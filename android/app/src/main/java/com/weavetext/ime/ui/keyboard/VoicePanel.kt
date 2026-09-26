@@ -82,6 +82,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
     init {
         session.addListener { view.invalidate(); if (session.active) view.postInvalidateOnAnimation() }
+        // 没有引擎：打开面板显示安装引导，而不是报错。 No engine: show the guidance in the panel, not an error.
+        session.onNoEngine = { if (kb.panel !== this) kb.showPanel("voice") else { view.refreshEngine(); view.invalidate() } }
     }
 
     private val holdMode get() = WeavePrefs.voiceMode(kb.prefs) == "hold"
@@ -246,7 +248,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             text.textSize = titleSize
             c.drawText(title, area.centerX(), area.centerY() - m.dp(12f), text)
             val labels = buildList {
-                if (VoiceHelp.canOfferOfflineBuild) add(offlineBtn to "下载离线语音版")
+                if (VoiceHelp.canOfferOfflineBuild) add(offlineBtn to "安装离线语音")
                 add(sysBtn to "系统语音设置")
                 add(importBtn to "导入插件")
             }
@@ -277,7 +279,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             }
             // 系统识别出错：同样给出办法，而不是只有一行错误。 System recognizer failed: offer the same ways out.
             if (session.state == VoiceSession.State.ERROR && plugin?.id == SYSTEM_ENGINE_ID) {
-                drawNoEngine(c, (session.error ?: "系统语音识别失败") + "，可以：")
+                drawNoEngine(c, (session.error ?: "系统语音识别暂时用不了") + "。可以：")
                 return
             }
             importBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty()
@@ -378,8 +380,11 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 listening -> kb.icons.draw(c, R.drawable.ic_stop, pal.onAccent, cx, cy, m.dp(32f))
                 else -> kb.icons.draw(c, R.drawable.ic_mic, pal.onAccent, cx, cy, m.dp(32f))
             }
+            // 系统识别不可用时上方已给出办法，这里只提示可重试，不用红色。 System failure: guidance is above; no red here.
+            val systemGuide = st == VoiceSession.State.ERROR && plugin?.id == SYSTEM_ENGINE_ID
             val hint = when {
                 holdCancel -> "松手取消"
+                systemGuide -> "点击麦克风可重试"
                 st == VoiceSession.State.ERROR -> (session.error ?: "识别失败") + "，点击重试"
                 st == VoiceSession.State.CONNECTING -> "正在连接…"
                 st == VoiceSession.State.FINALIZING -> "识别中…"
@@ -389,7 +394,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 else -> "点击开始说话"
             }
             text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(12f)
-            text.color = if (st == VoiceSession.State.ERROR || holdCancel) pal.danger else pal.labelSecondary
+            text.color = if ((st == VoiceSession.State.ERROR && !systemGuide) || holdCancel) pal.danger else pal.labelSecondary
             c.drawText(hint, cx, mic.bottom + m.dp(6f) - text.ascent(), text)
         }
 
@@ -640,7 +645,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                     kb.ctx.startActivity(Intent(kb.ctx, PermissionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
                 IMPORT -> kb.openSettings("voice")
-                OFFLINE -> VoiceHelp.openOfflineBuild(kb.ctx)
+                OFFLINE -> kb.openSettings("voice/upgrade")
                 SYSVOICE -> VoiceHelp.openSystemVoiceSettings(kb.ctx)
                 MIC -> if (!holdMode) {
                     when {

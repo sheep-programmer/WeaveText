@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只共享下载好的离线语音版安装包给系统安装器。 Only the downloaded offline-voice package is shared with the installer. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

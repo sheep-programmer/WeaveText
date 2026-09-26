@@ -127,7 +127,7 @@ fun VoiceListScreen() {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
                 if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) {
-                    Button(onClick = { com.weavetext.ime.voice.VoiceHelp.openOfflineBuild(ctx) }) { Text("下载离线语音版（覆盖安装，设置不丢）") }
+                    Button(onClick = { nav.push(Route.VoiceUpgrade) }) { Text("一键安装离线语音（设置不丢）") }
                 }
                 FilledTonalButton(onClick = { com.weavetext.ime.voice.VoiceHelp.openSystemVoiceSettings(ctx) }) { Text("打开系统语音输入设置") }
                 FilledTonalButton(onClick = importer.launch) { Text("导入 .xipk 插件") }

@@ -119,6 +119,8 @@ interface VoiceRecognizer {
     fun cancel()
     /** 打开语音面板时调用：预热本地模型等。 Called when the voice panel opens (warms local models). */
     fun warmUp() {}
+    /** 是否有可用引擎；没有时界面给出安装引导而不是报错。 Whether any engine is usable; else the UI shows guidance. */
+    fun hasEngine(): Boolean = true
 }
 
 /** 语音能力入口。 Entry point. */

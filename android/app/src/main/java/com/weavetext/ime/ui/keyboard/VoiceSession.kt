@@ -8,6 +8,7 @@ import android.os.Looper
 import android.os.SystemClock
 import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.ui.VoiceAccess
+import com.weavetext.ime.voice.VoiceHelp
 import com.weavetext.ime.voice.MultiEngineResults
 import com.weavetext.ime.voice.MultiVoiceListener
 import com.weavetext.ime.voice.VoicePlugin
@@ -59,6 +60,24 @@ class VoiceSession(
     private var lastLoud = 0L
     private var token = 0
 
+    /**
+     * 没有任何可用引擎时调用（不报错）：默认打开设置里的引导页，语音面板在时改为在面板里给出办法。
+     * Called instead of an error when no engine is available: opens the guidance page by default; the
+     * voice panel replaces it with in-panel guidance.
+     */
+    var onNoEngine: () -> Unit = {
+        val route = if (VoiceHelp.canOfferOfflineBuild) "voice/upgrade" else "voice"
+        runCatching {
+            ctx.startActivity(
+                android.content.Intent(ctx, com.weavetext.ime.settings.SettingsActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .setData(android.net.Uri.parse("weavetext://settings/$route")),
+            )
+        }
+    }
+
+    private fun hasEngine(): Boolean = runCatching { recognizerProvider().hasEngine() }.getOrDefault(true)
+
     fun addListener(l: () -> Unit) { listeners += l }
     private fun changed() = listeners.forEach { it() }
 
@@ -86,6 +105,7 @@ class VoiceSession(
         if (active) return true
         if (state == State.CHOOSING) discard()
         if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
+        if (!hasEngine()) { error = null; state = State.IDLE; changed(); onNoEngine(); return false }
         val r = recognizerProvider()
         rec = r
         committed.clear(); partial = ""; error = null; level = 0f

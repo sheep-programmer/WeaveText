@@ -52,6 +52,7 @@ sealed class Route {
     data object Voice : Route()
     data class VoiceDetail(val id: String) : Route()
     data object Models : Route()
+    data object VoiceUpgrade : Route()
     data object Look : Route()
     data object Styles : Route()
     data object StyleTweak : Route()
@@ -67,7 +68,11 @@ sealed class Route {
         fun fromPath(path: String?): List<Route> {
             val parts = path.orEmpty().trim('/').split('/').filter { it.isNotEmpty() }
             return when (parts.firstOrNull()) {
-                "voice" -> listOf(Voice) + (parts.getOrNull(1)?.let { listOf(VoiceDetail(it)) } ?: emptyList())
+                "voice" -> listOf(Voice) + when (val sub = parts.getOrNull(1)) {
+                    null -> emptyList()
+                    "upgrade" -> listOf(VoiceUpgrade)
+                    else -> listOf(VoiceDetail(sub))
+                }
                 "models" -> if (com.weavetext.ime.BuildConfig.LOCAL_ASR) listOf(Voice, Models) else listOf(Voice)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
@@ -110,6 +115,7 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Voice -> VoiceListScreen()
                     is Route.VoiceDetail -> VoiceDetailScreen(r.id)
                     Route.Models -> ModelsScreen()
+                    Route.VoiceUpgrade -> VoiceUpgradeScreen()
                     Route.Look -> LookScreen()
                     Route.Styles -> StylesScreen()
                     Route.StyleTweak -> StyleTweakScreen()

@@ -46,6 +46,8 @@ object DataInstaller {
             "$key=$loc"
         }
         cleanUp(ctx, usedFallback)
+        // 已经装上离线语音版时，顺手删掉下载留下的安装包。 Drop a leftover upgrade package once installed.
+        com.weavetext.ime.voice.VoiceUpgrade.cleanUp(ctx)
         return spec
     }
 

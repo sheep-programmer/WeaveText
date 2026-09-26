@@ -79,6 +79,7 @@ class ScriptedRecognizer(private val engines: VoiceEngines) : VoiceRecognizer {
     }
     override fun stop() { stops++ }
     override fun cancel() { cancels++; isRunning = false; listener?.onEnd() }
+    override fun hasEngine() = engines.selection().isNotEmpty()
     val multi get() = listener as com.weavetext.ime.voice.MultiVoiceListener
     /** 模拟全部引擎结束。 All engines ended. */
     fun endAll() { isRunning = false; listener?.onEnd() }

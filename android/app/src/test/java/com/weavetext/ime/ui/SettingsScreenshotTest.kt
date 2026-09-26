@@ -85,6 +85,17 @@ class SettingsScreenshotTest {
         engines.plugins = emptyList()
         show("voice_list_empty", Route.Home, Route.Voice)
     }
+    /** 轻量版没有引擎：列表页给出一键安装离线语音。 Lite with no engine: one-tap offline voice install. */
+    @Test fun voiceListEmptyLite() {
+        engines.plugins = emptyList()
+        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        try {
+            show("voice_list_empty_lite", Route.Home, Route.Voice)
+        } finally {
+            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+        }
+    }
+    @Test fun voiceUpgrade() = show("voice_upgrade", Route.Home, Route.Voice, Route.VoiceUpgrade)
     @Test fun voiceDetailForm() = show("voice_detail", Route.Home, Route.Voice, Route.VoiceDetail("org.example.asr.cloud"))
     @Test fun voiceDetailFormDark() = show("voice_detail_dark", Route.Home, Route.Voice, Route.VoiceDetail("org.example.asr.cloud"), dark = true)
     /** 不联网的插件：网络访问卡片里没有「发送到上述地址」。 Offline plugin: no "sent to the hosts above". */

@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 轻量版一键安装离线语音版（覆盖安装同一应用）。 Lite: one-tap install of the offline-voice build over itself. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Android 11 起须声明才能找到并连接系统语音识别服务，否则系统识别总是不可用或连接失败。
          Since Android 11 this declaration is required to see and bind the system speech recognition service. -->
@@ -51,5 +53,14 @@
                 android:name="android.view.im"
                 android:resource="@xml/method" />
         </service>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

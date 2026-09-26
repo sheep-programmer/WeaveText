@@ -480,6 +480,8 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         return (r * 4).coerceIn(0.0, 1.0).toFloat()
     }
 
+    override fun hasEngine(): Boolean = runCatching { engines.selection().isNotEmpty() }.getOrDefault(true)
+
     /** 打开语音面板时预热本地模型。 Warm up local models when the voice panel opens. */
     override fun warmUp() {
         if (engines.selection().any { it.id == LOCAL_ENGINE_ID }) engines.local.preload()
