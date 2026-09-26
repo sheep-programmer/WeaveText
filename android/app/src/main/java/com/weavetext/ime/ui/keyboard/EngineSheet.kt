@@ -83,7 +83,8 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         val top = max(m.dp(8f), height - want)
         sheet.set(0f, top, width.toFloat(), height.toFloat() + m.dp(16f))
         list.set(m.dp(12f), top + head, width - m.dp(12f), height - foot)
-        manage.set(m.dp(8f), height - foot, width / 2f, height.toFloat())
+        // 整条底栏都可点（文字仍靠左）。 The whole footer is tappable; the text stays left-aligned.
+        manage.set(0f, height - foot, width.toFloat(), height.toFloat())
     }
 
     private fun maxScroll() = max(0f, plugins.size * rowH() - list.height())

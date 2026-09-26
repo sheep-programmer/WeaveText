@@ -72,6 +72,22 @@ class ResponsiveScreenshotTest : KeyboardSnapshotSupport() {
     @Config(qualifiers = "w320dp-h640dp-port-xhdpi") @Test fun narrowVoice() = voice("w320")
     @Config(qualifiers = "w320dp-h640dp-port-xhdpi") @Test fun narrowShuangpin() = shuangpin("w320")
 
+    /** 窄屏上没有引擎时三个办法放不下一行，折成两行而不是冲出屏幕。 On 320dp the three no-engine pills wrap instead of overflowing. */
+    @Config(qualifiers = "w320dp-h640dp-port-xhdpi") @Test fun narrowVoiceNoEngine() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        engines.plugins = emptyList()
+        com.weavetext.ime.models.AsrRuntime.bundled = false
+        com.weavetext.ime.voice.VoiceIme.finder = { listOf(com.weavetext.ime.voice.VoiceIme.Option("org.example.voice/.Ime", "示例语音输入", null, enabled = true)) }
+        try {
+            val (k, _) = keyboard(false)
+            k.showPanel("voice")
+            snap("w320_voice_no_engine")
+        } finally {
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
+            com.weavetext.ime.voice.VoiceIme.finder = { emptyList() }
+        }
+    }
+
     // ---------------------------------------------------------------- 600dp 小平板 / small tablet
 
     @Config(qualifiers = "w600dp-h960dp-port-xhdpi") @Test fun tabletMain() = main("w600")

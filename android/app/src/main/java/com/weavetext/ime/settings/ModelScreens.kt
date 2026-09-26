@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
@@ -304,7 +305,7 @@ private fun androidx.compose.foundation.layout.RowScope.ModelActions(
                     ).joinToString(" · ")
                     else -> ""
                 }
-                Text(label, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1)
+                Text(label, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // 解压在原生层进行，不能中途取消。 Extraction runs natively and cannot be cancelled.
             if (state != ModelState.Extracting) TextButton(onClick = onCancel) { Text("取消") }

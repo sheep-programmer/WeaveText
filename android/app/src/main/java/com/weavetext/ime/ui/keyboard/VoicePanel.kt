@@ -252,17 +252,25 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             text.textSize = titleSize
             c.drawText(title, area.centerX(), area.centerY() - m.dp(12f), text)
             val ime = voiceIme
-            imeBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty()
+            imeBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty(); importBtn.setEmpty()
             // 最多三个按钮：有其他语音输入法时它排第一，替换「系统语音设置」。 At most three pills.
             val labels = buildList {
                 if (ime != null) add(imeBtn to (if (ime.enabled) "切换到${VoiceIme.shortLabel(ime)}" else "启用${VoiceIme.shortLabel(ime)}"))
                 if (VoiceHelp.canOfferOfflineBuild) add(offlineBtn to "安装离线语音")
                 if (ime == null || !VoiceHelp.canOfferOfflineBuild) add(sysBtn to "系统语音设置")
                 add(importBtn to "导入插件")
-            }.take(3)
+            }.take(3).toMutableList()
             text.textSize = m.dp(13f); text.typeface = medium
-            val pad = m.dp(12f); val gap = m.dp(8f); val bh = m.dp(32f)
-            val total = labels.sumOf { (text.measureText(it.second) + 2 * pad).toDouble() }.toFloat() + gap * (labels.size - 1)
+            var pad = m.dp(12f); val gap = m.dp(8f); val bh = m.dp(32f)
+            fun width() = labels.sumOf { (text.measureText(it.second) + 2 * pad).toDouble() }.toFloat() + gap * (labels.size - 1)
+            // 窄屏放不下一行：先缩小到 0.85 倍，仍放不下就去掉末尾的次要项（导入插件在设置里也能找到）。
+            // Too narrow for one row: shrink to 0.85×, then drop trailing secondary pills (import is also in settings).
+            if (width() > area.width()) {
+                val k = max(0.85f, area.width() / width())
+                text.textSize *= k; pad *= k
+                while (labels.size > 1 && width() > area.width()) labels.removeAt(labels.size - 1)
+            }
+            val total = width()
             var x = area.centerX() - total / 2
             val top = area.centerY() + m.dp(2f)
             for ((rect, label) in labels) {
