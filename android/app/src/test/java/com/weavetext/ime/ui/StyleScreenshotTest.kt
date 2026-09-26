@@ -89,6 +89,22 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
         snap("round_english_light")
     }
 
+    /** 「玻璃」的长按候选半透明：垫的是键盘背景，不透出下面的按键。 Glass long-press popup, translucent over the backdrop. */
+    @Test fun glassPopup() {
+        for (dark in listOf(false, true)) {
+            val (k, _) = keyboard(dark) { clear(); putString(WeavePrefs.STYLE_THEME, "glass") }
+            val kv = k.keyboardView
+            val ov = k.overlay!!
+            val r = android.graphics.RectF(kv.keyOf('e'.code)!!.rect)
+            ov.map(kv, r, r)
+            ov.showAlternatives(r, listOf("e", "é", "è", "ê", "ë", "ē"), 0)
+            idle()
+            k.view.captureRoboImage(File(dir, "theme_glass_popup_${if (dark) "dark" else "light"}.png").path)
+            kb?.dispose()
+            kb = null
+        }
+    }
+
     /**
      * 渐变背景上候选栏右端的渐隐与展开区直接透出背景：逐像素等于只画背景的结果。
      * On a gradient the candidate bar's right-edge fade and expand area show the backdrop itself, pixel for pixel.

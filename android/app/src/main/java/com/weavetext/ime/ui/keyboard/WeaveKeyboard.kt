@@ -166,6 +166,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     init {
         overlay = popup
+        popup.surface = board
         board.addView(topBar)
         board.addView(main)
         board.addView(full)

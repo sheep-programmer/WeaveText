@@ -30,7 +30,7 @@
     "divider": "#80FFFFFF",
     "toolbarActive": "#66FFFFFF",
     "accentSoft": "#CCD6F7",
-    "popup": "#F7F8FC",
+    "popup": "#C7FFFFFF",
     "shadow": "none",
     "stroke": "#99FFFFFF",
     "strokeWidth": 1
@@ -60,7 +60,7 @@
     "divider": "#26FFFFFF",
     "toolbarActive": "#1AFFFFFF",
     "accentSoft": "#2E3A6E",
-    "popup": "#3A3F55",
+    "popup": "#47FFFFFF",
     "shadow": "none",
     "stroke": "#26FFFFFF",
     "strokeWidth": 1

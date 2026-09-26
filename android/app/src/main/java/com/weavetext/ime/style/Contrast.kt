@@ -58,10 +58,12 @@ object Contrast {
             out += Check("candidate/bg$tag", ratio(p.candidateFirst, if (p.candidatePill) over(p.candidatePillColor, bg) else bg), 4.5)
             out += Check("secondary/bg$tag", ratio(p.labelSecondary, bg), 3.0)
             out += Check("icon/bg$tag", ratio(p.icon, bg), 3.0)
+            // 半透明气泡叠在键盘背景上显示（PopupOverlay.plate）。 Translucent popups are laid over the backdrop.
+            val popup = over(p.popup, bg)
+            out += Check("label/popup$tag", ratio(p.label, popup), 4.5)
+            out += Check("onAccent/popupSelected$tag", ratio(p.onAccent, over(p.popupSelected, popup)), 4.5)
         }
         out += Check("onAccent/accent", ratio(p.onAccent, p.keyAccent), 4.5)
-        out += Check("label/popup", ratio(p.label, p.popup), 4.5)
-        out += Check("onAccent/popupSelected", ratio(p.onAccent, p.popupSelected), 4.5)
         out += Check("accent/accentSoft (active)", ratio(p.keyAccent, p.accentSoft), 3.0)
         return out
     }

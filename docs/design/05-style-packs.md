@@ -139,6 +139,12 @@ Built-in themes are checked by `StyleContrastTest` (translucent keys composited 
 text on keys / function keys / background / popups ≥ 4.5:1, first candidate ≥ 4.5:1, text on accent ≥ 4.5:1, secondary text,
 icons and pressed state ≥ 3:1. 用户微调的强调色会自动向文字色靠拢直到首选候选 ≥ 4.5:1。
 
+`popup` 可以半透明（如「玻璃」）：按键气泡、长按候选、提示与浮动组合串先垫一层键盘背景（渐变 / 图片按原位取样），
+再叠气泡色并描上主题的按键描边——看起来是背景上的半透明面板，但不会透出下面的按键文字，所以对比度按「气泡色叠在每个背景色上」断言。
+`popup` may be translucent (e.g. glass): bubbles, long-press alternatives, info and the floating preedit are laid over the
+keyboard backdrop sampled in place, then tinted and outlined with the key stroke. Key labels never show through, so the
+contrast is asserted for the popup composited over every background stop.
+
 ### 4.3 背景 / Background
 
 ```json
@@ -214,4 +220,4 @@ all icons are self-drawn (`build_icons.py`, incl. filled variants).
 ## 8. 验收截图 / Snapshots
 
 `android/app/src/test/snapshots/`：`style_<布局>_{composing,t9,symbols,idle}_{light,dark}.png`、`theme_<主题>_{light,dark}.png`、
-`style_round_english_light.png`、`settings_styles*.png`、`settings_style_tweak.png`、`settings_style_import*.png`。
+`theme_glass_popup_{light,dark}.png`、`style_round_english_light.png`、`settings_styles*.png`、`settings_style_tweak.png`、`settings_style_import*.png`。

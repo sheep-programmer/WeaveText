@@ -19,7 +19,7 @@ import kotlin.math.sin
  */
 class BackdropDrawable(private val b: KbBackdrop) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private val dimPaint = Paint().apply { color = (((b.dim * 255).toInt().coerceIn(0, 255)) shl 24) }
+    private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = (((b.dim * 255).toInt().coerceIn(0, 255)) shl 24) }
     private val matrix = Matrix()
 
     override fun onBoundsChange(r: Rect) {
@@ -41,6 +41,26 @@ class BackdropDrawable(private val b: KbBackdrop) : Drawable() {
     override fun draw(canvas: Canvas) {
         canvas.drawRect(bounds, paint)
         if (b.dim > 0f) canvas.drawRect(bounds, dimPaint)
+    }
+
+    /**
+     * 只在 [r]（圆角 [radius]）内画出背景，坐标系同 [getBounds]：半透明气泡先垫这一层，透出的正是键盘背景。
+     * Paint the backdrop inside [r] only, in bounds coordinates, so a translucent popup shows the keyboard backdrop.
+     */
+    fun drawRoundRect(canvas: Canvas, r: android.graphics.RectF, radius: Float, alpha: Int = 255) {
+        paint.alpha = alpha
+        canvas.drawRoundRect(r, radius, radius, paint)
+        if (b.dim > 0f) { dimPaint.alpha = (b.dim * alpha).toInt().coerceIn(0, 255); canvas.drawRoundRect(r, radius, radius, dimPaint) }
+        paint.alpha = 255
+        dimPaint.alpha = (b.dim * 255).toInt().coerceIn(0, 255)
+    }
+
+    fun drawPath(canvas: Canvas, path: android.graphics.Path, alpha: Int = 255) {
+        paint.alpha = alpha
+        canvas.drawPath(path, paint)
+        if (b.dim > 0f) { dimPaint.alpha = (b.dim * alpha).toInt().coerceIn(0, 255); canvas.drawPath(path, dimPaint) }
+        paint.alpha = 255
+        dimPaint.alpha = (b.dim * 255).toInt().coerceIn(0, 255)
     }
 
     override fun setAlpha(alpha: Int) { paint.alpha = alpha }

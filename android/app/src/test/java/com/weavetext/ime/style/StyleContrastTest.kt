@@ -33,6 +33,25 @@ class StyleContrastTest {
         assertTrue("对比度不足 / contrast failures:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * 「玻璃」的长按候选等气泡半透明（叠在键盘背景上显示），文字对叠合后的底色在每个渐变色上都 ≥ 4.5:1。
+     * Glass popups are translucent (shown over the backdrop); text on the composited plate is ≥ 4.5:1 at every stop.
+     */
+    @Test fun glassPopupIsTranslucentAndReadable() {
+        val t = StyleRepository.get(app).theme("glass")
+        for (dark in listOf(false, true)) {
+            val p = t.palette(dark)
+            assertTrue("glass popup should be translucent", (p.popup ushr 24) in 1..254)
+            for (bg in t.background(dark).colors) {
+                val plate = Contrast.over(p.popup, bg)
+                val r = Contrast.ratio(p.label, plate)
+                assertTrue("glass/${if (dark) "dark" else "light"} label/popup %.2f".format(r), r >= 4.5)
+                val sel = Contrast.ratio(p.onAccent, Contrast.over(p.popupSelected, plate))
+                assertTrue("glass/${if (dark) "dark" else "light"} onAccent/popupSelected %.2f".format(sel), sel >= 4.5)
+            }
+        }
+    }
+
     @Test fun ratioMatchesWcagReference() {
         assertTrue(Math.abs(Contrast.ratio(0xFF000000.toInt(), 0xFFFFFFFF.toInt()) - 21.0) < 0.01)
         assertTrue(Math.abs(Contrast.ratio(0xFF767676.toInt(), 0xFFFFFFFF.toInt()) - 4.54) < 0.02)

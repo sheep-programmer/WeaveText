@@ -24,6 +24,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private var spec: PopupSpec = Layouts.DEFAULT.popup
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val loc = IntArray(2)
     private val myLoc = IntArray(2)
@@ -92,10 +93,18 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     private val decel = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 
+    /** 画着键盘背景的视图：半透明气泡在它的背景上取样。 The view carrying the keyboard backdrop, sampled by translucent popups. */
+    var surface: View? = null
+    private var under: BackdropDrawable? = null
+    private val underBounds = android.graphics.Rect()
+    private val surfLoc = IntArray(2)
+
     fun applyStyle(s: KeyboardStyle) {
         palette = s.palette
         metrics = s.metrics
         spec = s.layout.popup
+        under = s.palette.backdrop?.let { BackdropDrawable(it) }
+        underBounds.setEmpty()
         // API 28 起硬件加速支持 setShadowLayer。 HW shadow layers need API 28+.
         if (android.os.Build.VERSION.SDK_INT < 28) {
             setLayerType(LAYER_TYPE_SOFTWARE, null)
@@ -115,6 +124,56 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     fun mapX(src: View, x: Float): Float { src.getLocationInWindow(loc); getLocationInWindow(myLoc); return x + loc[0] - myLoc[0] }
     fun mapY(src: View, y: Float): Float { src.getLocationInWindow(loc); getLocationInWindow(myLoc); return y + loc[1] - myLoc[1] }
+
+    // ------------------------------------------------------------ popup surface
+
+    /** 让垫底背景与键盘背景对齐（本层坐标）。 Align the under-layer with the keyboard backdrop, in overlay coordinates. */
+    private fun syncUnder() {
+        val u = under ?: return
+        val s = surface ?: return
+        s.getLocationInWindow(surfLoc)
+        getLocationInWindow(myLoc)
+        val l = surfLoc[0] - myLoc[0]
+        val t = surfLoc[1] - myLoc[1]
+        if (underBounds.left != l || underBounds.top != t || underBounds.width() != s.width || underBounds.height() != s.height) {
+            underBounds.set(l, t, l + s.width, t + s.height)
+            u.bounds = underBounds
+        }
+    }
+
+    /**
+     * 气泡底板。主题的气泡色半透明（如「玻璃」）时，先垫一层键盘背景（渐变 / 图片按原位取样）再叠气泡色：
+     * 看上去与按键一样是背景上的半透明面板，但不会透出下面的按键文字，对比度只取决于主题（05 §4.2 断言）。
+     * Popup plate. A translucent popup colour (e.g. glass) is laid over the keyboard backdrop sampled in place, so it reads
+     * as a translucent pane like the keys without showing the key labels below; contrast depends on the theme only.
+     */
+    private fun plate(c: Canvas, r: RectF, radius: Float, path: Path?, color: Int, alpha: Int, shadow: Float, dy: Float) {
+        val a = color ushr 24
+        if (a == 255) {
+            fill.color = color
+            fill.alpha = alpha
+            fill.setShadowLayer(shadow, 0f, dy, palette.popupShadow)
+            if (path != null) c.drawPath(path, fill) else c.drawRoundRect(r, radius, radius, fill)
+            fill.clearShadowLayer()
+            return
+        }
+        fill.color = palette.background
+        fill.alpha = alpha
+        fill.setShadowLayer(shadow, 0f, dy, palette.popupShadow)
+        if (path != null) c.drawPath(path, fill) else c.drawRoundRect(r, radius, radius, fill)
+        fill.clearShadowLayer()
+        under?.let { if (path != null) it.drawPath(c, path, alpha) else it.drawRoundRect(c, r, radius, alpha) }
+        fill.color = color
+        fill.alpha = a * alpha / 255
+        if (path != null) c.drawPath(path, fill) else c.drawRoundRect(r, radius, radius, fill)
+        // 与按键同样的细描边勾出玻璃边缘。 The keys' hairline outline marks the glass edge.
+        if (palette.strokeWidth > 0f && palette.stroke ushr 24 != 0) {
+            stroke.color = palette.stroke
+            stroke.alpha = (palette.stroke ushr 24) * alpha / 255
+            stroke.strokeWidth = metrics.dp(palette.strokeWidth)
+            if (path != null) c.drawPath(path, stroke) else c.drawRoundRect(r, radius, radius, stroke)
+        }
+    }
 
     // ------------------------------------------------------------ preview bubble
 
@@ -153,6 +212,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         bubbleText = label
         bubbleAccent = false
         bubbleShown = true
+        syncUnder()
         // 视图只需覆盖气泡（与相连的按键）加阴影；尺寸只增不减，平时不触发布局。
         // The view covers the bubble (and the joined key) plus the shadow; it only ever grows, so no layout per key.
         val pad = m.dp(16f)
@@ -215,11 +275,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             val m = metrics
             val r = m.dp(spec.radius)
             canvas.translate(-bubbleOx, -bubbleOy)
-            fill.color = p.popup
-            fill.alpha = 255
-            fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
-            if (bubbleAttached) canvas.drawPath(bubblePath, fill) else canvas.drawRoundRect(bubble, r, r, fill)
-            fill.clearShadowLayer()
+            plate(canvas, bubble, r, if (bubbleAttached) bubblePath else null, p.popup, 255, m.dp(12f), m.dp(4f))
             text.color = if (bubbleAccent) p.keyAccent else p.label
             text.textSize = m.dp(spec.textSize)
             text.typeface = Typeface.DEFAULT
@@ -257,6 +313,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         altSelected = if (selected in items.indices) selected else -1
         altPivotX = key.centerX()
         altPivotY = altBox.bottom
+        syncUnder()
         if (animScale() == 0f) {
             altScale = 1f; altAlpha = 1f
         } else {
@@ -327,6 +384,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         info.set(left, bottom - h, left + w, bottom)
         infoText = msg
         infoDanger = danger
+        syncUnder()
         invalidate()
     }
 
@@ -346,6 +404,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             val w = (this.text.measureText(text) + m.dp(20f)).coerceAtMost(anchorRight() - anchorLeft() - m.dp(16f))
             val top = (anchorTop() - m.dp(38f)).coerceAtLeast(0f)
             preeditBox.set(anchorLeft() + m.dp(8f), top, anchorLeft() + m.dp(8f) + w, top + m.dp(32f))
+            syncUnder()
         }
         invalidate()
     }
@@ -366,6 +425,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         strip.set(anchorLeft() + m.dp(12f), top, anchorRight() - m.dp(12f), top + m.dp(64f))
         stripText = msg; stripLevel = level; stripDanger = danger; stripLive = live
         stripShown = true
+        syncUnder()
         invalidate()
     }
 
@@ -385,11 +445,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private fun drawStrip(canvas: Canvas) {
         val p = palette
         val m = metrics
-        fill.color = if (stripDanger) p.danger else p.popup
-        fill.alpha = 255
-        fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
-        canvas.drawRoundRect(strip, m.dp(16f), m.dp(16f), fill)
-        fill.clearShadowLayer()
+        plate(canvas, strip, m.dp(16f), null, if (stripDanger) p.danger else p.popup, 255, m.dp(12f), m.dp(4f))
         // 左侧 9 根波形条 / nine waveform bars on the left
         val bw = m.dp(3f); val gap = m.dp(3f)
         var x = strip.left + m.dp(16f)
@@ -427,11 +483,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         val m = metrics
         val pre = preedit
         if (pre != null) {
-            fill.color = p.popup
-            fill.alpha = 255
-            fill.setShadowLayer(m.dp(8f), 0f, m.dp(2f), p.popupShadow)
-            canvas.drawRoundRect(preeditBox, m.dp(8f), m.dp(8f), fill)
-            fill.clearShadowLayer()
+            plate(canvas, preeditBox, m.dp(8f), null, p.popup, 255, m.dp(8f), m.dp(2f))
             text.color = p.label
             text.textSize = m.dp(15f)
             text.typeface = Typeface.DEFAULT
@@ -448,12 +500,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         if (altItems.isNotEmpty()) {
             canvas.save()
             canvas.scale(altScale, altScale, altPivotX, altPivotY)
-            fill.color = p.popup
-            fill.alpha = (255 * altAlpha).toInt()
-            fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
-            val ar = m.dp(spec.altRadius)
-            canvas.drawRoundRect(altBox, ar, ar, fill)
-            fill.clearShadowLayer()
+            plate(canvas, altBox, m.dp(spec.altRadius), null, p.popup, (255 * altAlpha).toInt(), m.dp(12f), m.dp(4f))
             text.textSize = m.dp(20f)
             text.typeface = Typeface.DEFAULT
             for (i in altItems.indices) {
@@ -478,12 +525,8 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         }
         if (stripShown) drawStrip(canvas)
         if (infoText.isNotEmpty()) {
-            fill.color = if (infoDanger) p.danger else p.popup
-            fill.alpha = 255
-            fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
             val rr = if (infoLines.size > 1) m.dp(12f) else info.height() / 2
-            canvas.drawRoundRect(info, rr, rr, fill)
-            fill.clearShadowLayer()
+            plate(canvas, info, rr, null, if (infoDanger) p.danger else p.popup, 255, m.dp(12f), m.dp(4f))
             text.color = if (infoDanger) p.onAccent else p.label
             text.textSize = m.dp(13f)
             val lineH = m.dp(18f)
