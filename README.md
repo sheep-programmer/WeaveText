@@ -30,14 +30,15 @@
 
 在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64），两个版本签名相同、可互相覆盖安装：
 
-- **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件。
+- **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件，也可在应用内一键下载约 30 MB 的离线语音包（识别运行库 + 实时模型），无需重装即可在手机上识别，效果与离线语音版相同。
 - **离线语音版**：在轻量版基础上内置端侧语音识别（语音不离开手机），可再下载更准的模型。
 
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 
 *Get the APK from [Releases](../../releases) (Android 8.0+, arm64); both builds share one signature. **Lite**
 (recommended) has every input feature and reads its dictionaries straight from the APK, so the footprint is about
-the APK size; voice uses the system recognizer or plugins. **Offline voice** adds on-device speech recognition.
+the APK size; voice uses the system recognizer or plugins, or a one-tap ~30 MB offline voice pack (speech runtime +
+streaming model) downloaded in the app — same on-device quality, no reinstall. **Offline voice** adds on-device speech recognition.
 Enable WeaveText in system settings after installing.*
 
 ## 目录 / Layout

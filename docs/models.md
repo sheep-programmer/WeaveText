@@ -4,11 +4,13 @@
 
 中文：织文的离线语音识别运行在 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0，含 onnxruntime）之上，采用**两遍识别**：
 流式模型边说边出字，检测到句尾后由非流式模型对这一句重新识别作为终稿，再可选地补全标点。
-两个小模型随 APK 内置，开箱即可离线语音输入；更准或多语种的模型可在「设置 → 语音引擎 → 离线模型」中按需下载。
+离线语音版随 APK 内置运行时与两个小模型，开箱即可离线语音输入；轻量版可在应用内下载「离线语音包」（见 §4.1）。
+更准或多语种的模型可在「设置 → 语音引擎 → 离线模型」中按需下载。
 
 English: offline speech runs on sherpa-onnx with **two-pass recognition** — a streaming model shows text while you speak,
 an offline model re-decodes each utterance for the final text, then punctuation is optionally restored. Two small models
-ship in the APK; more accurate or multilingual ones are optional downloads.
+ship in the offline-voice APK; the lite build downloads a voice pack instead (§4.1); more accurate or multilingual
+ones are optional downloads.
 
 ## 2. 模型清单 / Catalog
 
@@ -16,6 +18,7 @@ ship in the APK; more accurate or multilingual ones are optional downloads.
 
 | id | 用途 Role | 内置 Built-in | 大小 Size | 字错率 CER 干净/嘈杂 clean/noisy | 实时率 RTF | 许可 License |
 |---|---|---|---|---|---|---|
+| `asr-runtime` | 识别运行库 runtime（仅轻量版 / lite only） | – | 27 MB（下载 9 MB） | – | – | Apache-2.0 / MIT |
 | `asr-stream-small` | 实时 streaming | ✓ | 26 MB | 3.11% / 5.90% | 0.09 | Apache-2.0* |
 | `asr-final-small` | 终稿 final | ✓ | 63 MB | 0.98% / 1.80% | 0.06 | Apache-2.0* |
 | `asr-stream-large` | 实时（高精度） | – | 162 MB | 0.33% / 3.77% | 0.28 | Apache-2.0* |
@@ -61,17 +64,40 @@ verifies SHA-256 and extracts only the needed files into uncompressed assets.*
 | 离线语音版（内置运行时与两遍识别模型） / offline voice | `./gradlew :app:assembleRelease` | ≈ 146 MB |
 | 轻量版（不含端侧语音识别） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 30 MB |
 
-轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型，「本地离线识别」与「离线模型」入口不会出现；语音输入使用系统识别或插件。
+轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在下载语音包（§4.1）之前「本地离线识别」与「离线模型」入口不会出现，语音输入使用系统识别或插件。
 两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
-*Lite drops the sherpa-onnx runtime (~27 MB) and models, hiding the on-device engine and the models page; voice uses the
-system recognizer or plugins. Both builds read dictionaries straight from the APK, so the footprint is about the APK size.*
+*Lite drops the sherpa-onnx runtime (~27 MB) and models; until the voice pack (§4.1) is downloaded the on-device engine
+and the models page stay hidden and voice uses the system recognizer or plugins. Both builds read dictionaries straight from the APK, so the footprint is about the APK size.*
 
 正式版只含 arm64-v8a；调试版额外含 x86_64 以便模拟器。`-Pweave.abis=arm64-v8a,x86_64` 可覆盖。
 *Release builds are arm64-v8a only; debug adds x86_64 for emulators; override with `-Pweave.abis`.*
 
+### 4.1 轻量版语音包 / Lite voice pack
+
+中文：
+- 轻量版在「设置 → 语音引擎 → 下载离线语音包」（语音面板里的「安装离线语音」也会打开这里）一键下载两样：
+  **识别运行库** `asr-runtime`（sherpa-onnx 1.13.8 的 C 接口库与 onnxruntime，arm64-v8a，官方文件原样，解开后约 27 MB）
+  和 **实时识别 · 小** `asr-stream-small`，合计下载约 30 MB，合并显示进度、可取消，计流量网络下先询问。
+- 运行库按目录里的 `archives` 顺序取：先试织文发布页上只含 arm64 的小包（约 9 MB），404 或失败再退到 sherpa-onnx 官方的
+  多架构 Android 包（约 46 MB），只解出 `arm64-v8a/` 下的两个文件；两条都走同一组 GitHub 镜像，每个文件按 SHA-256 校验。
+- 安装后运行库文件设为只读（Android 14 起动态载入的代码必须不可写），再由 Rust 内核按绝对路径载入并核对版本号
+  （`core/weave-ffi/src/asr.rs`）。识别参数（端点规则、线程数、两遍识别）与离线语音版一致，所以识别效果相同。
+- 装好后自动选中「本地离线识别」；终稿识别与智能标点仍是「离线模型」页里的可选下载。不必重装 APK。
+- 运行库只在不随包的构建里、且设备主 ABI 相符时才列出；否则此页退回「安装完整离线语音版」（覆盖安装 APK）。
+
+English: the lite build downloads a ~30 MB voice pack — the unmodified sherpa-onnx 1.13.8 C API + onnxruntime
+libraries (arm64-v8a) and the small streaming model — with combined progress, cancel and a metered-network prompt. The
+runtime tries a small arm64-only pack first and falls back to the official multi-ABI archive, keeping only
+`arm64-v8a/`; files are SHA-256 verified, made read-only (Android 14 dynamic-code rule) and loaded by the Rust core with a
+version check. Settings match the offline-voice build, so recognition quality is the same. The local engine is selected
+automatically; final-pass and punctuation models remain optional. Without a matching ABI the page falls back to the
+full offline-voice APK upgrade.
+
 ## 5. 测试 / Tests
 
 `./gradlew :native-test:test` 在桌面 JVM 上验证：目录解析、下载器（镜像回退、坏镜像、断点续传、取消）、两条路线择优与逐文件校验、
-Rust 解压真实模型包、两遍识别（真实 sherpa-onnx + 内置模型，两句话各出一个正确终稿）。`WEAVE_NET_TEST=1` 时额外做真实网络下载。
+Rust 解压真实模型包、两遍识别（真实 sherpa-onnx + 内置模型，两句话各出一个正确终稿）、压缩包来源回退（首个 404 → 下一个，只取一个 ABI）；
+在 macOS arm64 上还会下载桌面版运行库，经 `NativeAsr`（与轻量版同一条载入路径）端到端识别官方测试音频。`WEAVE_NET_TEST=1` 时额外做真实网络下载。
 *Desktop tests cover catalog parsing, downloader fallback/resume/cancel, route selection with per-file checks, real archive
-extraction, and two-pass recognition with the real runtime; `WEAVE_NET_TEST=1` adds a real-network download.*
+extraction, two-pass recognition with the real runtime, archive-source fallback, and (on macOS arm64) an end-to-end
+`NativeAsr` decode through the same run-time loading path as the lite build; `WEAVE_NET_TEST=1` adds a real-network download.*
