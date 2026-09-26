@@ -33,138 +33,102 @@ import com.weavetext.ime.voice.VoiceHelp
 import com.weavetext.ime.voice.VoiceUpgrade
 
 /**
- * 轻量版的语音入口：能下载运行库时是「下载语音包」（运行库 + 实时模型，约 30 MB）；
+ * 轻量版的语音入口：运行库可用时就是「语音包」列表页（顶部推荐组合一键安装，下面逐项安装/卸载）；
  * 否则（架构不符等）退回「安装离线语音」——下载完整的离线语音版 APK 覆盖安装。
- * The lite build's voice page: "download the voice pack" (runtime + streaming model, ~30 MB) when the
- * runtime is available for this device, else the full offline-voice APK upgrade.
+ * The lite build's voice page: the voice-pack list (one-tap recommended set on top, per-item install and
+ * uninstall below) when the runtime fits this device, else the full offline-voice APK upgrade.
  */
 @Composable
 fun VoiceUpgradeScreen() {
-    val deps = LocalDeps.current
-    val repo = remember { deps.models() }
+    val repo = LocalDeps.current.models()
     val pack = remember(repo) { VoicePack(repo) }
-    if (!AsrRuntime.bundled && pack.supported) VoicePackPage(repo, pack) else FullBuildPage()
+    if (!AsrRuntime.bundled && pack.supported) ModelsScreen() else FullBuildPage()
 }
 
+/**
+ * 语音包列表顶部的推荐组合（运行库 + 「实时识别 · 小」）：还没装齐时显示，一键装好并选中本地识别。
+ * The recommended set on top of the list (runtime + small streaming model), shown until it is installed.
+ */
 @Composable
-private fun VoicePackPage(repo: ModelRepository, pack: VoicePack) {
+internal fun VoicePackHeader(repo: ModelRepository) {
     val deps = LocalDeps.current
-    val nav = LocalNav.current
-    val ctx = LocalContext.current
+    val pack = remember(repo) { VoicePack(repo) }
+    if (!pack.supported) return
     val tick = rememberModelTick(repo)
     val state = remember(tick) { pack.state() }
+    if (state == VoicePack.State.Ready) return
     var confirmMetered by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    val deletable = remember(tick) { pack.deletable() }
-    val busy = state is VoicePack.State.Downloading || state == VoicePack.State.Installing
     // 装好后自动选中本地离线识别。 Select the local engine once installed.
     val start: (Boolean) -> Unit = { metered ->
         pack.start(allowMetered = metered) { runCatching { deps.engines().activeId = LOCAL_ENGINE_ID } }
     }
     val onDownload = { if (repo.wifiOnly && repo.isMetered()) confirmMetered = true else start(!repo.wifiOnly) }
-
-    SubPage("下载语音包") {
-        GroupCard(Modifier.padding(top = 8.dp)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("离线语音包", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "下载后即可在手机上识别语音：不联网，语音不离开设备，识别效果与离线语音版相同。" +
-                        "语音包含识别运行库和「实时识别 · 小」模型，只需下载一次，不用重新安装应用。建议在 Wi-Fi 下下载。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                when (state) {
-                    is VoicePack.State.Idle, is VoicePack.State.Failed -> {
-                        val bytes = (state as? VoicePack.State.Idle)?.bytes ?: (state as VoicePack.State.Failed).bytes
-                        if (state is VoicePack.State.Failed) {
-                            Text(state.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                        }
-                        Button(onClick = onDownload, Modifier.fillMaxWidth()) {
-                            Text((if (state is VoicePack.State.Failed) "重新下载" else "下载语音包") + "（${formatSize(bytes)}）")
-                        }
+    GroupCard(Modifier.padding(top = 8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("推荐：一键装好离线识别", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "安装「识别运行库」和「实时识别 · 小」后即可在手机上识别语音：不联网，语音不离开设备，效果与离线语音版相同。" +
+                    "下面的列表可以逐项安装或卸载更准的模型。建议在 Wi-Fi 下下载。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            when (state) {
+                is VoicePack.State.Idle, is VoicePack.State.Failed -> {
+                    val bytes = (state as? VoicePack.State.Idle)?.bytes ?: (state as VoicePack.State.Failed).bytes
+                    if (state is VoicePack.State.Failed) {
+                        Text(state.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                     }
-                    is VoicePack.State.Downloading -> {
-                        if (state.total > 0) {
-                            LinearProgressIndicator(progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
-                        } else {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            val speed = if (state.bytesPerSecond > 0) " · ${formatSize(state.bytesPerSecond)}/s" else ""
-                            val via = if (state.mirror.isNotEmpty()) " · ${state.mirror}" else ""
-                            Text(
-                                if (state.done > 0) "${formatSize(state.done)} / ${formatSize(state.total)}$speed$via" else "正在连接…",
-                                Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            TextButton(onClick = { pack.cancel() }) { Text("取消") }
-                        }
-                    }
-                    VoicePack.State.Installing -> {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Text("正在解压与校验…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    VoicePack.State.Ready -> {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(painterResource(R.drawable.ic_check), null, Modifier.size(20.dp), tint = LocalSuccess.current)
-                            Text("语音包已装好，语音输入会使用「本地离线识别」", style = MaterialTheme.typography.bodyMedium)
-                        }
-                        Button(onClick = { nav.pop() }, Modifier.fillMaxWidth()) { Text("完成") }
+                    Button(onClick = onDownload, Modifier.fillMaxWidth()) {
+                        Text((if (state is VoicePack.State.Failed) "重新下载" else "一键安装") + "（${formatSize(bytes)}）")
                     }
                 }
+                is VoicePack.State.Downloading -> {
+                    if (state.total > 0) {
+                        LinearProgressIndicator(progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        val speed = if (state.bytesPerSecond > 0) " · ${formatSize(state.bytesPerSecond)}/s" else ""
+                        val via = if (state.mirror.isNotEmpty()) " · ${state.mirror}" else ""
+                        Text(
+                            if (state.done > 0) "${formatSize(state.done)} / ${formatSize(state.total)}$speed$via" else "正在连接…",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(onClick = { pack.cancel() }) { Text("取消") }
+                    }
+                }
+                VoicePack.State.Installing -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("正在解压与校验…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                VoicePack.State.Ready -> {}
             }
         }
-        // 能下载就能删除：运行库与已下载的语音模型一起删，释放空间。 What can be downloaded can be deleted.
-        if (deletable.isNotEmpty() && !busy) {
-            GroupTitle("管理")
-            GroupCard {
-                SettingRow(
-                    "删除语音包",
-                    "释放 ${formatSize(deletable.sumOf { it.installedSize })}，之后可随时重新下载",
-                    titleColor = MaterialTheme.colorScheme.error,
-                    onClick = { confirmDelete = true },
-                )
-            }
-        }
-        GroupTitle("更多模型")
-        GroupCard {
-            SettingRow("离线模型", "终稿识别、智能标点等可按需下载，识别更准", onClick = { nav.push(Route.Models) }) { Chevron() }
-        }
-        GroupTitle("其他方式")
-        GroupCard {
-            FullBuildRow()
-            RowDivider()
-            SettingRow("打开系统语音输入设置", "手机自带语音服务可用时，织文会自动使用", onClick = { VoiceHelp.openSystemVoiceSettings(ctx) }) { Chevron() }
-        }
     }
-
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("删除语音包？") },
-            text = {
-                Text(
-                    "将删除：" + deletable.joinToString("、") { it.name } +
-                        "，共 ${formatSize(deletable.sumOf { it.installedSize })}。删除后本地离线识别不可用，需要时可重新下载。",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { confirmDelete = false; pack.delete() }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
-        )
-    }
-
     if (confirmMetered) {
         val bytes = (state as? VoicePack.State.Idle)?.bytes ?: (state as? VoicePack.State.Failed)?.bytes ?: 0L
         AlertDialog(
             onDismissRequest = { confirmMetered = false },
             title = { Text("使用移动网络下载？") },
-            text = { Text("当前为计流量网络，语音包约需 ${formatSize(bytes)} 流量。") },
+            text = { Text("当前为计流量网络，约需 ${formatSize(bytes)} 流量。") },
             confirmButton = { TextButton(onClick = { confirmMetered = false; start(true) }) { Text("下载") } },
             dismissButton = { TextButton(onClick = { confirmMetered = false }) { Text("取消") } },
         )
+    }
+}
+
+/** 语音包列表底部的「其他方式」。 "Other ways" at the bottom of the list. */
+@Composable
+internal fun VoiceOtherWays() {
+    val ctx = LocalContext.current
+    GroupTitle("其他方式")
+    GroupCard {
+        FullBuildRow()
+        RowDivider()
+        SettingRow("打开系统语音输入设置", "手机自带语音服务可用时，织文会自动使用", onClick = { VoiceHelp.openSystemVoiceSettings(ctx) }) { Chevron() }
     }
 }
 

@@ -2,7 +2,7 @@ package com.weavetext.ime.models
 
 /**
  * 轻量版的「离线语音包」：识别运行库 + 「实时识别 · 小」，一次下载两样，合并显示进度。
- * 两样都装好后调用 [start] 时传入的 onReady（用来自动选中本地离线识别）。终稿与标点模型仍在「离线模型」里按需下载。
+ * 两样都装好后调用 [start] 时传入的 onReady（用来自动选中本地离线识别）。终稿与标点模型在「语音包」列表里逐项安装、卸载。
  *
  * The lite build's offline voice pack: the speech runtime plus the small streaming model, downloaded
  * together with one combined progress. Once both are installed the onReady given to [start] runs (used to
@@ -88,39 +88,29 @@ class VoicePack(private val repo: ModelRepository) {
         for (m in parts) repo.cancel(m.id)
     }
 
-    /**
-     * 删除语音包会一并删掉的内容：运行库与所有已下载的语音模型（轻量版里它们离开运行库都用不了）。
-     * What deleting the pack removes: the runtime and every downloaded speech model (useless without it on lite).
-     */
-    fun deletable(): List<ModelSpec> = repo.catalog.models.filter { m ->
-        m.kind in SPEECH_KINDS && repo.state(m.id) == ModelState.Installed
-    }
-
-    /** [deletable] 占用的空间。 Space taken by [deletable]. */
-    fun deletableBytes(): Long = deletable().sumOf { it.installedSize }
-
-    /** 删除语音包，返回删掉的条目数。 Delete the pack; returns how many entries were removed. */
-    fun delete(): Int {
-        // 只取消正在进行的下载。 Cancel only downloads that are actually in flight.
-        for (m in parts) {
-            val st = repo.state(m.id)
-            if (st == ModelState.Waiting || st == ModelState.Extracting || st is ModelState.Downloading) repo.cancel(m.id)
-        }
-        // 模型先删、运行库最后删：正在用的会先被释放。 Models first, runtime last; users are released first.
-        return deletable().sortedBy { if (it.kind == ModelKind.ASR_RUNTIME) 1 else 0 }.count { repo.delete(it.id) }
-    }
-
     companion object {
+        /**
+         * 单独安装某一项：轻量版里语音模型离不开运行库，运行库还没装时一起装上。
+         * Install one item; on lite a speech model needs the runtime, so queue it too when missing.
+         */
+        fun install(repo: ModelRepository, id: String, allowMetered: Boolean) {
+            val m = repo.catalog.find(id) ?: return
+            val rt = repo.catalog.find(AsrRuntime.ID)
+            if (rt != null && m.kind != ModelKind.ASR_RUNTIME) {
+                val s = repo.state(rt.id)
+                if (s == ModelState.NotInstalled || s is ModelState.Failed) repo.download(rt.id, allowMetered)
+            }
+            repo.download(id, allowMetered)
+        }
+
         /** 运行库在前：它小，先装好。 Runtime first: it is small. */
         val PART_IDS = listOf(AsrRuntime.ID, "asr-stream-small")
-
-        private val SPEECH_KINDS = setOf(ModelKind.ASR_RUNTIME, ModelKind.ASR_STREAMING, ModelKind.ASR_OFFLINE, ModelKind.PUNCTUATION)
 
         /** 下载失败的原因换成用户能懂的话；已是中文的原样保留。 Readable failure text; Chinese messages pass through. */
         fun friendly(raw: String): String = when {
             raw.isNotEmpty() && raw.first().code > 0x2E80 -> raw
             raw.contains("sha256", true) -> "下载的文件校验失败，请重试"
-            else -> "下载失败，请检查网络后重试（可在「离线模型」里换下载源）"
+            else -> "下载失败，请检查网络后重试（可在「语音包」页换下载源）"
         }
     }
 }

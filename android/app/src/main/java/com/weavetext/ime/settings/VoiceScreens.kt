@@ -442,7 +442,7 @@ fun VoiceDetailScreen(id: String) {
         }
         if (plugin.id == LOCAL_ENGINE_ID) {
             GroupCard(Modifier.padding(top = 12.dp)) {
-                SettingRow("管理离线模型", "下载更准的模型，或删除不用的模型", icon = R.drawable.ic_waveform, onClick = { nav.push(Route.Models) }) { Chevron() }
+                SettingRow("管理语音包", "逐项安装更准的模型，或卸载不用的", icon = R.drawable.ic_waveform, onClick = { nav.push(Route.Models) }) { Chevron() }
             }
         }
         if (!isBuiltinEngine(plugin.id)) {

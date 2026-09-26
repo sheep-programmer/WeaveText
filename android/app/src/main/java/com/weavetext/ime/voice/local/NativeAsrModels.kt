@@ -75,13 +75,13 @@ internal object NativeAsrModels {
     fun friendly(raw: String?): String {
         val m = raw.orEmpty()
         return when {
-            m.contains("required") -> "识别运行库版本不对，请在「离线模型」里删除「识别运行库」后重新下载"
+            m.contains("required") -> "识别运行库版本不对，请在「语音包」里删除「识别运行库」后重新下载"
             m.startsWith("load onnxruntime") || m.startsWith("load sherpa-onnx") || m.startsWith("missing ") ->
-                "识别运行库无法载入，可能已损坏，请在「离线模型」里删除后重新下载（$m）"
+                "识别运行库无法载入，可能已损坏，请在「语音包」里删除后重新下载（$m）"
             m.contains("not loaded") -> "识别运行库还没有载入"
             m.startsWith("unsupported") -> "不支持这种模型（$m）"
             m.contains("recognizer") || m.contains("stream") || m.contains("punctuation") ->
-                "模型无法打开，可能下载不完整，请在「离线模型」里删除后重新下载"
+                "模型无法打开，可能下载不完整，请在「语音包」里删除后重新下载"
             m.isEmpty() -> "离线识别出错"
             else -> "离线识别出错：$m"
         }

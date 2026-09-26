@@ -103,7 +103,7 @@ class ModelsScreenshotTest {
     @Test fun meteredConfirm() {
         val models = FakeModels(metered = true)
         open(models)
-        compose.onAllNodesWithText("下载")[0].performClick()
+        compose.onAllNodesWithText("安装")[0].performClick()
         compose.waitForIdle()
         assertTrue(models.downloads.isEmpty())
         captureScreenRoboImage(File(dir, "models_metered_confirm.png").path)
@@ -117,19 +117,19 @@ class ModelsScreenshotTest {
     @Test fun unmeteredDownloadsDirectly() {
         val models = FakeModels(metered = false)
         open(models)
-        compose.onAllNodesWithText("下载")[0].performClick()
+        compose.onAllNodesWithText("安装")[0].performClick()
         compose.waitForIdle()
         assertEquals(listOf("asr-stream-large" to false), models.downloads)
     }
 
-    /** 已安装模型删除需确认。 Deleting an installed model asks first. */
+    /** 已安装的一项可单独卸载，需确认。 Uninstalling one installed item asks first. */
     @Test fun deleteConfirm() {
         val models = FakeModels(mapOf("asr-stream-large" to ModelState.Installed))
         open(models)
-        compose.onNodeWithText("删除").performClick()
+        compose.onNodeWithText("卸载").performClick()
         compose.waitForIdle()
         captureScreenRoboImage(File(dir, "models_delete_confirm.png").path)
-        compose.onAllNodesWithText("删除").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()
+        compose.onAllNodesWithText("卸载").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()
         compose.waitForIdle()
         assertEquals(ModelState.NotInstalled, models.state("asr-stream-large"))
     }
@@ -154,6 +154,6 @@ class ModelsScreenshotTest {
 
     @Test fun voiceListCard() {
         open(FakeModels(mixed), routes = listOf(Route.Home, Route.Voice))
-        compose.onNodeWithText("已安装 3 个 · 占用 75.5\u00A0MB").assertExists()
+        compose.onNodeWithText("已安装 3 项 · 占用 75.5\u00A0MB").assertExists()
     }
 }

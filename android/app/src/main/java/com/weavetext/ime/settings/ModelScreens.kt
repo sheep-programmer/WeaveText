@@ -37,6 +37,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
 import com.weavetext.ime.models.ModelKind
+import com.weavetext.ime.models.AsrRuntime
+import com.weavetext.ime.models.VoicePack
 import com.weavetext.ime.models.ModelRepository
 import com.weavetext.ime.models.ModelSpec
 import com.weavetext.ime.models.ModelState
@@ -80,14 +82,14 @@ private fun rememberUsedBytes(repo: ModelRepository, tick: Int): Long {
     return remember(sig) { runCatching { repo.usedBytes() }.getOrDefault(0L) }
 }
 
-/** 语音引擎页顶部的「离线模型」入口卡片。 Entry card at the top of the voice engines page. */
+/** 语音引擎页顶部的「语音包」入口卡片。 Entry card at the top of the voice engines page. */
 @Composable
 fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
     val tick = rememberModelTick(repo)
     val used = rememberUsedBytes(repo, tick)
     val count = remember(tick) { repo.catalog.models.count { repo.state(it.id).isReady } }
     GroupCard(Modifier.padding(top = 8.dp)) {
-        SettingRow("离线模型", "已安装 $count 个 · 占用 ${formatSize(used)}", icon = R.drawable.ic_waveform, onClick = onClick) { Chevron() }
+        SettingRow("语音包", "已安装 $count 项 · 占用 ${formatSize(used)}", icon = R.drawable.ic_waveform, onClick = onClick) { Chevron() }
     }
 }
 
@@ -109,11 +111,15 @@ fun ModelsScreen() {
     var customDialog by remember { mutableStateOf(false) }
 
     // 仅 Wi-Fi 且当前计流量：先确认。 Ask first on a metered network when Wi-Fi only is on.
+    // 轻量版里语音模型离不开运行库：没装时一起装。 On lite a model needs the runtime: install it too.
     val startDownload: (ModelSpec) -> Unit = { m ->
-        if (repo.wifiOnly && repo.isMetered()) confirmMetered = m else repo.download(m.id, allowMetered = !repo.wifiOnly)
+        if (repo.wifiOnly && repo.isMetered()) confirmMetered = m else VoicePack.install(repo, m.id, allowMetered = !repo.wifiOnly)
     }
+    val lite = !AsrRuntime.bundled
 
-    SubPage("离线模型") {
+    SubPage("语音包") {
+        // 轻量版：顶部是推荐组合一键安装（装齐后隐藏）。 Lite: the one-tap recommended set on top.
+        if (lite) VoicePackHeader(repo)
         for ((kind, title) in GROUPS) {
             val models = repo.catalog.models.filter { it.kind == kind }
             if (models.isEmpty()) continue
@@ -131,7 +137,10 @@ fun ModelsScreen() {
                 }
             }
         }
-        InfoNote("识别在手机上完成，语音不离开设备。字错率仅供模型间相对比较，数字越小越准。")
+        InfoNote(
+            "每一项都可以单独安装或卸载。识别在手机上完成，语音不离开设备。字错率仅供模型间相对比较，数字越小越准。" +
+                if (lite) "识别模型需要「识别运行库」，安装模型时会一起装上。" else "",
+        )
 
         GroupTitle("下载设置")
         GroupCard {
@@ -145,6 +154,7 @@ fun ModelsScreen() {
                 Text(formatSize(rememberUsedBytes(repo, tick)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        if (lite) VoiceOtherWays()
     }
 
     confirmMetered?.let { m ->
@@ -152,17 +162,22 @@ fun ModelsScreen() {
             onDismissRequest = { confirmMetered = null },
             title = { Text("使用移动网络下载？") },
             text = { Text("当前为计流量网络，下载「${m.name}」约需 ${formatSize(m.archiveSize)} 流量。") },
-            confirmButton = { TextButton(onClick = { confirmMetered = null; repo.download(m.id, allowMetered = true) }) { Text("下载") } },
+            confirmButton = { TextButton(onClick = { confirmMetered = null; VoicePack.install(repo, m.id, allowMetered = true) }) { Text("下载") } },
             dismissButton = { TextButton(onClick = { confirmMetered = null }) { Text("取消") } },
         )
     }
     confirmDelete?.let { m ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            title = { Text("删除「${m.name}」？") },
-            text = { Text("将释放约 ${formatSize(m.installedSize)}，之后可重新下载。") },
+            title = { Text("卸载「${m.name}」？") },
+            text = {
+                Text(
+                    "将释放约 ${formatSize(m.installedSize)}，之后可重新下载。" +
+                        if (m.kind == ModelKind.ASR_RUNTIME) "已下载的识别模型会保留，但要重新安装运行库后才能使用。" else "",
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { confirmDelete = null; repo.delete(m.id) }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { confirmDelete = null; repo.delete(m.id) }) { Text("卸载", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("取消") } },
         )
@@ -260,11 +275,11 @@ private fun androidx.compose.foundation.layout.RowScope.ModelActions(
         ModelState.Builtin -> StatusText("随应用内置，无需下载", R.drawable.ic_check, LocalSuccess.current)
         ModelState.Installed -> {
             StatusText("已安装", R.drawable.ic_check, LocalSuccess.current)
-            TextButton(onClick = onDelete) { Text("删除", color = cs.error) }
+            TextButton(onClick = onDelete) { Text("卸载", color = cs.error) }
         }
         ModelState.NotInstalled -> {
-            Text("未下载", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
-            FilledTonalButton(onClick = onDownload) { Text("下载") }
+            Text("未安装", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+            FilledTonalButton(onClick = onDownload) { Text("安装") }
         }
         is ModelState.Failed -> {
             Row(Modifier.weight(1f).padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

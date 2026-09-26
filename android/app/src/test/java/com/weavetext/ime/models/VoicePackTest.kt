@@ -127,7 +127,7 @@ class VoicePackTest {
         repo.emit(stream, ModelState.Failed("当前为移动网络，已按设置暂停下载"))
         val f = pack.state() as VoicePack.State.Failed
         assertTrue(f.message, f.message.startsWith("下载失败") || f.message.startsWith("当前为移动网络"))
-        assertEquals("下载失败，请检查网络后重试（可在「离线模型」里换下载源）", VoicePack.friendly("HF: HTTP 404"))
+        assertEquals("下载失败，请检查网络后重试（可在「语音包」页换下载源）", VoicePack.friendly("HF: HTTP 404"))
         assertEquals("下载的文件校验失败，请重试", VoicePack.friendly("model.int8.onnx: sha256 mismatch"))
         assertEquals("存储空间不足，需要约 60 MB", VoicePack.friendly("存储空间不足，需要约 60 MB"))
 
@@ -151,20 +151,25 @@ class VoicePackTest {
         assertEquals("离线识别出错", NativeAsrModels.friendly(null))
     }
 
-    /** 能下载就能删除：运行库与已下载的语音模型一起删，语音包回到未下载。 Deleting the pack frees everything. */
-    @Test fun deletePackRemovesRuntimeAndDownloadedSpeechModels() {
+    /** 逐项安装：轻量版装某个模型时顺带装运行库；卸载运行库不连带删除模型。 Per-item install and uninstall. */
+    @Test fun installingAModelQueuesTheRuntimeAndUninstallIsPerItem() {
         val repo = FakeModels(catalog = FakeModels.LITE)
-        val pack = VoicePack(repo)
-        assertTrue("没装时没有可删的 / nothing to delete yet", pack.deletable().isEmpty())
+        VoicePack.install(repo, "punc-ct", allowMetered = false)
+        assertEquals(listOf(AsrRuntime.ID to false, "punc-ct" to false), repo.downloads)
+        // 运行库已装：只装模型本身。 Runtime present: only the model.
+        repo.downloads.clear()
         repo.emit(AsrRuntime.ID, ModelState.Installed)
+        VoicePack.install(repo, stream, allowMetered = true)
+        assertEquals(listOf(stream to true), repo.downloads)
+        // 卸载运行库：模型保留，但本地识别下线。 Uninstalling the runtime keeps the model but disables the engine.
         repo.emit(stream, ModelState.Installed)
-        repo.emit("punc-ct", ModelState.Installed)
-        assertEquals(VoicePack.State.Ready, pack.state())
-        assertEquals(setOf(AsrRuntime.ID, stream, "punc-ct"), pack.deletable().map { it.id }.toSet())
-        assertTrue(pack.deletableBytes() > 0)
-        assertEquals(3, pack.delete())
-        assertTrue(pack.deletable().isEmpty())
-        assertTrue(pack.state() is VoicePack.State.Idle)
+        assertTrue(AsrRuntime.engineReady(repo, bundled = false))
+        repo.delete(AsrRuntime.ID)
+        assertEquals(ModelState.Installed, repo.state(stream))
         assertFalse(AsrRuntime.engineReady(repo, bundled = false))
+        // 离线语音版的目录里没有运行库：只装模型。 Voice build (no runtime in catalog): model only.
+        val voice = FakeModels()
+        VoicePack.install(voice, "punc-ct", allowMetered = false)
+        assertEquals(listOf("punc-ct" to false), voice.downloads)
     }
 }
