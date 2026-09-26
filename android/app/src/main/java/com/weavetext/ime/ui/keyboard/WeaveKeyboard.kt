@@ -82,6 +82,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 键盘卡片：常规模式下铺满底部；悬浮模式下是可拖动的小卡片（06 §5）。 Docked full width, or the floating card. */
     private val card = FrameLayout(service)
     private val handle = FloatHandle(service)
+    private val grip = ResizeGrip(service)
+    /** 悬浮卡片的缩放（按当前方向读取）。 Floating card scale for the current orientation. */
+    private var floatScale = 1f
+    /** 正在拖动缩放：布局时不按保存的比例重新放置。 Resizing: layout keeps the card where it is. */
+    private var resizing = false
     val board = FrameLayout(service)
     val topBar = TopBarView(service, this)
     val main = FrameLayout(service)
@@ -132,6 +137,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         main.addView(oneHandButton)
         card.addView(handle)
         card.addView(board)
+        card.addView(grip)
         root.addView(card)
         root.addView(popup, FrameLayout.LayoutParams(-1, -1))
         full.visibility = View.GONE
@@ -165,7 +171,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     fun applyTheme() {
         // 悬浮卡片更窄，键高用最紧凑档，比例更协调。 The narrower floating card uses the compact level.
-        style = if (floating) StyleRepository.get(ctx).resolve(ctx, prefs, FLOAT_LEVEL) else StyleRepository.get(ctx).resolve(ctx, prefs)
+        style = if (floating) floatingStyle() else StyleRepository.get(ctx).resolve(ctx, prefs)
         palette = style.palette
         metrics = style.metrics
         icons.clear()
@@ -191,6 +197,15 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
+    private fun floatingStyle(): KeyboardStyle {
+        val landscape = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        floatScale = FloatingGeometry.decodeScale(prefs.getString(if (landscape) WeavePrefs.FLOAT_SIZE_LAND else WeavePrefs.FLOAT_SIZE_PORT, null))
+        val base = StyleRepository.get(ctx).resolve(ctx, prefs, FLOAT_LEVEL)
+        if (floatScale == 1f) return base
+        val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(base.layout, base.overrides), floatScale)
+        return KeyboardStyle(base.layout, base.theme, base.dark, base.overrides, base.palette, m)
+    }
+
     /** 给接管整块键盘的面板铺上与键盘相同的背景。 Give a full-height panel the keyboard background. */
     fun paintBackground(v: View) {
         val b = palette.backdrop
@@ -202,10 +217,14 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (floating) {
             val kbH = m.kbHeight.toInt()
             val handleH = m.dp(HANDLE_DP).toInt()
-            val w = FloatingGeometry.cardWidth(ctx.resources.displayMetrics.widthPixels, m.landscape, m.density)
+            val w = (FloatingGeometry.cardWidth(ctx.resources.displayMetrics.widthPixels, m.landscape, m.density) * floatScale).toInt()
             card.layoutParams = FrameLayout.LayoutParams(w, handleH + kbH)
             handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
             handle.visibility = View.VISIBLE
+            val g = m.dp(GRIP_DP).toInt()
+            grip.layoutParams = FrameLayout.LayoutParams(g, g, android.view.Gravity.BOTTOM or android.view.Gravity.END)
+            grip.visibility = View.VISIBLE
+            grip.bringToFront()
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = handleH }
             board.setPadding(0, 0, 0, 0)
             card.outlineProvider = object : android.view.ViewOutlineProvider() {
@@ -223,6 +242,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             card.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
             card.elevation = 0f
             handle.visibility = View.GONE
+            grip.visibility = View.GONE
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH)
             board.setPadding(0, 0, 0, navInset)
         }
@@ -988,6 +1008,76 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
+    /** 卡片当前宽度 px（测试用）。 Current card width in px (for tests). */
+    @get:androidx.annotation.VisibleForTesting
+    val cardWidth: Int get() = card.width
+
+    private fun sizeKey() = if (metrics.landscape) WeavePrefs.FLOAT_SIZE_LAND else WeavePrefs.FLOAT_SIZE_PORT
+
+    /** 按缩放重建尺寸（拖动缩放中）。 Re-apply sizes for a new scale while resizing. */
+    private fun applyFloatScale(s: Float) {
+        prefs.edit().putString(sizeKey(), "%.3f".format(java.util.Locale.ROOT, s)).apply()
+        applyTheme()
+        layoutSig = ""
+        refreshLayout()
+        updateCandidates(null)
+    }
+
+    /**
+     * 悬浮卡片右下角的缩放手柄：拖动整体缩放（按键保持比例），范围见 [FloatingGeometry.clampScale]，横竖屏各记一份。
+     * Resize grip in the card's bottom-right corner: drag to scale the whole card, remembered per orientation.
+     */
+    private inner class ResizeGrip(c: Context) : View(c) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        private var downX = 0f
+        private var downY = 0f
+        private var startScale = 1f
+        private var startW = 0
+        private var startH = 0
+
+        init { contentDescription = "拖动调整悬浮键盘大小" }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val m = metrics
+            paint.color = palette.labelHint
+            paint.strokeWidth = m.dp(1.5f)
+            val r = width - m.dp(6f)
+            val b = height - m.dp(6f)
+            for (i in 1..2) {
+                val d = m.dp(5f) * i
+                canvas.drawLine(r - d, b, r, b - d, paint)
+            }
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY
+                    startScale = floatScale; startW = card.width; startH = card.height
+                    resizing = true
+                    keyboardView.cancelTouch()
+                    popup.hideAll()
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val raw = FloatingGeometry.resizeScale(startScale, startW, startH, e.rawX - downX, e.rawY - downY)
+                    val dm = ctx.resources.displayMetrics
+                    val baseW = (startW / startScale).toInt()
+                    val baseH = (startH / startScale).toInt()
+                    val s = FloatingGeometry.clampScale(raw, root.width.takeIf { it > 0 } ?: dm.widthPixels, root.height.takeIf { it > 0 } ?: dm.heightPixels, baseW, baseH, dm.density)
+                    if (kotlin.math.abs(s - floatScale) >= 0.02f) applyFloatScale(s)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    resizing = false
+                    saveCardPosition()
+                }
+            }
+            return true
+        }
+    }
+
     // ================================================================ lifecycle
 
     override fun onShown() {
@@ -1062,7 +1152,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             super.onLayout(changed, left, top, right, bottom)
-            if (floating) placeCard() else syncOverlayAnchor()
+            if (floating) { if (resizing) moveCardBy(0f, 0f) else placeCard() } else syncOverlayAnchor()
         }
     }
 
@@ -1070,6 +1160,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         /** 悬浮卡片使用的键高档位。 Height level used by the floating card. */
         const val FLOAT_LEVEL = 0
         private const val HANDLE_DP = 22f
+        private const val GRIP_DP = 28f
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

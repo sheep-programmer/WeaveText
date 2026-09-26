@@ -71,6 +71,9 @@ object WeavePrefs {
     /** 悬浮卡片位置 "fx,fy"（0–1 的比例），横竖屏各记一份。 Card position as fractions, per orientation. */
     const val FLOAT_POS_PORT = "float_pos_port"
     const val FLOAT_POS_LAND = "float_pos_land"
+    /** 悬浮卡片缩放（0.7–1.3），横竖屏各记一份。 Card scale, per orientation. */
+    const val FLOAT_SIZE_PORT = "float_size_port"
+    const val FLOAT_SIZE_LAND = "float_size_land"
     /** "tap" / "hold" */
     const val VOICE_MODE = "voice_mode"
     const val SYMBOL_LOCK = "symbol_lock"

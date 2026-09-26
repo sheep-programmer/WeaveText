@@ -364,5 +364,16 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("floating_toolbox_light")
     }
 
+    @Test fun floatingResized() {
+        val (k, _) = keyboard(false) { putBoolean(WeavePrefs.FLOATING, true) }
+        val before = k.cardWidth
+        // 重新进入悬浮模式时读取保存的缩放。 The stored scale is read when floating mode is entered.
+        WeavePrefs.of(app).edit().putString(WeavePrefs.FLOAT_SIZE_PORT, "0.8").putBoolean(WeavePrefs.FLOATING, false).commit()
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.FLOATING, true).commit()
+        idle()
+        assertTrue("card shrank: ${k.cardWidth} < $before", k.cardWidth < before * 0.85f)
+        snap("floating_small_light")
+    }
+
     @Test fun compactHeight() { keyboard(false) { putInt(WeavePrefs.HEIGHT_LEVEL, 0) }; snap("pinyin_compact_light") }
 }

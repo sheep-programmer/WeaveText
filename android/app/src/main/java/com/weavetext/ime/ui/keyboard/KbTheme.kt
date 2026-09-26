@@ -79,7 +79,7 @@ class KbBackdrop(
  * 键盘尺寸（01 §4.3、§6、§7）。全部为 px，布局时一次算好。
  * Keyboard metrics (01 §4.3, §6, §7), precomputed in px.
  */
-class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT) {
+class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, scale: Float = 1f) {
     val density: Float = ctx.resources.displayMetrics.density
     private val widthDp: Float
     val landscape: Boolean
@@ -123,7 +123,9 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT) 
         val base = if (landscape) (heightDp * 0.105f).coerceIn(38f, 48f) else (heightDp * 0.0615f).coerceIn(46f, 62f)
         val factor = LEVEL_FACTORS[level.coerceIn(0, 4)]
         val gapV = if (small) geo.gapV - 2f else geo.gapV
-        val pitchDp = (base * factor * geo.rowScale).coerceIn(40f, 68f).roundToInt().toFloat()
+        // [scale]：悬浮卡片的缩放（允许比常规档更矮）。 Floating-card scale; may go below the docked minimum.
+        val pitchDp = (base * factor * geo.rowScale).coerceIn(40f, 68f).let { if (scale == 1f) it else (it * scale).coerceIn(32f, 76f) }
+            .roundToInt().toFloat()
         rowPitch = pitchDp * density
         keyHeight = (pitchDp - gapV) * density
         // 系统字号完整生效（上限 2.0，与系统最大档一致）；字母键另受键高约束，见 [letter]。

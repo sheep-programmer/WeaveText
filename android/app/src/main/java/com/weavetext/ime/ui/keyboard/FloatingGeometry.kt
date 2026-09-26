@@ -56,6 +56,29 @@ object FloatingGeometry {
 
     fun insets(windowH: Int, card: Box) = Insets(windowH, windowH, card)
 
+    const val MIN_SCALE = 0.7f
+    const val MAX_SCALE = 1.3f
+
+    /**
+     * 卡片缩放的允许范围：宽不小于 220 dp、不超过窗口宽的 95%，高不超过窗口高的 65%。
+     * Allowed card scale: at least 220 dp wide, at most 95% of the window width and 65% of its height.
+     * @param baseW 缩放为 1 时的卡片宽；@param baseH 缩放为 1 时的卡片高。 Card size at scale 1.
+     */
+    fun clampScale(scale: Float, windowW: Int, windowH: Int, baseW: Int, baseH: Int, density: Float): Float {
+        if (baseW <= 0 || baseH <= 0) return 1f
+        val hi = minOf(MAX_SCALE, windowW * 0.95f / baseW, windowH * 0.65f / baseH)
+        val lo = maxOf(MIN_SCALE, 220 * density / baseW).coerceAtMost(hi)
+        return scale.coerceIn(lo, hi)
+    }
+
+    /** 拖动右下角：宽、高的相对变化取平均，按键保持比例。 Corner drag: average of the relative width and height change. */
+    fun resizeScale(startScale: Float, startW: Int, startH: Int, dx: Float, dy: Float): Float {
+        if (startW <= 0 || startH <= 0) return startScale
+        return startScale * ((startW + dx) / startW + (startH + dy) / startH) / 2f
+    }
+
+    fun decodeScale(s: String?): Float = s?.toFloatOrNull()?.takeIf { !it.isNaN() }?.coerceIn(MIN_SCALE, MAX_SCALE) ?: 1f
+
     fun encode(f: Pair<Float, Float>) = "%.4f,%.4f".format(java.util.Locale.ROOT, f.first, f.second)
 
     fun decode(s: String?): Pair<Float, Float> {

@@ -63,4 +63,32 @@ class FloatingGeometryTest {
         assertEquals(FloatingGeometry.DEFAULT, FloatingGeometry.decode("0.3"))
         assertEquals(1f to 0f, FloatingGeometry.decode("7,-2"))
     }
+
+    @Test fun resizeFollowsTheCornerDrag() {
+        assertEquals(1f, FloatingGeometry.resizeScale(1f, 800, 600, 0f, 0f), 1e-4f)
+        // 宽 +10%、高 +10% → 1.1。 +10% both ways.
+        assertEquals(1.1f, FloatingGeometry.resizeScale(1f, 800, 600, 80f, 60f), 1e-4f)
+        // 只拖宽度：取平均，按键保持比例。 Width only: averaged, keys keep their proportions.
+        assertEquals(0.9f, FloatingGeometry.resizeScale(1f, 800, 600, -160f, 0f), 1e-4f)
+    }
+
+    @Test fun scaleStaysWithinLimits() {
+        val d = 2.625f
+        // 基准卡片 810×700 px。 Base card 810 × 700 px.
+        assertEquals(220 * d / 810, FloatingGeometry.clampScale(0.1f, w, h, 810, 700, d), 1e-4f)
+        assertEquals(FloatingGeometry.MIN_SCALE, FloatingGeometry.clampScale(0.1f, 2400, h, 1200, 700, d), 1e-4f)
+        assertEquals(1.2666f, FloatingGeometry.clampScale(5f, w, h, 810, 700, d), 1e-3f) // 95% 窗宽 / 95% of the width
+        assertEquals(0.85f, FloatingGeometry.clampScale(0.85f, w, h, 810, 700, d), 1e-4f)
+        // 横屏窗口矮：高度上限起作用。 Short landscape window: the height cap wins.
+        assertEquals(1080 * 0.65f / 700, FloatingGeometry.clampScale(5f, 2400, 1080, 1200, 700, d), 1e-3f)
+        // 最小 220 dp 宽。 At least 220 dp wide.
+        assertEquals(220 * d / 700, FloatingGeometry.clampScale(0.1f, w, h, 700, 500, d), 1e-3f)
+    }
+
+    @Test fun storedScaleIsSanitised() {
+        assertEquals(1f, FloatingGeometry.decodeScale(null), 0f)
+        assertEquals(1f, FloatingGeometry.decodeScale("x"), 0f)
+        assertEquals(FloatingGeometry.MAX_SCALE, FloatingGeometry.decodeScale("9"), 0f)
+        assertEquals(0.8f, FloatingGeometry.decodeScale("0.800"), 1e-4f)
+    }
 }
