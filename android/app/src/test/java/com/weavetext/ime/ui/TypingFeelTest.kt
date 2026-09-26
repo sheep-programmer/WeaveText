@@ -261,6 +261,20 @@ class TypingFeelTest {
         assertEquals("【qw】3", ic.text)
     }
 
+    @Test fun englishLettersShowOnTheNextFrame() {
+        controller.toggleChinese()
+        hold(20)
+        for (c in "hel") tap(c)
+        hold(20)
+        // 组合串不写入编辑器，但每个字母当帧出现在候选栏首位。 Not in the editor, but in the bar within a frame.
+        assertEquals("", ic.text)
+        assertEquals("hel", kb.state.preedit)
+        assertEquals("hel", kb.topBar.candidateAt(0))
+        tap('p')
+        hold(20)
+        assertEquals("help", kb.topBar.candidateAt(0))
+    }
+
     // ------------------------------------------------------------ 14-key
 
     @Test fun fourteenKeySendsGroupCodesAndSeparator() {

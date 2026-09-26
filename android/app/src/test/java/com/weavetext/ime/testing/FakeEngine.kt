@@ -20,7 +20,8 @@ class FakeEngine : KeyEngine {
     var snapshots = 0
 
     private fun composes(c: Char) = c in 'a'..'z' || (schema == "t14" && (c in 'A'..'N' || c == '\'' || c == '1'))
-    private fun cand(i: Int) = Candidate(if (i == 0) "【$raw】" else "$raw$i", "", false)
+    /** 英文方案与真实内核一样把原样输入放在首位。 English puts the typed word first, like the real engine. */
+    private fun cand(i: Int) = Candidate(if (i == 0) (if (schema == "english") "$raw" else "【$raw】") else "$raw$i", "", false)
 
     override fun setSchema(key: String): Boolean { schema = key; raw.clear(); return true }
     override fun setOption(key: String, value: Boolean) = true

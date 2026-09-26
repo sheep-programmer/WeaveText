@@ -160,6 +160,18 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("english_shift_once_light")
     }
 
+    /** 英文输入中：正在敲的单词是首个候选，带光标。 English typing: the word being typed leads, with a caret. */
+    @Test fun englishTyping() {
+        val (_, c) = keyboard(false)
+        c.previewState(
+            ImeState(
+                chinese = false, engineReady = true, composing = true, preedit = "hel",
+                candidates = listOf("hel", "hello", "help", "held", "helmet").map { com.weavetext.ime.core.Candidate(it, "", false) }, totalCandidates = 5,
+            ),
+        )
+        snap("english_typing_light")
+    }
+
     @Test fun numberPad() {
         val (k, _) = keyboard(false)
         k.onKey(k.keyboardView.keyOf(KeyCode.NUMBER)!!)

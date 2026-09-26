@@ -226,6 +226,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     }
 
     val loadedCount get() = texts.size
+    /** 第 [i] 个候选的文字（测试用）。 Candidate text at [i] (for tests). */
+    @androidx.annotation.VisibleForTesting
+    fun candidateAt(i: Int): String? = texts.getOrNull(i)
     /** 已测量（可绘制）的候选数。 Candidates measured so far. */
     val measuredCount get() = measured
 
@@ -464,6 +467,12 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             text.color = if (i == 0) p.candidateFirst else p.label
             val sh = shown[i] ?: continue
             c.drawText(sh, l + m.dp(12f), base, text)
+            // 英文：首项就是正在敲的单词，带上光标，每个字母当帧可见。 English: the first item is the word being typed, with a caret.
+            if (i == 0 && english && cursorOn && preedit.isNotEmpty() && texts[0] == preedit) {
+                val cx = l + m.dp(12f) + text.measureText(sh) + m.dp(1f)
+                fill.color = p.candidateFirst
+                c.drawRect(cx, base + text.ascent() * 0.8f, cx + m.dp(1f), base + m.dp(1.5f), fill)
+            }
             val cm = comments[i]
             if (cm.isNotEmpty()) {
                 small.color = p.labelHint
