@@ -68,6 +68,7 @@ class WeaveImeService : InputMethodService() {
 
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        controller.onSelectionUpdate(newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         ui?.onSelectionChanged(newSelStart, newSelEnd)
     }
 

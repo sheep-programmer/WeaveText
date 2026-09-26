@@ -66,7 +66,7 @@ class FakeEngine : KeyEngine {
  * 记录上屏结果的编辑器连接（方向键移动光标、删除键删字）。
  * An editor connection that keeps the committed text (arrows move the cursor, DEL deletes).
  */
-class FakeInputConnection(view: View) : BaseInputConnection(view, true) {
+open class FakeInputConnection(view: View) : BaseInputConnection(view, true) {
     val text: String get() = editable!!.toString()
     var cursorMoves = 0
 

@@ -62,6 +62,12 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private var undoStamp = -1
     /** null = 上次输入进了内核组合；否则为直接上屏的文字。 null = went into the engine; else the committed text. */
     private var undoText: String? = null
+    /** 选区与光标前文字的本地镜像，按键路径上少走 IPC。 Local editor mirror that saves IPCs on the key path. */
+    val editor = EditorCache()
+    /** 编辑框只收按键事件（TYPE_NULL，如终端）。 The field only understands key events (TYPE_NULL). */
+    private var keyEventsOnly = false
+    private var capsCached = false
+    private var capsVersion = -1
 
     fun addListener(l: (ImeState) -> Unit) { listeners += l; l(state) }
     fun removeListener(l: (ImeState) -> Unit) { listeners -= l }
@@ -78,6 +84,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         editorInfo = info
+        editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
+        keyEventsOnly = info == null || info.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL
         val e = engine
         if (!restarting) {
             e?.clear()
@@ -103,6 +111,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
             )
         }
         refresh()
+    }
+
+    /** 编辑器回报的选区变化。 Selection update from the editor. */
+    fun onSelectionUpdate(selStart: Int, selEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
+        editor.onUpdate(selStart, selEnd, candidatesStart, candidatesEnd)
     }
 
     fun onFinishInput() {
@@ -159,9 +172,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
             return true
         }
         if (t.isEmpty()) return true
-        val ic = ic() ?: return false
-        if (ic.getTextBeforeCursor(t.length, 0)?.toString() != t) return false
+        val ic = ic(modeled = true) ?: return false
+        if ((editor.textBefore(t.length) ?: ic.getTextBeforeCursor(t.length, 0)?.toString()) != t) return false
         ic.deleteSurroundingText(t.length, 0)
+        editor.onDeleteBefore(t.length)
         return true
     }
 
@@ -171,7 +185,24 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
-        val ic = ic() ?: return
+        val ic = ic(modeled = true) ?: return
+        if (!keyEventsOnly && editor.selectionKnown) {
+            // 已知选区：一次 IPC 删掉选区或光标前一个字形。 Known selection: one IPC per delete.
+            if (!editor.selectionEmpty) {
+                ic.commitText("", 1)
+                editor.onCommit("")
+                return
+            }
+            if (editor.textBefore(1) == null) ic.getTextBeforeCursor(EditorCache.FILL, 0)?.let { editor.fill(it, EditorCache.FILL) }
+            val n = editor.lastClusterLength()
+            if (n > 0) {
+                ic.deleteSurroundingText(n, 0)
+                editor.onDeleteBefore(n)
+                return
+            }
+        }
+        // 不回报选区的编辑器、终端、文本开头：按原来的方式发删除键。 Fallback: query, then a DEL key event.
+        editor.invalidate()
         val sel = ic.getSelectedText(0)
         if (!sel.isNullOrEmpty()) {
             ic.commitText("", 1)
@@ -193,11 +224,13 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val now = android.os.SystemClock.uptimeMillis()
         if (!state.chinese && lastSpaceAt != 0L && now - lastSpaceAt < DOUBLE_SPACE_MS) {
             lastSpaceAt = 0L
-            val ic = ic()
-            if (ic != null && ic.getTextBeforeCursor(1, 0) == " ") {
+            val ic = ic(modeled = true)
+            if (ic != null && (editor.textBefore(1) ?: ic.getTextBeforeCursor(1, 0)?.toString()) == " ") {
                 ic.beginBatchEdit()
                 ic.deleteSurroundingText(1, 0)
+                editor.onDeleteBefore(1)
                 ic.commitText(". ", 1)
+                editor.onCommit(". ")
                 ic.endBatchEdit()
                 return
             }
@@ -315,7 +348,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
     }
 
-    fun hasSelection(): Boolean = !icProvider()?.getSelectedText(0).isNullOrEmpty()
+    fun hasSelection(): Boolean =
+        if (editor.selectionKnown) !editor.selectionEmpty else !icProvider()?.getSelectedText(0).isNullOrEmpty()
 
     /** 复制/剪切/粘贴/全选。 Copy / cut / paste / select all. */
     fun contextMenuAction(id: Int) {
@@ -360,8 +394,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
-        val ic = ic() ?: return
-        val before = ic.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+        val ic = ic(modeled = true) ?: return
+        val before = editor.textBefore(64) ?: ic.getTextBeforeCursor(64, 0)?.toString().orEmpty().also { editor.fill(it, 64) }
         if (before.isEmpty()) { sendKey(KeyEvent.KEYCODE_DEL); return }
         var i = before.length
         // 先跳过尾部空白，再删同类字符（字母数字一段 / 汉字一段 / 单个标点）。
@@ -372,6 +406,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         val n = (before.length - i).coerceAtLeast(1)
         ic.deleteSurroundingText(n, 0)
+        editor.onDeleteBefore(n)
     }
 
     private fun charClass(c: Char): Int = when {
@@ -380,24 +415,38 @@ class InputController(private val icProvider: () -> InputConnection?) {
         else -> 2
     }
 
-    /** 句首自动大写（英文）。 Auto-capitalise at sentence start. */
+    /**
+     * 句首自动大写（英文）。优先用本地镜像计算；编辑器没变时复用上次结果，不再每键查询。
+     * Auto-capitalise at sentence start: computed from the local mirror, or reused while the editor is
+     * unchanged, instead of an IPC per key.
+     */
     fun capsModeActive(): Boolean {
         val info = editorInfo ?: return false
-        if (info.inputType and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES == 0 &&
-            info.inputType and InputType.TYPE_TEXT_FLAG_CAP_WORDS == 0 &&
-            info.inputType and InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS == 0
-        ) return false
+        val req = info.inputType and CAPS_FLAGS
+        if (req == 0) return false
+        if (req and InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS != 0) return true
+        editor.capsMode(req)?.let { return it != 0 }
+        if (capsVersion == editor.version) return capsCached
         val ic = icProvider() ?: return false
-        return ic.getCursorCapsMode(info.inputType) != 0
+        // 读一次光标前文字，之后的按键都在本地算。 One read fills the mirror for the following keys.
+        if (editor.selectionEmpty) {
+            ic.getTextBeforeCursor(EditorCache.FILL, 0)?.let { editor.fill(it, EditorCache.FILL) }
+            editor.capsMode(req)?.let { return it != 0 }
+        }
+        capsCached = ic.getCursorCapsMode(info.inputType) != 0
+        capsVersion = editor.version
+        return capsCached
     }
 
     /** 英文双击空格 → ". "。 Double-space period; true if applied. */
     fun doubleSpacePeriod(): Boolean {
-        val ic = ic() ?: return false
-        val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: return false
+        val ic = ic(modeled = true) ?: return false
+        val before = editor.textBefore(2) ?: ic.getTextBeforeCursor(2, 0)?.toString() ?: return false
         if (before.length < 2 || before[1] != ' ' || !before[0].isLetterOrDigit()) return false
         ic.deleteSurroundingText(1, 0)
+        editor.onDeleteBefore(1)
         ic.commitText(". ", 1)
+        editor.onCommit(". ")
         return true
     }
 
@@ -506,12 +555,19 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     private fun commit(text: String) {
         if (text.isEmpty()) return
-        ic()?.commitText(text, 1)
+        val ic = ic(modeled = true) ?: return
+        ic.commitText(text, 1)
+        editor.onCommit(text)
     }
 
-    /** 要改动编辑器时取连接（使撤销失效）。 Connection for an edit; invalidates the pending undo. */
-    private fun ic(): InputConnection? {
+    /**
+     * 要改动编辑器时取连接（使撤销失效）；[modeled] 为假时调用方做的改动不在本地镜像里，镜像等下一次回报。
+     * Connection for an edit; invalidates the pending undo. Unless [modeled], the edit isn't mirrored
+     * locally and the mirror waits for the editor's next report.
+     */
+    private fun ic(modeled: Boolean = false): InputConnection? {
         stamp++
+        if (!modeled) editor.invalidate()
         return icProvider()
     }
 
@@ -545,6 +601,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     companion object {
         private const val DOUBLE_SPACE_MS = 450L
+        private const val CAPS_FLAGS = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_CAP_WORDS or
+            InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         private val PASSWORD_VARIATIONS = setOf(
             InputType.TYPE_TEXT_VARIATION_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
