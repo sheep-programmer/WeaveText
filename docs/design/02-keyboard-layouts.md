@@ -80,7 +80,7 @@
 | 候选行 Candidate row | y=18–48dp（30dp 高），横向滚动 `RecyclerView`/自绘 `HorizontalScroll`；每项左右 padding 12dp、最小宽 40dp（文字左对齐）；第 1 项 `kb.candidateFirst` + 500 字重；其余 `kb.label` |
 | 分隔 Separator | 候选之间**无**竖线；靠 24dp 间距区分 / no dividers |
 | 展开箭头 Expand | 右侧固定 44dp 宽，`ic_chevron_down` 22dp，左侧 16dp 渐隐遮罩（背景色 0→100%）盖住滚动内容；无更多候选时隐藏 |
-| 英文联想 | 英文模式下组合串行隐藏，候选行垂直居中（y 占满 48dp），首项为原样输入 |
+| 英文联想 | 英文模式下组合串行隐藏，候选行垂直居中（y 占满 48dp），首项为原样输入，末尾带与组合串相同的闪烁光标（06 §8.5）|
 | 按下态 | 候选项按下显示 `kb.toolbarActive` 圆角 8dp 底块（高 30dp） |
 | 长按候选 | 若为用户词/学习词 → 弹出小气泡「删除该词」；系统词无操作 |
 
@@ -559,7 +559,7 @@
 |---|---|
 | `TOUCH_SLOP` | 8dp |
 | `LONG_PRESS_MS` | 450ms（空格 500ms），从按下事件时刻起算 |
-| `SWIPE_UP_MIN` | `max(20dp, keyHeight × 0.45)` |
+| `SWIPE_UP_MIN` | `max(28dp, keyHeight × 0.55)`，且 \|dy\| > 1.5 \|dx\| |
 | `CURSOR_STEP` | 12dp / 字符 |
 | `DELETE_CLEAR_DX` | 1.5 × 字母格宽（约 60dp）|
 | `REPEAT_DELAY_MS / REPEAT_INTERVAL_MS` | 400ms / 50ms |
@@ -567,7 +567,7 @@
 ### 14.1 字符键 / Character keys
 1. **点击**：ACTION_DOWN 显示按下态 + 气泡，**同时输出该字符**（06 §8.2）；抬起不再输出。
    *The char is emitted on DOWN (06 §8.2).*
-2. **上滑副字符**：按下后纵向位移 ≤ −`SWIPE_UP_MIN` 且横向位移 < 纵向位移 → 气泡内容实时切换为副字符（气泡字色改 `kb.keyAccent`）并振动一次；抬起时用副字符**替换**按下时输出的字。未达到阈值回落 → 恢复主字符。
+2. **上滑副字符**：按下后纵向位移 ≤ −`SWIPE_UP_MIN` 且纵向位移大于横向的 1.5 倍（06 §8.3）→ 气泡内容实时切换为副字符（气泡字色改 `kb.keyAccent`）并振动一次；抬起时用副字符**替换**按下时输出的字。未达到阈值回落 → 恢复主字符。
    *Swipe-up switches the bubble to the hint char; UP replaces the emitted char with it.*
 3. **长按候选气泡**：`LONG_PRESS_MS` 未移出 `TOUCH_SLOP` → 弹出长按气泡（§04 组件 3），与副字符对齐但**不预选**；手指移到某项上才选中，抬起时用它替换；原地松手或移出气泡 → 保留原字符。
    *The popup preselects nothing; lifting in place keeps the key's own char.*
@@ -625,3 +625,8 @@
 - 布局 JSON 的 `qwerty.rows` 允许 5 行，首行必须恰好是 0–9 十个数字（05 §3）。*`qwerty.rows` may have a leading digit row.*
 
 ![数字行布局 / Number-row layout](../../android/app/src/test/snapshots/style_numrow_composing_light.png)
+
+## 16. 实体键盘 / Physical keyboard
+
+接着实体键盘时只显示候选栏（与软键盘顶栏的组合串、候选行规格相同），按键规则见 06 §9。
+*With a physical keyboard only the candidate bar shows (same spec as the soft keyboard's top bar); key rules in 06 §9.*

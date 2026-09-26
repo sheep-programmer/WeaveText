@@ -151,15 +151,19 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 
 ### 5.3 缩放 / Resize
 
-- 卡片右下角有 28dp 的缩放手柄（两道斜线）。拖动时卡片**整体缩放**，按键保持比例：缩放系数取宽、高相对变化的平均值。
-  *A 28dp grip in the bottom-right corner scales the whole card; keys keep their proportions (average of the
-  relative width and height change).*
+- 缩放手柄在顶部拖动条的**左端**（44dp 宽、与拖动条等高，画两层直角标记），与右端的停靠按钮对称；它**不占任何按键的触控区**
+  （此前放在右下角，会压住回车键的一角）。向左上拖放大、向右下拖缩小，卡片**整体缩放**，按键保持比例：缩放系数取宽、高相对变化的平均值。
+  *The grip sits at the left end of the top drag bar (44dp wide, bar height), mirroring the dock button on the
+  right, so no key loses touch area (the old bottom-right grip covered a corner of Enter). Drag up/left to grow,
+  down/right to shrink; the whole card scales by the average of the relative width and height change.*
 - 范围 0.7–1.3，并且：宽不小于 220dp、不超过窗口宽的 95%，高不超过窗口高的 65%（横屏窗口矮时高度上限先起作用）。
   *Scale 0.7–1.3, at least 220dp wide, at most 95% of the window width and 65% of its height.*
 - 缩放只改悬浮卡片的行距（可低于常规档的 40dp 下限，最低 32dp），不影响停靠后的键盘高度。
   *Only the floating card's row pitch changes (down to 32dp); the docked height is unaffected.*
-- 横竖屏各记一份（`float_size_port` / `float_size_land`）；缩放中卡片左上角不动，松手后记下新位置。
-  *Remembered per orientation; the top-left corner stays put while resizing.*
+- 横竖屏各记一份（`float_size_port` / `float_size_land`）；缩放中卡片**右下角**不动（再夹回屏幕内），松手后记下新位置。
+  *Remembered per orientation; the bottom-right corner stays put while resizing (then clamped on screen).*
+- `FloatingGeometryTest` 检查手柄与停靠按钮都在拖动条内、与键区不相交，中间留出拖动区。
+  *`FloatingGeometryTest` checks that the grip and dock button stay in the bar, clear of the key area.*
 
 ![缩小后的悬浮卡片 / A smaller floating card](../../android/app/src/test/snapshots/keyboard_floating_small_light.png)
 
@@ -290,6 +294,10 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *A space-bar slide that never moved the cursor types a space on release.*
 - 中文组合中空格不进入光标模式：横滑照常按空格上屏首选，不会出现「空格没反应」。
   *While composing, the space bar does not enter cursor mode, so it never looks dead.*
+- 上滑输出副字符要**明显朝上且够长**：纵向位移 ≥ max(28dp, 0.55 × 键高)，并且 |dy| > 1.5 |dx|（此前是 max(20dp, 0.45 × 键高)、
+  |dy| > |dx|）。快速连打时手指的斜向拖动不会再把字母变成数字。
+  *Swipe-up needs a clearly vertical, longer movement: at least max(28dp, 0.55 × key height) with |dy| > 1.5 |dx|
+  (was max(20dp, 0.45 × key height), |dy| > |dx|), so fast typing no longer turns letters into digits.*
 - 长按阈值 **450 ms**（空格 **500 ms**，进入按住说话），从按下事件的时间戳起算，主线程忙时判定也稳定。
   *Long press at 450 ms (space 500 ms), measured from the DOWN event time.*
 - 长按浮层对齐上滑字符但**不预选**：不移动就松手，输出的是这个键本身；移到某一项上才选中。
@@ -313,3 +321,75 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 - 解码仍在主线程：内核每键只构造前 120 个候选、加载线程预热数据块后，桌面实测单键均值约 0.5 ms，暂不需要后台解码线程。
   *Decoding stays on the main thread: with 120 candidates per key and warmed blocks the desktop mean is about 0.5 ms
   per key, so no worker thread yet.*
+
+### 8.5 英文输入 / English typing
+
+- 设计不变：组合串**不写入编辑器**（§1 的兼容性理由同样适用于英文）。英文模式下正在敲的单词本来就是候选首项（原样输入），
+  现在首项末尾带与组合串相同的闪烁光标，每按一个字母在下一帧就能看到，不再像「整词才出现」。
+  *Still no composing text in the editor. The word being typed is the first candidate (typed as-is) and now carries
+  the same blinking caret as the preedit, so each letter shows within a frame.*
+
+![英文输入中 / English typing](../../android/app/src/test/snapshots/keyboard_english_typing_light.png)
+
+### 8.6 编辑器 IPC / Editor IPCs
+
+- 每次 `InputConnection` 调用都是到编辑器 App 的一次同步 IPC。`EditorCache` 在本地镜像选区（来自 `EditorInfo.initialSel*` 与
+  `onUpdateSelection`）和光标前一小段文字（读一次，之后由我们自己的上屏、删除同步更新；回报晚到时按预期位置对账，
+  对不上就丢弃镜像）。
+  *Every `InputConnection` call is a synchronous IPC. `EditorCache` mirrors the selection (from `EditorInfo` and
+  `onUpdateSelection`) and a short run of text before the cursor (read once, then updated by our own commits and
+  deletes; late echoes are matched against expected positions, anything else drops the mirror).*
+- **退格**：已知选区为空时一次 `deleteSurroundingText`，按字形簇删（表情、肤色修饰、组合字符一次删完）；有选区时一次
+  `commitText("")`。此前每次是 `getSelectedText` + 两次 `sendKeyEvent`。
+  *Backspace: one `deleteSurroundingText` of the last grapheme cluster when the selection is known and empty (one
+  `commitText("")` for a selection), instead of `getSelectedText` plus two `sendKeyEvent`s.*
+- **自动大写**：从镜像本地计算（`TextUtils.getCapsMode`），编辑器没变时复用上次结果；不再每键 `getCursorCapsMode`。
+  双击空格、撤销上滑也先查镜像。*Auto-caps is computed locally or reused while nothing changed; double-space and
+  swipe undo read the mirror first.*
+- **退回原路径**：不回报选区的编辑器（`initialSelStart = -1` 且没有 `onUpdateSelection`）、`TYPE_NULL` 的终端类输入框、
+  编辑器里有 composing 区域（语音）、文本开头，以及方向键、粘贴等我们不建模的改动之后，照旧查询并发删除键，直到下一次回报。
+  *Fallback — editors that never report the selection, `TYPE_NULL` terminals, a composing region, the start of the
+  text, and any edit we don't model — keeps the old query + DEL key path until the next report.*
+- 实测（JVM，计数的假连接，`EditorIpcTest`）：连删每次 **1** 次调用（此前 3 次；镜像为空时的第一次是读取 + 删除共 2 次）；
+  无联想输入框里敲 `Hi. Y` 共 6 次调用（1 次读取 + 5 次上屏），`getCursorCapsMode` 为 0 次（此前每键 1 次）；英文组合中字母键 0 次。
+  *Measured with a counting fake connection: 1 call per repeated delete (was 3; the first one with an empty mirror
+  is 2); typing `Hi. Y` in a no-suggestion field takes 6 calls with zero `getCursorCapsMode` (was one per key);
+  letters composing in English take none.*
+
+### 8.7 振动与按键气泡 / Haptics and the key preview
+
+- 振动全部投递到 feedback 线程，效果在选定档位时预先建好。「系统」档在 Android 13+ 用预置点击效果 + 触摸用途
+  （`VibrationAttributes.USAGE_TOUCH`，遵从系统的触摸振动开关与强度）；只有更早的系统仍在 UI 线程调用
+  `performHapticFeedback`（那里只有它能遵从系统开关）。
+  *All haptics run on the feedback thread with prebuilt effects. The "system" level uses a predefined click with
+  touch usage on Android 13+ (honouring the system touch-haptics setting); only older releases still call
+  `performHapticFeedback` on the UI thread, the only way to honour the switch there.*
+- 预览气泡是覆盖层之下的**单独小视图**（只覆盖气泡、相连的按键和阴影，尺寸只增不减、按平移定位，平时不触发布局）：
+  每键只重录这一小块，淡出只改视图透明度；此前每键要把整张覆盖层重画 6–12 帧（API 26/27 还是软件层）。
+  *The preview bubble is its own small view below the overlay (bubble, joined key and shadow only; grow-only size,
+  positioned by translation, so no layout per key). A press re-records just that view and the fade only animates its
+  alpha — previously the whole overlay redrew for 6–12 frames per key (in software on API 26/27).*
+
+![按键气泡 / Key preview](../../android/app/src/test/snapshots/keyboard_key_preview_light.png)
+
+## 9. 实体键盘 / Physical keyboard
+
+- 接着实体键盘、且系统没有要求同时显示软键盘时（系统的 `onEvaluateInputViewShown` 为假），**软键盘隐藏，只显示候选栏**：
+  顶栏移到输入法的候选视图里，组合中出现、结束后收起；拔掉实体键盘后顶栏回到键盘里，恢复软键盘。
+  *With a physical keyboard (and no system request to also show the soft one) the keys are hidden and only the
+  candidate bar shows: the top bar moves into the IME candidates view, shown while composing; detaching the keyboard
+  moves it back and the soft keyboard returns.*
+- 经过内核：字母、数字、标点（中文模式转全角）、空格、退格；Shift 为大写（中文模式下大写字母直接上屏，英文模式进入联想）。
+  *Letters, digits, punctuation (full-width in Chinese), space and backspace go through the engine; Shift types
+  uppercase (committed directly in Chinese, composed in English).*
+- 组合中：**1–9 选对应候选**，回车原样上屏字母，Esc 取消，方向键 / Home / End / Tab 先上屏原始字母再交给 App。
+  *While composing: 1–9 pick a candidate, Enter commits the raw letters, Esc cancels, and arrows / Home / End / Tab
+  commit the raw letters before passing through.*
+- **Ctrl+空格**切换中/英。其它 Ctrl/Alt/Meta 组合键是 App 的快捷键：组合中先上屏原始字母，再交给 App。不在组合中时回车、Esc
+  也交给 App（换行、提交、返回按它自己的规则）。`TYPE_NULL` 的终端类输入框不经过内核。
+  *Ctrl+Space toggles Chinese/English. Other Ctrl/Alt/Meta chords are app shortcuts (raw letters are committed
+  first); Enter and Esc outside a composition also go to the app. `TYPE_NULL` terminal fields bypass the engine.*
+- 验证：`HardwareKeysTest` 用合成的 `KeyEvent` 覆盖以上每一条（按下被处理时对应的抬起也被吞掉）。
+  *`HardwareKeysTest` covers each rule with synthetic `KeyEvent`s (a consumed DOWN also consumes its UP).*
+
+![实体键盘时的候选栏 / Candidate bar with a physical keyboard](../../android/app/src/test/snapshots/keyboard_hardware_candidates_light.png)
