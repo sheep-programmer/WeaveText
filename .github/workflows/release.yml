@@ -16,14 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -38,7 +38,7 @@ jobs:
           tool: cargo-ndk
 
       # 源数据（固定版本）与构建时下载的运行时、模型。 Pinned source data and build-time downloads.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .ref
           key: ref-${{ hashFiles('data/build.sh', 'android/app/src/main/assets/models/catalog.json', 'android/app/build.gradle.kts') }}
