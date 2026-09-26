@@ -17,6 +17,7 @@
 //! ```
 
 pub mod archive;
+pub mod asr;
 pub mod plugin;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
