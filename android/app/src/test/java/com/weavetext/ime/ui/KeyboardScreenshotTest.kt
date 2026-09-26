@@ -355,13 +355,13 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
     @Test fun voiceNoEngineLite() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         engines.plugins = emptyList()
-        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        com.weavetext.ime.models.AsrRuntime.bundled = false
         try {
             val (k, _) = keyboard(false)
             k.showPanel("voice")
             snap("voice_no_engine_lite_light")
         } finally {
-            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
         }
     }
 
@@ -370,14 +370,14 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "", "", null, emptyList()))
         engines.activeId = "weave.system"
-        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        com.weavetext.ime.models.AsrRuntime.bundled = false
         try {
             val (k, _) = keyboard(false)
             k.showPanel("voice")
             (k.panel as VoicePanel).session.preview(VoiceSession.State.ERROR, "", "", 0f, "系统语音服务连接失败")
             snap("voice_system_error_lite_light")
         } finally {
-            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
         }
     }
 

@@ -17,6 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.testing.FakeEngines
 import com.weavetext.ime.testing.FakeModels
+import com.weavetext.ime.models.AsrRuntime
+import com.weavetext.ime.models.ModelState
+import com.weavetext.ime.models.Progress
 import com.weavetext.ime.testing.FakeUserDictionary
 import org.junit.Before
 import org.junit.Rule
@@ -39,7 +42,7 @@ class SettingsScreenshotTest {
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
     private val dir = File(System.getProperty("weave.snapshotDir") ?: "build/snapshots")
     private val engines = FakeEngines()
-    private val models = FakeModels(mapOf("punc-ct" to com.weavetext.ime.models.ModelState.Installed))
+    private var models = FakeModels(mapOf("punc-ct" to com.weavetext.ime.models.ModelState.Installed))
 
     @Before fun setUp() {
         WeavePrefs.of(app).edit().clear()
@@ -88,14 +91,51 @@ class SettingsScreenshotTest {
     /** 轻量版没有引擎：列表页给出一键安装离线语音。 Lite with no engine: one-tap offline voice install. */
     @Test fun voiceListEmptyLite() {
         engines.plugins = emptyList()
-        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        com.weavetext.ime.models.AsrRuntime.bundled = false
         try {
             show("voice_list_empty_lite", Route.Home, Route.Voice)
         } finally {
-            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
         }
     }
-    @Test fun voiceUpgrade() = show("voice_upgrade", Route.Home, Route.Voice, Route.VoiceUpgrade)
+    /** 运行库不能下载时（如架构不符）：安装完整离线语音版。 No runtime for this ABI: full-build upgrade. */
+    @Test fun voiceUpgrade() = lite("voice_upgrade", catalog = FakeModels.LITE_X86)
+
+    /** 轻量版：运行库随包与否由 [AsrRuntime.bundled] 决定，截图期间临时改为不随包。 Lite: temporarily unbundle the runtime. */
+    private fun lite(
+        name: String, states: Map<String, ModelState> = emptyMap(), dark: Boolean = false,
+        catalog: com.weavetext.ime.models.ModelCatalog = FakeModels.LITE, routes: List<Route> = listOf(Route.Home, Route.Voice, Route.VoiceUpgrade),
+    ) {
+        models = FakeModels(states, catalog = catalog)
+        AsrRuntime.bundled = false
+        try {
+            show(name, *routes.toTypedArray(), dark = dark)
+        } finally {
+            AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
+        }
+    }
+
+    /** 下载语音包：未下载。 Voice pack page, nothing downloaded. */
+    @Test fun voicePack() = lite("voice_pack")
+    @Test fun voicePackDark() = lite("voice_pack_dark", dark = true)
+    /** 运行库已装好，模型下载中：合并进度与镜像名。 Runtime done, model downloading: combined progress and mirror. */
+    @Test fun voicePackDownloading() = lite(
+        "voice_pack_downloading",
+        mapOf(
+            AsrRuntime.ID to ModelState.Installed,
+            "asr-stream-small" to ModelState.Downloading(Progress(8_400_000, 21_264_113, 1_300_000, "ghfast.top")),
+        ),
+    )
+    @Test fun voicePackFailed() = lite("voice_pack_failed", mapOf(AsrRuntime.ID to ModelState.Failed("ARCHIVE: all mirrors failed")))
+    @Test fun voicePackReady() = lite("voice_pack_ready", mapOf(AsrRuntime.ID to ModelState.Installed, "asr-stream-small" to ModelState.Installed))
+    /** 轻量版装好语音包后的引擎列表：本地识别在列，离线模型入口出现。 Lite with the pack: local engine and models card. */
+    @Test fun voiceListLiteWithPack() {
+        engines.plugins = listOf(LOCAL)
+        lite(
+            "voice_list_lite_pack", mapOf(AsrRuntime.ID to ModelState.Installed, "asr-stream-small" to ModelState.Installed),
+            routes = listOf(Route.Home, Route.Voice),
+        )
+    }
     @Test fun voiceDetailForm() = show("voice_detail", Route.Home, Route.Voice, Route.VoiceDetail("org.example.asr.cloud"))
     @Test fun voiceDetailFormDark() = show("voice_detail_dark", Route.Home, Route.Voice, Route.VoiceDetail("org.example.asr.cloud"), dark = true)
     /** 不联网的插件：网络访问卡片里没有「发送到上述地址」。 Offline plugin: no "sent to the hosts above". */

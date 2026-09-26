@@ -274,7 +274,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             transcriptArea(area)
             if (engines == 0) {
-                drawNoEngine(c, if (VoiceHelp.canOfferOfflineBuild) "轻量版不含离线识别，手机也没有可用的系统语音服务" else "还没有可用的语音引擎")
+                drawNoEngine(c, if (VoiceHelp.canOfferOfflineBuild) "还没有语音引擎，下载离线语音包即可在手机上识别" else "还没有可用的语音引擎")
                 return
             }
             // 系统识别出错：同样给出办法，而不是只有一行错误。 System recognizer failed: offer the same ways out.

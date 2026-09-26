@@ -64,8 +64,12 @@ sealed class Route {
     data object Licenses : Route()
 
     companion object {
-        /** 深链 weavetext://settings/<path>（03 §1）。 Deep link parsing. */
-        fun fromPath(path: String?): List<Route> {
+        /**
+         * 深链 weavetext://settings/<path>（03 §1）。[runtimeReady]：识别运行库可用（随包或已下载）；
+         * 不可用时 models 深链改去下载语音包。
+         * Deep link parsing; without a usable runtime the models link opens the voice pack page instead.
+         */
+        fun fromPath(path: String?, runtimeReady: Boolean = com.weavetext.ime.models.AsrRuntime.bundled): List<Route> {
             val parts = path.orEmpty().trim('/').split('/').filter { it.isNotEmpty() }
             return when (parts.firstOrNull()) {
                 "voice" -> listOf(Voice) + when (val sub = parts.getOrNull(1)) {
@@ -73,7 +77,7 @@ sealed class Route {
                     "upgrade" -> listOf(VoiceUpgrade)
                     else -> listOf(VoiceDetail(sub))
                 }
-                "models" -> if (com.weavetext.ime.BuildConfig.LOCAL_ASR) listOf(Voice, Models) else listOf(Voice)
+                "models" -> if (runtimeReady) listOf(Voice, Models) else listOf(Voice, VoiceUpgrade)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
                 "dictionary" -> listOf(Dictionary)
@@ -182,14 +186,16 @@ class SettingsActivity : ComponentActivity() {
         val st = deps.status()
         val done = WeavePrefs.of(this).getBoolean(WeavePrefs.ONBOARDING_DONE, false)
         val start = if (!done && !(st.enabled && st.isDefault)) listOf<Route>(Route.Onboarding) else listOf(Route.Home)
-        nav = Navigator(start + Route.fromPath(intent?.data?.path))
+        nav = Navigator(start + Route.fromPath(intent?.data?.path, runtimeReady()))
         registerReceiver(imeChanged, IntentFilter(Intent.ACTION_INPUT_METHOD_CHANGED))
         setContent { SettingsApp(deps, nav, statusVersion) }
     }
 
+    private fun runtimeReady() = com.weavetext.ime.models.AsrRuntime.ready(deps.models())
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val extra = Route.fromPath(intent.data?.path)
+        val extra = Route.fromPath(intent.data?.path, runtimeReady())
         if (extra.isNotEmpty()) { nav.replaceAll(Route.Home); extra.forEach(nav::push) }
     }
 

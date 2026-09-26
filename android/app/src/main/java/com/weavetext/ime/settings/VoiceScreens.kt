@@ -98,8 +98,12 @@ fun VoiceListScreen() {
     val nav = LocalNav.current
     val engines = remember { deps.engines() }
     var tick by remember { mutableIntStateOf(0) }
-    val plugins = remember(tick) { runCatching { engines.list() }.getOrDefault(emptyList()) }
-    val active = remember(tick) { engines.active()?.id }
+    val models = remember { deps.models() }
+    // 语音包装好后本地引擎会出现，模型状态变化时也重读列表。 Re-read when models change: the pack adds the local engine.
+    val modelTick = rememberModelTick(models)
+    val runtimeReady = remember(modelTick) { com.weavetext.ime.models.AsrRuntime.ready(models) }
+    val plugins = remember(tick, modelTick) { runCatching { engines.list() }.getOrDefault(emptyList()) }
+    val active = remember(tick, modelTick) { engines.active()?.id }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val importer = rememberXipkImporter(engines) { tick++ }
@@ -111,15 +115,15 @@ fun VoiceListScreen() {
             Text("导入")
         }
     }) {
-        // 轻量版没有端侧识别运行时，也就不提供离线模型。 Lite has no on-device runtime, so no models.
-        if (com.weavetext.ime.BuildConfig.LOCAL_ASR) OfflineModelsCard(remember { deps.models() }) { nav.push(Route.Models) }
+        // 识别运行库可用（随包或已下载语音包）时才有离线模型可管。 Models only matter once the runtime is usable.
+        if (runtimeReady) OfflineModelsCard(models) { nav.push(Route.Models) }
         if (plugins.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(painterResource(R.drawable.ic_waveform), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("还没有语音引擎", style = MaterialTheme.typography.titleMedium)
                 val ctx = androidx.compose.ui.platform.LocalContext.current
                 Text(
-                    if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) "轻量版不含离线识别，手机上也没有找到系统语音服务。可以任选一种方式："
+                    if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) "手机上没有找到系统语音服务。下载离线语音包（约 30\u00A0MB）即可在手机上识别，也可以任选其它方式："
                     else "手机上没有找到系统语音服务。可以任选一种方式：",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -127,7 +131,7 @@ fun VoiceListScreen() {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
                 if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) {
-                    Button(onClick = { nav.push(Route.VoiceUpgrade) }) { Text("一键安装离线语音（设置不丢）") }
+                    Button(onClick = { nav.push(Route.VoiceUpgrade) }) { Text("下载离线语音包") }
                 }
                 FilledTonalButton(onClick = { com.weavetext.ime.voice.VoiceHelp.openSystemVoiceSettings(ctx) }) { Text("打开系统语音输入设置") }
                 FilledTonalButton(onClick = importer.launch) { Text("导入 .xipk 插件") }

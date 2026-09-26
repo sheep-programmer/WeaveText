@@ -50,8 +50,8 @@ object VoiceUpgrade {
     private val main = Handler(Looper.getMainLooper())
     private val cancel = AtomicBoolean(false)
 
-    /** 只有轻量版需要（离线语音版本身已含端侧识别）。 Only the lite build needs this. */
-    val available: Boolean get() = !BuildConfig.LOCAL_ASR
+    /** 只有运行库不随包的轻量版需要（离线语音版本身已含端侧识别）。 Only the lite build needs this. */
+    val available: Boolean get() = !com.weavetext.ime.models.AsrRuntime.bundled
 
     private val tag get() = "v" + BuildConfig.VERSION_NAME
     private val assetName get() = "WeaveText-${BuildConfig.VERSION_NAME}-arm64-voice.apk"
@@ -209,6 +209,6 @@ object VoiceUpgrade {
 
     /** 已经是离线语音版时删掉残留的安装包。 Remove the leftover package once the voice build is installed. */
     fun cleanUp(ctx: Context) {
-        if (BuildConfig.LOCAL_ASR) File(ctx.cacheDir, DIR).deleteRecursively()
+        if (com.weavetext.ime.models.AsrRuntime.bundled) File(ctx.cacheDir, DIR).deleteRecursively()
     }
 }
