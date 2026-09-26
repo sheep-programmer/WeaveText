@@ -1,0 +1,371 @@
+package com.weavetext.ime.ui.keyboard
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import com.weavetext.ime.R
+import com.weavetext.ime.core.Candidate
+import com.weavetext.ime.ime.ImeState
+import kotlin.math.ceil
+import kotlin.math.max
+
+/**
+ * 候选展开网格（02 §2.3）：接管顶栏 + 主区域。 Expanded candidate grid over top bar + main area.
+ */
+class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
+    override val full = true
+    private val ctx = kb.ctx
+    private val header = Header(ctx)
+    private val grid = Grid(ctx)
+    private val side = PadView(ctx, kb)
+    private var showPinyin = false
+
+    override val view: ViewGroup = object : ViewGroup(ctx) {
+        override fun onMeasure(ws: Int, hs: Int) {
+            val w = MeasureSpec.getSize(ws)
+            val h = MeasureSpec.getSize(hs)
+            setMeasuredDimension(w, h)
+            val m = kb.metrics
+            val sideW = m.dp(64f).toInt()
+            val top = m.topBar.toInt()
+            header.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(top, MeasureSpec.EXACTLY))
+            grid.measure(MeasureSpec.makeMeasureSpec(w - sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h - top, MeasureSpec.EXACTLY))
+            side.measure(MeasureSpec.makeMeasureSpec(sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h - top, MeasureSpec.EXACTLY))
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val w = r - l
+            val h = b - t
+            val m = kb.metrics
+            val sideW = m.dp(64f).toInt()
+            val top = m.topBar.toInt()
+            header.layout(0, 0, w, top)
+            grid.layout(0, top, w - sideW, h)
+            side.layout(w - sideW, top, w, h)
+        }
+    }.apply {
+        addView(header); addView(grid); addView(side)
+        setOnTouchListener { _, _ -> true }
+    }
+
+    private var cands = ArrayList<Candidate>()
+    private var pinyin: List<String> = emptyList()
+
+    init {
+        side.onTap = { k ->
+            when (k.id) {
+                0 -> kb.controller.onBackspace()
+                1 -> kb.controller.reset()
+                2 -> kb.closePanel()
+                3 -> { showPinyin = !showPinyin; k.active = showPinyin; reload() }
+            }
+        }
+        side.keys = buildSide(false)
+        side.layouter = { w, h -> layoutSide(w, h) }
+        grid.onPressFeedback = { kb.feedback.key(grid) }
+    }
+
+    private fun buildSide(t9: Boolean): List<PadKey> {
+        val list = ArrayList<PadKey>()
+        if (t9) list += PadKey(3, "拼音")
+        list += PadKey(0, icon = R.drawable.ic_backspace).apply { repeat = true }
+        list += PadKey(1, "重输")
+        list += PadKey(2, "返回")
+        return list
+    }
+
+    private fun layoutSide(w: Float, h: Float) {
+        val m = kb.metrics
+        val n = side.keys.size
+        val rh = h / n
+        side.keys.forEachIndexed { i, k ->
+            k.cell.set(0f, i * rh, w, (i + 1) * rh)
+            k.rect.set(k.cell)
+            k.rect.inset(m.insetH, m.insetV)
+            k.textSize = m.label(15f)
+        }
+    }
+
+    override fun applyTheme() {
+        kb.paintBackground(view)
+        header.invalidate(); grid.invalidate(); side.relayout()
+    }
+
+    override fun onShow() {
+        val t9 = kb.state.schema == "t9" && kb.state.chinese
+        showPinyin = false
+        side.keys = buildSide(t9)
+        grid.scrollToTop()
+        reload()
+    }
+
+    override fun onState(s: ImeState) {
+        if (!s.composing && s.candidates.isEmpty()) { kb.closePanel(); return }
+        reload()
+    }
+
+    private fun reload() {
+        val s = kb.state
+        cands = ArrayList(s.candidates)
+        pinyin = if (showPinyin) s.pinyinOptions else emptyList()
+        header.text = s.preedit
+        grid.rebuild()
+        grid.scrollToTop()
+        header.invalidate()
+    }
+
+    private fun loadMore() {
+        val s = kb.state
+        if (cands.size >= s.totalCandidates) return
+        val more = kb.controller.loadCandidates(cands.size, 30)
+        if (more.isEmpty()) return
+        cands.addAll(more)
+        grid.rebuild()
+    }
+
+    @SuppressLint("ViewConstructor")
+    private inner class Header(c: Context) : View(c) {
+        var text = ""
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        override fun onDraw(canvas: Canvas) {
+            val pal = kb.palette
+            val m = kb.metrics
+            p.textSize = m.dp(12.5f) * m.candScale
+            p.color = pal.labelSecondary
+            canvas.drawText(text, m.dp(12f), height / 2f - (p.ascent() + p.descent()) / 2, p)
+            val cx = width - m.dp(32f)
+            kb.icons.draw(canvas, R.drawable.ic_chevron_up, pal.icon, cx, height / 2f, m.dp(22f))
+            p.color = pal.divider
+            canvas.drawRect(0f, height - max(1f, m.dp(0.5f)), width.toFloat(), height.toFloat(), p)
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.actionMasked == MotionEvent.ACTION_DOWN && e.x > width - kb.metrics.dp(64f)) {
+                kb.feedback.key(this)
+                kb.closePanel()
+            }
+            return true
+        }
+    }
+
+    @SuppressLint("ViewConstructor")
+    private inner class Grid(c: Context) : ScrollGridView(c) {
+        // 每项：left, top, right, bottom；前 pinyin.size 项为拼音 chip。 Per item rects.
+        private var rects = FloatArray(0)
+        private var labels: Array<String> = emptyArray()
+        private var nPinyin = 0
+        private var rowsBottom = 0f
+        private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val line = Paint()
+
+        fun rebuild() {
+            if (width == 0) { post { rebuild() }; return }
+            val m = kb.metrics
+            text.textSize = m.dp(19f) * m.candScale
+            val unit = width / 4f
+            val rowH = m.dp(max(52f, 19f * m.candScale + 26f))
+            nPinyin = pinyin.size
+            val all = pinyin + cands.map { it.text }
+            labels = all.toTypedArray()
+            rects = FloatArray(all.size * 4)
+            var y = 0f
+            var i = 0
+            // 拼音行：每个 chip 1 单元，一行 4 个。 Pinyin chips: 1 unit each.
+            while (i < nPinyin) {
+                val rowStart = i
+                while (i < nPinyin && i - rowStart < 4) i++
+                layoutRow(rowStart, i, IntArray(i - rowStart) { 1 }, y, rowH, unit)
+                y += rowH
+            }
+            while (i < all.size) {
+                val rowStart = i
+                var used = 0
+                val spans = ArrayList<Int>()
+                while (i < all.size) {
+                    val w = text.measureText(all[i]) + m.dp(24f)
+                    val span = ceil(w / unit).toInt().coerceIn(1, 4)
+                    if (used + span > 4) break
+                    spans += span
+                    used += span
+                    i++
+                }
+                layoutRow(rowStart, i, spans.toIntArray(), y, rowH, unit)
+                y += rowH
+            }
+            rowsBottom = y
+            invalidate()
+            a11yChanged()
+        }
+
+        override fun a11yCount() = labels.size
+        override fun a11yRect(index: Int, out: android.graphics.RectF) {
+            out.set(rects[index * 4], rects[index * 4 + 1], rects[index * 4 + 2], rects[index * 4 + 3])
+        }
+        override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let { if (index < nPinyin) "拼音 $it" else it }
+
+        private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float) {
+            val used = spans.sum()
+            val extra = (4 - used) * unit / spans.size.coerceAtLeast(1)
+            var x = 0f
+            for (j in from until to) {
+                val w = spans[j - from] * unit + extra
+                rects[j * 4] = x; rects[j * 4 + 1] = y; rects[j * 4 + 2] = x + w; rects[j * 4 + 3] = y + rowH
+                x += w
+            }
+        }
+
+        override fun contentHeight() = rowsBottom
+        override fun hit(x: Float, y: Float): Int {
+            for (i in labels.indices) {
+                if (x >= rects[i * 4] && x < rects[i * 4 + 2] && y >= rects[i * 4 + 1] && y < rects[i * 4 + 3]) return i
+            }
+            return -1
+        }
+
+        override fun onItemTap(index: Int) {
+            if (index < nPinyin) { kb.controller.onPinyinOption(index); return }
+            kb.controller.onCandidate(index - nPinyin)
+        }
+
+        override fun onScrolledNearEnd() = loadMore()
+
+        override fun drawContent(c: Canvas) {
+            val p = kb.palette
+            val m = kb.metrics
+            val hair = max(1f, m.dp(0.5f))
+            text.textSize = m.dp(19f) * m.candScale
+            val top = scroll
+            val bottom = scroll + height
+            for (i in labels.indices) {
+                val l = rects[i * 4]; val t = rects[i * 4 + 1]; val r = rects[i * 4 + 2]; val b = rects[i * 4 + 3]
+                if (b < top || t > bottom) continue
+                if (i == pressed) {
+                    line.color = p.toolbarActive
+                    c.drawRect(l, t, r, b, line)
+                }
+                val isPy = i < nPinyin
+                text.color = when {
+                    isPy -> p.candidateFirst
+                    i == nPinyin -> p.candidateFirst
+                    else -> p.label
+                }
+                text.textSize = if (isPy) m.dp(15f) else m.dp(19f) * m.candScale
+                c.drawText(labels[i], (l + r) / 2, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
+                line.color = p.divider
+                c.drawRect(0f, b - hair / 2, width.toFloat(), b + hair / 2, line)
+                if (r < width - 1f) c.drawRect(r - hair / 2, t + m.dp(10f), r + hair / 2, b - m.dp(10f), line)
+            }
+        }
+    }
+}
+
+/**
+ * 键盘选择浮层（02 §2.4）：覆盖主区域。 Layout picker over the main area.
+ */
+class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
+    override val toolIndex = 1
+    override val view = PickerView(kb.ctx)
+
+    override fun applyTheme() { kb.paintBackground(view); view.invalidate() }
+    override fun onShow() = view.invalidate()
+
+    @SuppressLint("ViewConstructor")
+    inner class PickerView(c: Context) : View(c) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = android.graphics.RectF()
+        private var pressed = -1
+        private val medium = if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
+
+        private fun items() = com.weavetext.ime.settings.WeavePrefs.keyboards(kb.prefs)
+
+        private fun cell(i: Int, out: android.graphics.RectF) {
+            val m = kb.metrics
+            val gap = m.dp(8f)
+            val cw = m.dp(76f).coerceAtMost((width - m.dp(24f) - 3 * gap) / 4)
+            val ch = m.dp(72f)
+            val totalW = 4 * cw + 3 * gap
+            val left0 = (width - totalW) / 2
+            val col = i % 4
+            val row = i / 4
+            val top = m.dp(44f) + row * (ch + gap)
+            out.set(left0 + col * (cw + gap), top, left0 + col * (cw + gap) + cw, top + ch)
+        }
+
+        private fun sub(k: String): String = when (k) {
+            "pinyin" -> "全拼"
+            "t9" -> "拼音"
+            "shuangpin" -> com.weavetext.ime.settings.WeavePrefs.SHUANGPIN_SCHEMES.firstOrNull { it.first == com.weavetext.ime.settings.WeavePrefs.shuangpinScheme(kb.prefs) }?.second ?: ""
+            "wubi86" -> "86"
+            else -> "English"
+        }
+
+        private fun title(k: String): String = when (k) {
+            "pinyin" -> "26键"; "t9" -> "九键"; "shuangpin" -> "双拼"; "wubi86" -> "五笔"; else -> "英文"
+        }
+
+        override fun onDraw(c: Canvas) {
+            val pal = kb.palette
+            val m = kb.metrics
+            p.textSize = m.dp(15f); p.typeface = medium; p.color = pal.label; p.textAlign = Paint.Align.LEFT
+            c.drawText("选择键盘", m.dp(16f), m.dp(22f) - (p.ascent() + p.descent()) / 2, p)
+            p.textAlign = Paint.Align.RIGHT; p.color = pal.candidateFirst
+            c.drawText("完成", width - m.dp(16f), m.dp(22f) - (p.ascent() + p.descent()) / 2, p)
+            val cur = kb.currentKeyboardKey()
+            val list = items()
+            p.textAlign = Paint.Align.CENTER
+            for (i in list.indices) {
+                cell(i, rect)
+                val sel = list[i] == cur
+                p.style = Paint.Style.FILL
+                p.color = if (sel) pal.accentSoft else if (i == pressed) pal.keyPressed else pal.key
+                c.drawRoundRect(rect, m.dp(12f), m.dp(12f), p)
+                if (sel) {
+                    p.style = Paint.Style.STROKE; p.strokeWidth = m.dp(1.5f); p.color = pal.keyAccent
+                    c.drawRoundRect(rect, m.dp(12f), m.dp(12f), p)
+                    p.style = Paint.Style.FILL
+                }
+                kb.icons.draw(c, R.drawable.ic_keyboard, if (sel) pal.keyAccent else pal.icon, rect.centerX(), rect.top + m.dp(20f), m.dp(20f))
+                p.typeface = medium; p.textSize = m.dp(13f); p.color = if (sel) pal.keyAccent else pal.label
+                c.drawText(title(list[i]), rect.centerX(), rect.top + m.dp(46f), p)
+                p.typeface = Typeface.DEFAULT; p.textSize = m.dp(11f); p.color = if (sel) pal.keyAccent else pal.labelSecondary
+                c.drawText(sub(list[i]) + if (sel) " ✓" else "", rect.centerX(), rect.top + m.dp(62f), p)
+            }
+            if (list.size <= 4) {
+                p.textSize = m.dp(12f); p.color = pal.labelSecondary
+                c.drawText("方案细节在设置 App 里调整", width / 2f, height - m.dp(24f), p)
+            } else {
+                cell(list.size, rect)
+                p.textSize = m.dp(12f); p.color = pal.labelSecondary; p.textAlign = Paint.Align.LEFT
+                c.drawText("（方案细节在设置 App 里调整）", rect.left + m.dp(8f), rect.centerY(), p)
+            }
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            val list = items()
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    pressed = -1
+                    for (i in list.indices) { cell(i, rect); if (rect.contains(e.x, e.y)) pressed = i }
+                    if (pressed >= 0 || (e.y < kb.metrics.dp(44f) && e.x > width - kb.metrics.dp(80f))) kb.feedback.key(this)
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP -> {
+                    val i = pressed
+                    pressed = -1
+                    if (i >= 0) { kb.chooseKeyboard(list[i]); kb.closePanel() }
+                    else if (e.y < kb.metrics.dp(44f) && e.x > width - kb.metrics.dp(80f)) kb.closePanel()
+                    invalidate()
+                }
+                MotionEvent.ACTION_CANCEL -> { pressed = -1; invalidate() }
+            }
+            return true
+        }
+    }
+}

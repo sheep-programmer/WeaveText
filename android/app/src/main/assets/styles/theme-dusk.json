@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "kind": "theme",
+  "id": "dusk",
+  "order": 11,
+  "name": "暮紫",
+  "description": "淡紫渐变背景，柔和投影",
+  "light": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#E6E0F7",
+        "#F5E4EF"
+      ],
+      "angle": 0
+    },
+    "key": "#FFFFFF",
+    "keyPressed": "#E9E3F6",
+    "keyFunc": "#D8CFEE",
+    "keyFuncPressed": "#C6BAE3",
+    "keyShadow": "#338A6FC9",
+    "accent": "#6A42C2",
+    "accentPressed": "#5835A6",
+    "onAccent": "#FFFFFF",
+    "label": "#221C33",
+    "labelHint": "#6F6882",
+    "labelSecondary": "#5A536C",
+    "candidate": "#5B35B0",
+    "icon": "#3D3550",
+    "divider": "#DDD5EE",
+    "toolbarActive": "#E2DAF2",
+    "accentSoft": "#DED2F7",
+    "popup": "#FFFFFF",
+    "shadow": "soft"
+  },
+  "dark": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#1B1530",
+        "#2A1630"
+      ],
+      "angle": 0
+    },
+    "key": "#3A3052",
+    "keyPressed": "#4B4066",
+    "keyFunc": "#2A2340",
+    "keyFuncPressed": "#393054",
+    "keyShadow": "#66000000",
+    "accent": "#B39DFF",
+    "accentPressed": "#A08AF0",
+    "onAccent": "#1E0F4A",
+    "label": "#EEE9FA",
+    "labelHint": "#A89EC2",
+    "labelSecondary": "#B8AED0",
+    "candidate": "#C8B6FF",
+    "icon": "#D6CEEA",
+    "divider": "#2E2645",
+    "toolbarActive": "#2E2645",
+    "accentSoft": "#3B2E66",
+    "popup": "#463C60",
+    "shadow": "soft"
+  }
+}

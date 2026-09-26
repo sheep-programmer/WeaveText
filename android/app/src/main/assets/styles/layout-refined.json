@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "refined",
+  "extends": "fresh",
+  "order": 6,
+  "name": "精致",
+  "description": "小写字母、无副标签，Shift 与删除键内缩，地球键切换语言，文字回车，气泡与按键相连",
+  "theme": "silver",
+  "geometry": {
+    "gapH": 5.5,
+    "gapV": 11,
+    "padH": 3,
+    "radius": 5,
+    "radiusLarge": 7
+  },
+  "qwerty": {
+    "rows": [
+      [
+        "qwertyuiop"
+      ],
+      [
+        "asdfghjkl"
+      ],
+      [
+        "shift:1.2",
+        "gap:0.3",
+        "zxcvbnm",
+        "gap:0.3",
+        "delete:1.2"
+      ],
+      [
+        "number:1.25",
+        "lang:1.25",
+        "space:5",
+        "enter:2.5"
+      ]
+    ],
+    "letterCase": "lower",
+    "showHints": false,
+    "letterSize": 24
+  },
+  "t9": {
+    "right": [
+      "delete",
+      "reset",
+      "zero",
+      "enter"
+    ],
+    "bottom": [
+      "number",
+      "symbol",
+      "space",
+      "lang"
+    ]
+  },
+  "labels": {
+    "lang": "globe",
+    "space": "text",
+    "spaceText": "空格",
+    "enter": "text"
+  },
+  "toolbar": {
+    "items": [
+      "menu",
+      "emoji",
+      "voice",
+      "hide"
+    ],
+    "align": "edges"
+  },
+  "popup": {
+    "bubble": "attached",
+    "radius": 8,
+    "textSize": 28
+  }
+}

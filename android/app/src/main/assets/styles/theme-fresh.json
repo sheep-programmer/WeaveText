@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "kind": "theme",
+  "id": "fresh",
+  "order": 1,
+  "name": "清爽",
+  "description": "冷灰底 + 蓝色强调",
+  "light": {
+    "background": "#E8EBF0", "key": "#FFFFFF", "keyPressed": "#D6DBE3",
+    "keyFunc": "#CDD3DC", "keyFuncPressed": "#B8C0CB", "keyShadow": "#A9B1BD",
+    "accent": "#2E6CF6", "accentPressed": "#2257D1", "onAccent": "#FFFFFF",
+    "label": "#1B1E23", "labelHint": "#737983", "labelSecondary": "#5E6570",
+    "labelDisabled": "#80868F", "candidate": "#255FE0", "icon": "#3E444D",
+    "divider": "#D5DAE1", "toolbarActive": "#D9DEE6", "accentSoft": "#DCE6FD",
+    "popup": "#FFFFFF", "popupSelected": "#2E6CF6", "popupShadow": "#2E1E283C",
+    "card": "#FFFFFF", "danger": "#E5484D", "voiceWave": "#2E6CF6", "scrim": "#3D000000",
+    "shadow": "bar", "weight": 400, "candidateStyle": "text"
+  },
+  "dark": {
+    "background": "#121315", "key": "#2D2F34", "keyPressed": "#45484F",
+    "keyFunc": "#202226", "keyFuncPressed": "#34373D", "keyShadow": "#050607",
+    "accent": "#3B6FE6", "accentPressed": "#335FC8", "onAccent": "#FFFFFF",
+    "label": "#E9EBEF", "labelHint": "#9AA0AA", "labelSecondary": "#A2A8B2",
+    "labelDisabled": "#7A7F88", "candidate": "#7FA6FF", "icon": "#C9CDD4",
+    "divider": "#2A2C31", "toolbarActive": "#26282D", "accentSoft": "#1F2B47",
+    "popup": "#3A3D43", "popupSelected": "#3B6FE6", "popupShadow": "#66000000",
+    "card": "#202226", "danger": "#FF6166", "voiceWave": "#7FA6FF", "scrim": "#7A000000",
+    "shadow": "bar", "weight": 400, "candidateStyle": "text"
+  }
+}

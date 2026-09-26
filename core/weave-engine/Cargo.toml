@@ -1,0 +1,9 @@
+[package]
+name = "weave-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WeaveText IME engine: pinyin / shuangpin / T9 / wubi / English decoding"
+
+[dependencies]
+weave-dict = { path = "../weave-dict" }

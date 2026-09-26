@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "kind": "theme",
+  "id": "glass",
+  "order": 16,
+  "name": "玻璃",
+  "description": "渐变底上的半透明按键",
+  "light": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#C7D4F2",
+        "#E8D6EF"
+      ],
+      "angle": 45
+    },
+    "key": "#B8FFFFFF",
+    "keyPressed": "#80FFFFFF",
+    "keyFunc": "#66FFFFFF",
+    "keyFuncPressed": "#40FFFFFF",
+    "keyShadow": "#00000000",
+    "accent": "#3350C4",
+    "accentPressed": "#2A43A8",
+    "onAccent": "#FFFFFF",
+    "label": "#141A2A",
+    "labelHint": "#4D5468",
+    "labelSecondary": "#3E4558",
+    "candidate": "#243CA0",
+    "icon": "#262D40",
+    "divider": "#80FFFFFF",
+    "toolbarActive": "#66FFFFFF",
+    "accentSoft": "#CCD6F7",
+    "popup": "#F7F8FC",
+    "shadow": "none",
+    "stroke": "#99FFFFFF",
+    "strokeWidth": 1
+  },
+  "dark": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#18203A",
+        "#2A1B38"
+      ],
+      "angle": 45
+    },
+    "key": "#33FFFFFF",
+    "keyPressed": "#4DFFFFFF",
+    "keyFunc": "#1AFFFFFF",
+    "keyFuncPressed": "#33FFFFFF",
+    "keyShadow": "#00000000",
+    "accent": "#8FA8FF",
+    "accentPressed": "#7C95F0",
+    "onAccent": "#0E1A4A",
+    "label": "#F2F4FA",
+    "labelHint": "#B3B9CC",
+    "labelSecondary": "#C2C8DA",
+    "candidate": "#AFC2FF",
+    "icon": "#D6DAE6",
+    "divider": "#26FFFFFF",
+    "toolbarActive": "#1AFFFFFF",
+    "accentSoft": "#2E3A6E",
+    "popup": "#3A3F55",
+    "shadow": "none",
+    "stroke": "#26FFFFFF",
+    "strokeWidth": 1
+  }
+}

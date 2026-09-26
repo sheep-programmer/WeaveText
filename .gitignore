@@ -1,0 +1,15 @@
+.ref/
+target/
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+.DS_Store
+android/app/src/main/jniLibs/
+android/**/build/
+*.keystore
+captures/
+android/.kotlin/
+keystore.properties
+*.jks

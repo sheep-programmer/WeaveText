@@ -1,0 +1,17 @@
+[package]
+name = "weave-dict"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WeaveText dictionary format: syllables, compiled lexicon trie, compiler"
+
+[dependencies]
+memmap2 = "0.9"
+
+[[bin]]
+name = "dictgen"
+path = "src/bin/dictgen.rs"
+
+[[bin]]
+name = "gramdump"
+path = "src/bin/gramdump.rs"

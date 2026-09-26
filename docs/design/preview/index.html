@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>织文输入法 WeaveText · UI 预览 / UI Preview v0.1</title>
+<!--
+  1 CSS px = 1 dp inside .screen (411.43 × 914.29 dp = 1080×2400 @420dpi),
+  scaled by 0.875 to a 360 × 800 CSS px frame. All sizes mirror docs/design/01–04.
+  图标 sprite 由 ../icons/build_icons.py 生成，勿手改标记之间的内容。
+-->
+<style>
+:root{
+  --font: system-ui, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", Roboto, sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#D9DDE3;color:#1B1E23;font-family:var(--font);-webkit-font-smoothing:antialiased}
+header.page{padding:28px 40px 4px;max-width:1700px;margin:0 auto}
+header.page h1{margin:0;font-size:22px;font-weight:600;letter-spacing:.2px}
+header.page p{margin:6px 0 0;color:#5E6570;font-size:13px;line-height:1.6}
+.gallery{display:flex;flex-wrap:wrap;gap:44px 36px;padding:28px 40px 20px;justify-content:center;max-width:1700px;margin:0 auto}
+figure{margin:0;width:360px}
+figcaption{text-align:center;font-size:13px;margin-top:18px;color:#3E444D;line-height:1.5}
+figcaption small{display:block;color:#868C96;font-size:11.5px}
+.phone{width:360px;height:800px;border-radius:44px;overflow:hidden;position:relative;background:#000;
+  box-shadow:0 0 0 7px #17181B,0 0 0 8px #3A3D43,0 24px 48px rgba(20,30,50,.28)}
+.screen{position:absolute;left:0;top:0;width:411.43px;height:914.29px;transform:scale(.875);transform-origin:0 0;
+  display:flex;flex-direction:column;overflow:hidden;background:var(--app);color:var(--appText)}
+svg.i{width:24px;height:24px;flex:none;color:var(--icon)}
+
+/* ---------- 主题令牌 Theme tokens (01 §2) ---------- */
+.light{--bg:#E8EBF0;--key:#FFFFFF;--keyP:#D6DBE3;--func:#CDD3DC;--funcP:#B8C0CB;--shadow:#A9B1BD;
+  --accent:#2E6CF6;--accentP:#2257D1;--onAccent:#FFFFFF;--label:#1B1E23;--hint:#868C96;--sec:#5E6570;--dis:#B3B9C2;
+  --cand1:#255FE0;--icon:#3E444D;--div:#D5DAE1;--active:#D9DEE6;--soft:#DCE6FD;--popup:#FFFFFF;--card:#FFFFFF;
+  --danger:#E5484D;--wave:#2E6CF6;
+  --app:#F5F6F8;--appText:#1B1E23;--appSec:#5E6570;--bubIn:#FFFFFF;--bubOut:#DCE6FD;--field:#FFFFFF;--appLine:#E3E6EB}
+.dark{--bg:#121315;--key:#2D2F34;--keyP:#45484F;--func:#202226;--funcP:#34373D;--shadow:#050607;
+  --accent:#3B6FE6;--accentP:#335FC8;--onAccent:#FFFFFF;--label:#E9EBEF;--hint:#8E949E;--sec:#A2A8B2;--dis:#5A5F68;
+  --cand1:#7FA6FF;--icon:#C9CDD4;--div:#2A2C31;--active:#26282D;--soft:#1F2B47;--popup:#3A3D43;--card:#202226;
+  --danger:#FF6166;--wave:#7FA6FF;
+  --app:#0B0C0E;--appText:#E9EBEF;--appSec:#A2A8B2;--bubIn:#1E2024;--bubOut:#1F2B47;--field:#1E2024;--appLine:#2A2C31}
+
+/* ---------- 状态栏 & 导航条 ---------- */
+.status{height:36px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 26px 0 30px;
+  font-size:14px;font-weight:600;color:var(--appText)}
+.status .r{display:flex;gap:6px;align-items:center}
+.status svg{width:17px;height:17px;color:var(--appText)}
+.nav{height:24px;flex:none;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+.nav::after{content:"";width:108px;height:4px;border-radius:2px;background:var(--label);opacity:.35}
+.nav.app{background:var(--app)}
+
+/* ---------- 聊天模拟 App mock ---------- */
+.chat{flex:1;display:flex;flex-direction:column;min-height:0}
+.chat .bar{height:52px;display:flex;align-items:center;padding:0 12px;gap:8px;border-bottom:.5px solid var(--appLine)}
+.chat .bar b{flex:1;text-align:center;font-size:17px;font-weight:600;margin-right:32px}
+.chat .msgs{flex:1;padding:16px 14px;display:flex;flex-direction:column;gap:12px;justify-content:flex-end;overflow:hidden}
+.msg{max-width:72%;padding:10px 13px;border-radius:16px;font-size:15.5px;line-height:1.45;background:var(--bubIn)}
+.msg.out{align-self:flex-end;background:var(--bubOut);border-bottom-right-radius:6px}
+.msg.in{border-bottom-left-radius:6px}
+.chat .time{align-self:center;font-size:12px;color:var(--appSec)}
+.chat .input{display:flex;align-items:center;gap:10px;padding:8px 12px 10px}
+.chat .field{flex:1;min-height:40px;border-radius:20px;background:var(--field);padding:9px 16px;font-size:16px;line-height:22px;display:flex;align-items:center}
+.chat .field .ph{color:var(--appSec)}
+.caretA{display:inline-block;width:2px;height:20px;background:var(--accent);margin-left:1px;border-radius:1px}
+
+/* ---------- 键盘 Keyboard ---------- */
+.kb{flex:none;background:var(--bg);color:var(--label)}
+.top{height:48px;display:flex;position:relative}
+.tool{flex:1;display:flex;align-items:center;justify-content:center}
+.tool.on::before{content:"";position:absolute;width:40px;height:36px;border-radius:10px;background:var(--active)}
+.tool{position:relative}.tool svg{position:relative}
+.cand{display:flex;flex-direction:column;flex:1;min-width:0;position:relative}
+.comp{height:18px;padding:3px 0 0 12px;font-size:12.5px;line-height:15px;color:var(--sec);letter-spacing:.2px}
+.comp .lk{color:var(--cand1)}
+.comp i{display:inline-block;width:1px;height:12px;background:var(--cand1);vertical-align:-2px;margin-left:1px}
+.cands{height:30px;display:flex;align-items:center;padding-left:0;white-space:nowrap;overflow:hidden;font-size:19px}
+.cands span{flex:none;padding:0 12px;min-width:40px;text-align:left}
+.cands span:first-child{color:var(--cand1);font-weight:500}
+.cands span sub{font-size:10px;color:var(--hint);vertical-align:baseline;margin-left:3px}
+.fade{position:absolute;right:0;top:0;bottom:0;width:16px;background:linear-gradient(90deg,transparent,var(--bg))}
+.expand{width:44px;flex:none;display:flex;align-items:center;justify-content:center}
+.expand svg{width:22px;height:22px}
+.main{height:230px;padding:2px 3px 4px}
+.row{display:flex;height:56px}
+.k{flex:var(--w,1) 1 0;position:relative;display:flex;align-items:center;justify-content:center;
+  font-size:22px;line-height:1;color:var(--label);font-style:normal;min-width:0;z-index:0}
+.k::before{content:"";position:absolute;z-index:-1;inset:5px 3px;border-radius:6px;background:var(--key);box-shadow:0 1px 0 var(--shadow)}
+.k>*{position:relative}
+.k[data-h]{padding-top:7px}
+.k[data-h]::after{content:attr(data-h);position:absolute;top:8px;left:0;right:0;text-align:center;font-size:10.5px;line-height:12px;color:var(--hint)}
+.k.fn::before{background:var(--func)}
+.k.ac::before{background:var(--accent)}
+.k.ac{color:var(--onAccent)}.k.ac svg{color:var(--onAccent)}
+.k.pr::before{background:var(--keyP);box-shadow:none;transform:translateY(.5px)}
+.k svg{width:22px;height:22px;color:var(--icon)}
+.k.cjk{font-size:16px;font-weight:500}
+.k.lat{font-size:16px;font-weight:500}
+.k.pun{font-size:20px}
+.k.zy{font-size:16px;font-weight:500}
+.k.zy span{font-size:12px;font-weight:400;color:var(--hint);margin-left:1px}
+.k.zy span b{font-weight:400;margin:0 1px}
+.sp{flex:var(--w) 1 0}
+.spc{display:flex;flex-direction:column;align-items:center;gap:0;margin-top:2px}
+.spc svg{color:var(--hint)}
+.spc svg.m{width:12px;height:12px;margin-bottom:-6px}
+.spc svg.s{width:24px;height:24px}
+/* 右下角双拼/五笔提示 (02 §5) */
+.sp2 .k[data-h]{padding-top:0;padding-bottom:2px;font-size:20px}
+.sp2 .k[data-h]::after{font-size:9px;top:7px}
+.k u{position:absolute;right:6.5px;bottom:7.5px;font-size:9.5px;line-height:10px;color:var(--hint);text-decoration:none;letter-spacing:-.1px}
+/* 按键气泡 */
+.bubble{position:absolute;z-index:5;border-radius:10px;background:var(--popup);display:flex;align-items:center;justify-content:center;
+  font-size:30px;color:var(--label);box-shadow:0 4px 12px rgba(30,40,60,.18)}
+
+/* 九键 T9 */
+.t9{display:grid;grid-template-columns:1.1fr 1.3fr 1.3fr 1.3fr 1.1fr;grid-template-rows:repeat(4,56px);height:224px}
+.t9 .k::before{border-radius:8px}
+.t9 .k.col{grid-row:1/4;padding:0}
+.col .list{position:absolute;inset:5px 3px;border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
+.col .list div{height:44px;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;border-bottom:.5px solid var(--div)}
+.col .list div.sel{color:var(--cand1);font-weight:500}
+.t9 .k.dg{flex-direction:column;gap:3px;padding-top:2px}
+.t9 .k.dg b{font-size:17px;font-weight:500;letter-spacing:.5px}
+.t9 .k.dg s{text-decoration:none;font-size:10.5px;color:var(--hint)}
+.t9 .enter{grid-row:3/5;grid-column:5}
+
+/* 工具箱 Toolbox */
+.toolbox{height:230px;padding:10px 12px 12px;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(3,1fr);gap:8px}
+.tb{background:var(--card);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  font-size:12px;color:var(--sec)}
+.tb svg{width:26px;height:26px}
+.tb .txt{font-size:22px;line-height:26px;height:26px;color:var(--icon);font-weight:400}
+.tb.on{background:var(--soft);color:var(--accent)}.tb.on svg{color:var(--accent)}
+
+/* 语音 Voice */
+.voice{height:278px;display:flex;flex-direction:column}
+.vtop{height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 6px}
+.vtop .btn{width:44px;height:44px;display:flex;align-items:center;justify-content:center}
+.chip{height:32px;border-radius:16px;background:var(--key);display:flex;align-items:center;gap:6px;padding:0 10px 0 6px;font-size:14px;font-weight:500;color:var(--label);box-shadow:0 1px 0 var(--shadow)}
+.chip svg{width:16px;height:16px}
+.av{border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;flex:none}
+.vtext{height:54px;padding:2px 22px 0;font-size:18px;line-height:26px;color:var(--label);overflow:hidden}
+.vtext .p{color:var(--sec)}
+.wave{height:26px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:3px}
+.wave i{width:3px;border-radius:2px;background:var(--wave)}
+.vctl{height:104px;display:grid;grid-template-columns:1fr 128px 1fr;align-items:center;padding:0 12px}
+.vside{display:flex;flex-direction:column;gap:8px}
+.vside.l{align-items:flex-start}.vside.r{align-items:flex-end}
+.vkey{width:64px;height:44px;border-radius:8px;background:var(--func);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:500;color:var(--label);box-shadow:0 1px 0 var(--shadow)}
+.vkey svg{width:22px;height:22px}
+.vcenter{display:flex;flex-direction:column;align-items:center;gap:6px}
+.mic{width:72px;height:72px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;position:relative}
+.mic::before{content:"";position:absolute;inset:-9px;border-radius:50%;background:var(--accent);opacity:.18}
+.mic svg{width:30px;height:30px;color:#fff}
+.vhint{font-size:12px;color:var(--sec);white-space:nowrap}
+.seg{height:28px;display:flex;align-items:center;justify-content:center;gap:0;font-size:12px;color:var(--hint);padding-bottom:6px}
+.seg span{padding:0 12px}.seg span.on{color:var(--label);font-weight:500}
+.seg em{width:1px;height:10px;background:var(--div)}
+
+/* ---------- 设置 App（M3） ---------- */
+.st{--pri:#2E6CF6;--priC:#DCE6FD;--onPriC:#0B2A6B;--surf:#F5F6F8;--card2:#FFFFFF;--on:#1B1E23;--onV:#5E6570;--outV:#E3E6EB;--out:#C4CAD3;--ok:#1F9D55}
+.st .screen{background:var(--surf);color:var(--on)}
+.st .status{color:var(--on)}
+.appbar{height:64px;display:flex;align-items:center;padding:0 4px;gap:4px}
+.appbar .ib{width:48px;height:48px;display:flex;align-items:center;justify-content:center}
+.appbar .ib svg{color:var(--on)}
+.appbar h2{margin:0;font-size:22px;font-weight:400;flex:1}
+.appbar .tbtn{height:40px;padding:0 14px 0 10px;border-radius:20px;display:flex;align-items:center;gap:6px;color:var(--pri);font-size:14px;font-weight:500}
+.appbar .tbtn svg{width:18px;height:18px;color:var(--pri)}
+.large{padding:18px 20px 18px}
+.large h1{margin:0;font-size:28px;font-weight:400;line-height:36px}
+.large .sub{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:13px;color:var(--onV);background:#E7F5EC;padding:4px 10px 4px 8px;border-radius:12px}
+.large .sub i{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.group{margin:0 16px 16px;background:var(--card2);border-radius:16px;overflow:hidden}
+.gtitle{margin:8px 32px 8px;font-size:14px;font-weight:500;color:var(--pri)}
+.li{display:flex;align-items:center;min-height:72px;padding:12px 16px 12px 16px;gap:16px;position:relative}
+.li.one{min-height:56px}
+.li+.li::before{content:"";position:absolute;top:0;left:56px;right:0;height:.5px;background:var(--outV)}
+.li.noic+.li.noic::before,.li.plug+.li.plug::before{left:72px}
+.li>svg{color:var(--onV)}
+.li .t{flex:1;min-width:0}
+.li .t b{display:block;font-size:16px;font-weight:400;line-height:24px}
+.li .t span{display:block;font-size:14px;line-height:20px;color:var(--onV)}
+.li .t span.d{font-size:12.5px;line-height:18px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.li .t span.v{font-size:11.5px;line-height:16px;margin-top:2px;color:#868C96}
+.li .chev{width:20px;height:20px;color:var(--onV)}
+.try{margin:auto 16px 12px;height:56px;border:1px solid var(--out);border-radius:12px;display:flex;align-items:center;padding:0 16px;color:var(--onV);font-size:16px;background:var(--card2)}
+.radio{width:20px;height:20px;border-radius:50%;border:2px solid var(--onV);flex:none;display:flex;align-items:center;justify-content:center}
+.radio.on{border-color:var(--pri)}.radio.on::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--pri)}
+.plug .av{width:40px;height:40px;border-radius:10px;font-size:17px}
+.gear{width:40px;height:40px;display:flex;align-items:center;justify-content:center;margin-right:-8px}
+.gear svg{width:22px;height:22px;color:var(--onV)}
+.vdiv{width:.5px;height:28px;background:var(--outV);margin:0 -4px 0 -4px}
+.note{margin:4px 32px 0;display:flex;gap:8px;font-size:12.5px;line-height:18px;color:var(--onV)}
+.note svg{width:16px;height:16px;color:var(--onV);margin-top:1px}
+.li.sel{background:linear-gradient(90deg,rgba(46,108,246,.06),rgba(46,108,246,.02))}
+
+/* ---------- 图标清单 Icon sheet ---------- */
+section.icons{max-width:1500px;margin:10px auto 60px;padding:0 40px}
+section.icons h2{font-size:16px;font-weight:600;margin:0 0 4px}
+section.icons p{font-size:12.5px;color:#5E6570;margin:0 0 16px}
+.ic-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:10px}
+.ic-cell{background:#fff;border-radius:12px;padding:14px 6px 10px;display:flex;flex-direction:column;align-items:center;gap:8px;color:#3E444D}
+.ic-cell svg{width:36px;height:36px}
+.ic-cell code{font-size:10.5px;color:#5E6570;font-family:ui-monospace,Menlo,monospace}
+.ic-grid.dk .ic-cell{background:#202226;color:#C9CDD4}.ic-grid.dk .ic-cell code{color:#8E949E}
+.swatches{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 28px}
+.sw{width:110px;border-radius:10px;overflow:hidden;background:#fff;font-size:10.5px}
+.sw div{height:40px}.sw p{margin:0;padding:6px 8px;color:#3E444D;line-height:1.35}.sw p code{color:#868C96}
+</style>
+</head>
+<body>
+<!-- ICON-SPRITE:BEGIN -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none"><symbol id="ic_logo" viewBox="0 0 24 24"><path d="M12,3a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z M7.5,9.5l2.25,5.5l2.25,-4.5l2.25,4.5l2.25,-5.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_keyboard" viewBox="0 0 24 24"><path d="M6,5.5h12a3,3 0 0,1 3,3v7a3,3 0 0,1 -3,3h-12a3,3 0 0,1 -3,-3v-7a3,3 0 0,1 3,-3z M7.5,9.5h0.01 M10.5,9.5h0.01 M13.5,9.5h0.01 M16.5,9.5h0.01 M9,14.5h6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_mic" viewBox="0 0 24 24"><path d="M12,3a3,3 0 0,1 3,3v5a3,3 0 0,1 -6,0v-5a3,3 0 0,1 3,-3z M5.5,11a6.5,6.5 0 0,0 13,0 M12,17.5v3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_cursor" viewBox="0 0 24 24"><path d="M12,5v14 M9.5,5h5 M9.5,19h5 M6.5,9l-3,3l3,3 M17.5,9l3,3l-3,3" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_clipboard" viewBox="0 0 24 24"><path d="M9,4.5h-1a2.5,2.5 0 0,0 -2.5,2.5v11.5a2.5,2.5 0 0,0 2.5,2.5h9a2.5,2.5 0 0,0 2.5,-2.5v-11.5a2.5,2.5 0 0,0 -2.5,-2.5h-1 M10,3h4a1,1 0 0,1 1,1v1a1,1 0 0,1 -1,1h-4a1,1 0 0,1 -1,-1v-1a1,1 0 0,1 1,-1z M9,11h6 M9,15h4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_chevron_down" viewBox="0 0 24 24"><path d="M6,9l6,6l6,-6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_chevron_up" viewBox="0 0 24 24"><path d="M6,15l6,-6l6,6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_chevron_left" viewBox="0 0 24 24"><path d="M15,6l-6,6l6,6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_chevron_right" viewBox="0 0 24 24"><path d="M9,6l6,6l-6,6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_backspace" viewBox="0 0 24 24"><path d="M8.5,5h10a2.5,2.5 0 0,1 2.5,2.5v9a2.5,2.5 0 0,1 -2.5,2.5h-10l-6,-7z M12,9.5l5,5 M17,9.5l-5,5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_enter" viewBox="0 0 24 24"><path d="M19,5v6a3,3 0 0,1 -3,3h-11 M8.5,10.5l-3.5,3.5l3.5,3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_shift" viewBox="0 0 24 24"><path d="M12,3.5l8,8.5h-4.5v7.5h-7v-7.5h-4.5z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_shift_filled" viewBox="0 0 24 24"><path d="M12,3.5l8,8.5h-4.5v7.5h-7v-7.5h-4.5z" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_shift_lock" viewBox="0 0 24 24"><path d="M12,3l7.5,7.5h-4v5h-7v-5h-4z" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5,20h7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_space" viewBox="0 0 24 24"><path d="M5,10.5v3a1.5,1.5 0 0,0 1.5,1.5h11a1.5,1.5 0 0,0 1.5,-1.5v-3" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_search" viewBox="0 0 24 24"><path d="M10.5,4a6.5,6.5 0 1,1 0,13a6.5,6.5 0 1,1 0,-13z M15.3,15.3l4.7,4.7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_emoji" viewBox="0 0 24 24"><path d="M12,3a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z M9,10h0.01 M15,10h0.01 M8.5,14.5a4,4 0 0,0 7,0" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_settings" viewBox="0 0 24 24"><path d="M12,2.8l8,4.6v9.2l-8,4.6l-8,-4.6v-9.2z M12,9a3,3 0 1,1 0,6a3,3 0 1,1 0,-6z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_moon" viewBox="0 0 24 24"><path d="M20,14.5a8,8 0 1,1 -10.5,-10.5a7.5,7.5 0 0,0 10.5,10.5z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_theme" viewBox="0 0 24 24"><path d="M12,3a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/><path d="M12,3a9,9 0 0,1 0,18z" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_resize" viewBox="0 0 24 24"><path d="M8,4h-2a2,2 0 0,0 -2,2v2 M16,4h2a2,2 0 0,1 2,2v2 M8,20h-2a2,2 0 0,1 -2,-2v-2 M16,20h2a2,2 0 0,0 2,-2v-2 M9,15l6,-6 M11,9h4v4 M13,15h-4v-4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_quick_phrase" viewBox="0 0 24 24"><path d="M6,4.5h12a2.5,2.5 0 0,1 2.5,2.5v8a2.5,2.5 0 0,1 -2.5,2.5h-6l-4,3v-3h-2a2.5,2.5 0 0,1 -2.5,-2.5v-8a2.5,2.5 0 0,1 2.5,-2.5z M8,9.5h8 M8,13h5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_one_hand" viewBox="0 0 24 24"><path d="M8,3h8a2,2 0 0,1 2,2v14a2,2 0 0,1 -2,2h-8a2,2 0 0,1 -2,-2v-14a2,2 0 0,1 2,-2z M6,14.5h8.5v6.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_waveform" viewBox="0 0 24 24"><path d="M4,10v4 M8,7v10 M12,4v16 M16,7v10 M20,10v4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_toolbox" viewBox="0 0 24 24"><path d="M5.5,4h3a1.5,1.5 0 0,1 1.5,1.5v3a1.5,1.5 0 0,1 -1.5,1.5h-3a1.5,1.5 0 0,1 -1.5,-1.5v-3a1.5,1.5 0 0,1 1.5,-1.5z M15.5,4h3a1.5,1.5 0 0,1 1.5,1.5v3a1.5,1.5 0 0,1 -1.5,1.5h-3a1.5,1.5 0 0,1 -1.5,-1.5v-3a1.5,1.5 0 0,1 1.5,-1.5z M5.5,14h3a1.5,1.5 0 0,1 1.5,1.5v3a1.5,1.5 0 0,1 -1.5,1.5h-3a1.5,1.5 0 0,1 -1.5,-1.5v-3a1.5,1.5 0 0,1 1.5,-1.5z M15.5,14h3a1.5,1.5 0 0,1 1.5,1.5v3a1.5,1.5 0 0,1 -1.5,1.5h-3a1.5,1.5 0 0,1 -1.5,-1.5v-3a1.5,1.5 0 0,1 1.5,-1.5z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_tab" viewBox="0 0 24 24"><path d="M3.5,12h12 M11.5,8l4,4l-4,4 M20.5,6v12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_copy" viewBox="0 0 24 24"><path d="M9.5,8.5h8a2,2 0 0,1 2,2v8a2,2 0 0,1 -2,2h-8a2,2 0 0,1 -2,-2v-8a2,2 0 0,1 2,-2z M15.5,8.5v-2a2,2 0 0,0 -2,-2h-7a2,2 0 0,0 -2,2v7a2,2 0 0,0 2,2h1" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_cut" viewBox="0 0 24 24"><path d="M6.5,15a2.5,2.5 0 1,1 0,5a2.5,2.5 0 1,1 0,-5z M17.5,15a2.5,2.5 0 1,1 0,5a2.5,2.5 0 1,1 0,-5z M8,15.5l8.5,-12 M16,15.5l-8.5,-12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_select_all" viewBox="0 0 24 24"><path d="M4,8v-2a2,2 0 0,1 2,-2h2 M11,4h2 M16,4h2a2,2 0 0,1 2,2v2 M20,11v2 M20,16v2a2,2 0 0,1 -2,2h-2 M13,20h-2 M8,20h-2a2,2 0 0,1 -2,-2v-2 M4,13v-2 M9.5,9.5h5v5h-5z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_pin" viewBox="0 0 24 24"><path d="M9,3.5h6 M10,3.5v5.5l-3,3.5v1.5h10v-1.5l-3,-3.5v-5.5 M12,14v6.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_delete" viewBox="0 0 24 24"><path d="M4,6.5h16 M9.5,3.5h5 M6,6.5l0.9,12a2,2 0 0,0 2,1.85h6.2a2,2 0 0,0 2,-1.85l0.9,-12 M10,10.5v6 M14,10.5v6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_edit" viewBox="0 0 24 24"><path d="M4,20v-3l11.25,-11.25a2.12,2.12 0 0,1 3,3l-11.25,11.25z M13.5,7.5l3,3" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_undo" viewBox="0 0 24 24"><path d="M9,14l-5,-5l5,-5 M4,9h10.5a5.5,5.5 0 0,1 0,11h-3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_close" viewBox="0 0 24 24"><path d="M6,6l12,12 M18,6l-12,12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_check" viewBox="0 0 24 24"><path d="M5,12.5l4.5,4.5l9.5,-10" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_plus" viewBox="0 0 24 24"><path d="M12,5v14 M5,12h14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_import" viewBox="0 0 24 24"><path d="M13.5,3.5h-6.5a2,2 0 0,0 -2,2v13a2,2 0 0,0 2,2h10a2,2 0 0,0 2,-2v-9.5z M13.5,3.5v4a2,2 0 0,0 2,2h3.5 M12,11.5v6 M9.5,15l2.5,2.5l2.5,-2.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_export" viewBox="0 0 24 24"><path d="M13.5,3.5h-6.5a2,2 0 0,0 -2,2v13a2,2 0 0,0 2,2h10a2,2 0 0,0 2,-2v-9.5z M13.5,3.5v4a2,2 0 0,0 2,2h3.5 M12,17.5v-6 M9.5,14l2.5,-2.5l2.5,2.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_book" viewBox="0 0 24 24"><path d="M6.5,3.5h12v14h-12a1.5,1.5 0 0,0 -1.5,1.5v-14a1.5,1.5 0 0,1 1.5,-1.5z M5,19a1.5,1.5 0 0,0 1.5,1.5h12v-3 M9,7.5h6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_info" viewBox="0 0 24 24"><path d="M12,3a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z M12,11v5.5 M12,7.75h0.01" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_warning" viewBox="0 0 24 24"><path d="M12,4l9,15.5h-18z M12,10v4 M12,16.75h0.01" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_volume" viewBox="0 0 24 24"><path d="M4,9.5h3l4.5,-4v13l-4.5,-4h-3z M15.5,9a4,4 0 0,1 0,6 M18,6.5a7.5,7.5 0 0,1 0,11" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_vibration" viewBox="0 0 24 24"><path d="M9,4h6a1.5,1.5 0 0,1 1.5,1.5v13a1.5,1.5 0 0,1 -1.5,1.5h-6a1.5,1.5 0 0,1 -1.5,-1.5v-13a1.5,1.5 0 0,1 1.5,-1.5z M4.5,9v6 M19.5,9v6 M2,11v2 M22,11v2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_lock" viewBox="0 0 24 24"><path d="M7,10.5h10a1.5,1.5 0 0,1 1.5,1.5v7a1.5,1.5 0 0,1 -1.5,1.5h-10a1.5,1.5 0 0,1 -1.5,-1.5v-7a1.5,1.5 0 0,1 1.5,-1.5z M8.5,10.5v-3a3.5,3.5 0 0,1 7,0v3 M12,14.5v2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_lock_open" viewBox="0 0 24 24"><path d="M7,10.5h10a1.5,1.5 0 0,1 1.5,1.5v7a1.5,1.5 0 0,1 -1.5,1.5h-10a1.5,1.5 0 0,1 -1.5,-1.5v-7a1.5,1.5 0 0,1 1.5,-1.5z M8.5,10.5v-3a3.5,3.5 0 0,1 6.8,-1.2 M12,14.5v2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_arrow_back" viewBox="0 0 24 24"><path d="M19,12h-14 M11,6l-6,6l6,6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_open_external" viewBox="0 0 24 24"><path d="M14,4h6v6 M20,4l-9,9 M18,14v4a2,2 0 0,1 -2,2h-10a2,2 0 0,1 -2,-2v-10a2,2 0 0,1 2,-2h4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_drag_handle" viewBox="0 0 24 24"><path d="M5,9h14 M5,15h14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_stop" viewBox="0 0 24 24"><path d="M9,7h6a2,2 0 0,1 2,2v6a2,2 0 0,1 -2,2h-6a2,2 0 0,1 -2,-2v-6a2,2 0 0,1 2,-2z" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_globe" viewBox="0 0 24 24"><path d="M12,3a9,9 0 1,1 0,18a9,9 0 1,1 0,-18z M12,3a5,9 0 0,1 0,18a5,9 0 0,1 0,-18z M3,12h18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_logo_filled" viewBox="0 0 24 24"><path d="M12,2.1a9.9,9.9 0 1,1 0,19.8a9.9,9.9 0 1,1 0,-19.8z M6.42,9.66L9.67,17.48L12.00,12.82L14.33,17.48L17.58,9.66L15.82,8.94L14.17,12.92L12.00,8.58L9.83,12.92L8.18,8.94z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_keyboard_filled" viewBox="0 0 24 24"><path d="M5.8,4.7h12.4a3.6,3.6 0 0,1 3.6,3.6v7.4a3.6,3.6 0 0,1 -3.6,3.6h-12.4a3.6,3.6 0 0,1 -3.6,-3.6v-7.4a3.6,3.6 0 0,1 3.6,-3.6z M7.05,8.55h0.9a0.5,0.5 0 0,1 0.5,0.5v0.9a0.5,0.5 0 0,1 -0.5,0.5h-0.9a0.5,0.5 0 0,1 -0.5,-0.5v-0.9a0.5,0.5 0 0,1 0.5,-0.5z M10.05,8.55h0.9a0.5,0.5 0 0,1 0.5,0.5v0.9a0.5,0.5 0 0,1 -0.5,0.5h-0.9a0.5,0.5 0 0,1 -0.5,-0.5v-0.9a0.5,0.5 0 0,1 0.5,-0.5z M13.05,8.55h0.9a0.5,0.5 0 0,1 0.5,0.5v0.9a0.5,0.5 0 0,1 -0.5,0.5h-0.9a0.5,0.5 0 0,1 -0.5,-0.5v-0.9a0.5,0.5 0 0,1 0.5,-0.5z M16.05,8.55h0.9a0.5,0.5 0 0,1 0.5,0.5v0.9a0.5,0.5 0 0,1 -0.5,0.5h-0.9a0.5,0.5 0 0,1 -0.5,-0.5v-0.9a0.5,0.5 0 0,1 0.5,-0.5z M9,13.55h6a0.95,0.95 0 0,1 0.95,0.95v0a0.95,0.95 0 0,1 -0.95,0.95h-6a0.95,0.95 0 0,1 -0.95,-0.95v-0a0.95,0.95 0 0,1 0.95,-0.95z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_mic_filled" viewBox="0 0 24 24"><path d="M12,2.6h0a3.4,3.4 0 0,1 3.4,3.4v5a3.4,3.4 0 0,1 -3.4,3.4h-0a3.4,3.4 0 0,1 -3.4,-3.4v-5a3.4,3.4 0 0,1 3.4,-3.4z" fill="currentColor" fill-rule="evenodd"/><path d="M5.5,11a6.5,6.5 0 0,0 13,0 M12,17.5v3.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="ic_cursor_filled" viewBox="0 0 24 24"><path d="M6.9,3.4h10.2a4.5,4.5 0 0,1 4.5,4.5v8.2a4.5,4.5 0 0,1 -4.5,4.5h-10.2a4.5,4.5 0 0,1 -4.5,-4.5v-8.2a4.5,4.5 0 0,1 4.5,-4.5z M10.1,6.2h3.8a0.9,0.9 0 0,1 0.9,0.9v0a0.9,0.9 0 0,1 -0.9,0.9h-3.8a0.9,0.9 0 0,1 -0.9,-0.9v-0a0.9,0.9 0 0,1 0.9,-0.9z M11.1,8h1.8v8h-1.8z M10.1,16h3.8a0.9,0.9 0 0,1 0.9,0.9v0a0.9,0.9 0 0,1 -0.9,0.9h-3.8a0.9,0.9 0 0,1 -0.9,-0.9v-0a0.9,0.9 0 0,1 0.9,-0.9z M7.4,9.3l-2.7,2.7l2.7,2.7z M16.6,9.3l2.7,2.7l-2.7,2.7z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_clipboard_filled" viewBox="0 0 24 24"><path d="M7.4,3.6h9.2a2.8,2.8 0 0,1 2.8,2.8v12.2a2.8,2.8 0 0,1 -2.8,2.8h-9.2a2.8,2.8 0 0,1 -2.8,-2.8v-12.2a2.8,2.8 0 0,1 2.8,-2.8z M8.95,10.1h6.1a0.9,0.9 0 0,1 0.9,0.9v0a0.9,0.9 0 0,1 -0.9,0.9h-6.1a0.9,0.9 0 0,1 -0.9,-0.9v-0a0.9,0.9 0 0,1 0.9,-0.9z M8.95,14.1h4.1a0.9,0.9 0 0,1 0.9,0.9v0a0.9,0.9 0 0,1 -0.9,0.9h-4.1a0.9,0.9 0 0,1 -0.9,-0.9v-0a0.9,0.9 0 0,1 0.9,-0.9z" fill="currentColor" fill-rule="evenodd"/><path d="M9.8,1.8h4.4a1.4,1.4 0 0,1 1.4,1.4v1a1.4,1.4 0 0,1 -1.4,1.4h-4.4a1.4,1.4 0 0,1 -1.4,-1.4v-1a1.4,1.4 0 0,1 1.4,-1.4z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_chevron_down_filled" viewBox="0 0 24 24"><path d="M5.2,8.6h13.6l-6.8,7.8z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_emoji_filled" viewBox="0 0 24 24"><path d="M12,2.1a9.9,9.9 0 1,1 0,19.8a9.9,9.9 0 1,1 0,-19.8z M9,8.7a1.3,1.3 0 1,1 0,2.6a1.3,1.3 0 1,1 0,-2.6z M15,8.7a1.3,1.3 0 1,1 0,2.6a1.3,1.3 0 1,1 0,-2.6z M8,13.6h8a4,4 0 0,1 -8,0z" fill="currentColor" fill-rule="evenodd"/></symbol><symbol id="ic_settings_filled" viewBox="0 0 24 24"><path d="M12,1.8l8.9,5.1v10.2l-8.9,5.1l-8.9,-5.1v-10.2z M12,8.8a3.2,3.2 0 1,1 0,6.4a3.2,3.2 0 1,1 0,-6.4z" fill="currentColor" fill-rule="evenodd"/></symbol></svg>
+<!-- ICON-SPRITE:END -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="sb_signal" viewBox="0 0 24 24"><path fill="currentColor" d="M3,17h3v4h-3z M8,13h3v8h-3z M13,9h3v12h-3z M18,5h3v16h-3z"/></symbol>
+  <symbol id="sb_wifi" viewBox="0 0 24 24"><path fill="currentColor" d="M12,20.5l-3.2,-3.7a4.8,4.8 0 0,1 6.4,0z M5.6,13.4a9.6,9.6 0 0,1 12.8,0l-1.8,2.1a6.9,6.9 0 0,0 -9.2,0z M2.4,9.7a14.4,14.4 0 0,1 19.2,0l-1.8,2.1a11.7,11.7 0 0,0 -15.6,0z"/></symbol>
+  <symbol id="sb_batt" viewBox="0 0 24 24"><rect x="2.5" y="7" width="17" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4.3" y="8.8" width="11" height="6.4" rx="1.2" fill="currentColor"/><rect x="20.5" y="10" width="1.6" height="4" rx=".8" fill="currentColor"/></symbol>
+</svg>
+
+<header class="page">
+  <h1>织文输入法 WeaveText · UI 预览 v0.1</h1>
+  <p>1080×2400 @420dpi（411×914 dp）按 0.875 缩放为 360×800 CSS px；框内 1 px = 1 dp，尺寸与颜色严格取自 <code>docs/design/01–04</code>。<br>
+  Frames are 411×914 dp scaled to 360×800 CSS px; every size and colour comes from the spec docs.</p>
+</header>
+
+<main class="gallery">
+
+<!-- ===================== 1. 亮色 26 键拼音（输入中） ===================== -->
+<figure>
+<div class="phone light"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>小林</b></div>
+    <div class="msgs">
+      <span class="time">下午 3:12</span>
+      <div class="msg in">周末一起去爬山吗？</div>
+      <div class="msg out">好呀，几点出发</div>
+      <div class="msg in">早上八点，地铁站见 👋</div>
+    </div>
+    <div class="input"><div class="field">没问题，<span class="caretA"></span></div></div>
+  </div>
+  <div class="kb">
+    <div class="top">
+      <div class="cand">
+        <div class="comp">ni'hao<i></i></div>
+        <div class="cands"><span>你好</span><span>拟好</span><span>你</span><span>尼</span><span>泥</span><span>呢</span><span>倪</span><span>妮</span><span>你号</span></div>
+        <div class="fade"></div>
+      </div>
+      <div class="expand"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+    </div>
+    <div class="main" style="position:relative">
+      <div class="row">
+        <i class="k" data-h="1">Q</i><i class="k" data-h="2">W</i><i class="k" data-h="3">E</i><i class="k" data-h="4">R</i><i class="k" data-h="5">T</i><i class="k" data-h="6">Y</i><i class="k" data-h="7">U</i><i class="k" data-h="8">I</i><i class="k" data-h="9">O</i><i class="k" data-h="0">P</i>
+      </div>
+      <div class="row">
+        <i class="sp" style="--w:.5"></i><i class="k" data-h="~">A</i><i class="k" data-h="!">S</i><i class="k" data-h="@">D</i><i class="k" data-h="#">F</i><i class="k" data-h="%">G</i><i class="k" data-h="“">H</i><i class="k" data-h="”">J</i><i class="k" data-h="*">K</i><i class="k" data-h="?">L</i><i class="sp" style="--w:.5"></i>
+      </div>
+      <div class="row">
+        <i class="k fn cjk" style="--w:1.5">分词</i><i class="k" data-h="（">Z</i><i class="k" data-h="）">X</i><i class="k" data-h="-">C</i><i class="k" data-h="_">V</i><i class="k" data-h="：">B</i><i class="k" data-h="；">N</i><i class="k" data-h="、">M</i><i class="k fn" style="--w:1.5"><svg><use href="#ic_backspace"/></svg></i>
+      </div>
+      <div class="row">
+        <i class="k fn cjk" style="--w:1.3">符</i><i class="k fn lat" style="--w:1.3">123</i><i class="k pun">，</i><i class="k" style="--w:2.8"><span class="spc"><svg class="m"><use href="#ic_mic"/></svg><svg class="s"><use href="#ic_space"/></svg></span></i><i class="k pun">。</i><i class="k fn zy" style="--w:1.3">中<span><b>/</b>英</span></i><i class="k fn" style="--w:1.3"><svg><use href="#ic_enter"/></svg></i>
+      </div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>① 亮色 · 26 键拼音 · 输入中<small>候选栏两行结构：组合串 12.5dp ＋ 候选 19dp，总高 48dp 不跳动</small></figcaption>
+</figure>
+
+<!-- ===================== 2. 暗色 26 键（空闲，发送键 + 按下气泡） ===================== -->
+<figure>
+<div class="phone dark"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>项目群</b></div>
+    <div class="msgs">
+      <span class="time">晚上 11:02</span>
+      <div class="msg in">设计稿今晚能发出来吗？</div>
+      <div class="msg out">可以，暗色主题也一起</div>
+    </div>
+    <div class="input"><div class="field"><span class="caretA"></span><span class="ph">发消息</span></div></div>
+  </div>
+  <div class="kb">
+    <div class="top">
+      <div class="tool"><svg class="i"><use href="#ic_logo"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_keyboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_mic"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_cursor"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_clipboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+    </div>
+    <div class="main" style="position:relative">
+      <!-- 按下 G 的预览气泡：宽 = 键宽 + 16，高 = 键高 + 12，位于键上方 6dp -->
+      <div class="bubble" style="left:180.4px;top:-1px;width:50.5px;height:58px">G</div>
+      <div class="row">
+        <i class="k" data-h="1">Q</i><i class="k" data-h="2">W</i><i class="k" data-h="3">E</i><i class="k" data-h="4">R</i><i class="k" data-h="5">T</i><i class="k" data-h="6">Y</i><i class="k" data-h="7">U</i><i class="k" data-h="8">I</i><i class="k" data-h="9">O</i><i class="k" data-h="0">P</i>
+      </div>
+      <div class="row">
+        <i class="sp" style="--w:.5"></i><i class="k" data-h="~">A</i><i class="k" data-h="!">S</i><i class="k" data-h="@">D</i><i class="k" data-h="#">F</i><i class="k pr" data-h="%">G</i><i class="k" data-h="“">H</i><i class="k" data-h="”">J</i><i class="k" data-h="*">K</i><i class="k" data-h="?">L</i><i class="sp" style="--w:.5"></i>
+      </div>
+      <div class="row">
+        <i class="k fn" style="--w:1.5"><svg><use href="#ic_shift"/></svg></i><i class="k" data-h="（">Z</i><i class="k" data-h="）">X</i><i class="k" data-h="-">C</i><i class="k" data-h="_">V</i><i class="k" data-h="：">B</i><i class="k" data-h="；">N</i><i class="k" data-h="、">M</i><i class="k fn" style="--w:1.5"><svg><use href="#ic_backspace"/></svg></i>
+      </div>
+      <div class="row">
+        <i class="k fn cjk" style="--w:1.3">符</i><i class="k fn lat" style="--w:1.3">123</i><i class="k pun">，</i><i class="k" style="--w:2.8"><span class="spc"><svg class="m"><use href="#ic_mic"/></svg><svg class="s"><use href="#ic_space"/></svg></span></i><i class="k pun">。</i><i class="k fn zy" style="--w:1.3">中<span><b>/</b>英</span></i><i class="k ac cjk" style="--w:1.3">发送</i>
+      </div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>② 暗色 · 26 键 · 空闲工具栏<small>按下 G 的预览气泡；输入框 actionSend → 回车显示强调色「发送」</small></figcaption>
+</figure>
+
+<!-- ===================== 3. 九键（输入中） ===================== -->
+<figure>
+<div class="phone light"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>妈妈</b></div>
+    <div class="msgs">
+      <span class="time">上午 8:30</span>
+      <div class="msg in">到公司了吗</div>
+      <div class="msg out">刚到～</div>
+    </div>
+    <div class="input"><div class="field"><span class="caretA"></span></div></div>
+  </div>
+  <div class="kb">
+    <div class="top">
+      <div class="cand">
+        <div class="comp"><span class="lk">ni</span>'hao<i></i></div>
+        <div class="cands"><span>你好</span><span>你</span><span>拟好</span><span>泥</span><span>逆号</span><span>腻</span><span>妮</span></div>
+        <div class="fade"></div>
+      </div>
+      <div class="expand"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+    </div>
+    <div class="main">
+      <div class="t9">
+        <i class="k fn col"><span class="list"><div class="sel">ni</div><div>mi</div><div>oh</div><div>o</div><div>n</div></span></i>
+        <i class="k fn cjk">分词</i>
+        <i class="k dg"><b>ABC</b><s>2</s></i>
+        <i class="k dg"><b>DEF</b><s>3</s></i>
+        <i class="k fn"><svg><use href="#ic_backspace"/></svg></i>
+        <i class="k dg"><b>GHI</b><s>4</s></i>
+        <i class="k dg"><b>JKL</b><s>5</s></i>
+        <i class="k dg"><b>MNO</b><s>6</s></i>
+        <i class="k fn cjk">重输</i>
+        <i class="k dg"><b>PQRS</b><s>7</s></i>
+        <i class="k dg"><b>TUV</b><s>8</s></i>
+        <i class="k dg"><b>WXYZ</b><s>9</s></i>
+        <i class="k fn enter"><svg><use href="#ic_enter"/></svg></i>
+        <i class="k fn cjk">符</i>
+        <i class="k fn lat">123</i>
+        <i class="k"><span class="spc"><svg class="m"><use href="#ic_mic"/></svg><svg class="s"><use href="#ic_space"/></svg></span></i>
+        <i class="k fn zy">中<span><b>/</b>英</span></i>
+      </div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>③ 亮色 · 九键拼音 · 输入中（64426）<small>左列变为拼音选择，已锁定音节 ni 以强调色显示</small></figcaption>
+</figure>
+
+<!-- ===================== 4. 工具箱 ===================== -->
+<figure>
+<div class="phone light"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>备忘录</b></div>
+    <div class="msgs"><div class="msg out">记得买牛奶和面包</div></div>
+    <div class="input"><div class="field"><span class="caretA"></span></div></div>
+  </div>
+  <div class="kb">
+    <div class="top">
+      <div class="tool on"><svg class="i"><use href="#ic_logo"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_keyboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_mic"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_cursor"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_clipboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+    </div>
+    <div class="toolbox">
+      <div class="tb"><svg class="i"><use href="#ic_keyboard"/></svg>输入方案</div>
+      <div class="tb"><svg class="i"><use href="#ic_resize"/></svg>键盘调节</div>
+      <div class="tb"><svg class="i"><use href="#ic_moon"/></svg>深色模式</div>
+      <div class="tb on"><span class="txt" style="color:inherit">繁</span>繁体输出</div>
+      <div class="tb"><svg class="i"><use href="#ic_emoji"/></svg>表情</div>
+      <div class="tb"><svg class="i"><use href="#ic_quick_phrase"/></svg>常用语</div>
+      <div class="tb"><svg class="i"><use href="#ic_one_hand"/></svg>单手模式</div>
+      <div class="tb"><svg class="i"><use href="#ic_waveform"/></svg>语音引擎</div>
+      <div class="tb"><svg class="i"><use href="#ic_cursor"/></svg>光标编辑</div>
+      <div class="tb"><svg class="i"><use href="#ic_clipboard"/></svg>剪贴板</div>
+      <div class="tb"><svg class="i"><use href="#ic_settings"/></svg>设置</div>
+      <div class="tb"><svg class="i"><use href="#ic_info"/></svg>帮助</div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>④ 亮色 · 工具箱面板<small>4×3 白卡片，开关类（繁体输出）开启时染强调色；无账号头像与推荐位</small></figcaption>
+</figure>
+
+<!-- ===================== 5. 语音面板 ===================== -->
+<figure>
+<div class="phone light"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>工作群</b></div>
+    <div class="msgs">
+      <div class="msg in">明天的会几点？</div>
+    </div>
+    <div class="input"><div class="field"><span style="text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:4px">今天下午三点在会议室开会，记得带上电脑和</span><span class="caretA"></span></div></div>
+  </div>
+  <div class="kb">
+    <div class="voice">
+      <div class="vtop">
+        <div class="btn"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+        <div class="chip"><span class="av" style="width:20px;height:20px;font-size:11px;background:#2E6CF6">系</span>系统语音识别<svg class="i"><use href="#ic_chevron_down"/></svg></div>
+        <div class="btn"><svg class="i"><use href="#ic_settings"/></svg></div>
+      </div>
+      <div class="vtext">今天下午三点在会议室开会，记得带上电脑<span class="p">和充电</span></div>
+      <div class="wave">
+        <i style="height:4px"></i><i style="height:6px"></i><i style="height:10px"></i><i style="height:8px"></i><i style="height:14px"></i><i style="height:20px"></i><i style="height:16px"></i><i style="height:24px"></i><i style="height:28px"></i><i style="height:22px"></i><i style="height:26px"></i><i style="height:18px"></i><i style="height:12px"></i><i style="height:14px"></i><i style="height:8px"></i><i style="height:6px"></i><i style="height:4px"></i>
+      </div>
+      <div class="vctl">
+        <div class="vside l"><div class="vkey">，</div><div class="vkey"><svg class="i"><use href="#ic_keyboard"/></svg></div></div>
+        <div class="vcenter"><div class="mic"><svg><use href="#ic_stop"/></svg></div><div class="vhint">正在聆听…点击结束</div></div>
+        <div class="vside r"><div class="vkey"><svg class="i"><use href="#ic_backspace"/></svg></div><div class="vkey"><svg class="i"><use href="#ic_enter"/></svg></div></div>
+      </div>
+      <div class="seg"><span class="on">点按说话</span><em></em><span>按住说话</span></div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>⑤ 亮色 · 语音面板 · 收音中<small>顶部引擎 chip 一键切换；中间结果灰色，已确定文本同步为编辑框 composing</small></figcaption>
+</figure>
+
+<!-- ===================== 6. 设置首页 ===================== -->
+<figure>
+<div class="phone light st"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="large"><h1>织文输入法</h1><div class="sub"><i></i>已启用 · 当前默认输入法</div></div>
+  <div class="group">
+    <div class="li"><svg class="i"><use href="#ic_keyboard"/></svg><div class="t"><b>输入方案</b><span>全拼 26 键 · 小鹤双拼</span></div><svg class="chev"><use href="#ic_chevron_right"/></svg></div>
+    <div class="li"><svg class="i"><use href="#ic_waveform"/></svg><div class="t"><b>语音引擎</b><span>系统语音识别</span></div><svg class="chev"><use href="#ic_chevron_right"/></svg></div>
+    <div class="li"><svg class="i"><use href="#ic_theme"/></svg><div class="t"><b>外观与手感</b><span>跟随系统 · 标准高度</span></div><svg class="chev"><use href="#ic_chevron_right"/></svg></div>
+    <div class="li"><svg class="i"><use href="#ic_book"/></svg><div class="t"><b>词库</b><span>1,284 个用户词</span></div><svg class="chev"><use href="#ic_chevron_right"/></svg></div>
+  </div>
+  <div class="group">
+    <div class="li one"><svg class="i"><use href="#ic_info"/></svg><div class="t"><b>关于</b></div><span style="font-size:14px;color:var(--onV)">v0.1.0</span><svg class="chev"><use href="#ic_chevron_right"/></svg></div>
+  </div>
+  <div class="try">在这里试试输入…</div>
+  <div class="nav app"></div>
+</div></div>
+<figcaption>⑥ 设置 App · 首页<small>仅 5 个入口，双行副文字直接显示当前值；底部「试一试」输入框</small></figcaption>
+</figure>
+
+<!-- ===================== 7. 语音引擎管理 ===================== -->
+<figure>
+<div class="phone light st"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="appbar"><div class="ib"><svg class="i"><use href="#ic_arrow_back"/></svg></div><h2>语音引擎</h2><div class="tbtn"><svg class="i"><use href="#ic_import"/></svg>导入</div></div>
+  <div class="gtitle">已安装 · 4</div>
+  <div class="group">
+    <div class="li plug sel"><span class="av" style="background:#2E6CF6">系</span><div class="t"><b>系统语音识别</b><span class="d">调用手机自带的语音识别服务，无需任何配置。</span><span class="v">v1.0.3</span></div><div class="radio on"></div><div class="gear"><svg class="i"><use href="#ic_info"/></svg></div></div>
+    <div class="li plug"><span class="av" style="background:#1B1E23">云</span><div class="t"><b>示例云端识别</b><span class="d">示例插件：WebSocket 流式识别，支持自动标点。</span><span class="v">v1.0.4 · 3 项设置</span></div><div class="radio"></div><div class="gear"><svg class="i"><use href="#ic_settings"/></svg></div></div>
+    <div class="li plug"><span class="av" style="background:#6A5AE0">B</span><div class="t"><b>示例插件 B</b><span class="d">实时流式识别，支持中英混说与自动标点。</span><span class="v">v1.2.0 · 2 项设置</span></div><div class="radio"></div><div class="gear"><svg class="i"><use href="#ic_settings"/></svg></div></div>
+    <div class="li plug"><span class="av" style="background:#F07A1A">C</span><div class="t"><b>示例插件 C</b><span class="d">示例插件：低延迟流式识别。</span><span class="v">v1.0.1</span></div><div class="radio"></div><div class="gear"><svg class="i"><use href="#ic_info"/></svg></div></div>
+  </div>
+  <div class="note"><svg class="i"><use href="#ic_info"/></svg><span>语音会发送到所选服务商识别；插件只能访问其 manifest 中声明的域名。点击行切换引擎，点击右侧图标查看详情与设置。</span></div>
+  <div style="flex:1"></div>
+  <div class="nav app"></div>
+</div></div>
+<figcaption>⑦ 设置 App · 语音引擎<small>图标＋名称＋描述＋单选；⚙ 进入 configSchema 自动表单，ⓘ 表示插件无配置项</small></figcaption>
+</figure>
+
+<!-- ===================== 8. 双拼（小鹤提示） ===================== -->
+<figure>
+<div class="phone light"><div class="screen">
+  <div class="status"><span>9:41</span><span class="r"><svg><use href="#sb_signal"/></svg><svg><use href="#sb_wifi"/></svg><svg><use href="#sb_batt"/></svg></span></div>
+  <div class="chat">
+    <div class="bar"><svg class="i"><use href="#ic_chevron_left"/></svg><b>搜索</b></div>
+    <div class="msgs"></div>
+    <div class="input"><div class="field">织文输入法<span class="caretA"></span></div></div>
+  </div>
+  <div class="kb sp2">
+    <div class="top">
+      <div class="tool"><svg class="i"><use href="#ic_logo"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_keyboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_mic"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_cursor"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_clipboard"/></svg></div>
+      <div class="tool"><svg class="i"><use href="#ic_chevron_down"/></svg></div>
+    </div>
+    <div class="main">
+      <div class="row">
+        <i class="k" data-h="1">Q<u>iu</u></i><i class="k" data-h="2">W<u>ei</u></i><i class="k" data-h="3">E<u>e</u></i><i class="k" data-h="4">R<u>uan</u></i><i class="k" data-h="5">T<u>ue</u></i><i class="k" data-h="6">Y<u>un</u></i><i class="k" data-h="7">U<u>sh/u</u></i><i class="k" data-h="8">I<u>ch/i</u></i><i class="k" data-h="9">O<u>uo</u></i><i class="k" data-h="0">P<u>ie</u></i>
+      </div>
+      <div class="row">
+        <i class="sp" style="--w:.5"></i><i class="k" data-h="~">A<u>a</u></i><i class="k" data-h="!">S<u>ong</u></i><i class="k" data-h="@">D<u>ai</u></i><i class="k" data-h="#">F<u>en</u></i><i class="k" data-h="%">G<u>eng</u></i><i class="k" data-h="“">H<u>ang</u></i><i class="k" data-h="”">J<u>an</u></i><i class="k" data-h="*">K<u>ing</u></i><i class="k" data-h="?">L<u>iang</u></i><i class="sp" style="--w:.5"></i>
+      </div>
+      <div class="row">
+        <i class="k fn" style="--w:1.5"><svg><use href="#ic_shift"/></svg></i><i class="k" data-h="（">Z<u>ou</u></i><i class="k" data-h="）">X<u>ua</u></i><i class="k" data-h="-">C<u>ao</u></i><i class="k" data-h="_">V<u>zh/ui</u></i><i class="k" data-h="：">B<u>in</u></i><i class="k" data-h="；">N<u>iao</u></i><i class="k" data-h="、">M<u>ian</u></i><i class="k fn" style="--w:1.5"><svg><use href="#ic_backspace"/></svg></i>
+      </div>
+      <div class="row">
+        <i class="k fn cjk" style="--w:1.3">符</i><i class="k fn lat" style="--w:1.3">123</i><i class="k pun">，</i><i class="k" style="--w:2.8"><span class="spc"><svg class="m"><use href="#ic_mic"/></svg><svg class="s"><use href="#ic_space"/></svg></span></i><i class="k pun">。</i><i class="k fn zy" style="--w:1.3">中<span><b>/</b>英</span></i><i class="k ac" style="--w:1.3"><svg><use href="#ic_search"/></svg></i>
+      </div>
+    </div>
+  </div>
+  <div class="nav"></div>
+</div></div>
+<figcaption>⑧ 亮色 · 小鹤双拼 · 按键提示<small>韵母提示右下 9.5dp，数字提示缩为 9dp；actionSearch → 回车为强调色搜索</small></figcaption>
+</figure>
+
+</main>
+
+<section class="icons">
+  <h2>颜色令牌 Colour tokens（亮 / 暗）</h2>
+  <p>键盘主值；完整表见 01 §2。</p>
+  <div class="swatches">
+    <div class="sw"><div style="background:#E8EBF0"></div><p>kb.background<br><code>#E8EBF0 / #121315</code></p></div>
+    <div class="sw"><div style="background:#FFFFFF;box-shadow:inset 0 0 0 1px #E3E6EB"></div><p>kb.key<br><code>#FFFFFF / #2D2F34</code></p></div>
+    <div class="sw"><div style="background:#CDD3DC"></div><p>kb.keyFunc<br><code>#CDD3DC / #202226</code></p></div>
+    <div class="sw"><div style="background:#D6DBE3"></div><p>kb.keyPressed<br><code>#D6DBE3 / #45484F</code></p></div>
+    <div class="sw"><div style="background:#A9B1BD"></div><p>kb.keyShadow<br><code>#A9B1BD / #050607</code></p></div>
+    <div class="sw"><div style="background:#2E6CF6"></div><p>kb.keyAccent<br><code>#2E6CF6 / #3B6FE6</code></p></div>
+    <div class="sw"><div style="background:#255FE0"></div><p>kb.candidateFirst<br><code>#255FE0 / #7FA6FF</code></p></div>
+    <div class="sw"><div style="background:#1B1E23"></div><p>kb.label<br><code>#1B1E23 / #E9EBEF</code></p></div>
+    <div class="sw"><div style="background:#868C96"></div><p>kb.labelHint<br><code>#868C96 / #8E949E</code></p></div>
+    <div class="sw"><div style="background:#5E6570"></div><p>kb.labelSecondary<br><code>#5E6570 / #A2A8B2</code></p></div>
+    <div class="sw"><div style="background:#D5DAE1"></div><p>kb.divider<br><code>#D5DAE1 / #2A2C31</code></p></div>
+    <div class="sw"><div style="background:#E5484D"></div><p>kb.danger<br><code>#E5484D / #FF6166</code></p></div>
+  </div>
+  <h2>图标清单 Icon inventory · 24dp / 1.75dp stroke</h2>
+  <p>由 <code>docs/design/icons/build_icons.py</code> 生成；与 <code>icons/drawable/*.xml</code> 的 pathData 完全相同。</p>
+  <div class="ic-grid">
+<!-- ICON-SHEET:BEGIN -->
+<div class="ic-cell"><svg><use href="#ic_logo"/></svg><code>ic_logo</code></div><div class="ic-cell"><svg><use href="#ic_keyboard"/></svg><code>ic_keyboard</code></div><div class="ic-cell"><svg><use href="#ic_mic"/></svg><code>ic_mic</code></div><div class="ic-cell"><svg><use href="#ic_cursor"/></svg><code>ic_cursor</code></div><div class="ic-cell"><svg><use href="#ic_clipboard"/></svg><code>ic_clipboard</code></div><div class="ic-cell"><svg><use href="#ic_chevron_down"/></svg><code>ic_chevron_down</code></div><div class="ic-cell"><svg><use href="#ic_chevron_up"/></svg><code>ic_chevron_up</code></div><div class="ic-cell"><svg><use href="#ic_chevron_left"/></svg><code>ic_chevron_left</code></div><div class="ic-cell"><svg><use href="#ic_chevron_right"/></svg><code>ic_chevron_right</code></div><div class="ic-cell"><svg><use href="#ic_backspace"/></svg><code>ic_backspace</code></div><div class="ic-cell"><svg><use href="#ic_enter"/></svg><code>ic_enter</code></div><div class="ic-cell"><svg><use href="#ic_shift"/></svg><code>ic_shift</code></div><div class="ic-cell"><svg><use href="#ic_shift_filled"/></svg><code>ic_shift_filled</code></div><div class="ic-cell"><svg><use href="#ic_shift_lock"/></svg><code>ic_shift_lock</code></div><div class="ic-cell"><svg><use href="#ic_space"/></svg><code>ic_space</code></div><div class="ic-cell"><svg><use href="#ic_search"/></svg><code>ic_search</code></div><div class="ic-cell"><svg><use href="#ic_emoji"/></svg><code>ic_emoji</code></div><div class="ic-cell"><svg><use href="#ic_settings"/></svg><code>ic_settings</code></div><div class="ic-cell"><svg><use href="#ic_moon"/></svg><code>ic_moon</code></div><div class="ic-cell"><svg><use href="#ic_theme"/></svg><code>ic_theme</code></div><div class="ic-cell"><svg><use href="#ic_resize"/></svg><code>ic_resize</code></div><div class="ic-cell"><svg><use href="#ic_quick_phrase"/></svg><code>ic_quick_phrase</code></div><div class="ic-cell"><svg><use href="#ic_one_hand"/></svg><code>ic_one_hand</code></div><div class="ic-cell"><svg><use href="#ic_waveform"/></svg><code>ic_waveform</code></div><div class="ic-cell"><svg><use href="#ic_toolbox"/></svg><code>ic_toolbox</code></div><div class="ic-cell"><svg><use href="#ic_tab"/></svg><code>ic_tab</code></div><div class="ic-cell"><svg><use href="#ic_copy"/></svg><code>ic_copy</code></div><div class="ic-cell"><svg><use href="#ic_cut"/></svg><code>ic_cut</code></div><div class="ic-cell"><svg><use href="#ic_select_all"/></svg><code>ic_select_all</code></div><div class="ic-cell"><svg><use href="#ic_pin"/></svg><code>ic_pin</code></div><div class="ic-cell"><svg><use href="#ic_delete"/></svg><code>ic_delete</code></div><div class="ic-cell"><svg><use href="#ic_edit"/></svg><code>ic_edit</code></div><div class="ic-cell"><svg><use href="#ic_undo"/></svg><code>ic_undo</code></div><div class="ic-cell"><svg><use href="#ic_close"/></svg><code>ic_close</code></div><div class="ic-cell"><svg><use href="#ic_check"/></svg><code>ic_check</code></div><div class="ic-cell"><svg><use href="#ic_plus"/></svg><code>ic_plus</code></div><div class="ic-cell"><svg><use href="#ic_import"/></svg><code>ic_import</code></div><div class="ic-cell"><svg><use href="#ic_export"/></svg><code>ic_export</code></div><div class="ic-cell"><svg><use href="#ic_book"/></svg><code>ic_book</code></div><div class="ic-cell"><svg><use href="#ic_info"/></svg><code>ic_info</code></div><div class="ic-cell"><svg><use href="#ic_warning"/></svg><code>ic_warning</code></div><div class="ic-cell"><svg><use href="#ic_volume"/></svg><code>ic_volume</code></div><div class="ic-cell"><svg><use href="#ic_vibration"/></svg><code>ic_vibration</code></div><div class="ic-cell"><svg><use href="#ic_lock"/></svg><code>ic_lock</code></div><div class="ic-cell"><svg><use href="#ic_lock_open"/></svg><code>ic_lock_open</code></div><div class="ic-cell"><svg><use href="#ic_arrow_back"/></svg><code>ic_arrow_back</code></div><div class="ic-cell"><svg><use href="#ic_open_external"/></svg><code>ic_open_external</code></div><div class="ic-cell"><svg><use href="#ic_drag_handle"/></svg><code>ic_drag_handle</code></div><div class="ic-cell"><svg><use href="#ic_stop"/></svg><code>ic_stop</code></div><div class="ic-cell"><svg><use href="#ic_globe"/></svg><code>ic_globe</code></div><div class="ic-cell"><svg><use href="#ic_logo_filled"/></svg><code>ic_logo_filled</code></div><div class="ic-cell"><svg><use href="#ic_keyboard_filled"/></svg><code>ic_keyboard_filled</code></div><div class="ic-cell"><svg><use href="#ic_mic_filled"/></svg><code>ic_mic_filled</code></div><div class="ic-cell"><svg><use href="#ic_cursor_filled"/></svg><code>ic_cursor_filled</code></div><div class="ic-cell"><svg><use href="#ic_clipboard_filled"/></svg><code>ic_clipboard_filled</code></div><div class="ic-cell"><svg><use href="#ic_chevron_down_filled"/></svg><code>ic_chevron_down_filled</code></div><div class="ic-cell"><svg><use href="#ic_emoji_filled"/></svg><code>ic_emoji_filled</code></div><div class="ic-cell"><svg><use href="#ic_settings_filled"/></svg><code>ic_settings_filled</code></div>
+<!-- ICON-SHEET:END -->
+  </div>
+</section>
+</body>
+</html>

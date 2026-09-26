@@ -1,0 +1,550 @@
+package com.weavetext.ime.ime
+
+import android.text.InputType
+import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import com.weavetext.ime.core.Candidate
+import com.weavetext.ime.core.EngineSnapshot
+import com.weavetext.ime.core.NativeEngine
+
+/** 回车键此刻的语义（决定回车键文字与颜色）。 What Enter does right now. */
+enum class EnterAction { NEWLINE, SEND, SEARCH, GO, NEXT, DONE, PREVIOUS }
+
+/**
+ * 键盘界面需要的全部状态。 Everything the keyboard UI renders.
+ *
+ * @property chinese 中/英状态（中文模式下标点转全角）。 Chinese vs English mode.
+ * @property schema 当前中文方案标识。 Current Chinese schema key.
+ */
+data class ImeState(
+    val preedit: String = "",
+    val candidates: List<Candidate> = emptyList(),
+    val totalCandidates: Int = 0,
+    val pinyinOptions: List<String> = emptyList(),
+    val composing: Boolean = false,
+    val chinese: Boolean = true,
+    val schema: String = "pinyin",
+    val enterAction: EnterAction = EnterAction.NEWLINE,
+    val passwordField: Boolean = false,
+    /** 密码框或要求不做个性化学习（IME_FLAG_NO_PERSONALIZED_LEARNING）：不显示/不记录剪贴板。 Private field. */
+    val privateField: Boolean = false,
+    val engineReady: Boolean = false,
+)
+
+/**
+ * 按键逻辑：连接界面、内核与编辑器。界面只调用这里的方法、只读 [state]。
+ * Key logic between UI, engine and editor. The UI only calls these methods and reads [state].
+ *
+ * 设计取舍：组合中的拼音**不写入编辑器**（只显示在候选栏上方），只在确定时 commitText。
+ * 这样绕开了聊天应用/WebView 等对 setComposingText 支持不一的大量兼容问题。
+ * Design choice: the preedit is never written into the editor (shown above candidates only); we
+ * only commitText. This sidesteps composing-text quirks in chat apps, WebViews, etc.
+ */
+class InputController(private val icProvider: () -> InputConnection?) {
+
+    private var engine: NativeEngine? = null
+    var state = ImeState()
+        private set
+    private val listeners = mutableListOf<(ImeState) -> Unit>()
+    /** 中文方案（中/英切换时保留）。 Chinese schema kept across 中/英 toggles. */
+    private var chineseSchema = "pinyin"
+    private var editorInfo: EditorInfo? = null
+    /** 当前输入框允许英文联想。 English suggestions allowed in this field. */
+    private var englishSuggest = false
+    /** 上一次「单词后补空格」的时间，用于双击空格。 When the last word-space was committed. */
+    private var lastSpaceAt = 0L
+
+    fun addListener(l: (ImeState) -> Unit) { listeners += l; l(state) }
+    fun removeListener(l: (ImeState) -> Unit) { listeners -= l }
+
+    fun attachEngine(e: NativeEngine) {
+        engine = e
+        e.setSchema(chineseSchema)
+        update { it.copy(engineReady = true, schema = chineseSchema) }
+    }
+
+    fun detachEngine(): NativeEngine? = engine.also { engine = null }
+
+    // ---------------------------------------------------------------- lifecycle
+
+    fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        editorInfo = info
+        val e = engine
+        if (!restarting) {
+            e?.clear()
+            e?.setContext(null)
+        }
+        val cls = (info?.inputType ?: 0) and InputType.TYPE_MASK_CLASS
+        val variation = (info?.inputType ?: 0) and InputType.TYPE_MASK_VARIATION
+        val password = cls == InputType.TYPE_CLASS_TEXT && variation in PASSWORD_VARIATIONS ||
+            cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        val noLearn = password || (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
+        e?.setLearning(!noLearn)
+        val urlOrEmail = cls == InputType.TYPE_CLASS_TEXT && variation in LATIN_VARIATIONS
+        val noSuggest = (info?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS != 0
+        englishSuggest = cls == InputType.TYPE_CLASS_TEXT && !password && !urlOrEmail && !noSuggest
+        val chinese = !password && !urlOrEmail
+        applyMode(chinese)
+        update {
+            it.copy(
+                enterAction = enterActionOf(info),
+                passwordField = password,
+                privateField = noLearn,
+                chinese = chinese,
+            )
+        }
+        refresh()
+    }
+
+    fun onFinishInput() {
+        engine?.let { it.clear(); it.flush() }
+        refresh()
+    }
+
+    // ---------------------------------------------------------------- keys
+
+    /** 字符键。 A character key. */
+    fun onChar(codePoint: Int) {
+        val e = engine
+        val ch = codePoint.toChar()
+        lastSpaceAt = 0L
+        // 中文方案，或普通文本框里的英文联想，都交给内核组合。 Chinese, or English with suggestions.
+        if (e != null && (state.chinese || englishSuggest) && e.inputChar(codePoint)) {
+            refresh()
+            return
+        }
+        e?.commitFirst()
+        drainCommit()
+        commit(if (state.chinese) fullWidthPunct(ch) ?: ch.toString() else ch.toString())
+    }
+
+    /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
+    fun onText(text: String) {
+        engine?.commitFirst()
+        drainCommit()
+        commit(text)
+    }
+
+    fun onBackspace() {
+        val e = engine
+        if (e != null && e.backspace()) {
+            refresh()
+            return
+        }
+        val ic = icProvider() ?: return
+        val sel = ic.getSelectedText(0)
+        if (!sel.isNullOrEmpty()) {
+            ic.commitText("", 1)
+        } else {
+            sendKey(KeyEvent.KEYCODE_DEL)
+        }
+    }
+
+    fun onSpace() {
+        val e = engine
+        if (e != null && e.isComposing()) {
+            e.select(0)
+            refresh()
+            // 英文：上屏单词后补一个空格。 English: a space follows the committed word.
+            if (!state.chinese) commitSpaceAfterWord()
+            return
+        }
+        // 英文双击空格 → ". "。 English double-space → ". ".
+        val now = android.os.SystemClock.uptimeMillis()
+        if (!state.chinese && lastSpaceAt != 0L && now - lastSpaceAt < DOUBLE_SPACE_MS) {
+            lastSpaceAt = 0L
+            val ic = icProvider()
+            if (ic != null && ic.getTextBeforeCursor(1, 0) == " ") {
+                ic.beginBatchEdit()
+                ic.deleteSurroundingText(1, 0)
+                ic.commitText(". ", 1)
+                ic.endBatchEdit()
+                return
+            }
+        }
+        commit(" ")
+        lastSpaceAt = 0L
+    }
+
+    private fun commitSpaceAfterWord() {
+        commit(" ")
+        lastSpaceAt = android.os.SystemClock.uptimeMillis()
+    }
+
+    fun onEnter() {
+        val e = engine
+        lastSpaceAt = 0L
+        if (e != null && e.isComposing()) {
+            // 英文候选首项即原样输入（保留撇号）。 English: the first candidate is the typed word.
+            if (state.chinese) e.commitRaw() else e.select(0)
+            refresh()
+            return
+        }
+        val ic = icProvider() ?: return
+        val info = editorInfo
+        val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        val noEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
+        if (state.enterAction != EnterAction.NEWLINE && !noEnterAction) {
+            ic.performEditorAction(action)
+        } else {
+            sendKey(KeyEvent.KEYCODE_ENTER)
+        }
+    }
+
+    fun onCandidate(index: Int) {
+        engine?.select(index)
+        refresh()
+        // 英文：选词上屏后补空格。 English: a space follows a chosen suggestion.
+        if (!state.chinese && !state.composing) commitSpaceAfterWord()
+    }
+
+    fun onPinyinOption(index: Int) {
+        engine?.selectPinyin(index)
+        refresh()
+    }
+
+    /** 长按删除用户词。 Forget a learned candidate. */
+    fun onForgetCandidate(index: Int): Boolean = (engine?.forget(index) == true).also { refresh() }
+
+    /** 候选展开时分页加载。 Load more candidates for the expanded grid. */
+    fun loadCandidates(offset: Int, limit: Int): List<Candidate> = engine?.candidates(offset, limit).orEmpty()
+
+    fun toggleChinese() {
+        engine?.commitRaw()
+        drainCommit()
+        applyMode(!state.chinese)
+        refresh()
+    }
+
+    /** 切换中文方案并保持中文模式。 Switch the Chinese schema. */
+    fun setSchema(key: String): Boolean {
+        val e = engine ?: return false
+        e.commitRaw()
+        drainCommit()
+        if (!e.setSchema(key)) return false
+        chineseSchema = key
+        update { it.copy(chinese = true, schema = key) }
+        refresh()
+        return true
+    }
+
+    fun setOption(key: String, value: Boolean) { engine?.setOption(key, value) }
+
+    /**
+     * 设定中文方案但不改变中/英状态（设置同步、内核未就绪时用）。
+     * Set the preferred Chinese schema without touching 中/英 mode (settings sync, engine not ready).
+     */
+    fun setPreferredSchema(key: String): Boolean {
+        if (engine != null && state.chinese) return setSchema(key)
+        chineseSchema = key
+        update { it.copy(schema = key) }
+        return true
+    }
+
+    /** 光标左右移动（空格滑动、光标面板）。 Move the cursor. */
+    fun moveCursor(dx: Int) {
+        val code = if (dx < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        repeat(kotlin.math.abs(dx)) { sendKey(code) }
+    }
+
+    fun sendKey(code: Int, meta: Int = 0) {
+        val ic = icProvider() ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta))
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, meta))
+    }
+
+    /** 清空组合（收起键盘等）。 Drop the composition. */
+    fun reset() {
+        engine?.clear()
+        refresh()
+    }
+
+    // ---------------------------------------------------------------- editing helpers (UI panels)
+
+    /** 当前编辑框信息（数字键盘、自动大写判断用）。 Current editor info. */
+    val currentEditorInfo: EditorInfo? get() = editorInfo
+
+    /** 编辑框是否数字/电话类。 Number or phone field. */
+    fun numericFieldKind(): Int {
+        val cls = (editorInfo?.inputType ?: 0) and InputType.TYPE_MASK_CLASS
+        return when (cls) {
+            InputType.TYPE_CLASS_NUMBER, InputType.TYPE_CLASS_DATETIME -> 1
+            InputType.TYPE_CLASS_PHONE -> 2
+            else -> 0
+        }
+    }
+
+    fun hasSelection(): Boolean = !icProvider()?.getSelectedText(0).isNullOrEmpty()
+
+    /** 复制/剪切/粘贴/全选。 Copy / cut / paste / select all. */
+    fun contextMenuAction(id: Int) {
+        val ic = icProvider() ?: return
+        if (id == android.R.id.paste) {
+            engine?.commitFirst()
+            drainCommit()
+            refresh()
+        }
+        ic.performContextMenuAction(id)
+    }
+
+    fun deleteForward() = sendKey(KeyEvent.KEYCODE_FORWARD_DEL)
+
+    /**
+     * 删除光标前全部文本（上限 [limit]），返回被删内容供撤销；有组合串时只清空组合串并返回 null。
+     * Delete everything before the cursor (capped); returns the removed text for undo.
+     */
+    fun clearBeforeCursor(limit: Int = 2000): String? {
+        val e = engine
+        if (e != null && e.isComposing()) {
+            e.clear()
+            refresh()
+            return null
+        }
+        val ic = icProvider() ?: return null
+        val sel = ic.getSelectedText(0)
+        if (!sel.isNullOrEmpty()) {
+            ic.commitText("", 1)
+            return sel.toString()
+        }
+        val before = ic.getTextBeforeCursor(limit, 0)?.toString().orEmpty()
+        if (before.isEmpty()) return null
+        ic.deleteSurroundingText(before.length, 0)
+        return before
+    }
+
+    /** 按词删除（长按删除加速后）。 Delete one word/run before the cursor. */
+    fun deleteWordBefore() {
+        val e = engine
+        if (e != null && e.backspace()) {
+            refresh()
+            return
+        }
+        val ic = icProvider() ?: return
+        val before = ic.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+        if (before.isEmpty()) { sendKey(KeyEvent.KEYCODE_DEL); return }
+        var i = before.length
+        // 先跳过尾部空白，再删同类字符（字母数字一段 / 汉字一段 / 单个标点）。
+        while (i > 0 && before[i - 1].isWhitespace()) i--
+        if (i > 0) {
+            val cls = charClass(before[i - 1])
+            if (cls == 2) i-- else while (i > 0 && charClass(before[i - 1]) == cls) i--
+        }
+        val n = (before.length - i).coerceAtLeast(1)
+        ic.deleteSurroundingText(n, 0)
+    }
+
+    private fun charClass(c: Char): Int = when {
+        Character.isIdeographic(c.code) -> 1
+        c.isLetterOrDigit() -> 0
+        else -> 2
+    }
+
+    /** 句首自动大写（英文）。 Auto-capitalise at sentence start. */
+    fun capsModeActive(): Boolean {
+        val info = editorInfo ?: return false
+        if (info.inputType and InputType.TYPE_TEXT_FLAG_CAP_SENTENCES == 0 &&
+            info.inputType and InputType.TYPE_TEXT_FLAG_CAP_WORDS == 0 &&
+            info.inputType and InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS == 0
+        ) return false
+        val ic = icProvider() ?: return false
+        return ic.getCursorCapsMode(info.inputType) != 0
+    }
+
+    /** 英文双击空格 → ". "。 Double-space period; true if applied. */
+    fun doubleSpacePeriod(): Boolean {
+        val ic = icProvider() ?: return false
+        val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: return false
+        if (before.length < 2 || before[1] != ' ' || !before[0].isLetterOrDigit()) return false
+        ic.deleteSurroundingText(1, 0)
+        ic.commitText(". ", 1)
+        return true
+    }
+
+    /** 成对符号：插入并把光标放中间。 Paired symbols with the cursor placed inside. */
+    fun onPairedText(open: String, close: String) {
+        onText(open + close)
+        moveCursor(-close.length)
+    }
+
+    // ---------------------------------------------------------------- cursor panel (02 §9)
+
+    /**
+     * 方向键；[select] 为真时扩选（附带 Shift）。组合中先上屏原始字母，避免方向键打断内核状态。
+     * Arrow key; extends the selection with Shift when [select].
+     */
+    fun cursorArrow(keyCode: Int, select: Boolean) {
+        commitRawIfComposing()
+        sendKey(keyCode, if (select) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
+    }
+
+    /**
+     * 移到整段开头/末尾；扩选模式下保留锚点。优先用 ExtractedText 精确设置选区，拿不到时退回 Ctrl+Home/End。
+     * Move to the very start/end of the field (keeps the anchor when selecting).
+     */
+    fun cursorToEdge(end: Boolean, select: Boolean) {
+        commitRawIfComposing()
+        val ic = icProvider() ?: return
+        val et = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
+        if (et?.text == null) {
+            var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+            if (select) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+            sendKey(if (end) KeyEvent.KEYCODE_MOVE_END else KeyEvent.KEYCODE_MOVE_HOME, meta)
+            return
+        }
+        val target = if (end) et.startOffset + et.text.length else 0
+        if (select) {
+            // selectionStart 即锚点（可能大于 selectionEnd）。 selectionStart is the anchor.
+            ic.setSelection(et.startOffset + et.selectionStart, target)
+        } else {
+            ic.setSelection(target, target)
+        }
+    }
+
+    /** Tab 键输入 \t。 Insert a tab. */
+    fun onTab() = onText("\t")
+
+    private fun commitRawIfComposing() {
+        val e = engine ?: return
+        if (e.isComposing()) { e.commitRaw(); refresh() }
+    }
+
+    /**
+     * 当前编辑框是否敏感（密码框或禁止个性化学习），剪贴板不记录、不显示历史。
+     * Password / no-personalized-learning field: clips are neither recorded nor shown.
+     */
+    val isSensitiveField: Boolean get() = state.privateField
+
+    /**
+     * 仅供截图测试 / 设计预览：直接替换界面状态（不经过内核）。
+     * For screenshot tests & previews only: replace the UI state without the engine.
+     */
+    @androidx.annotation.VisibleForTesting
+    fun previewState(s: ImeState) = update { s }
+
+    // ---------------------------------------------------------------- voice (composing text allowed here)
+
+    /** 语音中间结果以 composing 文本显示（带下划线）。 Voice interim result as composing text. */
+    fun voicePartial(text: String) {
+        val ic = icProvider() ?: return
+        if (engine?.isComposing() == true) { engine?.commitFirst(); drainCommit(); refresh() }
+        ic.setComposingText(text, 1)
+    }
+
+    /** 语音最终结果上屏（替换 composing）。 Commit a final voice segment. */
+    fun voiceFinal(text: String) {
+        val ic = icProvider() ?: return
+        if (text.isEmpty()) ic.finishComposingText() else ic.commitText(text, 1)
+    }
+
+    /** 插件事后修正已上屏文本。 Post-hoc correction of committed voice text. */
+    fun voiceReplace(old: String, new: String) {
+        val ic = icProvider() ?: return
+        val before = ic.getTextBeforeCursor(old.length, 0)?.toString() ?: return
+        if (before == old) {
+            ic.deleteSurroundingText(old.length, 0)
+            ic.commitText(new, 1)
+        }
+    }
+
+    /** 取消语音：丢弃 composing。 Drop the voice composing text. */
+    fun voiceCancel() {
+        val ic = icProvider() ?: return
+        ic.setComposingText("", 1)
+        ic.finishComposingText()
+    }
+
+    // ---------------------------------------------------------------- internals
+
+    private fun applyMode(chinese: Boolean) {
+        val e = engine
+        if (e != null) {
+            e.setSchema(if (chinese) chineseSchema else "english")
+        }
+        update { it.copy(chinese = chinese) }
+    }
+
+    private fun commit(text: String) {
+        if (text.isEmpty()) return
+        icProvider()?.commitText(text, 1)
+    }
+
+    private fun drainCommit(): EngineSnapshot? {
+        val snap = engine?.snapshot() ?: return null
+        if (snap.commit.isNotEmpty()) commit(snap.commit)
+        return snap
+    }
+
+    private fun refresh() {
+        val snap = drainCommit() ?: EngineSnapshot.EMPTY
+        update {
+            it.copy(
+                preedit = snap.preedit,
+                candidates = snap.candidates,
+                totalCandidates = snap.totalCandidates,
+                pinyinOptions = snap.pinyinOptions,
+                composing = snap.composing,
+            )
+        }
+    }
+
+    private inline fun update(f: (ImeState) -> ImeState) {
+        val next = f(state)
+        if (next != state) {
+            state = next
+            listeners.forEach { it(next) }
+        }
+    }
+
+    companion object {
+        private const val DOUBLE_SPACE_MS = 450L
+        private val PASSWORD_VARIATIONS = setOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+        )
+        private val LATIN_VARIATIONS = setOf(
+            InputType.TYPE_TEXT_VARIATION_URI,
+            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+        )
+
+        fun enterActionOf(info: EditorInfo?): EnterAction {
+            val opts = info?.imeOptions ?: return EnterAction.NEWLINE
+            if (opts and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0) return EnterAction.NEWLINE
+            val multiLine = (info.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+            return when (opts and EditorInfo.IME_MASK_ACTION) {
+                EditorInfo.IME_ACTION_SEND -> EnterAction.SEND
+                EditorInfo.IME_ACTION_SEARCH -> EnterAction.SEARCH
+                EditorInfo.IME_ACTION_GO -> EnterAction.GO
+                EditorInfo.IME_ACTION_NEXT -> if (multiLine) EnterAction.NEWLINE else EnterAction.NEXT
+                EditorInfo.IME_ACTION_DONE -> if (multiLine) EnterAction.NEWLINE else EnterAction.DONE
+                EditorInfo.IME_ACTION_PREVIOUS -> EnterAction.PREVIOUS
+                else -> EnterAction.NEWLINE
+            }
+        }
+
+        /** 中文模式下的标点。 Chinese punctuation for ASCII keys. */
+        fun fullWidthPunct(c: Char): String? = when (c) {
+            ',' -> "，"
+            '.' -> "。"
+            '?' -> "？"
+            '!' -> "！"
+            ':' -> "："
+            ';' -> "；"
+            '(' -> "（"
+            ')' -> "）"
+            '\\' -> "、"
+            '^' -> "……"
+            '_' -> "——"
+            '<' -> "《"
+            '>' -> "》"
+            '[' -> "【"
+            ']' -> "】"
+            '~' -> "～"
+            '$' -> "￥"
+            else -> null
+        }
+    }
+}

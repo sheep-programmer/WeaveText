@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "fresh",
+  "order": 1,
+  "name": "清爽",
+  "description": "浅灰底、白色字母键与 1dp 底边，字母上方带数字符号提示",
+  "theme": "fresh",
+  "geometry": { "gapH": 6, "gapV": 10, "padH": 3, "rowScale": 1.0, "radius": 6, "radiusLarge": 8 },
+  "qwerty": {
+    "rows": [
+      ["qwertyuiop"],
+      ["asdfghjkl"],
+      ["shift:1.5", "zxcvbnm", "delete:1.5"],
+      ["symbol:1.3", "number:1.3", "comma", "space:2.8", "period", "lang:1.3", "enter:1.3"]
+    ],
+    "letterCase": "upper",
+    "hint": "top",
+    "showHints": true,
+    "pillKeys": [],
+    "letterSize": 22,
+    "hintSize": 10.5,
+    "punctSize": 20,
+    "funcSize": 16
+  },
+  "t9": {
+    "columns": [1.1, 1.3, 1.3, 1.3, 1.1],
+    "right": ["delete", "reset", "enter:2"],
+    "bottom": ["symbol", "number", "space", "lang"],
+    "side": "punct"
+  },
+  "numpad": { "columns": [1.0, 1.3, 1.3, 1.3, 1.1] },
+  "labels": {
+    "symbol": "符",
+    "number": "123",
+    "lang": "zhEn",
+    "space": "iconMic",
+    "spaceText": "空格",
+    "enter": "auto",
+    "enterAccent": "action"
+  },
+  "candidates": { "english": "list", "preedit": "inline", "expandIcon": "chevron", "textSize": 19, "dividers": false },
+  "toolbar": { "items": ["menu", "keyboard", "voice", "cursor", "clipboard", "hide"], "icons": "outline", "show": "idle" },
+  "popup": { "bubble": "float", "radius": 10, "textSize": 30, "altRadius": 10 },
+  "symbols": { "indicator": "underline" }
+}

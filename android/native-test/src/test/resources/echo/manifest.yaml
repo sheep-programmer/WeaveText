@@ -1,0 +1,10 @@
+id: org.example.echo
+name: 回声 Echo
+description: 把音频时长回显成文字 / echoes the audio length as text
+version: 1.0.0
+type: speech
+configSchema:
+  - key: prefix
+    type: text
+    label: 前缀 / Prefix
+    defaultValue: "echo"

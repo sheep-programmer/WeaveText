@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "kind": "theme",
+  "id": "sea",
+  "order": 12,
+  "name": "海盐",
+  "description": "青蓝渐变背景，柔和投影",
+  "light": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#D8EEF5",
+        "#E4EAF8"
+      ],
+      "angle": 0
+    },
+    "key": "#FFFFFF",
+    "keyPressed": "#DDEBF1",
+    "keyFunc": "#C3DCE7",
+    "keyFuncPressed": "#AFCDDB",
+    "keyShadow": "#3300758F",
+    "accent": "#00718A",
+    "accentPressed": "#005E73",
+    "onAccent": "#FFFFFF",
+    "label": "#102A33",
+    "labelHint": "#5C737B",
+    "labelSecondary": "#4A6169",
+    "candidate": "#00667D",
+    "icon": "#2A444D",
+    "divider": "#CCE2EA",
+    "toolbarActive": "#D2E6EE",
+    "accentSoft": "#C6E4EE",
+    "popup": "#FFFFFF",
+    "shadow": "soft"
+  },
+  "dark": {
+    "background": {
+      "type": "gradient",
+      "colors": [
+        "#0B1E26",
+        "#102033"
+      ],
+      "angle": 0
+    },
+    "key": "#1F3B47",
+    "keyPressed": "#2C4C5A",
+    "keyFunc": "#16303B",
+    "keyFuncPressed": "#223F4B",
+    "keyShadow": "#66000000",
+    "accent": "#4FC3DC",
+    "accentPressed": "#3FB0C8",
+    "onAccent": "#002A33",
+    "label": "#E0F4FA",
+    "labelHint": "#8FB0BC",
+    "labelSecondary": "#A1C0CB",
+    "candidate": "#7FD8EA",
+    "icon": "#C2DCE4",
+    "divider": "#183039",
+    "toolbarActive": "#172E38",
+    "accentSoft": "#123F4C",
+    "popup": "#28485A",
+    "shadow": "soft"
+  }
+}

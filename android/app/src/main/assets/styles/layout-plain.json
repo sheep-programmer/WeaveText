@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "plain",
+  "extends": "fresh",
+  "order": 4,
+  "name": "素雅",
+  "description": "极简工具栏，Shift 与删除键内缩，空格留白，文字回车，按键气泡与按键相连",
+  "theme": "jade",
+  "geometry": {
+    "gapH": 6,
+    "gapV": 10,
+    "padH": 4.5,
+    "radius": 5,
+    "radiusLarge": 7
+  },
+  "qwerty": {
+    "rows": [
+      [
+        "qwertyuiop"
+      ],
+      [
+        "asdfghjkl"
+      ],
+      [
+        "shift:1.2",
+        "gap:0.3",
+        "zxcvbnm",
+        "gap:0.3",
+        "delete:1.2"
+      ],
+      [
+        "number:2",
+        "comma",
+        "space:4",
+        "lang",
+        "enter:2"
+      ]
+    ],
+    "hintSize": 8.5
+  },
+  "t9": {
+    "right": [
+      "delete",
+      "reset",
+      "zero",
+      "enter"
+    ],
+    "bottom": [
+      "symbol",
+      "number",
+      "space",
+      "lang"
+    ]
+  },
+  "labels": {
+    "symbol": "符号",
+    "space": "none",
+    "enter": "text"
+  },
+  "toolbar": {
+    "items": [
+      "menu",
+      "clipboard",
+      "hide"
+    ],
+    "align": "edges",
+    "menuAccent": true
+  },
+  "popup": {
+    "bubble": "attached",
+    "radius": 8
+  },
+  "symbols": {
+    "indicator": "pill"
+  }
+}

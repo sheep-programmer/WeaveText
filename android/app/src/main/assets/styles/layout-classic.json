@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "classic",
+  "extends": "fresh",
+  "order": 2,
+  "name": "经典",
+  "description": "键距紧凑，左下常驻分词键，字母键带数字符号提示，工具栏首个图标着强调色",
+  "theme": "amber",
+  "geometry": {
+    "gapH": 4,
+    "gapV": 7,
+    "padH": 2,
+    "rowScale": 0.97,
+    "radius": 5,
+    "radiusLarge": 6
+  },
+  "qwerty": {
+    "rows": [
+      [
+        "qwertyuiop"
+      ],
+      [
+        "asdfghjkl"
+      ],
+      [
+        "shift:1.5",
+        "zxcvbnm",
+        "delete:1.5"
+      ],
+      [
+        "symbol:1.4",
+        "number:1.4",
+        "comma",
+        "space:2.4",
+        "period",
+        "lang:1.2",
+        "enter:1.6"
+      ]
+    ],
+    "hintSize": 9.5,
+    "letterSize": 21
+  },
+  "t9": {
+    "columns": [
+      1.0,
+      1.3,
+      1.3,
+      1.3,
+      1.1
+    ],
+    "right": [
+      "delete",
+      "reset",
+      "zero",
+      "enter"
+    ],
+    "bottom": [
+      "symbol",
+      "number",
+      "space",
+      "lang"
+    ],
+    "sideColor": "key"
+  },
+  "labels": {
+    "shift": "split"
+  },
+  "toolbar": {
+    "items": [
+      "menu",
+      "emoji",
+      "voice",
+      "clipboard",
+      "keyboard",
+      "hide"
+    ],
+    "menuAccent": true
+  },
+  "popup": {
+    "radius": 8
+  }
+}

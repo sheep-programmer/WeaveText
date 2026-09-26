@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 build_icons.py 生成，勿手改 / generated, do not edit -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+  <path
+      android:fillColor="#FF000000"
+      android:fillType="evenOdd"
+      android:pathData="M12,2.1a9.9,9.9 0 1,1 0,19.8a9.9,9.9 0 1,1 0,-19.8z M6.42,9.66L9.67,17.48L12.00,12.82L14.33,17.48L17.58,9.66L15.82,8.94L14.17,12.92L12.00,8.58L9.83,12.92L8.18,8.94z" />
+</vector>

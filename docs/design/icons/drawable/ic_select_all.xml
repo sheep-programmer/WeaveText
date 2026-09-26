@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 build_icons.py 生成，勿手改 / generated, do not edit -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+  <path
+      android:strokeColor="#FF000000"
+      android:strokeWidth="1.75"
+      android:strokeLineCap="round"
+      android:strokeLineJoin="round"
+      android:pathData="M4,8v-2a2,2 0 0,1 2,-2h2 M11,4h2 M16,4h2a2,2 0 0,1 2,2v2 M20,11v2 M20,16v2a2,2 0 0,1 -2,2h-2 M13,20h-2 M8,20h-2a2,2 0 0,1 -2,-2v-2 M4,13v-2 M9.5,9.5h5v5h-5z" />
+</vector>

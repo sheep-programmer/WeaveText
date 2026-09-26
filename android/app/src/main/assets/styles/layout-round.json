@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "round",
+  "extends": "fresh",
+  "order": 5,
+  "name": "圆润",
+  "description": "小写字母、平面键，数字键与回车为胶囊形，空格显示语言，英文联想为居中三格",
+  "theme": "mist",
+  "geometry": {
+    "gapH": 6,
+    "gapV": 10,
+    "padH": 3,
+    "radius": 8,
+    "radiusLarge": 12
+  },
+  "qwerty": {
+    "rows": [
+      [
+        "qwertyuiop"
+      ],
+      [
+        "asdfghjkl"
+      ],
+      [
+        "shift:1.5",
+        "zxcvbnm",
+        "delete:1.5"
+      ],
+      [
+        "number:1.4",
+        "comma",
+        "lang",
+        "space:4.2",
+        "period",
+        "enter:1.4"
+      ]
+    ],
+    "letterCase": "lower",
+    "hint": "topRight",
+    "showHints": false,
+    "pillKeys": [
+      "number",
+      "enter"
+    ],
+    "letterSize": 23
+  },
+  "t9": {
+    "right": [
+      "delete",
+      "reset",
+      "zero",
+      "enter"
+    ],
+    "bottom": [
+      "number",
+      "emoji",
+      "space",
+      "lang"
+    ]
+  },
+  "labels": {
+    "number": "?123",
+    "lang": "globe",
+    "space": "lang",
+    "enterAccent": "always"
+  },
+  "candidates": {
+    "english": "strip3",
+    "expandIcon": "chevron"
+  },
+  "toolbar": {
+    "items": [
+      "menu",
+      "emoji",
+      "clipboard",
+      "settings",
+      "cursor",
+      "voice"
+    ],
+    "menuIcon": "grid"
+  },
+  "popup": {
+    "radius": 12,
+    "altRadius": 16
+  },
+  "symbols": {
+    "indicator": "pill"
+  }
+}

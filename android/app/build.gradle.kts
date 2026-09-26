@@ -1,0 +1,304 @@
+import groovy.json.JsonSlurper
+import java.net.HttpURLConnection
+import java.net.URI
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.nio.ByteOrder
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val sdkDir: String = run {
+    val p = Properties()
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { p.load(it) }
+    p.getProperty("sdk.dir") ?: System.getenv("ANDROID_HOME") ?: "${System.getProperty("user.home")}/Library/Android/sdk"
+}
+val ndkVer = "27.2.12479018"
+val coreDir = rootProject.projectDir.resolve("../core")
+val rustJniDir = layout.buildDirectory.dir("rustJniLibs").get().asFile
+val dictAssetsDir = layout.buildDirectory.dir("dictAssets").get().asFile
+val cargo = "${System.getProperty("user.home")}/.cargo/bin/cargo"
+/** 可选：构建时内置的插件包目录（*.xipk）。不传则 APK 不含任何插件。
+ *  Optional directory of *.xipk packages to bundle; without it the APK ships no plugins. */
+val bundledPluginsDir: String? = (findProperty("weave.bundledPlugins") as String?)?.takeIf { it.isNotBlank() }
+val pluginAssetsDir = layout.buildDirectory.dir("pluginAssets").get().asFile
+
+// ---------------------------------------------------------------- 端侧模型 / on-device models
+// 语音识别运行时 sherpa-onnx（Apache-2.0）与内置模型在构建时下载，经多个 GitHub 镜像回退并校验 SHA-256。
+// The sherpa-onnx runtime (Apache-2.0) and built-in models are fetched at build time through
+// several GitHub mirrors with SHA-256 verification.
+/** -Pweave.lite=true：不内置语音模型（首次使用时下载），APK 小约 85 MB。 Skip built-in speech models. */
+val liteBuild = (findProperty("weave.lite") as String?) == "true"
+
+/** ABI 过滤在 AGP 里跨构建类型取并集，所以按本次要构建的类型决定。 AGP unions ABI filters, so decide per invocation. */
+val releaseBuild = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+
+fun abiList(isRelease: Boolean): List<String> =
+    (findProperty("weave.abis") as String?)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+        ?: if (isRelease) listOf("arm64-v8a") else listOf("arm64-v8a", "x86_64")
+
+val sherpaVersion = "1.13.8"
+val sherpaAarUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaVersion/sherpa-onnx-$sherpaVersion.aar"
+val sherpaAarSha = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+val sherpaAar = rootProject.projectDir.resolve("../.ref/cache/sherpa-onnx-$sherpaVersion.aar")
+val modelAssetsDir = layout.buildDirectory.dir("modelAssets").get().asFile
+val catalogFile = project.file("src/main/assets/models/catalog.json")
+
+@Suppress("UNCHECKED_CAST")
+fun catalog(): Map<String, Any> = JsonSlurper().parse(catalogFile) as Map<String, Any>
+
+fun sha256(f: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    f.inputStream().use { i ->
+        val buf = ByteArray(1 shl 16)
+        while (true) {
+            val n = i.read(buf)
+            if (n < 0) break
+            md.update(buf, 0, n)
+        }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
+/** 依次尝试镜像下载并校验；已存在且校验通过则跳过。 Try each mirror; skip if already verified. */
+fun fetchVerified(url: String, sha: String, dest: File) {
+    if (dest.isFile && sha256(dest) == sha) return
+    dest.parentFile.mkdirs()
+    @Suppress("UNCHECKED_CAST")
+    val mirrors = (catalog()["mirrors"] as List<Map<String, String>>).map { it["template"]!! }
+    val errors = mutableListOf<String>()
+    for (t in mirrors) {
+        val src = t.replace("{url}", url)
+        val part = File(dest.path + ".part")
+        try {
+            val conn = URI(src).toURL().openConnection() as HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 30_000
+            conn.instanceFollowRedirects = true
+            conn.inputStream.use { i -> part.outputStream().use { o -> i.copyTo(o, 1 shl 16) } }
+            val got = sha256(part)
+            if (got != sha) throw GradleException("sha256 mismatch ($got)")
+            part.renameTo(dest)
+            logger.lifecycle("fetched ${dest.name} via $src")
+            return
+        } catch (e: Exception) {
+            part.delete()
+            errors += "$src: ${e.message}"
+        }
+    }
+    throw GradleException("could not fetch $url:\n" + errors.joinToString("\n"))
+}
+
+/** 下载运行时 AAR。 Fetch the runtime AAR. */
+val fetchSherpa by tasks.registering {
+    group = "weave"
+    outputs.file(sherpaAar)
+    doLast { fetchVerified(sherpaAarUrl, sherpaAarSha, sherpaAar) }
+}
+
+/** 下载并解出内置模型到 assets/models/<id>/。 Fetch built-in models into assets/models/<id>/. */
+val fetchBuiltinModels by tasks.registering {
+    group = "weave"
+    inputs.file(catalogFile)
+    outputs.dir(modelAssetsDir)
+    doLast {
+        @Suppress("UNCHECKED_CAST")
+        val models = (catalog()["models"] as List<Map<String, Any>>).filter { it["builtin"] == true && !liteBuild }
+        for (m in models) {
+            val id = m["id"] as String
+            @Suppress("UNCHECKED_CAST")
+            val archive = m["archive"] as Map<String, Any>
+            @Suppress("UNCHECKED_CAST")
+            val fileSpecs = m["files"] as List<Map<String, Any>>
+            val files = fileSpecs.map { it["name"] as String }
+            val url = archive["url"] as String
+            val cached = rootProject.projectDir.resolve("../.ref/cache/" + url.substringAfterLast('/'))
+            fetchVerified(url, archive["sha256"] as String, cached)
+            val out = modelAssetsDir.resolve("models/$id")
+            val ok = { fileSpecs.all { f -> out.resolve(f["name"] as String).let { it.isFile && sha256(it) == f["sha256"] } } }
+            if (ok()) continue
+            val tmp = temporaryDir.resolve(id).apply { deleteRecursively(); mkdirs() }
+            providers.exec { commandLine("tar", "xjf", cached.absolutePath, "-C", tmp.absolutePath) }.result.get()
+            out.mkdirs()
+            for (f in files) {
+                val found = tmp.walkTopDown().firstOrNull { it.isFile && it.name == f }
+                    ?: throw GradleException("$id: $f not found in archive")
+                found.copyTo(out.resolve(f), overwrite = true)
+            }
+            tmp.deleteRecursively()
+            if (!ok()) throw GradleException("$id: extracted files do not match catalog sha256")
+            logger.lifecycle("built-in model $id ready")
+        }
+    }
+}
+
+android {
+    namespace = "com.weavetext.ime"
+    compileSdk = 36
+    ndkVersion = ndkVer
+
+    defaultConfig {
+        applicationId = "com.weavetext.ime"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0-beta.1"
+        // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
+        // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
+        ndk { abiFilters += abiList(isRelease = releaseBuild) }
+    }
+
+    // 正式签名：读取 android/keystore.properties（不入库）；没有则退回调试签名。
+    // Release signing from the git-ignored android/keystore.properties; falls back to the debug key.
+    val keystoreProps = rootProject.file("keystore.properties").takeIf { it.exists() }
+        ?.let { f -> Properties().apply { f.inputStream().use { load(it) } } }
+    signingConfigs {
+        if (keystoreProps != null) create("release") {
+            storeFile = file(keystoreProps.getProperty("storeFile"))
+            storePassword = keystoreProps.getProperty("storePassword")
+            keyAlias = keystoreProps.getProperty("keyAlias")
+            keyPassword = keystoreProps.getProperty("keyPassword")
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+    sourceSets["main"].jniLibs.srcDir(rustJniDir)
+    sourceSets["main"].assets.srcDir(dictAssetsDir)
+    sourceSets["main"].assets.srcDir(pluginAssetsDir)
+    if (!liteBuild) sourceSets["main"].assets.srcDir(modelAssetsDir)
+    // 词库在 APK 中压缩存放（约 60% 体积），首次启动解压到私有目录后 mmap。
+    // Dictionaries stay compressed in the APK and are inflated once on first start, then mmapped.
+    packaging {
+        jniLibs.useLegacyPackaging = false
+        // sherpa-onnx 的 JNI 库只依赖 onnxruntime，C/C++ API 库用不到。 JNI lib needs only onnxruntime.
+        jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
+    }
+    androidResources {
+        // 模型文件不压缩：ONNX 压缩率很低，且可以直接从 APK 读取。 Keep ONNX uncompressed.
+        noCompress += listOf("onnx")
+    }
+    // JVM 截图测试（Robolectric 原生渲染 + Roborazzi），输出到 src/test/snapshots。
+    // JVM screenshot tests (Robolectric native graphics + Roborazzi), written to src/test/snapshots.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                it.systemProperty("robolectric.graphicsMode", "NATIVE")
+                it.systemProperty("roborazzi.test.record", "true")
+                it.systemProperty("weave.snapshotDir", project.file("src/test/snapshots").absolutePath)
+                it.maxHeapSize = "4g"
+            }
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+/** 可选：跳过 Rust 编译，沿用上次产物（JVM 测试不需要原生库；内核改动进行中时用）。
+ *  Optional: skip the Rust build and reuse the last output (JVM tests don't need native code). */
+val skipRust = (findProperty("weave.skipRust") as String?)?.toBoolean() == true
+
+/** 交叉编译 Rust 内核。 Cross-compile the Rust core. */
+val buildRust by tasks.registering(Exec::class) {
+    group = "weave"
+    onlyIf { !skipRust }
+    workingDir = coreDir
+    environment("ANDROID_NDK_HOME", "$sdkDir/ndk/$ndkVer")
+    val profile = if (gradle.startParameter.taskNames.any { it.contains("Release", true) }) "--release" else "--release"
+    commandLine(cargo, "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-o", rustJniDir.absolutePath, "build", "-p", "weave-ffi", profile)
+    inputs.dir(coreDir.resolve("weave-engine/src"))
+    inputs.dir(coreDir.resolve("weave-dict/src"))
+    inputs.dir(coreDir.resolve("weave-ffi/src"))
+    inputs.dir(coreDir.resolve("weave-plugin/src"))
+    outputs.dir(rustJniDir)
+}
+
+/**
+ * 编译词库到 data/build（build.sh 自己判断是否需要重建），再同步进 assets/dict。
+ * 注意：Exec 任务不声明输入时 Gradle 会一直认为它是最新的，所以这里强制每次执行，由脚本决定是否真的重建。
+ * Compile dictionaries into data/build (build.sh decides whether anything changed), then sync them
+ * into assets/dict. An Exec task without declared inputs would stay "up to date" forever, so it always
+ * runs and the script does its own change detection.
+ */
+val dataBuildDir = rootProject.projectDir.resolve("../data/build")
+val buildDicts by tasks.registering(Exec::class) {
+    group = "weave"
+    commandLine(rootProject.projectDir.resolve("../data/build.sh").absolutePath, dataBuildDir.absolutePath)
+    outputs.upToDateWhen { false }
+}
+
+val syncDicts by tasks.registering(Sync::class) {
+    group = "weave"
+    dependsOn(buildDicts)
+    from(dataBuildDir) {
+        include("*.wvl", "*.wvg", "*.txt")
+    }
+    into(dictAssetsDir.resolve("dict"))
+    // 缺文件或格式版本不对就让构建失败，避免打出一个没有词库的 APK。
+    // Fail the build on missing data or a wrong format version instead of shipping an APK without a dictionary.
+    doLast {
+        val dir = dictAssetsDir.resolve("dict")
+        val expected = mapOf("pinyin.wvl" to "WVLX", "wubi86.wvl" to "WVLX", "english.wvl" to "WVLX", "grammar.wvg" to "WVGM")
+        for ((name, magic) in expected) {
+            val f = dir.resolve(name)
+            require(f.isFile && f.length() > 64) { "missing dictionary asset: $name" }
+            val head = f.inputStream().use { it.readNBytes(8) }
+            require(String(head, 0, 4, Charsets.US_ASCII) == magic) { "bad magic in $name" }
+            val version = ByteBuffer.wrap(head, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val want = if (magic == "WVLX") 3 else 1
+            require(version == want) { "$name has format version $version, engine expects $want" }
+        }
+    }
+}
+
+/** 拷贝可选的内置插件到 assets/plugins。 Copy optional bundled plugins into assets/plugins. */
+val bundlePlugins by tasks.registering(Sync::class) {
+    group = "weave"
+    into(pluginAssetsDir.resolve("plugins"))
+    bundledPluginsDir?.let { from(it) { include("*.xipk") } }
+}
+
+tasks.named("preBuild") { dependsOn(buildRust, syncDicts, bundlePlugins, fetchSherpa, fetchBuiltinModels) }
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2026.04.01")
+    implementation(composeBom)
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    // 端侧语音识别运行时（构建时下载，见 fetchSherpa）。 On-device ASR runtime, fetched at build time.
+    implementation(files(sherpaAar))
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.75.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.75.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core-ktx:1.7.0")
+}

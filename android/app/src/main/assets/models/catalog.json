@@ -1,0 +1,237 @@
+{
+  "version": 2,
+  "mirrors": [
+    {
+      "id": "github",
+      "name": "GitHub 直连",
+      "template": "{url}"
+    },
+    {
+      "id": "ghfast",
+      "name": "ghfast.top",
+      "template": "https://ghfast.top/{url}"
+    },
+    {
+      "id": "ghproxy",
+      "name": "gh-proxy.com",
+      "template": "https://gh-proxy.com/{url}"
+    },
+    {
+      "id": "ghproxyorg",
+      "name": "gh-proxy.org",
+      "template": "https://gh-proxy.org/{url}"
+    },
+    {
+      "id": "ghproxynet",
+      "name": "ghproxy.net",
+      "template": "https://ghproxy.net/{url}"
+    },
+    {
+      "id": "llkk",
+      "name": "gh.llkk.cc",
+      "template": "https://gh.llkk.cc/{url}"
+    }
+  ],
+  "models": [
+    {
+      "id": "asr-stream-small",
+      "kind": "asr-streaming",
+      "arch": "zipformer2-ctc",
+      "name": "实时识别 · 小",
+      "description": "流式识别，边说边出字。内置，约 26 MB。",
+      "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
+      "builtin": true,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01.tar.bz2",
+        "sha256": "b3b309f7ce4a737195fcc6963ea19b0653a7d3401580af5ae0d3e284cbb71f0b",
+        "size": 21264113
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 26342340,
+          "sha256": "68c9c943840f7d9cf3e8a4970ba50f404feb5277f611fa82b7e72267786fa84a"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 13366,
+          "sha256": "6fed8c6c248516f38e7faa19404b57413e8ce259f1cbc1fa4aebc86eac32fdfd"
+        }
+      ],
+      "installedSize": 26355706,
+      "bench": {
+        "cerClean": 3.11,
+        "cerNoisy": 5.9,
+        "rtf": 0.09
+      },
+      "hf": "csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01"
+    },
+    {
+      "id": "asr-final-small",
+      "kind": "asr-offline",
+      "arch": "zipformer-ctc",
+      "name": "终稿识别 · 小",
+      "description": "每句说完后重新识别一遍，抗噪最好。内置，约 63 MB。",
+      "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
+      "builtin": true,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ctc-small-zh-int8-2025-07-16.tar.bz2",
+        "sha256": "6a71c0cc442ba85ac1455ca23e4561e2a1ef18e55269a184a649d54e9cd0524c",
+        "size": 50536402
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 62666860,
+          "sha256": "32e5f17cc9a77d480f8d94bda97b7cc7a40965b6651b35385813f561a74129c8"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 13366,
+          "sha256": "6fed8c6c248516f38e7faa19404b57413e8ce259f1cbc1fa4aebc86eac32fdfd"
+        }
+      ],
+      "installedSize": 62680226,
+      "bench": {
+        "cerClean": 0.98,
+        "cerNoisy": 1.8,
+        "rtf": 0.06
+      },
+      "hf": "csukuangfj/sherpa-onnx-zipformer-ctc-small-zh-int8-2025-07-16"
+    },
+    {
+      "id": "asr-stream-large",
+      "kind": "asr-streaming",
+      "arch": "zipformer2-ctc",
+      "name": "实时识别 · 高精度",
+      "description": "更准的流式识别（干净环境最准），约 162 MB，较耗电。",
+      "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30.tar.bz2",
+        "sha256": "f2ab7a5deb02717801f6a5b26c751b42f8a2db891b07f5b095e6da7442081448",
+        "size": 127965713
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 162290887,
+          "sha256": "24ffdc19ba9aaed5a6a9beaede1e087745217d82425cf4041bca0c696661801e"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 20628,
+          "sha256": "6193c7ea1c96d0d9a1e9652789b40d13a8a913b434a5451e93158f5a09fd6652"
+        }
+      ],
+      "installedSize": 162311515,
+      "bench": {
+        "cerClean": 0.33,
+        "cerNoisy": 3.77,
+        "rtf": 0.28
+      },
+      "hf": "csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30"
+    },
+    {
+      "id": "asr-sensevoice",
+      "kind": "asr-offline",
+      "arch": "sense-voice",
+      "name": "SenseVoice 多语种",
+      "description": "普通话、粤语、英语、日语、韩语，自带标点与数字规整，约 237 MB。",
+      "license": "FunASR Model License（需署名）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+        "sha256": "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63",
+        "size": 165783878
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 237115547,
+          "sha256": "12ca1a2ae7ecf3e0019ef2822307ee0b5cadc9196569e379b4c4026f8205276d"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 315894,
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+        }
+      ],
+      "installedSize": 237431441,
+      "bench": {
+        "cerClean": 0.82,
+        "cerNoisy": 3.44,
+        "rtf": 0.09
+      },
+      "hf": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"
+    },
+    {
+      "id": "asr-paraformer",
+      "kind": "asr-offline",
+      "arch": "paraformer",
+      "name": "Paraformer 中文",
+      "description": "中文终稿识别，干净环境准确率高，约 238 MB。",
+      "license": "FunASR Model License（需署名）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-int8-2025-10-07.tar.bz2",
+        "sha256": "a071ee5419e14adb34d7f970ab98105a45e6608018b168f023ca2e4810744abe",
+        "size": 228262632
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 238429929,
+          "sha256": "53813ee1d41722cc6370a571c887e6d0b391d25b8312cf714a31af85ea603812"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 75756,
+          "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6"
+        }
+      ],
+      "installedSize": 238505685,
+      "bench": {
+        "cerClean": 0.66,
+        "cerNoisy": 3.61,
+        "rtf": 0.07
+      },
+      "hf": "csukuangfj/sherpa-onnx-paraformer-zh-int8-2025-10-07"
+    },
+    {
+      "id": "punc-ct",
+      "kind": "punctuation",
+      "arch": "ct-transformer",
+      "name": "智能标点",
+      "description": "为识别结果补全中英文标点，约 76 MB。",
+      "license": "FunASR Model License（需署名）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8.tar.bz2",
+        "sha256": "c0d5aa5f8eeb686032345e180bedf39319dc2e0556781c6264bcadba8328a6e1",
+        "size": 64717756
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 75519198,
+          "sha256": "65a3fb9f5ad7bfb96bf69e0dc4481df97f6ee60513c1d94ce981ba6effd524b1"
+        }
+      ],
+      "installedSize": 75519198,
+      "bench": null
+    }
+  ],
+  "hfMirrors": [
+    {
+      "id": "hfmirror",
+      "name": "hf-mirror.com",
+      "template": "https://hf-mirror.com/{url}"
+    },
+    {
+      "id": "huggingface",
+      "name": "HuggingFace",
+      "template": "https://huggingface.co/{url}"
+    }
+  ]
+}
