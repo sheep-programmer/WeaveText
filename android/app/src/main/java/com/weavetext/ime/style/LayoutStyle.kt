@@ -26,6 +26,8 @@ class LayoutStyle(
 /** 一行中的一个键位记号：功能键名或一串字母；[weight] 为键宽权重，[span] 为九键跨格数。 One row token. */
 class KeyToken(val name: String, val weight: Float = 1f, val span: Int = 1) {
     val isLetters get() = name !in FUNC_TOKENS && name.all { it in 'a'..'z' }
+    /** 一串数字（可选的数字行）。 A run of digits (optional number row). */
+    val isDigits get() = name.isNotEmpty() && name.all { it in '0'..'9' }
 
     override fun toString() = if (weight == 1f && span == 1) name else "$name:${if (span != 1) span else weight}"
 
@@ -38,7 +40,7 @@ class KeyToken(val name: String, val weight: Float = 1f, val span: Int = 1) {
 }
 
 class QwertySpec(
-    /** 4 行（字母 3 行 + 底行）。 Four rows: three letter rows plus the bottom row. */
+    /** 4 行（字母 3 行 + 底行），或前面再加一行数字共 5 行。 Four rows (three letter rows + bottom), optionally led by a number row. */
     val rows: List<List<KeyToken>>,
     /** 英文键盘单独的底行（null = 同 [rows]）。 Optional English rows. */
     val rowsEnglish: List<List<KeyToken>>?,

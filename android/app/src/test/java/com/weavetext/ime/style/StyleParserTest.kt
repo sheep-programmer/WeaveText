@@ -111,6 +111,17 @@ class StyleParserTest {
         assertRejects("版本") { StyleParser.layout(JSONObject("""{"id":"t","version":99}""")) }
     }
 
+    @Test fun numberRowIsOptional() {
+        val l = repo.layout("numrow")
+        assertEquals(5, l.qwerty.rows.size)
+        val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
+        assertEquals("1234567890", keys.filter { it.row == 0 }.joinToString("") { it.label })
+        assertEquals(listOf("0", "⁰", "₀", "⓪"), keys.first { it.code == '0'.code }.longPress)
+        assertRejects("数字行缺数字") { layout(""""qwerty":{"rows":[["123456789"],["qwertyuiop"],["asdfghjkl"],["zxcvbnm"],["space","delete","enter"]]}""") }
+        assertRejects("数字不在首行") { layout(""""qwerty":{"rows":[["qwertyuiop"],["1234567890"],["asdfghjkl"],["zxcvbnm"],["space","delete","enter"]]}""") }
+        assertRejects("6 行") { layout(""""qwerty":{"rows":[["1234567890"],["qwertyuiop"],["asdfghjkl"],["zxcvbnm"],["space","delete","enter"],["space"]]}""") }
+    }
+
     @Test fun customRowsBuildKeys() {
         val l = layout(""""qwerty":{"rows":[["qwertyuiop"],["asdfghjkl"],["shift:1.5","zxcvbnm","delete:1.5"],["number:1.5","emoji","space:5","period","enter:1.5"]],"letterCase":"lower"}""")
         val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)

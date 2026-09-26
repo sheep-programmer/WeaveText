@@ -141,6 +141,13 @@ object Layouts {
             val rowStart = keys.size
             for (t in tokens) {
             if (t.name == "gap") { gap += t.weight; continue }
+            if (t.isDigits) {
+                for (c in t.name) {
+                    keys += Key(c.code, c.toString(), longPress = DIGIT_VARIANTS[(c - '0' + 9) % 10]).apply { row = r; weight = t.weight; gapBefore = gap }
+                    gap = 0f
+                }
+                continue
+            }
             if (t.isLetters) {
                 for (c in t.name) {
                     val s = hints[c]?.toString()
@@ -187,13 +194,15 @@ object Layouts {
     fun layoutQwerty(keys: List<Key>, w: Float, m: KbMetrics, spec: QwertySpec = DEFAULT.qwerty, splitGap: Float = 0f) {
         if (splitGap > 0f) { layoutSplit(keys, w, m, spec, splitGap); return }
         val rows = (keys.maxOfOrNull { it.row } ?: -1) + 1
+        // 带数字行（5 行）时总高不变，行高均分。 With a number row (5 rows) the height stays, rows share it.
+        val pitch = if (rows > 4) m.mainHeight / rows else m.rowPitch
         val rowWeights = FloatArray(rows)
         for (k in keys) rowWeights[k.row] += k.weight + k.gapBefore + k.gapAfter
         // 浮点累加误差（如 1.3 × 4 + 2.8 + 2）不算超宽。 Ignore float rounding when summing weights.
         val units = (rowWeights.maxOrNull() ?: 10f).let { if (it < 10.01f) 10f else it }
         val unit = (w - 2 * m.padH) / units
         for (r in 0 until rows) {
-            val top = r * m.rowPitch
+            val top = r * pitch
             val indent = (units - rowWeights[r]) / 2f
             var x = m.padH + (if (indent < 0.005f) 0f else unit * indent)
             var first: Key? = null
@@ -201,7 +210,7 @@ object Layouts {
             for (k in keys) {
                 if (k.row != r) continue
                 if (k.gapBefore > 0f) x += unit * k.gapBefore
-                k.cell.set(x, top, x + unit * k.weight, top + m.rowPitch)
+                k.cell.set(x, top, x + unit * k.weight, top + pitch)
                 k.rect.set(k.cell)
                 k.rect.inset(m.insetH, m.insetV)
                 x += unit * k.weight
@@ -225,7 +234,8 @@ object Layouts {
         }
         for (k in keys) {
             k.labelSize = when {
-                k.code in 'a'.code..'z'.code -> m.letter(spec.letterSize)
+                k.code in 'a'.code..'z'.code -> minOf(m.letter(spec.letterSize), (pitch - 2 * m.insetV) * 0.62f)
+                k.code in '0'.code..'9'.code -> minOf(m.label(spec.punctSize), (pitch - 2 * m.insetV) * 0.55f)
                 k.code == ','.code || k.code == '.'.code -> m.label(spec.punctSize)
                 else -> m.label(spec.funcSize)
             }

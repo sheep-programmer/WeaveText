@@ -197,8 +197,16 @@ object StyleParser {
     }
 
     private fun rows(a: JSONArray, field: String): List<List<KeyToken>> {
-        if (a.length() != 4) throw StyleException("$field 须为 4 行")
-        val out = List(4) { tokens(a.optJSONArray(it) ?: throw StyleException("$field[$it] 不是数组"), "$field[$it]", t9 = false) }
+        if (a.length() != 4 && a.length() != 5) throw StyleException("$field 须为 4 行（或首行为数字行的 5 行）")
+        val all5 = List(a.length()) { tokens(a.optJSONArray(it) ?: throw StyleException("$field[$it] 不是数组"), "$field[$it]", t9 = false, digits = it == 0 && a.length() == 5) }
+        val numberRow = if (all5.size == 5) all5[0] else null
+        if (numberRow != null) {
+            val digits = numberRow.filter { it.isDigits }.joinToString("") { it.name }
+            if (numberRow.any { !it.isDigits && it.name != "gap" } || digits.toSet().size != 10 || digits.length != 10) {
+                throw StyleException("$field 数字行须恰好包含 0–9")
+            }
+        }
+        val out = all5.takeLast(4)
         if (out[3].any { it.isLetters }) throw StyleException("$field 底行只能放功能键")
         val letters = out.take(3).flatten().filter { it.isLetters }.joinToString("") { it.name }
         if (letters.toSet().size != 26 || letters.length != 26) throw StyleException("$field 前 3 行须恰好包含 26 个字母")
@@ -206,16 +214,17 @@ object StyleParser {
         for (r in out) if (r.first().name == "gap" && r.last().name == "gap" && r.size == 1) throw StyleException("$field 有空行")
         val all = out.flatten().map { it.name }
         for (need in listOf("delete", "enter")) if (need !in all) throw StyleException("$field 缺少 $need")
-        return out
+        return all5
     }
 
-    private fun tokens(a: JSONArray, field: String, t9: Boolean): List<KeyToken> {
+    private fun tokens(a: JSONArray, field: String, t9: Boolean, digits: Boolean = false): List<KeyToken> {
         val out = ArrayList<KeyToken>()
         for (i in 0 until a.length()) {
             val raw = a.optString(i)
             val name = raw.substringBefore(':')
             val arg = raw.substringAfter(':', "").ifEmpty { null }
-            val valid = if (t9) name in KeyToken.T9_TOKENS else name in KeyToken.FUNC_TOKENS || (name.isNotEmpty() && name.all { it in 'a'..'z' })
+            val valid = if (t9) name in KeyToken.T9_TOKENS else name in KeyToken.FUNC_TOKENS || (name.isNotEmpty() && name.all { it in 'a'..'z' }) ||
+                (digits && name.isNotEmpty() && name.all { it in '0'..'9' })
             if (!valid) throw StyleException("$field 含未知键「$raw」")
             if (t9) {
                 val span = arg?.toIntOrNull() ?: if (arg == null) 1 else throw StyleException("$field「$raw」跨格数无效")
