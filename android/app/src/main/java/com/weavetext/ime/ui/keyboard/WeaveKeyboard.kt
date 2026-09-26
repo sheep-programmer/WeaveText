@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.RectF
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
 import android.view.View
@@ -77,6 +78,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         private set
 
     private val root = RootLayout(service)
+    /** 键盘卡片：常规模式下铺满底部；悬浮模式下是可拖动的小卡片（06 §5）。 Docked full width, or the floating card. */
+    private val card = FrameLayout(service)
+    private val handle = FloatHandle(service)
     val board = FrameLayout(service)
     val topBar = TopBarView(service, this)
     val main = FrameLayout(service)
@@ -97,6 +101,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var localCands: List<String>? = null
     var navInset = 0
         private set
+    /** 当前是否悬浮。 Whether the keyboard floats. */
+    var floating = false
+        private set
 
     private val panels = HashMap<String, KbPanel>()
     var panel: KbPanel? = null
@@ -114,7 +121,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         engineSheet.visibility = View.GONE
         main.addView(keyboardView, FrameLayout.LayoutParams(-1, -1))
         main.addView(oneHandButton)
-        root.addView(board)
+        card.addView(handle)
+        card.addView(board)
+        root.addView(card)
         root.addView(popup, FrameLayout.LayoutParams(-1, -1))
         full.visibility = View.GONE
         root.setOnApplyWindowInsetsListener { _, insets ->
@@ -134,6 +143,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     // ================================================================ theme & geometry
 
     private fun applyAllPrefs() {
+        floating = WeavePrefs.floating(prefs)
         feedback.vibration = WeavePrefs.vibration(prefs)
         feedback.soundStyle = WeavePrefs.soundStyle(prefs)
         feedback.soundVolume = WeavePrefs.soundVolume(prefs)
@@ -144,7 +154,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     fun applyTheme() {
-        style = StyleRepository.get(ctx).resolve(ctx, prefs)
+        // 悬浮卡片更窄，键高用最紧凑档，比例更协调。 The narrower floating card uses the compact level.
+        style = if (floating) StyleRepository.get(ctx).resolve(ctx, prefs, FLOAT_LEVEL) else StyleRepository.get(ctx).resolve(ctx, prefs)
         palette = style.palette
         metrics = style.metrics
         icons.clear()
@@ -154,12 +165,14 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         topBar.applyStyle(style, icons)
         keyboardView.applyStyle(style, icons)
         oneHandButton.invalidate()
+        handle.setBackgroundColor(palette.background)
+        handle.invalidate()
         engineSheet.invalidate()
         for (p in panels.values) p.applyTheme()
         applyGeometry()
         // 导航栏颜色跟随键盘。 Tint the navigation bar to match.
         host.window?.let { w ->
-            w.navigationBarColor = palette.background
+            w.navigationBarColor = if (floating) Color.TRANSPARENT else palette.background
             @Suppress("DEPRECATION")
             val flags = w.decorView.systemUiVisibility
             @Suppress("DEPRECATION")
@@ -176,9 +189,33 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     private fun applyGeometry() {
         val m = metrics
-        val kbH = m.kbHeight.toInt() + navInset
-        board.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = m.bubbleSpace.toInt() }
-        board.setPadding(0, 0, 0, navInset)
+        if (floating) {
+            val kbH = m.kbHeight.toInt()
+            val handleH = m.dp(HANDLE_DP).toInt()
+            val w = FloatingGeometry.cardWidth(ctx.resources.displayMetrics.widthPixels, m.landscape, m.density)
+            card.layoutParams = FrameLayout.LayoutParams(w, handleH + kbH)
+            handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
+            handle.visibility = View.VISIBLE
+            board.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = handleH }
+            board.setPadding(0, 0, 0, 0)
+            card.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) =
+                    outline.setRoundRect(0, 0, view.width, view.height, m.dp(16f))
+            }
+            card.clipToOutline = true
+            card.elevation = m.dp(8f)
+        } else {
+            val kbH = m.kbHeight.toInt() + navInset
+            card.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = m.bubbleSpace.toInt() }
+            card.translationX = 0f
+            card.translationY = 0f
+            card.clipToOutline = false
+            card.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
+            card.elevation = 0f
+            handle.visibility = View.GONE
+            board.layoutParams = FrameLayout.LayoutParams(-1, kbH)
+            board.setPadding(0, 0, 0, navInset)
+        }
         topBar.layoutParams = FrameLayout.LayoutParams(-1, m.topBar.toInt())
         val mainTop = (m.topBar + m.padTop).toInt()
         main.layoutParams = FrameLayout.LayoutParams(-1, m.mainHeight.toInt()).apply { topMargin = mainTop }
@@ -189,12 +226,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     private fun applyOneHand() {
-        val mode = WeavePrefs.oneHand(prefs)
+        // 悬浮卡片本身已经够小，不叠加单手模式。 One-hand mode doesn't apply to the floating card.
+        val mode = if (floating) 0 else WeavePrefs.oneHand(prefs)
         val lp = keyboardView.layoutParams as FrameLayout.LayoutParams
         val w = ctx.resources.displayMetrics.widthPixels
         val landscapeMax = if (metrics.landscape) (720 * metrics.density).toInt().coerceAtMost(w) else w
         if (mode == 0) {
-            lp.width = landscapeMax
+            lp.width = if (floating) -1 else landscapeMax
             lp.gravity = android.view.Gravity.CENTER_HORIZONTAL
             oneHandButton.visibility = View.GONE
         } else {
@@ -212,6 +250,16 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun computeInsets(outInsets: InputMethodService.Insets) {
         if (!board.isLaidOut) return
         val loc = IntArray(2)
+        if (floating) {
+            // 内容区从窗口底部开始（App 保持全高），只有卡片可触摸。 App keeps full height; only the card is touchable.
+            root.getLocationInWindow(loc)
+            val i = FloatingGeometry.insets(loc[1] + root.height, cardBox())
+            outInsets.contentTopInsets = i.contentTop
+            outInsets.visibleTopInsets = i.visibleTop
+            outInsets.touchableInsets = InputMethodService.Insets.TOUCHABLE_INSETS_REGION
+            outInsets.touchableRegion.set(i.touchable.left, i.touchable.top, i.touchable.right, i.touchable.bottom)
+            return
+        }
         board.getLocationInWindow(loc)
         val top = loc[1]
         outInsets.contentTopInsets = top
@@ -236,6 +284,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
+            WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
             WeavePrefs.CLIPBOARD_CLEARED -> clipboard.clearHistory()
         }
         for (pn in panels.values) if (pn is PrefAware) pn.onPref(key)
@@ -770,6 +819,122 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         topBar.postDelayed(clipChipTimeout, 10_000)
     }
 
+    // ================================================================ floating keyboard (06 §5)
+
+    fun toggleFloating() = prefs.edit().putBoolean(WeavePrefs.FLOATING, !floating).apply()
+
+    private fun setFloatingMode(on: Boolean) {
+        if (on == floating) return
+        floating = on
+        keyboardView.cancelTouch()
+        popup.hideAll()
+        applyTheme()
+        layoutSig = ""
+        refreshLayout()
+        updateCandidates(null)
+        root.requestLayout()
+    }
+
+    private fun posKey() = if (metrics.landscape) WeavePrefs.FLOAT_POS_LAND else WeavePrefs.FLOAT_POS_PORT
+    private fun floatMinTop() = metrics.dp(24f).toInt()
+    private fun floatMaxBottom() = root.height - navInset - metrics.dp(8f).toInt()
+
+    /** 按保存的比例放置卡片（窗口尺寸变化时也调用）。 Place the card from the stored fractions. */
+    private fun placeCard() {
+        if (!floating || root.height == 0) return
+        val (fx, fy) = FloatingGeometry.decode(prefs.getString(posKey(), null))
+        val lp = card.layoutParams
+        val b = FloatingGeometry.place(fx, fy, root.width, lp.width, lp.height, floatMinTop(), floatMaxBottom())
+        card.translationX = b.left.toFloat()
+        card.translationY = b.top.toFloat()
+        syncOverlayAnchor()
+    }
+
+    /** 卡片在本窗口中的矩形。 The card rect in window coordinates. */
+    private fun cardBox(): FloatingGeometry.Box {
+        val loc = IntArray(2)
+        card.getLocationInWindow(loc)
+        return FloatingGeometry.Box(loc[0], loc[1], loc[0] + card.width, loc[1] + card.height)
+    }
+
+    private fun moveCardBy(dx: Float, dy: Float) {
+        val b = FloatingGeometry.clamp(
+            (card.translationX + dx).toInt(), (card.translationY + dy).toInt(),
+            root.width, card.width, card.height, floatMinTop(), floatMaxBottom(),
+        )
+        card.translationX = b.left.toFloat()
+        card.translationY = b.top.toFloat()
+        syncOverlayAnchor()
+    }
+
+    private fun saveCardPosition() {
+        val b = FloatingGeometry.Box(card.translationX.toInt(), card.translationY.toInt(),
+            card.translationX.toInt() + card.width, card.translationY.toInt() + card.height)
+        val f = FloatingGeometry.fractions(b, root.width, floatMinTop(), floatMaxBottom())
+        prefs.edit().putString(posKey(), FloatingGeometry.encode(f)).apply()
+    }
+
+    /** 浮动组合串 / 语音条跟随卡片。 Preedit chip and voice strip follow the card. */
+    private fun syncOverlayAnchor() {
+        if (floating) popup.setAnchor(RectF(card.translationX, card.translationY, card.translationX + card.width, card.translationY))
+        else popup.setAnchor(null)
+    }
+
+    /** 悬浮卡片顶部的拖动条：拖动移动，双击或点右侧按钮停靠。 Drag handle: drag to move; double-tap or the button docks. */
+    private inner class FloatHandle(c: Context) : View(c) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        private var lastX = 0f
+        private var lastY = 0f
+        private var downX = 0f
+        private var downY = 0f
+        private var dragging = false
+        private var lastTap = 0L
+
+        init {
+            contentDescription = "拖动悬浮键盘；双击停靠到底部"
+        }
+
+        private fun dockButtonLeft() = width - metrics.dp(44f)
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val m = metrics
+            paint.color = palette.labelHint
+            val w = m.dp(36f)
+            val cy = height / 2f
+            canvas.drawRoundRect(width / 2f - w / 2, cy - m.dp(2f), width / 2f + w / 2, cy + m.dp(2f), m.dp(2f), m.dp(2f), paint)
+            icons.draw(canvas, R.drawable.ic_float, palette.icon, width - m.dp(22f), cy, m.dp(18f))
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    lastX = e.rawX; lastY = e.rawY; downX = e.rawX; downY = e.rawY; dragging = false
+                    keyboardView.cancelTouch()
+                    popup.hideAll()
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (!dragging && kotlin.math.hypot(e.rawX - downX, e.rawY - downY) > metrics.dp(6f)) dragging = true
+                    if (dragging) {
+                        moveCardBy(e.rawX - lastX, e.rawY - lastY)
+                        lastX = e.rawX; lastY = e.rawY
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (dragging) saveCardPosition()
+                    else if (e.x >= dockButtonLeft()) { feedback.key(this); toggleFloating() }
+                    else {
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastTap < 300) { lastTap = 0; toggleFloating() } else lastTap = now
+                    }
+                    dragging = false
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> { if (dragging) saveCardPosition(); dragging = false }
+            }
+            return true
+        }
+    }
+
     // ================================================================ lifecycle
 
     override fun onShown() {
@@ -823,19 +988,33 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
-    /** 根布局：键盘区在下，上方留出透明气泡区。 Root: keyboard at bottom with a transparent bubble area on top. */
+    /**
+     * 根布局：键盘区在下，上方留出透明气泡区；悬浮模式下铺满整个窗口（透明，只有卡片可触摸）。
+     * Root: keyboard at the bottom with a transparent bubble area; fills the whole (transparent)
+     * window in floating mode, where only the card is touchable.
+     */
     private inner class RootLayout(c: Context) : FrameLayout(c) {
         init {
             setBackgroundColor(Color.TRANSPARENT)
             clipChildren = false
         }
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val h = (metrics.bubbleSpace + metrics.kbHeight).toInt() + navInset
+            val h = if (floating) {
+                if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) resources.displayMetrics.heightPixels
+                else MeasureSpec.getSize(heightMeasureSpec)
+            } else (metrics.bubbleSpace + metrics.kbHeight).toInt() + navInset
             super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
+        }
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+            super.onLayout(changed, left, top, right, bottom)
+            if (floating) placeCard() else syncOverlayAnchor()
         }
     }
 
     companion object {
+        /** 悬浮卡片使用的键高档位。 Height level used by the floating card. */
+        const val FLOAT_LEVEL = 0
+        private const val HANDLE_DP = 22f
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

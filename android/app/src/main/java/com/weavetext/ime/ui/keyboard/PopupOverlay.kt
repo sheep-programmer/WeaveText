@@ -72,6 +72,15 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private var stripShown = false
     private val stripAutoHide = Runnable { hideStrip() }
 
+    /** 悬浮键盘时卡片的上沿（左、上、右）；null = 常规底部键盘。 Floating card top edge; null when docked. */
+    private var anchor: RectF? = null
+
+    fun setAnchor(r: RectF?) { anchor = r }
+
+    private fun anchorLeft() = anchor?.left ?: 0f
+    private fun anchorRight() = anchor?.right ?: width.toFloat()
+    private fun anchorTop() = anchor?.top ?: metrics.bubbleSpace
+
     private val decel = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 
     fun applyStyle(s: KeyboardStyle) {
@@ -274,8 +283,9 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         if (text != null) {
             val m = metrics
             this.text.textSize = m.dp(15f)
-            val w = (this.text.measureText(text) + m.dp(20f)).coerceAtMost(width - m.dp(16f))
-            preeditBox.set(m.dp(8f), m.bubbleSpace - m.dp(38f), m.dp(8f) + w, m.bubbleSpace - m.dp(6f))
+            val w = (this.text.measureText(text) + m.dp(20f)).coerceAtMost(anchorRight() - anchorLeft() - m.dp(16f))
+            val top = (anchorTop() - m.dp(38f)).coerceAtLeast(0f)
+            preeditBox.set(anchorLeft() + m.dp(8f), top, anchorLeft() + m.dp(8f) + w, top + m.dp(32f))
         }
         invalidate()
     }
@@ -292,7 +302,8 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     fun showStrip(msg: String, level: Float, danger: Boolean, live: Boolean) {
         removeCallbacks(stripAutoHide)
         val m = metrics
-        strip.set(m.dp(12f), m.bubbleSpace - m.dp(68f), width - m.dp(12f), m.bubbleSpace - m.dp(4f))
+        val top = (anchorTop() - m.dp(68f)).coerceAtLeast(0f)
+        strip.set(anchorLeft() + m.dp(12f), top, anchorRight() - m.dp(12f), top + m.dp(64f))
         stripText = msg; stripLevel = level; stripDanger = danger; stripLive = live
         stripShown = true
         invalidate()

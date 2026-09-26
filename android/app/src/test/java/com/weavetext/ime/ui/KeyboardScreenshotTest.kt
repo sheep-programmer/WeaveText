@@ -22,6 +22,8 @@ import com.weavetext.ime.ui.keyboard.VoicePanel
 import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.ui.keyboard.WeaveKeyboard
 import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -281,6 +283,33 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
     @Test fun oneHand() {
         val (_, _) = keyboard(false) { putInt(WeavePrefs.ONE_HAND, 2) }
         snap("one_hand_right_light")
+    }
+
+    /** 悬浮键盘：透明全屏窗口里的小卡片，App 不被压缩。 Floating card in a transparent full-height window. */
+    @Test fun floating() {
+        val (k, c) = keyboard(false) { putBoolean(WeavePrefs.FLOATING, true) }
+        c.previewState(composing())
+        idle()
+        snap("floating_light")
+        val insets = android.inputmethodservice.InputMethodService.Insets()
+        k.computeInsets(insets)
+        val v = k.view
+        assertEquals(v.height, insets.contentTopInsets)
+        assertEquals(v.height, insets.visibleTopInsets)
+        val card = insets.touchableRegion.bounds
+        assertTrue(card.width() < v.width)
+        assertTrue(card.bottom <= v.height && card.top > 0)
+    }
+
+    @Test fun floatingDark() {
+        keyboard(true) { putBoolean(WeavePrefs.FLOATING, true).putString(WeavePrefs.FLOAT_POS_PORT, "0.1,0.4") }
+        snap("floating_dark")
+    }
+
+    @Test fun floatingToolbox() {
+        val (k, _) = keyboard(false) { putBoolean(WeavePrefs.FLOATING, true) }
+        k.onToolbar(0)
+        snap("floating_toolbox_light")
     }
 
     @Test fun compactHeight() { keyboard(false) { putInt(WeavePrefs.HEIGHT_LEVEL, 0) }; snap("pinyin_compact_light") }

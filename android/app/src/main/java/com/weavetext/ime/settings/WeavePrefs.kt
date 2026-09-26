@@ -64,6 +64,11 @@ object WeavePrefs {
     const val TRADITIONAL = "traditional"
     /** 0 关，1 靠左，2 靠右。 0 off, 1 left, 2 right. */
     const val ONE_HAND = "one_hand"
+    /** 悬浮键盘（06 §5）。 Floating keyboard. */
+    const val FLOATING = "floating"
+    /** 悬浮卡片位置 "fx,fy"（0–1 的比例），横竖屏各记一份。 Card position as fractions, per orientation. */
+    const val FLOAT_POS_PORT = "float_pos_port"
+    const val FLOAT_POS_LAND = "float_pos_land"
     /** "tap" / "hold" */
     const val VOICE_MODE = "voice_mode"
     const val SYMBOL_LOCK = "symbol_lock"
@@ -132,5 +137,6 @@ object WeavePrefs {
     fun fuzzy(p: SharedPreferences): Set<String> = p.getStringSet(FUZZY, emptySet()) ?: emptySet()
     fun traditional(p: SharedPreferences) = p.getBoolean(TRADITIONAL, false)
     fun oneHand(p: SharedPreferences) = p.getInt(ONE_HAND, 0)
+    fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
 }

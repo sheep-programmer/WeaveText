@@ -139,10 +139,10 @@ class StyleRepository private constructor(private val app: Context) {
     }
 
     /** 按当前设置解析（相同设置与配置时返回缓存）。 Resolve from preferences; cached while nothing changes. */
-    fun resolve(ctx: Context, prefs: SharedPreferences): KeyboardStyle {
+    fun resolve(ctx: Context, prefs: SharedPreferences, level: Int = WeavePrefs.heightLevel(prefs)): KeyboardStyle {
         val layoutId = WeavePrefs.styleLayout(prefs)
         val themeId = WeavePrefs.styleTheme(prefs)
-        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), WeavePrefs.heightLevel(prefs), prefs.getLong(WeavePrefs.STYLE_STAMP, 0))
+        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), level, prefs.getLong(WeavePrefs.STYLE_STAMP, 0))
     }
 
     fun overrides(prefs: SharedPreferences): StyleOverrides =

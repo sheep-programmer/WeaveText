@@ -101,6 +101,8 @@ ICONS = [
        "a2.5,2.5 0 0,1 2.5,-2.5z M8,9.5h8 M8,13h5", False)]),
     ("ic_one_hand", "单手模式", "splitscreen_left",
      [(rrect(6, 3, 12, 18, 2) + " M6,14.5h8.5v6.5", False)]),
+    ("ic_float", "悬浮键盘", "picture_in_picture",
+     [(rrect(3, 4, 18, 16, 2.5) + " " + rrect(7, 10.5, 10, 6.5, 1.5) + " M10.5,8h3", False)]),
     ("ic_waveform", "语音引擎 / 波形", "graphic_eq",
      [("M4,10v4 M8,7v10 M12,4v16 M16,7v10 M20,10v4", False)]),
     ("ic_toolbox", "工具箱（备用）", "apps",

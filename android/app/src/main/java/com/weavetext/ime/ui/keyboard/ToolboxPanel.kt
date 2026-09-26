@@ -34,7 +34,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(CURSOR, R.drawable.ic_cursor, null, "光标编辑"),
         Item(CLIPBOARD, R.drawable.ic_clipboard, null, "剪贴板"),
         Item(SETTINGS, R.drawable.ic_settings, null, "设置"),
-        Item(HELP, R.drawable.ic_info, null, "帮助"),
+        Item(FLOAT, R.drawable.ic_float, null, "悬浮键盘"),
     )
 
     override fun applyTheme() = view.invalidate()
@@ -45,6 +45,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         DARK -> WeavePrefs.theme(kb.prefs) != "system"
         TRAD -> WeavePrefs.traditional(kb.prefs)
         ONE_HAND -> WeavePrefs.oneHand(kb.prefs) != 0
+        FLOAT -> kb.floating
         else -> false
     }
 
@@ -72,7 +73,8 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             CURSOR -> kb.showPanel("cursor")
             CLIPBOARD -> kb.showPanel("clipboard")
             SETTINGS -> kb.openSettings(null)
-            HELP -> kb.openSettings("about/help")
+            // 帮助入口在设置「关于」里；这一格让给悬浮键盘（06 §5）。 Help lives in Settings › About.
+            FLOAT -> { kb.closePanel(); kb.toggleFloating() }
         }
         view.invalidate()
     }
@@ -139,7 +141,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     companion object {
         const val SCHEMES = 0; const val HEIGHT = 1; const val DARK = 2; const val TRAD = 3
         const val EMOJI = 4; const val PHRASES = 5; const val ONE_HAND = 6; const val ENGINES = 7
-        const val CURSOR = 8; const val CLIPBOARD = 9; const val SETTINGS = 10; const val HELP = 11
+        const val CURSOR = 8; const val CLIPBOARD = 9; const val SETTINGS = 10; const val FLOAT = 11
     }
 }
 
