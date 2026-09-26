@@ -54,6 +54,9 @@ private fun VoicePackPage(repo: ModelRepository, pack: VoicePack) {
     val tick = rememberModelTick(repo)
     val state = remember(tick) { pack.state() }
     var confirmMetered by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    val deletable = remember(tick) { pack.deletable() }
+    val busy = state is VoicePack.State.Downloading || state == VoicePack.State.Installing
     // 装好后自动选中本地离线识别。 Select the local engine once installed.
     val start: (Boolean) -> Unit = { metered ->
         pack.start(allowMetered = metered) { runCatching { deps.engines().activeId = LOCAL_ENGINE_ID } }
@@ -112,6 +115,18 @@ private fun VoicePackPage(repo: ModelRepository, pack: VoicePack) {
                 }
             }
         }
+        // 能下载就能删除：运行库与已下载的语音模型一起删，释放空间。 What can be downloaded can be deleted.
+        if (deletable.isNotEmpty() && !busy) {
+            GroupTitle("管理")
+            GroupCard {
+                SettingRow(
+                    "删除语音包",
+                    "释放 ${formatSize(deletable.sumOf { it.installedSize })}，之后可随时重新下载",
+                    titleColor = MaterialTheme.colorScheme.error,
+                    onClick = { confirmDelete = true },
+                )
+            }
+        }
         GroupTitle("更多模型")
         GroupCard {
             SettingRow("离线模型", "终稿识别、智能标点等可按需下载，识别更准", onClick = { nav.push(Route.Models) }) { Chevron() }
@@ -122,6 +137,23 @@ private fun VoicePackPage(repo: ModelRepository, pack: VoicePack) {
             RowDivider()
             SettingRow("打开系统语音输入设置", "手机自带语音服务可用时，织文会自动使用", onClick = { VoiceHelp.openSystemVoiceSettings(ctx) }) { Chevron() }
         }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除语音包？") },
+            text = {
+                Text(
+                    "将删除：" + deletable.joinToString("、") { it.name } +
+                        "，共 ${formatSize(deletable.sumOf { it.installedSize })}。删除后本地离线识别不可用，需要时可重新下载。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; pack.delete() }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+        )
     }
 
     if (confirmMetered) {

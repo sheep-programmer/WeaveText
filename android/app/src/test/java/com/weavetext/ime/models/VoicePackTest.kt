@@ -150,4 +150,21 @@ class VoicePackTest {
         assertTrue(NativeAsrModels.friendly("failed to create streaming recognizer").contains("模型无法打开"))
         assertEquals("离线识别出错", NativeAsrModels.friendly(null))
     }
+
+    /** 能下载就能删除：运行库与已下载的语音模型一起删，语音包回到未下载。 Deleting the pack frees everything. */
+    @Test fun deletePackRemovesRuntimeAndDownloadedSpeechModels() {
+        val repo = FakeModels(catalog = FakeModels.LITE)
+        val pack = VoicePack(repo)
+        assertTrue("没装时没有可删的 / nothing to delete yet", pack.deletable().isEmpty())
+        repo.emit(AsrRuntime.ID, ModelState.Installed)
+        repo.emit(stream, ModelState.Installed)
+        repo.emit("punc-ct", ModelState.Installed)
+        assertEquals(VoicePack.State.Ready, pack.state())
+        assertEquals(setOf(AsrRuntime.ID, stream, "punc-ct"), pack.deletable().map { it.id }.toSet())
+        assertTrue(pack.deletableBytes() > 0)
+        assertEquals(3, pack.delete())
+        assertTrue(pack.deletable().isEmpty())
+        assertTrue(pack.state() is VoicePack.State.Idle)
+        assertFalse(AsrRuntime.engineReady(repo, bundled = false))
+    }
 }
