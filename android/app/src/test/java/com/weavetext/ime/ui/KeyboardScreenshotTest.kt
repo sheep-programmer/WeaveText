@@ -405,6 +405,21 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("voice_engine_sheet_light")
     }
 
+    /** 轻量版还没装语音包：引擎弹层底栏右侧给出「安装离线语音」。 Lite: the sheet footer offers installing. */
+    @Test fun voiceEngineSheetLite() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList()))
+        com.weavetext.ime.models.AsrRuntime.bundled = false
+        try {
+            val (k, _) = keyboard(false)
+            k.showPanel("voice")
+            k.showEngineSheet()
+            snap("voice_engine_sheet_lite_light")
+        } finally {
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
+        }
+    }
+
     @Test fun candidateGrid() {
         val (k, c) = keyboard(false)
         c.previewState(composing(cands = nihao + listOf("你好吗", "你好啊", "拟", "昵称", "泥土", "你们好").map { Candidate(it, "", false) }))

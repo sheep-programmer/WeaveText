@@ -34,6 +34,7 @@ internal object VoiceBackend {
 }
 
 private const val TAG = "WeaveVoice"
+private const val KEY_SYSTEM_DISABLED = "system_disabled"
 
 // SpeechRecognizer 在 API 31 起新增的错误码（minSdk 26，自行定义）。 Error codes added in API 31.
 private const val ERROR_TOO_MANY_REQUESTS = 10
@@ -119,6 +120,16 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
         prefs.edit().putString("bundled_stamp", stamp).apply()
     }
 
+    override var systemDisabled: Boolean
+        get() = prefs.getBoolean(KEY_SYSTEM_DISABLED, false)
+        set(v) {
+            prefs.edit().putBoolean(KEY_SYSTEM_DISABLED, v).apply()
+            if (v && activeId == SYSTEM_ENGINE_ID) activeId = null
+            refresh()
+        }
+
+    override fun systemPresent(): Boolean = systemAvailable
+
     fun refresh() {
         val list = mutableListOf<VoicePlugin>()
         // 本地离线识别排第一：不联网、语音不离开手机，没有选择时默认使用它。
@@ -128,7 +139,7 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
                 LOCAL_ENGINE_ID, "本地离线识别", "识别在手机上完成，无需联网，语音不离开设备。", "", null, local.fields(),
             )
         }
-        if (systemAvailable) {
+        if (systemAvailable && !systemDisabled) {
             list += VoicePlugin(SYSTEM_ENGINE_ID, "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList())
         }
         if (host != 0L) {

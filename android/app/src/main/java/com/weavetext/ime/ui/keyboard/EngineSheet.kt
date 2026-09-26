@@ -33,6 +33,9 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     private val sheet = RectF()
     private val list = RectF()
     private val manage = RectF()
+    private val install = RectF()
+    /** 轻量版还没装好离线识别：底栏右侧给出「安装离线语音」。 Lite without offline voice: offer to install it. */
+    private var offerInstall = false
     private val tmp = RectF()
     private var scroll = 0f
     private var pressed = NONE
@@ -49,6 +52,10 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         val e = runCatching { VoiceAccess.engines(context) }.getOrNull()
         plugins = e?.list().orEmpty()
         activeId = e?.active()?.id
+        offerInstall = runCatching {
+            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild &&
+                !com.weavetext.ime.models.AsrRuntime.engineReady(com.weavetext.ime.models.ModelManager.get(context))
+        }.getOrDefault(false)
         while (icons.size < plugins.size) icons += PluginIcon()
         plugins.forEachIndexed { i, p -> icons[i].bind(p) }
         scroll = 0f
@@ -83,8 +90,14 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         val top = max(m.dp(8f), height - want)
         sheet.set(0f, top, width.toFloat(), height.toFloat() + m.dp(16f))
         list.set(m.dp(12f), top + head, width - m.dp(12f), height - foot)
-        // 整条底栏都可点（文字仍靠左）。 The whole footer is tappable; the text stays left-aligned.
-        manage.set(0f, height - foot, width.toFloat(), height.toFloat())
+        // 整条底栏都可点（文字仍靠左）；有「安装离线语音」时左右各占一半。 Whole footer tappable; split when offering install.
+        if (offerInstall) {
+            manage.set(0f, height - foot, width / 2f, height.toFloat())
+            install.set(width / 2f, height - foot, width.toFloat(), height.toFloat())
+        } else {
+            manage.set(0f, height - foot, width.toFloat(), height.toFloat())
+            install.setEmpty()
+        }
     }
 
     private fun maxScroll() = max(0f, plugins.size * rowH() - list.height())
@@ -144,6 +157,11 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         c.restore()
         text.typeface = medium; text.textSize = m.dp(14f); text.color = pal.candidateFirst; text.textAlign = Paint.Align.LEFT
         c.drawText("管理语音引擎 ›", m.dp(16f), manage.centerY() - (text.ascent() + text.descent()) / 2, text)
+        if (offerInstall) {
+            text.textAlign = Paint.Align.RIGHT
+            c.drawText("安装离线语音 ›", width - m.dp(16f), install.centerY() - (text.ascent() + text.descent()) / 2, text)
+            text.textAlign = Paint.Align.LEFT
+        }
     }
 
     private fun buildTexts() {
@@ -172,9 +190,10 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
                 pressed = when {
                     e.y < sheet.top -> SCRIM
                     manage.contains(e.x, e.y) -> MANAGE
+                    !install.isEmpty && install.contains(e.x, e.y) -> INSTALL
                     else -> rowAt(e.x, e.y)
                 }
-                if (pressed >= 0 || pressed == MANAGE) kb.feedback.key(this)
+                if (pressed >= 0 || pressed == MANAGE || pressed == INSTALL) kb.feedback.key(this)
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -188,6 +207,7 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
                 if (!dragging) when {
                     p == SCRIM -> hide()
                     p == MANAGE -> { hide(); kb.openSettings("voice") }
+                    p == INSTALL -> { hide(); kb.openSettings("voice/upgrade") }
                     p >= 0 -> choose(plugins[p])
                 }
                 invalidate()
@@ -210,6 +230,7 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         private const val NONE = -1
         private const val SCRIM = -2
         private const val MANAGE = -3
+        private const val INSTALL = -4
     }
 }
 

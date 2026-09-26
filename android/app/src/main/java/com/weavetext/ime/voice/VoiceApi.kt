@@ -99,6 +99,17 @@ interface VoiceEngines {
         val extra = extraIds
         return listOf(primary) + list().filter { it.id != primary.id && it.id in extra && canCombine(it.id) }
     }
+    /**
+     * 停用系统语音识别：它是内置引擎不能卸载，停用后不再出现在列表里（可随时恢复）。
+     * Disable the platform recognizer: built in, so it can't be uninstalled; disabled it leaves the list.
+     */
+    var systemDisabled: Boolean
+        get() = false
+        set(@Suppress("UNUSED_PARAMETER") value) {}
+
+    /** 手机上有系统语音识别服务（不论是否停用）。 A platform recognition service exists, disabled or not. */
+    fun systemPresent(): Boolean = false
+
     /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
     fun inspect(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException())
     /** 从 .xipk 文件导入。 Import a .xipk package. */

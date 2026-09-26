@@ -115,8 +115,8 @@ fun VoiceListScreen() {
             Text("导入")
         }
     }) {
-        // 识别运行库可用（随包或已下载语音包）时才有离线模型可管。 Models only matter once the runtime is usable.
-        if (runtimeReady) OfflineModelsCard(models) { nav.push(Route.Models) }
+        // 「语音包」入口始终在：轻量版没装时点进去就是安装列表。 Always shown; on lite it leads to installing.
+        OfflineModelsCard(models) { nav.push(if (runtimeReady) Route.Models else Route.VoiceUpgrade) }
         if (plugins.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(painterResource(R.drawable.ic_waveform), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -149,6 +149,15 @@ fun VoiceListScreen() {
                 }
             }
             if (plugins.size >= 2) CombineCard(engines, plugins, active) { tick++ }
+        }
+        // 停用的系统语音识别：可以随时恢复。 A disabled platform recognizer can be restored.
+        val systemOff = remember(tick) { engines.systemPresent() && engines.systemDisabled }
+        if (systemOff) {
+            GroupCard(Modifier.padding(top = 12.dp)) {
+                SettingRow("系统语音识别已停用", "不会出现在引擎列表和键盘里") {
+                    TextButton(onClick = { engines.systemDisabled = false; tick++ }) { Text("恢复") }
+                }
+            }
         }
         Row(Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(painterResource(R.drawable.ic_info), null, Modifier.size(16.dp).padding(top = 1.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -458,9 +467,14 @@ fun VoiceDetailScreen(id: String) {
                     scope.launch { snack.showSnackbar("已恢复默认设置") }
                 }) { Text("恢复默认设置") }
             } else Spacer(Modifier)
-            // 内置引擎不能删除。 Built-in engines cannot be removed.
+            // 内置引擎不能删除；系统语音识别可以停用。 Built-ins can't be removed; the platform recognizer can be disabled.
             if (!isBuiltinEngine(plugin.id)) {
                 TextButton(onClick = { confirmDelete = true }) { Text("删除插件", color = MaterialTheme.colorScheme.error) }
+            } else if (plugin.id == com.weavetext.ime.voice.SYSTEM_ENGINE_ID) {
+                TextButton(onClick = {
+                    engines.systemDisabled = true
+                    nav.pop()
+                }) { Text("停用系统语音识别", color = MaterialTheme.colorScheme.error) }
             }
         }
     }

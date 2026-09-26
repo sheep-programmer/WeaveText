@@ -89,8 +89,14 @@ fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
     val tick = rememberModelTick(repo)
     val used = rememberUsedBytes(repo, tick)
     val count = remember(tick) { repo.catalog.models.count { repo.state(it.id).isReady } }
+    val ready = remember(tick) { AsrRuntime.engineReady(repo) }
     GroupCard(Modifier.padding(top = 8.dp)) {
-        SettingRow("语音包", "已安装 $count 项 · 占用 ${formatSize(used)}", icon = R.drawable.ic_waveform, onClick = onClick) { Chevron() }
+        SettingRow(
+            "语音包",
+            if (ready) "已安装 $count 项 · 占用 ${formatSize(used)}" else "未安装 · 点此安装，手机上离线识别",
+            icon = R.drawable.ic_waveform,
+            onClick = onClick,
+        ) { Chevron() }
     }
 }
 

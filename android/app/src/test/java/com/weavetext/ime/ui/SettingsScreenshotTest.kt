@@ -99,6 +99,16 @@ class SettingsScreenshotTest {
         }
     }
     /** 运行库不能下载时（如架构不符）：安装完整离线语音版。 No runtime for this ABI: full-build upgrade. */
+    /** 轻量版、只有系统语音识别、还没装语音包：顶部照样有「语音包」入口。 Lite with only the system engine. */
+    @Test fun voiceListLiteSystemOnly() {
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList()))
+        lite("voice_list_lite_system_only", routes = listOf(Route.Home, Route.Voice))
+    }
+    /** 系统语音识别的详情：可以停用。 The system engine's detail page offers disabling it. */
+    @Test fun voiceDetailSystem() {
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList()))
+        show("voice_detail_system", Route.Home, Route.Voice, Route.VoiceDetail("weave.system"))
+    }
     @Test fun voiceUpgrade() = lite("voice_upgrade", catalog = FakeModels.LITE_X86)
 
     /** 轻量版：运行库随包与否由 [AsrRuntime.bundled] 决定，截图期间临时改为不随包。 Lite: temporarily unbundle the runtime. */
