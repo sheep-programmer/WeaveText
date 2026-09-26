@@ -304,12 +304,12 @@ keyHeight = rowPitch - keyGapV
   *Also: long-press popup open, swipe-hint committed, each cursor step of space-drag, entering delete-clear state.*
 - 连续删除（长按重复）只在前 1 次和之后每 5 次触发，避免“嗡嗡”感。*Repeat-delete: first then every 5th.*
 
-### 9.2 振动强度档位 / Vibration levels（设置中一个滑块 one slider）
+### 9.2 振动强度档位 / Vibration levels（设置「按键震动」关 / 轻 / 中 / 强，默认关，见 06 §4）
 
 | 档 | 名称 | 实现 Implementation |
 |---|---|---|
-| 0 | 关 Off | 不振动 |
-| 1 | 跟随系统 System（默认） | `view.performHapticFeedback(KEYBOARD_TAP)`（API 27+ 用 `KEYBOARD_PRESS`），遵守系统触感开关 |
+| 0 | 关 Off（默认） | 不振动 |
+| 1 | 跟随系统 System（旧版选项，仍生效，界面不再提供） | `view.performHapticFeedback(KEYBOARD_TAP)`（API 27+ 用 `KEYBOARD_PRESS`），遵守系统触感开关 |
 | 2 | 轻 Light | `VibrationEffect.createPredefined(EFFECT_TICK)`（API 29+）；低版本 `createOneShot(8ms, 40)` |
 | 3 | 中 Medium | `EFFECT_CLICK`；低版本 `createOneShot(12ms, 90)` |
 | 4 | 强 Strong | `EFFECT_HEAVY_CLICK`；低版本 `createOneShot(18ms, 160)` |
@@ -319,9 +319,10 @@ keyHeight = rowPitch - keyGapV
 - 振动器调用放在独立 HandlerThread，不阻塞 UI 线程。*Vibrate off the UI thread.*
 
 ### 9.3 按键音 / Key sound
-- 滑块 0–4：0 关（默认），1–4 对应音量 0.15 / 0.3 / 0.5 / 0.8。
-- 使用 `AudioManager.playSoundEffect(FX_KEYPRESS_STANDARD / _DELETE / _RETURN / _SPACEBAR, volume)`，区分普通、删除、回车、空格四种。
-  *Use system key sounds with 4 variants.*
+- 风格：关（默认）/ 跟随系统 / 清脆 / 气泡 / 木质 / 打字机 / 水滴，音量 0–100；自有风格在代码中合成，区分字母、删除、空格、回车四种变体。详见 06 §3。
+  *Styles: off (default) / system / five synthesized styles with four variants each, volume 0–100. See 06 §3.*
+- 「跟随系统」使用 `AudioManager.playSoundEffect(FX_KEYPRESS_STANDARD / _DELETE / _RETURN / _SPACEBAR, volume)`。静音 / 振动模式下都不发声。
+  *"System" uses the platform key sounds. No sound in silent/vibrate ringer modes.*
 
 ---
 
