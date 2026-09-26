@@ -2,17 +2,32 @@ package com.weavetext.ime.voice.local
 
 import com.weavetext.ime.models.ModelLocation
 import com.weavetext.ime.models.ModelSpec
+import java.io.File
 
 /**
- * 轻量版的空实现：不带端侧识别运行时。`BuildConfig.LOCAL_ASR` 为 false 时本地引擎不会出现在列表里，
- * 这里只在误用时报错。
- * Lite stub without the on-device runtime. With `BuildConfig.LOCAL_ASR` false the local engine is never
- * listed; these only fail on misuse.
+ * 轻量版适配层：不随包带 sherpa-onnx，改用语音包里下载的运行库（经 [NativeAsr] 在运行时载入）。
+ * 轻量版的模型都是下载到私有目录的文件，不会在 APK assets 里。
+ *
+ * Lite adapters: no bundled sherpa-onnx; the runtime from the voice pack is loaded at run time through
+ * [NativeAsr]. Lite models are always downloaded files, never APK assets.
  */
 internal object SherpaModels {
-    private fun unsupported(): Nothing = throw UnsupportedOperationException("轻量版不含离线语音识别")
+    /** 载入运行库（只在第一次真正载入）。 Load the runtime (only the first call does work). */
+    fun prepare(runtimeDir: File?) {
+        if (!NativeAsr.nativeIsLoaded() && runtimeDir != null) com.weavetext.ime.models.AsrRuntime.makeReadOnly(runtimeDir)
+        NativeAsrModels.load(runtimeDir)
+    }
 
-    fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr = unsupported()
-    fun offline(spec: ModelSpec, loc: ModelLocation): OfflineAsr = unsupported()
-    fun punctuator(loc: ModelLocation): Punctuator = unsupported()
+    private fun files(loc: ModelLocation): ModelLocation {
+        check(loc.assets == null) { "轻量版不含内置模型" }
+        return loc
+    }
+
+    fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr =
+        files(loc).let { NativeAsrModels.streaming(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }
+
+    fun offline(spec: ModelSpec, loc: ModelLocation): OfflineAsr =
+        files(loc).let { NativeAsrModels.offline(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }
+
+    fun punctuator(loc: ModelLocation): Punctuator = NativeAsrModels.punctuator(files(loc).path("model.int8.onnx"))
 }

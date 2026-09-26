@@ -95,6 +95,13 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
             0L
         }
         refresh()
+        // 语音包下载完（或模型被删）时本地引擎会出现/消失；下载进度也会触发回调，所以只在可用性变化时刷新。
+        // The local engine appears/disappears as the voice pack is installed or models deleted; progress
+        // ticks also call back, so refresh only when availability actually changes.
+        com.weavetext.ime.models.ModelManager.get(ctx).addListener {
+            val now = runCatching { local.isAvailable }.getOrDefault(false)
+            if (now != cache.any { it.id == LOCAL_ENGINE_ID }) refresh()
+        }
     }
 
     /** 首次启动 / 升级后，安装 APK 内置的插件包（若构建时提供）。 Install bundled packages once. */

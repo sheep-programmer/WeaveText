@@ -2,6 +2,7 @@ package com.weavetext.ime.voice.local
 
 import android.content.Context
 import android.util.Log
+import com.weavetext.ime.models.AsrRuntime
 import com.weavetext.ime.models.ModelKind
 import com.weavetext.ime.models.ModelManager
 import com.weavetext.ime.voice.ConfigField
@@ -30,7 +31,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
         models.addReleaseHook { id ->
             val latch = java.util.concurrent.CountDownLatch(1)
             worker.execute {
-                if (loaded?.key?.split('|')?.contains(id) == true) { loaded?.release(); loaded = null }
+                // 删除运行库时也释放全部识别器。 Deleting the runtime releases everything too.
+                if (id == AsrRuntime.ID || loaded?.key?.split('|')?.contains(id) == true) { loaded?.release(); loaded = null }
                 latch.countDown()
             }
             latch.await(3, TimeUnit.SECONDS)
@@ -79,7 +81,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
     private fun punctuationOn(): Boolean =
         prefs.getBoolean(KEY_PUNCT, true) && models.isAvailable(PUNCT_ID)
 
-    val isAvailable: Boolean get() = com.weavetext.ime.BuildConfig.LOCAL_ASR && streamId() != null
+    /** 运行库在（随包或已下载）且有实时模型。 Runtime present (bundled or downloaded) and a streaming model. */
+    val isAvailable: Boolean get() = AsrRuntime.ready(models) && streamId() != null
 
     fun fields(): List<ConfigField> {
         val punctInstalled = models.isAvailable(PUNCT_ID)
@@ -194,6 +197,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
         var streaming: StreamingAsr? = null
         var offline: OfflineAsr? = null
         try {
+            SherpaModels.prepare(models.runtimeDir())
             streaming = SherpaModels.streaming(models.catalog.find(sid)!!, models.location(sid)!!)
             offline = fid?.let { id -> SherpaModels.offline(models.catalog.find(id)!!, models.location(id)!!) }
             val p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null

@@ -19,11 +19,16 @@ import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig
 import com.weavetext.ime.models.ModelLocation
 import com.weavetext.ime.models.ModelSpec
+import java.io.File
 
 /** sherpa-onnx 适配层（Android 版 Kotlin API）。 Adapters over sherpa-onnx's Android Kotlin API. */
 internal object SherpaModels {
     private const val THREADS = 2
     private val FEATURES = FeatureConfig(sampleRate = 16000, featureDim = 80)
+
+    /** 运行库随包，无需载入。 The runtime is bundled; nothing to load. */
+    @Suppress("UNUSED_PARAMETER")
+    fun prepare(runtimeDir: File?) {}
 
     fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr {
         require(spec.arch == "zipformer2-ctc") { "unsupported streaming arch ${spec.arch}" }

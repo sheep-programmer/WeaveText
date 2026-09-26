@@ -28,6 +28,9 @@ sourceSets["main"].kotlin {
         "com/weavetext/ime/models/Downloader.kt",
         "com/weavetext/ime/models/ModelFetcher.kt",
         "com/weavetext/ime/voice/local/TwoPassRecognizer.kt",
+        // 按需下载的运行库的 JNI 绑定与识别器。 JNI bindings and recognizers for the downloadable runtime.
+        "com/weavetext/ime/voice/local/NativeAsr.kt",
+        "com/weavetext/ime/voice/local/NativeAsrModels.kt",
     )
 }
 
@@ -53,6 +56,9 @@ tasks.test {
     System.getenv("WEAVE_TEST_WAV")?.let { systemProperty("weave.wav", it) }
     systemProperty("weave.models", project(":app").layout.buildDirectory.dir("modelAssets/models").get().asFile.absolutePath)
     systemProperty("weave.cache", refCache.absolutePath)
+    systemProperty("weave.asrRuntime", desktopRuntimeDir.resolve("lib").absolutePath)
+    systemProperty("weave.testWavs", rootProject.projectDir.resolve("../.ref/sherpa/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/test_wavs").absolutePath)
+    dependsOn(fetchDesktopRuntime)
     dependsOn(":app:fetchBuiltinModels")
     testLogging { events("passed", "failed", "skipped"); showStandardStreams = true; exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
@@ -106,6 +112,31 @@ val fetchDesktopSherpa by tasks.registering {
     }
 }
 tasks.named("compileTestKotlin") { dependsOn(fetchDesktopSherpa) }
+
+// 桌面版「下载的运行库」（sherpa-onnx C 接口 + onnxruntime 动态库），测试 NativeAsr 端到端；只有 macOS arm64 有对应包，其它主机跳过。
+// Desktop copy of the downloadable runtime (C API + onnxruntime shared libs) for the NativeAsr end-to-end
+// test; only macOS arm64 has a matching pack, other hosts skip it.
+val desktopRuntimeName = "sherpa-onnx-v$sherpaDesktop-osx-arm64-shared-lib"
+val desktopRuntimeSha = "ae77050cdae565496059d96f5ab33d77b397a0864282a4e4a26e3b3b3effb948"
+val desktopRuntimeDir = refCache.resolve(desktopRuntimeName)
+val fetchDesktopRuntime by tasks.registering {
+    onlyIf { hostNative.first == "osx-aarch64" }
+    outputs.dir(desktopRuntimeDir)
+    doLast {
+        if (desktopRuntimeDir.resolve("lib/libsherpa-onnx-c-api.dylib").exists()) return@doLast
+        refCache.mkdirs()
+        val archive = refCache.resolve("$desktopRuntimeName.tar.bz2")
+        if (!(archive.isFile && sha256Hex(archive) == desktopRuntimeSha)) {
+            val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$sherpaDesktop/$desktopRuntimeName.tar.bz2"
+            val tmp = refCache.resolve("${archive.name}.part")
+            URI(url).toURL().openStream().use { i -> tmp.outputStream().use { i.copyTo(it) } }
+            require(sha256Hex(tmp) == desktopRuntimeSha) { "sha256 mismatch for ${archive.name}" }
+            require(tmp.renameTo(archive)) { "rename failed: ${archive.name}" }
+        }
+        providers.exec { commandLine("tar", "xjf", archive.absolutePath, "-C", refCache.absolutePath) }.result.get()
+        require(desktopRuntimeDir.resolve("lib/libsherpa-onnx-c-api.dylib").exists()) { "unexpected layout in ${archive.name}" }
+    }
+}
 
 dependencies {
     testImplementation(files(sherpaJars.map { refCache.resolve(it.first) }))
