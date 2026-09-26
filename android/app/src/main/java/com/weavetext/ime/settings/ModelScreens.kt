@@ -40,6 +40,7 @@ import com.weavetext.ime.models.ModelKind
 import com.weavetext.ime.models.ModelRepository
 import com.weavetext.ime.models.ModelSpec
 import com.weavetext.ime.models.ModelState
+import com.weavetext.ime.models.isReady
 import java.util.Locale
 
 // ------------------------------------------------------------------ helpers
@@ -56,7 +57,6 @@ fun formatSize(bytes: Long): String {
 
 private fun formatSpeed(bps: Long) = if (bps <= 0) null else formatSize(bps) + "/s"
 
-private fun ModelState.available() = this == ModelState.Builtin || this == ModelState.Installed
 
 /** 订阅模型状态变化，返回每次变化递增的计数。 Observe model state changes as a counter. */
 @Composable
@@ -85,7 +85,7 @@ private fun rememberUsedBytes(repo: ModelRepository, tick: Int): Long {
 fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
     val tick = rememberModelTick(repo)
     val used = rememberUsedBytes(repo, tick)
-    val count = remember(tick) { repo.catalog.models.count { repo.state(it.id).available() } }
+    val count = remember(tick) { repo.catalog.models.count { repo.state(it.id).isReady } }
     GroupCard(Modifier.padding(top = 8.dp)) {
         SettingRow("离线模型", "已安装 $count 个 · 占用 ${formatSize(used)}", icon = R.drawable.ic_waveform, onClick = onClick) { Chevron() }
     }
@@ -93,7 +93,10 @@ fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
 
 // ------------------------------------------------------------------ page
 
-private val GROUPS = listOf(ModelKind.ASR_STREAMING to "实时识别", ModelKind.ASR_OFFLINE to "终稿识别", ModelKind.PUNCTUATION to "标点")
+// 运行库只在轻量版的目录里出现。 The runtime is only listed in the lite build's catalog.
+private val GROUPS = listOf(
+    ModelKind.ASR_RUNTIME to "识别运行库", ModelKind.ASR_STREAMING to "实时识别", ModelKind.ASR_OFFLINE to "终稿识别", ModelKind.PUNCTUATION to "标点",
+)
 
 @Composable
 fun ModelsScreen() {

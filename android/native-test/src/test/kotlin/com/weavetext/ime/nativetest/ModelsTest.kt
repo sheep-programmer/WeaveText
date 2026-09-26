@@ -47,6 +47,89 @@ class ModelsTest {
         assertTrue(cat.models.count { it.builtin } >= 2)
         assertTrue(cat.models.all { m -> m.archiveSha256.length == 64 && m.files.isNotEmpty() && m.files.all { it.sha256.length == 64 } })
         assertTrue(cat.hfMirrors.isNotEmpty())
+        assertTrue(cat.models.all { m -> m.archives.all { it.sha256.length == 64 && it.size > 0 } })
+    }
+
+    @Test
+    fun catalogRuntimeEntryPerBuild() {
+        val cat = ModelCatalog.parse(File("../app/src/main/assets/models/catalog.json").readText())
+        val rt = cat.find("asr-runtime")!!
+        assertEquals(com.weavetext.ime.models.ModelKind.ASR_RUNTIME, rt.kind)
+        assertEquals("arm64-v8a", rt.abi)
+        assertEquals(2, rt.archives.size)
+        assertEquals(rt.files.sumOf { it.size }, rt.installedSize)
+        assertTrue(rt.fileNames().all { it.startsWith("arm64-v8a/") })
+        // 离线语音版：不列运行库，内置模型不变。 Voice build: no runtime, built-ins unchanged.
+        val voice = cat.forBuild(bundledRuntime = true)
+        assertEquals(null, voice.find("asr-runtime"))
+        assertEquals(cat.models.count { it.builtin }, voice.models.count { it.builtin })
+        // 轻量版：有运行库、没有内置；架构不符时不列运行库。 Lite: runtime, no built-ins; other ABIs lose the runtime.
+        val lite = cat.forBuild(bundledRuntime = false, abi = "arm64-v8a")
+        assertTrue(lite.find("asr-runtime") != null && lite.models.none { it.builtin })
+        assertTrue(lite.find("asr-stream-small")!!.description.let { !it.contains("内置") })
+        assertEquals(null, cat.forBuild(bundledRuntime = false, abi = "x86_64").find("asr-runtime"))
+        // 旧格式（单个 archive）仍能读。 Legacy single `archive` still parses.
+        val legacy = ModelCatalog.parse(
+            """{"mirrors":[],"models":[{"id":"x","kind":"punctuation","arch":"ct-transformer","name":"x",
+               "archive":{"url":"https://h/x.tar.bz2","sha256":"${"a".repeat(64)}","size":5},
+               "files":[{"name":"m","size":1,"sha256":"${"b".repeat(64)}"}]}]}""",
+        )
+        assertEquals(listOf(com.weavetext.ime.models.ModelArchive("https://h/x.tar.bz2", "a".repeat(64), 5)), legacy.models.single().archives)
+    }
+
+    /** 首选压缩包 404 时换下一个来源，并只取「abi/文件名」。 First archive 404s → next source; keep abi/file paths. */
+    @Test
+    fun fetcherFallsBackToNextArchiveSource() {
+        // 用 tar + bzip2 造一个多架构包。 Build a multi-ABI archive with tar + bzip2.
+        val root = Files.createTempDirectory("weave-rt").toFile()
+        val tree = File(root, "pkg/jniLibs").apply { mkdirs() }
+        val libs = mapOf("libonnxruntime.so" to ByteArray(50_000) { (it % 13).toByte() }, "libsherpa-onnx-c-api.so" to ByteArray(20_000) { (it % 7).toByte() })
+        for (abi in listOf("arm64-v8a", "x86_64")) {
+            File(tree, abi).mkdirs()
+            for ((n, b) in libs) File(tree, "$abi/$n").writeBytes(if (abi == "arm64-v8a") b else b.reversedArray())
+        }
+        val tarball = File(root, "rt.tar.bz2")
+        assertEquals(0, ProcessBuilder("tar", "cjf", tarball.path, "-C", root.path, "pkg").inheritIO().start().waitFor())
+        val bytes = tarball.readBytes()
+        fun sha(x: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(x).joinToString("") { "%02x".format(it) }
+        val srv = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        srv.createContext("/") { ex ->
+            if (ex.requestURI.path.endsWith("/big.tar.bz2")) {
+                ex.sendResponseHeaders(200, bytes.size.toLong())
+                ex.responseBody.use { it.write(bytes) }
+            } else {
+                ex.sendResponseHeaders(404, -1)
+                ex.close()
+            }
+        }
+        srv.start()
+        try {
+            val base = "http://127.0.0.1:${srv.address.port}"
+            val spec = com.weavetext.ime.models.ModelSpec(
+                id = "asr-runtime", kind = com.weavetext.ime.models.ModelKind.ASR_RUNTIME, arch = "sherpa-onnx", name = "rt",
+                description = "", license = "", builtin = false,
+                archives = listOf(
+                    com.weavetext.ime.models.ModelArchive("$base/ours/small.tar.bz2", "1".repeat(64), 100),
+                    com.weavetext.ime.models.ModelArchive("$base/up/big.tar.bz2", sha(bytes), bytes.size.toLong()),
+                ),
+                files = libs.map { (n, b) -> com.weavetext.ime.models.ModelFile("arm64-v8a/$n", b.size.toLong(), sha(b)) },
+                installedSize = libs.values.sumOf { it.size }.toLong(), bench = null, hfRepo = null, abi = "arm64-v8a",
+            )
+            val work = Files.createTempDirectory("weave-rtw").toFile()
+            val fetcher = com.weavetext.ime.models.ModelFetcher(listOf(Mirror("direct", "direct", "{url}")), emptyList(), work) { a, d, keep ->
+                NativeArchive.nativeExtractTarBz2(a.path, d.path, keep.joinToString("\n"))
+            }
+            val dest = File(work, "staging")
+            fetcher.fetch(spec, dest)
+            for ((n, b) in libs) assertEquals(sha(b), Downloader.sha256Of(File(dest, "arm64-v8a/$n")))
+            assertTrue("只取一个架构 / one ABI only", !File(dest, "x86_64").exists())
+            // 两个来源都不行：报错里列出两者。 Both sources fail: the error names both.
+            val bad = spec.copy(archives = listOf(spec.archives[0], spec.archives[1].copy(sha256 = "2".repeat(64))))
+            val err = runCatching { fetcher.fetch(bad, File(work, "s2")) }.exceptionOrNull()
+            assertTrue(err?.message.orEmpty(), err is IOException && err.message!!.contains("small.tar.bz2") && err.message!!.contains("big.tar.bz2"))
+        } finally {
+            srv.stop(0)
+        }
     }
 
     // ------------------------------------------------------------ downloader
@@ -126,7 +209,7 @@ class ModelsTest {
             val spec = com.weavetext.ime.models.ModelSpec(
                 id = "t", kind = com.weavetext.ime.models.ModelKind.ASR_OFFLINE, arch = "zipformer-ctc", name = "t",
                 description = "", license = "", builtin = false,
-                archiveUrl = "http://127.0.0.1:1/none.tar.bz2", archiveSha256 = "0".repeat(64), archiveSize = 0,
+                archives = listOf(com.weavetext.ime.models.ModelArchive("http://127.0.0.1:1/none.tar.bz2", "0".repeat(64), 0)),
                 files = listOf(
                     com.weavetext.ime.models.ModelFile("model.int8.onnx", a.size.toLong(), sha(a)),
                     com.weavetext.ime.models.ModelFile("tokens.txt", b.size.toLong(), sha(b)),

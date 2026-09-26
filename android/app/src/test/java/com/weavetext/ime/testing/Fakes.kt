@@ -135,8 +135,11 @@ class FakeModels(
 
     override fun state(id: String) = states[id] ?: if (catalog.find(id)?.builtin == true) ModelState.Builtin else ModelState.NotInstalled
     private fun set(id: String, s: ModelState) { states[id] = s; listeners.toList().forEach { it() } }
+    /** 模拟下载进展（通知监听者）。 Simulate progress, notifying listeners. */
+    fun emit(id: String, s: ModelState) = set(id, s)
+    val cancels = mutableListOf<String>()
     override fun download(id: String, allowMetered: Boolean) { downloads += id to allowMetered; set(id, ModelState.Waiting) }
-    override fun cancel(id: String) = set(id, ModelState.NotInstalled)
+    override fun cancel(id: String) { cancels += id; set(id, ModelState.NotInstalled) }
     override fun delete(id: String): Boolean { set(id, ModelState.NotInstalled); return true }
     override fun addListener(l: () -> Unit) { listeners += l }
     override fun removeListener(l: () -> Unit) { listeners -= l }
@@ -149,6 +152,12 @@ class FakeModels(
 
     companion object {
         /** 单元测试的工作目录是 app/。 Unit tests run with app/ as the working directory. */
-        val CATALOG: ModelCatalog by lazy { ModelCatalog.parse(File("src/main/assets/models/catalog.json").readText()) }
+        private val RAW: ModelCatalog by lazy { ModelCatalog.parse(File("src/main/assets/models/catalog.json").readText()) }
+        /** 离线语音版看到的目录（运行库随包，不列出）。 The offline-voice build's catalog. */
+        val CATALOG: ModelCatalog by lazy { RAW.forBuild(bundledRuntime = true) }
+        /** 轻量版（arm64）看到的目录：有运行库，没有内置模型。 The lite build's catalog on arm64. */
+        val LITE: ModelCatalog by lazy { RAW.forBuild(bundledRuntime = false, abi = "arm64-v8a") }
+        /** 轻量版在其它架构上：没有运行库。 Lite on another ABI: no runtime. */
+        val LITE_X86: ModelCatalog by lazy { RAW.forBuild(bundledRuntime = false, abi = "x86_64") }
     }
 }

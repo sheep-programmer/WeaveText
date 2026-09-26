@@ -24,6 +24,9 @@ sealed interface ModelState {
     data class Failed(val message: String) : ModelState
 }
 
+/** 可以直接使用（内置或已安装）。 Usable right now (built in or installed). */
+val ModelState.isReady: Boolean get() = this == ModelState.Builtin || this == ModelState.Installed
+
 /** 模型文件位置：内置模型在 APK assets 中，下载的在私有目录。 Where a model's files live. */
 data class ModelLocation(val assets: AssetManager?, val dir: String) {
     fun path(file: String) = "$dir/$file"
@@ -46,7 +49,9 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
     /** 删除/替换模型前调用，让正在使用它的引擎先释放。 Called before a model is deleted or replaced. */
     private val releaseHooks = mutableListOf<(String) -> Unit>()
 
+    /** 按本次构建调整过的目录（离线语音版不列运行库，轻量版没有内置模型）。 Catalog adjusted for this build. */
     override val catalog: ModelCatalog = ModelCatalog.parse(ctx.assets.open("models/catalog.json").bufferedReader().use { it.readText() })
+        .forBuild(AsrRuntime.bundled, android.os.Build.SUPPORTED_ABIS.firstOrNull())
 
     init {
         for (m in catalog.models) states[m.id] = computeState(m)
@@ -67,7 +72,7 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
 
     override fun state(id: String): ModelState = states[id] ?: ModelState.NotInstalled
 
-    fun isAvailable(id: String) = state(id).let { it == ModelState.Builtin || it == ModelState.Installed }
+    fun isAvailable(id: String) = state(id).isReady
 
     /** 可用模型的位置；不可用返回 null。 Location of an available model. */
     fun location(id: String): ModelLocation? {
@@ -80,6 +85,17 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
     }
 
     fun available(kind: ModelKind): List<ModelSpec> = catalog.models.filter { it.kind == kind && isAvailable(it.id) }
+
+    /**
+     * 已下载运行库所在目录（含两个 .so）；运行库随包或未下载时为 null。
+     * Directory holding the downloaded runtime libraries; null when bundled or not downloaded.
+     */
+    fun runtimeDir(): File? {
+        val m = catalog.find(AsrRuntime.ID) ?: return null
+        if (state(m.id) != ModelState.Installed) return null
+        val sub = m.files.first().name.substringBeforeLast('/', "")
+        return File(installedDir(m), sub)
+    }
 
     fun addReleaseHook(h: (String) -> Unit) = synchronized(releaseHooks) { releaseHooks += h }
 
@@ -139,7 +155,8 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
             return
         }
         // 需要：下载（压缩包或逐文件）+ 安装后的空间，留 10% 余量。 Download + installed size, 10% headroom.
-        val need = (maxOf(m.archiveSize, m.installedSize) + m.installedSize) * 11 / 10
+        // 按最大的压缩包来源估算（首选来源失败时会退到更大的官方包）。 Budget for the largest archive source.
+        val need = (maxOf(m.archives.maxOf { it.size }, m.installedSize) + m.installedSize) * 11 / 10
         if (root.usableSpace < need) {
             set(id, ModelState.Failed("存储空间不足，需要约 ${need / 1_000_000} MB"))
             return
@@ -164,7 +181,8 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
                 Log.w(TAG, "download $id failed", t)
                 if (cancel.get()) {
                     staging.deleteRecursively()
-                    downloads.listFiles()?.filter { it.name.startsWith(m.archiveUrl.substringAfterLast('/')) }?.forEach { it.delete() }
+                    val names = m.archives.map { it.url.substringAfterLast('/') }
+                    downloads.listFiles()?.filter { f -> names.any { f.name.startsWith(it) } }?.forEach { it.delete() }
                 }
                 set(id, if (cancel.get()) ModelState.NotInstalled else ModelState.Failed(t.message?.lineSequence()?.firstOrNull() ?: "下载失败"))
             } finally {
@@ -196,6 +214,7 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
      * backup; roll back on failure.
      */
     private fun install(m: ModelSpec, staging: File) {
+        if (m.kind == ModelKind.ASR_RUNTIME) AsrRuntime.makeReadOnly(staging)
         File(staging, "installed.json").writeText(JSONObject().put("id", m.id).put("archive", m.archiveSha256).toString())
         val dest = installedDir(m)
         val backup = File(root, ".${m.id}.old")

@@ -68,6 +68,13 @@ class ModelsScreenshotTest {
     @Config(qualifiers = "w411dp-h1900dp-port-420dpi")
     @Test fun page() { open(FakeModels(mixed)); capture("page") }
 
+    /** 轻量版：顶部是识别运行库，原内置模型改为可下载。 Lite: runtime first, formerly built-in models downloadable. */
+    @Config(qualifiers = "w411dp-h2200dp-port-420dpi")
+    @Test fun pageLite() {
+        open(FakeModels(mapOf("asr-runtime" to ModelState.Installed, "asr-stream-small" to ModelState.Installed), catalog = FakeModels.LITE))
+        capture("page_lite")
+    }
+
     @Config(qualifiers = "w411dp-h1900dp-port-420dpi")
     @Test fun pageDark() { open(FakeModels(mixed), dark = true); capture("page_dark") }
 

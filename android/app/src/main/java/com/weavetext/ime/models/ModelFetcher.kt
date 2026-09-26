@@ -86,16 +86,35 @@ class ModelFetcher(
         }
     }
 
+    /**
+     * 按目录顺序尝试每个压缩包来源（例如先试小的自建包，404 或失败再试官方大包）；第一个用预先测好的镜像顺序。
+     * Try each archive source in catalog order (e.g. our small pack, then the big upstream one on 404 or
+     * failure); the first reuses the pre-probed mirror order.
+     */
     private fun archive(
         spec: ModelSpec, dest: File, dl: Downloader, order: List<Mirror>, cancel: AtomicBoolean,
         preferred: String?, onProgress: (Progress) -> Unit,
     ) {
         workDir.mkdirs()
-        val file = File(workDir, spec.archiveUrl.substringAfterLast('/'))
-        dl.download(spec.archiveUrl, spec.archiveSha256, file, cancel, preferred, order, spec.archiveSize, onProgress)
-        val err = extract(file, dest, spec.fileNames())
-        file.delete()
-        if (err != null) throw IOException("解压失败：$err")
+        val errors = mutableListOf<String>()
+        spec.archives.forEachIndexed { i, a ->
+            if (cancel.get()) throw IOException("cancelled")
+            val file = File(workDir, a.url.substringAfterLast('/'))
+            try {
+                val ranked = if (i == 0) order else dl.probeAll(a.url).map { it.first }
+                dl.download(a.url, a.sha256, file, cancel, preferred, ranked, a.size, onProgress)
+                val err = extract(file, dest, spec.fileNames())
+                file.delete()
+                if (err != null) throw IOException("解压失败：$err")
+                // 在这里校验，内容不对时还能换下一个来源。 Verify here so a bad pack falls through to the next source.
+                verify(spec, dest)
+                return
+            } catch (e: IOException) {
+                if (cancel.get()) throw e
+                errors += "${a.url.substringAfterLast('/')}: ${e.message}"
+            }
+        }
+        throw IOException(errors.joinToString("\n"))
     }
 
     /** 逐个文件核对大小与 SHA-256。 Check each file's size and SHA-256. */

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "mirrors": [
     {
       "id": "github",
@@ -34,11 +34,48 @@
   ],
   "models": [
     {
+      "id": "asr-runtime",
+      "kind": "asr-runtime",
+      "arch": "sherpa-onnx-1.13.8",
+      "name": "识别运行库",
+      "description": "离线语音识别所需的运行库（sherpa-onnx 1.13.8 与 onnxruntime），下载约 9 MB，只需一次。",
+      "license": "Apache-2.0（sherpa-onnx）、MIT（onnxruntime）",
+      "builtin": false,
+      "abi": "arm64-v8a",
+      "archives": [
+        {
+          "url": "https://github.com/sheep-programmer/WeaveText/releases/download/asr-runtime-v1.13.8/sherpa-onnx-runtime-v1.13.8-android-arm64.tar.bz2",
+          "sha256": "559a8b947be9676cbe025bc5e741070dee1ce5eb6a3a36fe18a481e3893789ee",
+          "size": 9082159
+        },
+        {
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-android.tar.bz2",
+          "sha256": "2ff63469a71cb6009aa2e3ed5f4a670f8abdcbe4bb9ffd23776afc792a6b4f44",
+          "size": 46093321
+        }
+      ],
+      "files": [
+        {
+          "name": "arm64-v8a/libonnxruntime.so",
+          "size": 22249560,
+          "sha256": "33847ad43bffe204699fd4a27f7f3603452a8cdaf2f9a44983a0bc31ffcf2da1"
+        },
+        {
+          "name": "arm64-v8a/libsherpa-onnx-c-api.so",
+          "size": 4465168,
+          "sha256": "c85e2382e2ca12b0513826be926eaccfea896b4cbf568182e287671ba526f80d"
+        }
+      ],
+      "installedSize": 26714728,
+      "bench": null
+    },
+    {
       "id": "asr-stream-small",
       "kind": "asr-streaming",
       "arch": "zipformer2-ctc",
       "name": "实时识别 · 小",
       "description": "流式识别，边说边出字。内置，约 26 MB。",
+      "descriptionLite": "流式识别，边说边出字，约 26 MB。语音包默认包含它。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
       "builtin": true,
       "archive": {
@@ -72,6 +109,7 @@
       "arch": "zipformer-ctc",
       "name": "终稿识别 · 小",
       "description": "每句说完后重新识别一遍，抗噪最好。内置，约 63 MB。",
+      "descriptionLite": "每句说完后重新识别一遍，抗噪最好，约 63 MB。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
       "builtin": true,
       "archive": {
