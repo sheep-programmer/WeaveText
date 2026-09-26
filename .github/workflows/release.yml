@@ -1,0 +1,95 @@
+# 推送 v* 标签时构建并发布：轻量版与离线语音版，正式签名，附 SHA-256 校验和。
+# 标签含「-」（如 v0.2.0-beta.1）时标为预发布；发布说明取自 docs/releases/<标签>.md。
+# On a v* tag: build the lite and offline-voice APKs, sign them with the release key, attach SHA-256 sums.
+# Tags containing "-" are marked as pre-releases; notes come from docs/releases/<tag>.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      # 源数据（固定版本）与构建时下载的运行时、模型。 Pinned source data and build-time downloads.
+      - uses: actions/cache@v4
+        with:
+          path: .ref
+          key: ref-${{ hashFiles('data/build.sh', 'android/app/src/main/assets/models/catalog.json', 'android/app/build.gradle.kts') }}
+          restore-keys: ref-
+
+      - name: Android NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+
+      # 标签必须与 versionName 一致，避免发出版本号不符的包。 The tag must match versionName.
+      - name: Check version
+        run: |
+          name=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/app/build.gradle.kts)
+          test "v$name" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != versionName $name"; exit 1; }
+          echo "VERSION=$name" >> "$GITHUB_ENV"
+
+      # 正式签名：没有配置密钥时直接失败，绝不发出调试签名的包。 Never publish debug-signed builds.
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" && test -n "$KEYSTORE_PASSWORD" || { echo "missing signing secrets"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=weavetext\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > android/keystore.properties
+
+      - name: Build lite
+        working-directory: android
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease -Pweave.lite=true
+          mkdir -p ../dist
+          cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64-lite.apk"
+
+      - name: Build offline voice
+        working-directory: android
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64-voice.apk"
+
+      - name: Verify
+        run: |
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          for f in dist/*.apk; do "$apksigner" verify --print-certs "$f" | grep 'SHA-256'; done
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease";; esac
+          notes="docs/releases/$GITHUB_REF_NAME.md"
+          test -f "$notes" || notes=/dev/null
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag $pre \
+            --title "织文输入法 $VERSION" --notes-file "$notes"

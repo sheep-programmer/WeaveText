@@ -18,6 +18,8 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::blob::{Blob, Source};
+
 pub const MAGIC: &[u8; 4] = b"WVGM";
 pub const VERSION: u32 = 1;
 const HEADER: usize = 32;
@@ -110,16 +112,10 @@ impl GramBuilder {
     }
 }
 
-#[derive(Clone)]
-enum Backing {
-    Owned(Arc<Vec<u8>>),
-    Mapped(Arc<memmap2::Mmap>),
-}
-
 /// 只读模型。 Read-only model.
 #[derive(Clone)]
 pub struct Gram {
-    backing: Backing,
+    blob: Blob,
     /// BMP 字符 → id + 1 的直查表（0 表示不在表中）。 Direct BMP lookup: id + 1, 0 = unknown.
     bmp: Arc<Vec<u16>>,
     n_chars: usize,
@@ -129,67 +125,64 @@ pub struct Gram {
 }
 
 #[inline]
-fn rd16(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-
-#[inline]
 fn rd32(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
 impl Gram {
+    /// 打开文件（原始文件 mmap，分块压缩文件按需解压）。 Open a raw (mmapped) or packed file.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let f = File::open(path)?;
-        // SAFETY: 只读映射，所有访问经切片下标检查。 Read-only; slice indexing is bounds-checked.
-        let m = unsafe { memmap2::Mmap::map(&f)? };
-        Self::parse(Backing::Mapped(Arc::new(m)))
+        Self::open_source(&Source::file(path))
+    }
+
+    pub fn open_source(src: &Source) -> io::Result<Self> {
+        Self::parse(Blob::open(src)?)
     }
 
     pub fn from_bytes(b: Vec<u8>) -> io::Result<Self> {
-        Self::parse(Backing::Owned(Arc::new(b)))
+        Self::parse(Blob::from_bytes(b))
     }
 
-    fn bytes(&self) -> &[u8] {
-        match &self.backing {
-            Backing::Owned(v) => v,
-            Backing::Mapped(m) => m,
-        }
+    /// 底层数据（用于缓存统计）。 Underlying bytes, e.g. for cache statistics.
+    pub fn blob(&self) -> &Blob {
+        &self.blob
     }
 
-    fn parse(backing: Backing) -> io::Result<Self> {
+    fn parse(blob: Blob) -> io::Result<Self> {
         let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
-        let b = match &backing {
-            Backing::Owned(v) => v.as_slice(),
-            Backing::Mapped(m) => &m[..],
-        };
-        if b.len() < HEADER || &b[0..4] != MAGIC || rd32(b, 4) != VERSION {
+        if blob.len() < HEADER {
             return Err(bad("bad gram header"));
         }
-        let n_chars = rd32(b, 8) as usize;
+        let h = blob.with(0, HEADER, |b| b.to_vec());
+        if &h[0..4] != MAGIC || rd32(&h, 4) != VERSION {
+            return Err(bad("bad gram header"));
+        }
+        let n_chars = rd32(&h, 8) as usize;
         let chars_off = HEADER;
         let mut off = chars_off + n_chars * 4;
         let mut tables = [(0, 0, 0, 0); MAX_LEN + 1];
         for (i, l) in (MIN_LEN..=MAX_LEN).enumerate() {
-            let count = rd32(b, 12 + i * 4) as usize;
+            let count = rd32(&h, 12 + i * 4) as usize;
             let groups = off;
             let keys = groups + (n_chars + 1) * 4;
             let values = keys + count * (l - 1) * 2;
             off = values + count;
             tables[l] = (groups, keys, values, count);
         }
-        if off > b.len() {
+        if off > blob.len() {
             return Err(bad("truncated gram"));
         }
         let mut bmp = vec![0u16; 0x10000];
-        for i in 0..n_chars {
-            let c = rd32(b, chars_off + i * 4);
-            if c < 0x10000 && i < u16::MAX as usize {
-                bmp[c as usize] = i as u16 + 1;
+        blob.with(chars_off, n_chars * 4, |b| {
+            for i in 0..n_chars {
+                let c = rd32(b, i * 4);
+                if c < 0x10000 && i < u16::MAX as usize {
+                    bmp[c as usize] = i as u16 + 1;
+                }
             }
-        }
+        });
         Ok(Gram {
-            backing,
+            blob,
             bmp: Arc::new(bmp),
             n_chars,
             chars_off,
@@ -203,12 +196,11 @@ impl Gram {
             let v = self.bmp[c as usize];
             return (v != 0).then(|| v - 1);
         }
-        let b = self.bytes();
         let (mut lo, mut hi) = (0usize, self.n_chars);
         let target = c as u32;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let v = rd32(b, self.chars_off + mid * 4);
+            let v = self.blob.u32(self.chars_off + mid * 4);
             if v == target {
                 return Some(mid as u16);
             } else if v < target {
@@ -227,26 +219,26 @@ impl Gram {
             return None;
         }
         let (groups, keys, values, _) = self.tables[l];
-        let b = self.bytes();
         let first = key[0] as usize;
-        let (mut lo, mut hi) = (
-            rd32(b, groups + first * 4) as usize,
-            rd32(b, groups + first * 4 + 4) as usize,
-        );
+        let (mut lo, mut hi) = self
+            .blob
+            .with(groups + first * 4, 8, |b| (rd32(b, 0) as usize, rd32(b, 4) as usize));
         let rest = &key[1..];
         let stride = (l - 1) * 2;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let o = keys + mid * stride;
-            let mut ord = std::cmp::Ordering::Equal;
-            for (j, &r) in rest.iter().enumerate() {
-                ord = rd16(b, o + j * 2).cmp(&r);
-                if ord != std::cmp::Ordering::Equal {
-                    break;
+            let ord = self.blob.with(keys + mid * stride, stride, |b| {
+                let mut ord = std::cmp::Ordering::Equal;
+                for (j, &r) in rest.iter().enumerate() {
+                    ord = u16::from_le_bytes([b[j * 2], b[j * 2 + 1]]).cmp(&r);
+                    if ord != std::cmp::Ordering::Equal {
+                        break;
+                    }
                 }
-            }
+                ord
+            });
             match ord {
-                std::cmp::Ordering::Equal => return Some(b[values + mid] as f32 / 2.0),
+                std::cmp::Ordering::Equal => return Some(self.blob.u8(values + mid) as f32 / 2.0),
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
             }

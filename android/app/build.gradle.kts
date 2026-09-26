@@ -31,7 +31,11 @@ val pluginAssetsDir = layout.buildDirectory.dir("pluginAssets").get().asFile
 // 语音识别运行时 sherpa-onnx（Apache-2.0）与内置模型在构建时下载，经多个 GitHub 镜像回退并校验 SHA-256。
 // The sherpa-onnx runtime (Apache-2.0) and built-in models are fetched at build time through
 // several GitHub mirrors with SHA-256 verification.
-/** -Pweave.lite=true：不内置语音模型（首次使用时下载），APK 小约 85 MB。 Skip built-in speech models. */
+/**
+ * -Pweave.lite=true：轻量版，不带端侧语音识别运行时与模型（语音输入仍可用系统识别与插件），APK 约小 125 MB。
+ * Lite build: no on-device speech runtime or models (voice still works via the system recognizer and
+ * plugins); about 125 MB smaller.
+ */
 val liteBuild = (findProperty("weave.lite") as String?) == "true"
 
 /** ABI 过滤在 AGP 里跨构建类型取并集，所以按本次要构建的类型决定。 AGP unions ABI filters, so decide per invocation. */
@@ -97,6 +101,7 @@ fun fetchVerified(url: String, sha: String, dest: File) {
 val fetchSherpa by tasks.registering {
     group = "weave"
     outputs.file(sherpaAar)
+    onlyIf { !liteBuild }
     doLast { fetchVerified(sherpaAarUrl, sherpaAarSha, sherpaAar) }
 }
 
@@ -150,6 +155,7 @@ android {
         // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
         // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
         ndk { abiFilters += abiList(isRelease = releaseBuild) }
+        buildConfigField("boolean", "LOCAL_ASR", (!liteBuild).toString())
     }
 
     // 正式签名：读取 android/keystore.properties（不入库）；没有则退回调试签名。
@@ -185,8 +191,8 @@ android {
     sourceSets["main"].assets.srcDir(dictAssetsDir)
     sourceSets["main"].assets.srcDir(pluginAssetsDir)
     if (!liteBuild) sourceSets["main"].assets.srcDir(modelAssetsDir)
-    // 词库在 APK 中压缩存放（约 60% 体积），首次启动解压到私有目录后 mmap。
-    // Dictionaries stay compressed in the APK and are inflated once on first start, then mmapped.
+    // 端侧语音适配层：轻量版换成空实现，不依赖 sherpa-onnx。 Lite swaps the ASR adapter for a stub.
+    sourceSets["main"].java.srcDir(if (liteBuild) "src/nosherpa/java" else "src/sherpa/java")
     packaging {
         jniLibs.useLegacyPackaging = false
         // sherpa-onnx 的 JNI 库只依赖 onnxruntime，C/C++ API 库用不到。 JNI lib needs only onnxruntime.
@@ -194,7 +200,9 @@ android {
     }
     androidResources {
         // 模型文件不压缩：ONNX 压缩率很低，且可以直接从 APK 读取。 Keep ONNX uncompressed.
-        noCompress += listOf("onnx")
+        // 词库是分块压缩文件（.wvz），在 APK 内原样存放，由内核直接按偏移读取，不再解压到手机上。
+        // Dictionaries are block-compressed (.wvz), stored as-is and read by offset straight from the APK.
+        noCompress += listOf("onnx", "wvz")
     }
     // JVM 截图测试（Robolectric 原生渲染 + Roborazzi），输出到 src/test/snapshots。
     // JVM screenshot tests (Robolectric native graphics + Roborazzi), written to src/test/snapshots.
@@ -225,8 +233,9 @@ val buildRust by tasks.registering(Exec::class) {
     onlyIf { !skipRust }
     workingDir = coreDir
     environment("ANDROID_NDK_HOME", "$sdkDir/ndk/$ndkVer")
-    val profile = if (gradle.startParameter.taskNames.any { it.contains("Release", true) }) "--release" else "--release"
-    commandLine(cargo, "ndk", "-t", "arm64-v8a", "-t", "x86_64", "-o", rustJniDir.absolutePath, "build", "-p", "weave-ffi", profile)
+    // 只编本次要打包的 ABI（正式版只有 arm64）。 Build only the ABIs being packaged (release: arm64).
+    val targets = abiList(isRelease = releaseBuild).flatMap { listOf("-t", it) }
+    commandLine(listOf(cargo, "ndk") + targets + listOf("-o", rustJniDir.absolutePath, "build", "-p", "weave-ffi", "--release"))
     inputs.dir(coreDir.resolve("weave-engine/src"))
     inputs.dir(coreDir.resolve("weave-dict/src"))
     inputs.dir(coreDir.resolve("weave-ffi/src"))
@@ -252,22 +261,27 @@ val syncDicts by tasks.registering(Sync::class) {
     group = "weave"
     dependsOn(buildDicts)
     from(dataBuildDir) {
-        include("*.wvl", "*.wvg", "*.txt")
+        include("*.wvz")
     }
     into(dictAssetsDir.resolve("dict"))
     // 缺文件或格式版本不对就让构建失败，避免打出一个没有词库的 APK。
     // Fail the build on missing data or a wrong format version instead of shipping an APK without a dictionary.
     doLast {
+        fun head(f: File): ByteBuffer {
+            require(f.isFile && f.length() > 64) { "missing dictionary file: ${f.name}" }
+            return ByteBuffer.wrap(f.inputStream().use { it.readNBytes(8) }).order(ByteOrder.LITTLE_ENDIAN)
+        }
+        fun check(f: File, magic: String, version: Int) {
+            val h = head(f)
+            require(String(h.array(), 0, 4, Charsets.US_ASCII) == magic) { "bad magic in ${f.name}" }
+            require(h.getInt(4) == version) { "${f.name} has format version ${h.getInt(4)}, engine expects $version" }
+        }
+        // 原始文件的格式版本（打包前）与打包后的容器头。 Raw format versions, then the packed containers.
+        for (n in listOf("pinyin.wvl", "wubi86.wvl", "english.wvl")) check(dataBuildDir.resolve(n), "WVLX", 4)
+        check(dataBuildDir.resolve("grammar.wvg"), "WVGM", 1)
         val dir = dictAssetsDir.resolve("dict")
-        val expected = mapOf("pinyin.wvl" to "WVLX", "wubi86.wvl" to "WVLX", "english.wvl" to "WVLX", "grammar.wvg" to "WVGM")
-        for ((name, magic) in expected) {
-            val f = dir.resolve(name)
-            require(f.isFile && f.length() > 64) { "missing dictionary asset: $name" }
-            val head = f.inputStream().use { it.readNBytes(8) }
-            require(String(head, 0, 4, Charsets.US_ASCII) == magic) { "bad magic in $name" }
-            val version = ByteBuffer.wrap(head, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            val want = if (magic == "WVLX") 3 else 1
-            require(version == want) { "$name has format version $version, engine expects $want" }
+        for (key in listOf("pinyin", "wubi86", "english", "grammar", "st_phrases", "st_characters", "emoji")) {
+            check(dir.resolve("$key.wvz"), "WVPK", 1)
         }
     }
 }
@@ -291,8 +305,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
-    // 端侧语音识别运行时（构建时下载，见 fetchSherpa）。 On-device ASR runtime, fetched at build time.
-    implementation(files(sherpaAar))
+    // 端侧语音识别运行时（构建时下载，见 fetchSherpa；轻量版不带）。 On-device ASR runtime; not in lite.
+    if (!liteBuild) implementation(files(sherpaAar))
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")

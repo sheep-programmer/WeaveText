@@ -79,7 +79,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     private fun punctuationOn(): Boolean =
         prefs.getBoolean(KEY_PUNCT, true) && models.isAvailable(PUNCT_ID)
 
-    val isAvailable: Boolean get() = streamId() != null
+    val isAvailable: Boolean get() = com.weavetext.ime.BuildConfig.LOCAL_ASR && streamId() != null
 
     fun fields(): List<ConfigField> {
         val punctInstalled = models.isAvailable(PUNCT_ID)

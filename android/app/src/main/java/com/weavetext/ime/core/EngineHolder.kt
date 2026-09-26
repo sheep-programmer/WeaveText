@@ -17,6 +17,11 @@ object EngineHolder {
     @Volatile private var engine: NativeEngine? = null
     private var loading: CountDownLatch? = null
 
+    /** 系统内存紧张时清空内核的解压缓存。 Drop the engine's decode caches under memory pressure. */
+    fun trim() {
+        engine?.trim()
+    }
+
     /** 已就绪则直接返回。 Returns the engine if already loaded. */
     fun peek(): NativeEngine? = engine
 
@@ -43,8 +48,8 @@ object EngineHolder {
             return engine
         }
         try {
-            val data = DataInstaller.ensureInstalled(ctx)
-            engine = NativeEngine.create(data.absolutePath, DataInstaller.userDir(ctx).absolutePath)
+            val spec = DataInstaller.sourceSpec(ctx)
+            engine = NativeEngine.createFromSpec(spec, DataInstaller.userDir(ctx).absolutePath, DataInstaller.cacheKb(ctx))
             if (engine == null) Log.e(TAG, "engine create failed")
         } catch (t: Throwable) {
             Log.e(TAG, "engine load failed", t)

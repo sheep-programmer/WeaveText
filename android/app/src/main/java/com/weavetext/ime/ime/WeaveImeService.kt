@@ -76,6 +76,17 @@ class WeaveImeService : InputMethodService() {
         return super.onKeyDown(keyCode, event)
     }
 
+    /** 内存紧张时丢掉词库解压缓存（键盘收起时更积极）。 Drop dictionary caches under memory pressure. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        @Suppress("DEPRECATION")
+        val hidden = !isInputViewShown && level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        @Suppress("DEPRECATION")
+        if (hidden || level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            com.weavetext.ime.core.EngineHolder.trim()
+        }
+    }
+
     override fun onDestroy() {
         debugBridge.unregister(this)
         ui?.dispose()

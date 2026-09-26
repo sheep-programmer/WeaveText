@@ -9,12 +9,28 @@ license = "Apache-2.0"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
+# 保留 unwind：JNI 入口靠 catch_unwind 防止 panic 带崩输入法。 Keep unwind: JNI entry points catch panics.
 panic = "unwind"
 # 不在 cargo 里 strip：macOS 上会产出无法加载的 dylib；Android 打包时 AGP 会自动 strip。
 # No cargo strip: it breaks dylibs on macOS; AGP strips Android libraries when packaging.
 strip = false
+
+# 体积优先：插件宿主、网络、解包等依赖不在按键路径上，用 "s"；内核与解码器保持 3。
+# Size first for dependencies off the key path (plugin host, networking, archives); the engine,
+# dictionary and block decoder stay at opt-level 3.
+[profile.release.package."*"]
+opt-level = "s"
+
+[profile.release.package.weave-engine]
+opt-level = 3
+
+[profile.release.package.weave-dict]
+opt-level = 3
+
+[profile.release.package.brotli-decompressor]
+opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 2

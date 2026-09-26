@@ -10,8 +10,10 @@
   (Xiaohe / Ziranma / Microsoft / Sogou), T9, Wubi 86, English with suggestions.*
 - **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.6%。
   *Beam search, a character collocation model and user learning: 75.6% top-1 on a 1000-sentence benchmark.*
-- **零部署**：预编译词库直接 mmap，启动 < 1 ms 载入，用户词写只追加日志。
-  *Zero deployment: mmapped dictionaries load in < 1 ms; user words go to an append-only log.*
+- **零部署、体积小**：预编译词库分块压缩后直接从 APK 读取、按需解压，手机上不再多占一份；全部词库与模型约 24 MB。
+  用户词写只追加日志。
+  *Zero deployment and small: precompiled, block-compressed dictionaries are read straight from the APK and decoded
+  on demand — about 24 MB for all data, nothing extracted. User words go to an append-only log.*
 - **键盘**：主流输入法式布局、亮/暗主题、候选展开、符号、光标编辑、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想。
   *mainstream-IME-style layout, light/dark, candidate grid, symbols, cursor panel, clipboard (off by default),
   phrases, one-handed mode, height, traditional output, emoji suggestions.*
@@ -24,10 +26,17 @@
 
 ## 下载 / Download
 
-在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64）：完整版内置离线语音模型；`lite` 版体积约一半，语音模型在首次使用时下载。
+在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64），两个版本签名相同、可互相覆盖安装：
+
+- **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件。
+- **离线语音版**：在轻量版基础上内置端侧语音识别（语音不离开手机），可再下载更准的模型。
+
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
-*Get the APK from [Releases](../../releases) (Android 8.0+, arm64). The full build bundles offline speech models;
-`lite` is about half the size and downloads them on first use. Enable WeaveText in system settings after installing.*
+
+*Get the APK from [Releases](../../releases) (Android 8.0+, arm64); both builds share one signature. **Lite**
+(recommended) has every input feature and reads its dictionaries straight from the APK, so the footprint is about
+the APK size; voice uses the system recognizer or plugins. **Offline voice** adds on-device speech recognition.
+Enable WeaveText in system settings after installing.*
 
 ## 目录 / Layout
 

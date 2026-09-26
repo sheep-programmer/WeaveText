@@ -454,7 +454,7 @@ impl<'a> Decoder<'a> {
                 count
             };
             for (i, e) in lex.entries(n).take(scan).enumerate() {
-                let text = lex.text(e.text_id);
+                let text = lex.text(e.text_id, &span.key);
                 let t = *top.get_or_insert(e.cost as u32);
                 let mut cost = e.cost as u32;
                 let mut origin = Origin::System;
@@ -464,11 +464,7 @@ impl<'a> Decoder<'a> {
                 } else if i >= limit {
                     continue;
                 }
-                out.push(Scored {
-                    text: text.to_string(),
-                    cost,
-                    origin,
-                });
+                out.push(Scored { text, cost, origin });
             }
         }
         for ue in user_entries {

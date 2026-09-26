@@ -42,6 +42,42 @@ class JniTest {
         }
     }
 
+    /**
+     * 与安卓端相同的加载方式：分块压缩文件拼进一个「APK」里，按偏移读取；结果须与原始文件完全一致。
+     * The Android path: packed files concatenated into one "APK" and read by offset; results must
+     * match the raw files exactly.
+     */
+    @Test
+    fun packedSourcesInsideOneFile() {
+        val keys = listOf("pinyin", "wubi86", "english", "grammar", "st_phrases", "st_characters", "emoji")
+        val apk = File.createTempFile("weave-apk", ".bin").apply { deleteOnExit() }
+        val spec = apk.outputStream().use { out ->
+            out.write(ByteArray(12345)) // 模拟 APK 里资源之前的内容 / bytes before the assets
+            var off = 12345L
+            keys.joinToString(";") { k ->
+                val bytes = File(data, "$k.wvz").readBytes()
+                out.write(bytes)
+                "$k=${apk.absolutePath}@$off+${bytes.size}".also { off += bytes.size }
+            }
+        }
+        val user = Files.createTempDirectory("weave-user").toFile()
+        val packed = NativeEngine.createFromSpec(spec, user.absolutePath, 4 * 1024) ?: error("create failed")
+        packed.use { p ->
+            engine().use { raw ->
+                for ((schema, keysTyped) in listOf("pinyin" to "woshizhongguoren", "pinyin" to "jintiantianqibucuo", "t9" to "94664486736", "wubi86" to "wqvb", "english" to "hel", "pinyin" to "kaixin")) {
+                    for (e in listOf(p, raw)) { e.clear(); assertTrue(e.setSchema(schema)); e.type(keysTyped) }
+                    assertEquals(schema + keysTyped, raw.candidates(0, 30), p.candidates(0, 30))
+                }
+                for (e in listOf(p, raw)) { e.clear(); e.setSchema("pinyin"); e.setOption("output.traditional", true); e.type("toufa") }
+                assertEquals(raw.candidates(0, 5), p.candidates(0, 5))
+                assertEquals("頭髮", p.candidates(0, 1).first().text)
+                p.trim()
+                p.clear(); p.setOption("output.traditional", false); p.type("woshizhongguoren")
+                assertEquals("我是中国人", p.snapshot().candidates.first().text)
+            }
+        }
+    }
+
     @Test
     fun schemasThroughJni() {
         engine().use { e ->

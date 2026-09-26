@@ -59,6 +59,9 @@ class NativeEngine private constructor(private var handle: Long) : AutoCloseable
     fun importUserWords(text: String): Int = nativeImportUserWords(handle, text)
     fun clearUserWords(): Boolean = nativeClearUserWords(handle)
 
+    /** 清空解压缓存。 Drop decode caches. */
+    fun trim() = nativeTrim(handle)
+
     override fun close() {
         if (handle != 0L) {
             nativeDestroy(handle)
@@ -77,7 +80,18 @@ class NativeEngine private constructor(private var handle: Long) : AutoCloseable
             return if (h == 0L) null else NativeEngine(h)
         }
 
+        /**
+         * 从 APK 内的资源区间创建。 Create from asset ranges inside the APK.
+         * @param spec `key=path@offset+len;…`；@param cacheKb 每个分块压缩文件的缓存预算。
+         */
+        fun createFromSpec(spec: String, userDir: String, cacheKb: Int): NativeEngine? {
+            val h = nativeCreateFromSpec(spec, userDir, cacheKb)
+            return if (h == 0L) null else NativeEngine(h)
+        }
+
         @JvmStatic private external fun nativeCreate(dataDir: String, userDir: String): Long
+        @JvmStatic private external fun nativeCreateFromSpec(spec: String, userDir: String, cacheKb: Int): Long
+        @JvmStatic private external fun nativeTrim(h: Long)
         @JvmStatic private external fun nativeDestroy(h: Long)
         @JvmStatic private external fun nativeSetSchema(h: Long, key: String): Boolean
         @JvmStatic private external fun nativeSetOption(h: Long, key: String, value: String): Boolean

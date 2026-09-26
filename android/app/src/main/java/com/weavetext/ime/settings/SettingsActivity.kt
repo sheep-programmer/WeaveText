@@ -68,7 +68,7 @@ sealed class Route {
             val parts = path.orEmpty().trim('/').split('/').filter { it.isNotEmpty() }
             return when (parts.firstOrNull()) {
                 "voice" -> listOf(Voice) + (parts.getOrNull(1)?.let { listOf(VoiceDetail(it)) } ?: emptyList())
-                "models" -> listOf(Voice, Models)
+                "models" -> if (com.weavetext.ime.BuildConfig.LOCAL_ASR) listOf(Voice, Models) else listOf(Voice)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
                 "dictionary" -> listOf(Dictionary)

@@ -1,10 +1,13 @@
 //! JNI 绑定：给 Android 端 `com.weavetext.ime.core.NativeEngine` 用。
 //! JNI bindings for `com.weavetext.ime.core.NativeEngine`.
 //!
-//! 引擎句柄是 `Box<Mutex<Engine>>` 的裸指针（jlong）；所有调用都在 IME 主线程，
-//! Mutex 只是为了防御误用。任何 panic 都被捕获，绝不让 native 崩溃带崩输入法进程。
-//! The handle is a raw `Box<Mutex<Engine>>` pointer. Calls come from the IME main thread; the
-//! mutex only guards against misuse. Panics are caught so native code never kills the IME.
+//! 引擎句柄是 `Box<Mutex<Engine>>` 的裸指针（jlong）。引擎内的解压缓存是单线程结构（`Engine` 不是
+//! `Send`），因此**所有访问都必须经过这把 Mutex**：它保证同一时刻只有一个线程接触引擎及其缓存，
+//! 且缓存的全部副本都在该引擎内部。任何 panic 都被捕获，绝不让 native 崩溃带崩输入法进程。
+//! The handle is a raw `Box<Mutex<Engine>>` pointer. The engine's decode caches are single-threaded
+//! (`Engine` is not `Send`), so **every access must go through this mutex**: it guarantees one thread
+//! at a time touches the engine and its caches, all of which live inside that engine. Panics are
+//! caught so native code never kills the IME.
 //!
 //! 快照编码（大端，Java ByteBuffer 默认序）/ Snapshot encoding (big endian):
 //! ```text
@@ -24,7 +27,7 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
-use weave_engine::session::{paths_in, CandidateView, Engine, Schema, Snapshot};
+use weave_engine::session::{paths_in, CandidateView, Engine, Paths, Schema, Snapshot};
 
 type Handle = Mutex<Engine>;
 
@@ -120,6 +123,41 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeCreate(
         Box::into_raw(Box::new(Mutex::new(engine))) as jlong
     })
     .unwrap_or(0)
+}
+
+/// 从 APK 内的资源区间创建：`spec` 为 `key=path@offset+len;…`，`cache_kb` 为每个分块压缩文件的缓存预算。
+/// Create from asset ranges inside the APK: `spec` is `key=path@offset+len;…`; `cache_kb` is the
+/// cache budget per block-compressed file.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeCreateFromSpec(
+    mut env: JNIEnv,
+    _c: JClass,
+    spec: JString,
+    user_dir: JString,
+    cache_kb: jint,
+) -> jlong {
+    let (Some(spec), Some(user)) = (get_string(&mut env, &spec), get_string(&mut env, &user_dir))
+    else {
+        return 0;
+    };
+    catch_unwind(|| {
+        if cache_kb > 0 {
+            weave_dict::blob::set_cache_budget(cache_kb as usize * 1024);
+        }
+        let engine = Engine::new(&Paths::from_spec(&spec, &PathBuf::from(user)));
+        Box::into_raw(Box::new(Mutex::new(engine))) as jlong
+    })
+    .unwrap_or(0)
+}
+
+/// 清空解压缓存（系统内存紧张时）。 Drop decode caches under memory pressure.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeTrim(
+    _env: JNIEnv,
+    _c: JClass,
+    h: jlong,
+) {
+    with_engine(h, (), |e| e.trim_caches());
 }
 
 #[no_mangle]

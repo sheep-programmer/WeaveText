@@ -111,7 +111,8 @@ fun VoiceListScreen() {
             Text("导入")
         }
     }) {
-        OfflineModelsCard(remember { deps.models() }) { nav.push(Route.Models) }
+        // 轻量版没有端侧识别运行时，也就不提供离线模型。 Lite has no on-device runtime, so no models.
+        if (com.weavetext.ime.BuildConfig.LOCAL_ASR) OfflineModelsCard(remember { deps.models() }) { nav.push(Route.Models) }
         if (plugins.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(painterResource(R.drawable.ic_waveform), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)

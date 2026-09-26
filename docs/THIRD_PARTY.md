@@ -9,13 +9,13 @@ Every new dependency must be registered here.
 | 数据 Data | 来源 Source | 许可证 License | 用途 Use | 说明 Notes |
 |---|---|---|---|---|
 | 万象拼音词库（`zi`、`jichu`、`diming`、`renming`、`mingren`、`shici`、`lianxiang`、`duoyin`、`en`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 拼音字词与词频、英文词频 | 构建时去声调并编译为 `pinyin.wvl` / `english.wvl`；应用「关于」页署名 |
-| 简繁转换表（`STPhrases`、`STCharacters`） | [OpenCC](https://github.com/BYVoid/OpenCC)，经 rime_wanxiang 整理 | Apache-2.0 / CC BY 4.0 | 繁体输出 | 原样随包分发（文本） |
-| 表情联想表（`emoji.txt`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 词后表情候选 | 原样随包分发（文本） |
+| 简繁转换表（`STPhrases`、`STCharacters`） | [OpenCC](https://github.com/BYVoid/OpenCC)，经 rime_wanxiang 整理 | Apache-2.0 / CC BY 4.0 | 繁体输出 | 内容不变，以分块压缩文件 `st_*.wvz` 随包分发 |
+| 表情联想表（`emoji.txt`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 词后表情候选 | 内容不变，以分块压缩文件 `emoji.wvz` 随包分发 |
 | 字符搭配模型（`grammar.wvg`） | [amzxyz/RIME-LMDG](https://github.com/amzxyz/RIME-LMDG) `wanxiang-lts-zh-hans.gram` | CC BY 4.0 | 整句组词 | 构建时读取原始模型，剪枝为 2~3 字搭配并转为织文格式 |
-| 五笔 86 码表 | [rime/rime-wubi](https://github.com/rime/rime-wubi) | LGPL-3.0 | 五笔 86 编码 | 作为**独立、可替换**的数据文件 `wubi86.wvl` 分发，附许可证全文与源地址；后续计划替换为自建码表 |
+| 五笔 86 码表 | [rime/rime-wubi](https://github.com/rime/rime-wubi) | LGPL-3.0 | 五笔 86 编码 | 作为**独立、可替换**的数据文件 `wubi86.wvz` 分发，附许可证全文与源地址；后续计划替换为自建码表 |
 
 *Wanxiang data (CC BY 4.0) is tone-stripped and compiled into `pinyin.wvl` / `english.wvl`, attributed on the
-About page. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvl` with the license
+About page. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvz` with the license
 text and source link; a self-built table is planned.*
 
 署名 / Attribution: 「本应用词库数据部分来自万象拼音（amzxyz/rime_wanxiang），依 CC BY 4.0 授权使用，已做格式转换。」
@@ -34,6 +34,8 @@ text and source link; a self-built table is planned.*
 | Crate | 许可证 License | 用途 Use |
 |---|---|---|
 | memmap2 | MIT OR Apache-2.0 | 词库 mmap / dictionary mmap |
+| brotli-decompressor（含 alloc-no-stdlib、alloc-stdlib） | BSD-3-Clause OR MIT（alloc-*：BSD-3-Clause） | 分块压缩词库解压 / decoding block-compressed data |
+| brotli（仅构建工具 `wvpack`，不进 APK / build tool only） | BSD-3-Clause AND MIT | 生成 `.wvz` / packing `.wvz` |
 | jni | MIT OR Apache-2.0 | Android JNI 绑定 / JNI bindings |
 | tar | MIT OR Apache-2.0 | 模型包解压 / model archive extraction |
 | bzip2（libbz2-rs-sys，纯 Rust） | MIT OR Apache-2.0（libbz2-rs-sys：bzip2 license） | 模型包解压 / model archive extraction |

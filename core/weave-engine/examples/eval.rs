@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use weave_dict::blob::Source;
 use weave_dict::syllable;
 use weave_engine::session::{Engine, Paths, Schema};
 use weave_engine::shuangpin::{self, SchemeId};
@@ -43,15 +44,20 @@ fn main() {
         .unwrap_or(0);
     let opt = |n: &str| {
         let p = data.join(n);
-        p.exists().then_some(p)
+        let z = data.join("pinyin.wvz");
+        if p.exists() {
+            Some(Source::file(p))
+        } else {
+            z.exists().then(|| Source::file(z))
+        }
     };
+    if let Some(mb) = arg(&args, "--cache-mb").and_then(|v| v.parse::<usize>().ok()) {
+        weave_dict::blob::set_cache_budget(mb << 20);
+    }
     let paths = Paths {
         pinyin_lexicon: opt("pinyin.wvl"),
-        wubi_lexicon: None,
-        english_lexicon: None,
-        convert_dir: None,
-        gram_model: arg(&args, "--gram").map(PathBuf::from),
-        user_dir: None,
+        gram_model: arg(&args, "--gram").map(|g| Source::file(PathBuf::from(g))),
+        ..Default::default()
     };
     let mut e = Engine::new(&paths);
     e.set_learning(false);
@@ -126,6 +132,9 @@ fn main() {
             shown += 1;
             println!("  ✗ {sentence}  →  {got}");
         }
+    }
+    for (name, hits, misses) in e.cache_stats() {
+        eprintln!("cache {name}: {hits} hits, {misses} misses");
     }
     let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
     println!(

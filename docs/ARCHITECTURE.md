@@ -27,21 +27,52 @@ English: the UI talks only to `InputController` and `VoiceHub`. The engine is a 
 machine returning a snapshot (commit text, preedit, candidates) after every key. The preedit is never
 written into the editor; only final text is committed, which avoids per-app composing-text quirks.
 
-## 2. 词库格式 / Lexicon format（`.wvl` v3）
+## 2. 词库格式 / Lexicon format（`.wvl` v4）
 
 中文：一种格式同时服务拼音（符号 = 音节 ID）与五笔/英文（符号 = 字母 1..26）。前缀树按 BFS 顺序存放，
 同一父节点的子节点连续且按符号升序，因此：
 
-- 节点只存 8 字节：`sym | best | child_count | entry_count`（`best` = 子树最小代价，供补全做最佳优先搜索）；
+- 节点字段**按列存放**：`sym`、`best`（子树最小代价，供补全做最佳优先搜索）、子节点数、词条数各成一列，
+  每个节点共 8 字节；二分查找只读 `sym` 列，前缀和只读两个计数列，同类数值挨在一起也更好压缩；
 - 首个子节点、首个词条的下标由「每 16 个节点一个检查点 + 组内前缀和」推出，不必逐节点存储；
-- 词条 6 字节：`text_id | cost`，`cost = round(-ln p × 1000)`；文字去重后集中存放。
+- 词条 3 字节：`cost`（`round(-ln p × 1000)`）与文本长度两列；文本按词条顺序紧挨存放，同一节点的候选
+  落在同一个压缩块里，每 16 个词条存一个文本起点；
+- 拼音词库的文本按**音节内序号**编码：第 i 个字记为它在第 i 个音节常用字表里的名次（几乎都 < 224，占 1 字节），
+  字数与音节数不符的词条原样存 UTF-8。压缩后文本只有 UTF-8 的约 30%。
 
-文件直接 `mmap`，启动时不解析、不校验全文件：加载时间 < 1 ms，内存按需分页。
+整个拼音词库原始 43 MB（旧格式 73 MB）。
 
 English: one format for pinyin (symbol = syllable id) and Wubi/English (symbol = letter). The trie is stored
-in BFS order with contiguous, sorted siblings, so nodes need only 8 bytes; child/entry offsets are derived
-from a checkpoint every 16 nodes plus an in-group prefix sum. Entries are 6 bytes. Files are mmapped with no
-load-time parsing (< 1 ms).
+in BFS order with contiguous, sorted siblings. Node fields are **columnar** (`sym`, `best`, child count, entry
+count; 8 bytes per node in total), so a binary search reads only the `sym` column and like values compress
+together; child/entry offsets come from a checkpoint every 16 nodes plus an in-group prefix sum. Entries are
+3 bytes (cost and text length columns); texts sit in entry order so a node's candidates share a compressed
+block. Pinyin texts are coded as **per-syllable ranks** (the i-th character's rank in the i-th syllable's
+character table, almost always one byte), about 30% of UTF-8 once compressed. The pinyin lexicon is 43 MB raw
+(73 MB in the old format).
+
+### 2.1 分块压缩与免解压 / Block compression without extraction（`.wvz`）
+
+中文：所有数据文件（词库、搭配模型、简繁表、表情表）在打包时切成 16 KiB 的块，每块独立 brotli 压缩，
+得到 `.wvz`（WVPK 格式，见 `weave-dict/src/blob.rs`）。APK 内这些文件**不压缩存放**，内核按
+「APK 路径 + 偏移」直接读取，用到哪块才解压哪块，解压结果放进容量固定的 LRU 缓存（每个文件默认 12 MB，
+低内存设备 6 MB；系统内存紧张时清空）。因此：
+
+- 手机上不再解压出一份完整文件，**装机占用 ≈ APK 大小**，首次启动也不用等拷贝；
+- 全部数据在 APK 内共 24 MB（旧方案 APK 内 45 MB、解压后再占 100 MB）；
+- 桌面与测试仍可直接 mmap 原始文件；两种来源给出的结果逐字相同（`JniTest.packedSourcesInsideOneFile`）。
+
+实测（1000 句评测集，桌面）：原始文件每句 9.2 ms CPU，分块压缩 + 12 MB 缓存 16.0 ms；准确率完全一致。
+块大小 16 KiB 是在 16/32/64 KiB 中实测命中率与单块解压耗时最好的；共享字典实测无收益，未采用。
+
+English: every data file is cut into 16 KiB blocks, each brotli-compressed on its own (`.wvz`, WVPK format,
+`weave-dict/src/blob.rs`). The APK stores them uncompressed; the engine reads them by APK path + offset and
+decodes blocks on first touch into a bounded LRU cache (12 MB per file by default, 6 MB on low-RAM devices,
+dropped under memory pressure). Nothing is extracted on the device — the footprint is about the APK size —
+and all data takes 24 MB inside the APK (45 MB compressed plus 100 MB extracted before). Desktop and tests can
+still mmap the raw files, with identical results. Measured on 1000 sentences (desktop): 9.2 ms CPU per
+sentence raw, 16.0 ms packed with a 12 MB cache, identical accuracy. 16 KiB blocks measured best of
+16/32/64 KiB; a shared dictionary brought no gain and is not used.
 
 ## 3. 解码 / Decoding
 

@@ -5,8 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "WeaveText dictionary format: syllables, compiled lexicon trie, compiler"
 
+[features]
+# 构建工具才需要的 brotli 编码器；运行时只带解码器。 The encoder is for build tools only.
+pack = ["dep:brotli"]
+
 [dependencies]
 memmap2 = "0.9"
+brotli-decompressor = "5"
+brotli = { version = "8", optional = true }
 
 [[bin]]
 name = "dictgen"
@@ -15,3 +21,8 @@ path = "src/bin/dictgen.rs"
 [[bin]]
 name = "gramdump"
 path = "src/bin/gramdump.rs"
+
+[[bin]]
+name = "wvpack"
+path = "src/bin/wvpack.rs"
+required-features = ["pack"]

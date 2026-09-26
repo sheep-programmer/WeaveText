@@ -33,7 +33,7 @@ pub fn lookup(lex: &Lexicon, code: &str, completion_limit: usize) -> Vec<TableCa
     let mut out: Vec<TableCand> = lex
         .entries(node)
         .map(|e| TableCand {
-            text: lex.text(e.text_id).to_string(),
+            text: lex.text(e.text_id, &[]),
             comment: String::new(),
             cost: e.cost as u32,
             exact: true,
@@ -58,7 +58,7 @@ pub fn lookup(lex: &Lexicon, code: &str, completion_limit: usize) -> Vec<TableCa
         }
         for e in lex.entries(n) {
             completions.push(TableCand {
-                text: lex.text(e.text_id).to_string(),
+                text: lex.text(e.text_id, &[]),
                 comment: suffix.clone(),
                 cost: e.cost as u32,
                 exact: false,
@@ -82,7 +82,7 @@ pub fn reverse_index(lex: &Lexicon) -> HashMap<String, String> {
     let mut stack: Vec<(NodeId, String)> = vec![(ROOT, String::new())];
     while let Some((n, code)) = stack.pop() {
         for e in lex.entries(n) {
-            let t = lex.text(e.text_id);
+            let t = lex.text(e.text_id, &[]);
             let slot = map.entry(t.to_string()).or_default();
             if code.len() > slot.len() {
                 *slot = code.clone();

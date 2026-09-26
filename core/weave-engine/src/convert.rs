@@ -5,10 +5,14 @@
 //! Data are tab-separated text files: `source<TAB>target1 target2 …` (OpenCC dictionary format).
 
 use std::collections::HashMap;
-use std::path::Path;
 
-fn load_map(path: &Path) -> HashMap<String, Vec<String>> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+use weave_dict::blob::{Blob, Source};
+
+fn load_map(src: &Source) -> HashMap<String, Vec<String>> {
+    let Ok(blob) = Blob::open(src) else {
+        return HashMap::new();
+    };
+    let Ok(text) = String::from_utf8(blob.to_vec()) else {
         return HashMap::new();
     };
     let mut map = HashMap::new();
@@ -42,7 +46,7 @@ pub struct Traditional {
 
 impl Traditional {
     /// 从 `STPhrases.txt` 与 `STCharacters.txt` 加载。 Load from OpenCC text dictionaries.
-    pub fn load(phrases: &Path, characters: &Path) -> Self {
+    pub fn load(phrases: &Source, characters: &Source) -> Self {
         let phrases: HashMap<String, String> = load_map(phrases)
             .into_iter()
             .map(|(k, mut v)| (k, v.swap_remove(0)))
@@ -111,8 +115,8 @@ pub struct Emoji {
 
 impl Emoji {
     /// 从 `emoji.txt` 加载（目标里与源相同的项会被去掉）。 Load; targets equal to the source are dropped.
-    pub fn load(path: &Path) -> Self {
-        let mut map = load_map(path);
+    pub fn load(src: &Source) -> Self {
+        let mut map = load_map(src);
         map.retain(|k, v| {
             v.retain(|t| t != k && !t.is_ascii() && !t.chars().any(is_han));
             !v.is_empty()

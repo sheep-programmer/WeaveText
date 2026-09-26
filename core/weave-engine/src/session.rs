@@ -18,6 +18,7 @@ use crate::shuangpin::{self, SchemeId};
 use crate::t9::{self, T9Input, T9Unit};
 use crate::table;
 use crate::userdict::UserDict;
+use weave_dict::blob::Source;
 use weave_dict::gram::Gram;
 
 /// 输入方案。 Input schema.
@@ -152,19 +153,75 @@ struct Selection {
     consumed_before: usize,
 }
 
-/// 资源文件路径。 Resource file locations.
+/// 资源位置：普通文件，或 APK 内的一段区间（见 [`Source`]）。
+/// Resource locations: plain files or byte ranges inside the APK (see [`Source`]).
 #[derive(Clone, Debug, Default)]
 pub struct Paths {
-    pub pinyin_lexicon: Option<PathBuf>,
-    pub wubi_lexicon: Option<PathBuf>,
-    pub english_lexicon: Option<PathBuf>,
-    /// 简繁与表情数据目录（STPhrases.txt / STCharacters.txt / emoji.txt）。
-    /// Directory holding conversion data.
-    pub convert_dir: Option<PathBuf>,
+    pub pinyin_lexicon: Option<Source>,
+    pub wubi_lexicon: Option<Source>,
+    pub english_lexicon: Option<Source>,
+    /// OpenCC 简繁词组表与单字表。 OpenCC phrase and character tables.
+    pub st_phrases: Option<Source>,
+    pub st_characters: Option<Source>,
+    /// 表情联想表。 Emoji suggestion table.
+    pub emoji: Option<Source>,
     /// 字符搭配模型（.wvg）。 Character collocation model.
-    pub gram_model: Option<PathBuf>,
+    pub gram_model: Option<Source>,
     /// 用户数据目录。 User data directory.
     pub user_dir: Option<PathBuf>,
+}
+
+/// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
+/// Resource key → raw file name; packed copies are named `<key>.wvz`.
+pub const RESOURCES: [(&str, &str); 7] = [
+    ("pinyin", "pinyin.wvl"),
+    ("wubi86", "wubi86.wvl"),
+    ("english", "english.wvl"),
+    ("grammar", "grammar.wvg"),
+    ("st_phrases", "STPhrases.txt"),
+    ("st_characters", "STCharacters.txt"),
+    ("emoji", "emoji.txt"),
+];
+
+impl Paths {
+    /// 按资源名设置来源；未知名字返回 false。 Set a source by resource key; false for unknown keys.
+    pub fn set(&mut self, key: &str, src: Source) -> bool {
+        let slot = match key {
+            "pinyin" => &mut self.pinyin_lexicon,
+            "wubi86" => &mut self.wubi_lexicon,
+            "english" => &mut self.english_lexicon,
+            "grammar" => &mut self.gram_model,
+            "st_phrases" => &mut self.st_phrases,
+            "st_characters" => &mut self.st_characters,
+            "emoji" => &mut self.emoji,
+            _ => return false,
+        };
+        *slot = Some(src);
+        true
+    }
+
+    /// 解析 `key=path@offset+len;…`（安卓端把 APK 内资源的位置传进来）。
+    /// Parse `key=path@offset+len;…`, how Android passes asset ranges inside the APK.
+    pub fn from_spec(spec: &str, user_dir: &Path) -> Paths {
+        let mut paths = Paths {
+            user_dir: Some(user_dir.to_path_buf()),
+            ..Default::default()
+        };
+        for item in spec.split(';').filter(|s| !s.is_empty()) {
+            let Some((key, loc)) = item.split_once('=') else {
+                continue;
+            };
+            let src = match loc.rsplit_once('@').and_then(|(p, r)| {
+                let (o, l) = r.split_once('+')?;
+                Some(Source::range(p, o.parse().ok()?, l.parse().ok()?))
+            }) {
+                Some(s) => s,
+                None => Source::file(loc),
+            };
+            paths.set(key, src);
+        }
+        paths
+    }
 }
 
 /// 输入法引擎。 The IME engine.
@@ -186,14 +243,14 @@ pub struct Engine {
     commit: String,
     last_word: Option<String>,
     wubi_reverse: Option<HashMap<String, String>>,
-    convert_dir: Option<PathBuf>,
+    st_sources: (Option<Source>, Option<Source>),
     traditional: Option<Traditional>,
     emoji: Emoji,
     gram: Option<Gram>,
 }
 
-fn open_lex(p: &Option<PathBuf>) -> Option<Lexicon> {
-    p.as_ref().and_then(|p| Lexicon::open(p).ok())
+fn open_lex(p: &Option<Source>) -> Option<Lexicon> {
+    p.as_ref().and_then(|p| Lexicon::open_source(p).ok())
 }
 
 const PAGE_INITIAL: usize = 60;
@@ -222,15 +279,38 @@ impl Engine {
             commit: String::new(),
             last_word: None,
             wubi_reverse: None,
-            emoji: paths
-                .convert_dir
-                .as_ref()
-                .map(|d| Emoji::load(&d.join("emoji.txt")))
-                .unwrap_or_default(),
-            convert_dir: paths.convert_dir.clone(),
+            emoji: paths.emoji.as_ref().map(Emoji::load).unwrap_or_default(),
+            st_sources: (paths.st_phrases.clone(), paths.st_characters.clone()),
             traditional: None,
-            gram: paths.gram_model.as_ref().and_then(|p| Gram::open(p).ok()),
+            gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
         }
+    }
+
+    /// 清空所有分块压缩数据的解压缓存。 Drop every packed file's decode cache.
+    pub fn trim_caches(&self) {
+        for l in [&self.pinyin, &self.wubi, &self.english].into_iter().flatten() {
+            l.blob().trim();
+        }
+        if let Some(g) = &self.gram {
+            g.blob().trim();
+        }
+    }
+
+    /// 分块压缩数据的缓存统计：(资源, 命中, 未命中)。 Cache stats of packed data: (resource, hits, misses).
+    pub fn cache_stats(&self) -> Vec<(&'static str, u64, u64)> {
+        let mut out = Vec::new();
+        for (name, blob) in [
+            ("pinyin", self.pinyin.as_ref().map(|l| l.blob())),
+            ("wubi86", self.wubi.as_ref().map(|l| l.blob())),
+            ("english", self.english.as_ref().map(|l| l.blob())),
+            ("grammar", self.gram.as_ref().map(|g| g.blob())),
+        ] {
+            if let Some(b) = blob.filter(|b| b.is_packed()) {
+                let (h, m) = b.cache_stats();
+                out.push((name, h, m));
+            }
+        }
+        out
     }
 
     /// 输出前的转换（繁体）。 Output conversion (traditional).
@@ -239,9 +319,9 @@ impl Engine {
             return s.to_owned();
         }
         if self.traditional.is_none() {
-            let t = match &self.convert_dir {
-                Some(d) => Traditional::load(&d.join("STPhrases.txt"), &d.join("STCharacters.txt")),
-                None => Traditional::default(),
+            let t = match &self.st_sources {
+                (Some(p), Some(c)) => Traditional::load(p, c),
+                _ => Traditional::default(),
             };
             self.traditional = Some(t);
         }
@@ -909,7 +989,7 @@ impl Engine {
         let Some(best) = en.entries(node).min_by_key(|e| e.cost) else {
             return;
         };
-        let text = en.text(best.text_id).to_string();
+        let text = en.text(best.text_id, &key);
         if self
             .cands
             .iter()
@@ -1124,22 +1204,23 @@ fn t9_option_label(u: &T9Unit) -> String {
 }
 
 /// 便捷：从目录加载标准文件名的资源。 Load resources with standard names from a directory.
+/// 从目录收集资源：优先原始文件，没有时找同名 `.wvz` 分块压缩版。
+/// Collect resources from a directory: raw files first, falling back to packed `.wvz` copies.
 pub fn paths_in(data_dir: &Path, user_dir: &Path) -> Paths {
-    let opt = |name: &str| {
-        let p = data_dir.join(name);
-        p.exists().then_some(p)
-    };
-    Paths {
-        pinyin_lexicon: opt("pinyin.wvl"),
-        wubi_lexicon: opt("wubi86.wvl"),
-        english_lexicon: opt("english.wvl"),
-        convert_dir: data_dir
-            .join("emoji.txt")
-            .exists()
-            .then(|| data_dir.to_path_buf()),
-        gram_model: opt("grammar.wvg"),
+    let mut paths = Paths {
         user_dir: Some(user_dir.to_path_buf()),
+        ..Default::default()
+    };
+    for (key, name) in RESOURCES {
+        let raw = data_dir.join(name);
+        let packed = data_dir.join(format!("{key}.wvz"));
+        if raw.exists() {
+            paths.set(key, Source::file(raw));
+        } else if packed.exists() {
+            paths.set(key, Source::file(packed));
+        }
     }
+    paths
 }
 
 #[cfg(test)]

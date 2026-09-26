@@ -58,8 +58,13 @@ verifies SHA-256 and extracts only the needed files into uncompressed assets.*
 
 | 构建 Build | 命令 Command | 体积 Size |
 |---|---|---|
-| 完整版（内置两遍离线识别） / full | `./gradlew :app:assembleRelease` | ≈ 160 MB |
-| 精简版（语音模型按需下载） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 75 MB |
+| 离线语音版（内置运行时与两遍识别模型） / offline voice | `./gradlew :app:assembleRelease` | ≈ 146 MB |
+| 轻量版（不含端侧语音识别） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 30 MB |
+
+轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型，「本地离线识别」与「离线模型」入口不会出现；语音输入使用系统识别或插件。
+两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
+*Lite drops the sherpa-onnx runtime (~27 MB) and models, hiding the on-device engine and the models page; voice uses the
+system recognizer or plugins. Both builds read dictionaries straight from the APK, so the footprint is about the APK size.*
 
 正式版只含 arm64-v8a；调试版额外含 x86_64 以便模拟器。`-Pweave.abis=arm64-v8a,x86_64` 可覆盖。
 *Release builds are arm64-v8a only; debug adds x86_64 for emulators; override with `-Pweave.abis`.*

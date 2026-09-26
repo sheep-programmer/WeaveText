@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 weave-engine = { path = "../weave-engine" }
+weave-dict = { path = "../weave-dict" }
 jni = "0.21"
 weave-plugin = { path = "../weave-plugin" }
 serde_json = "1"

@@ -1,0 +1,59 @@
+# 每次推送与合并请求：内核测试、Android 单元测试与 lint、桌面 JNI 测试。
+# On every push and pull request: engine tests, Android unit tests and lint, desktop JNI tests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      # 源数据（固定版本）与测试用的运行时、模型。 Pinned source data plus test-time downloads.
+      - uses: actions/cache@v4
+        with:
+          path: .ref
+          key: ref-${{ hashFiles('data/build.sh', 'android/app/src/main/assets/models/catalog.json', 'android/native-test/build.gradle.kts') }}
+          restore-keys: ref-
+
+      - name: Build dictionaries
+        run: ./data/build.sh
+
+      - name: Engine tests
+        working-directory: core
+        run: cargo test --workspace --features weave-dict/pack
+
+      # JVM 测试用不到安卓原生库，跳过交叉编译。 JVM tests need no Android natives.
+      - name: Android unit tests and lint
+        working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :native-test:test -Pweave.skipRust=true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: reports
+          path: |
+            android/app/build/reports
+            android/native-test/build/reports
