@@ -157,6 +157,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         feedback.soundStyle = WeavePrefs.soundStyle(prefs)
         feedback.soundVolume = WeavePrefs.soundVolume(prefs)
         previewEnabled = WeavePrefs.keyPreview(prefs)
+        keyboardView.splitWide = WeavePrefs.splitWide(prefs)
         applyTheme()
         applyEngineOptions()
         applySchemaPref()
@@ -289,6 +290,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 feedback.soundVolume = WeavePrefs.soundVolume(p)
             }
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
+            WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
             WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }

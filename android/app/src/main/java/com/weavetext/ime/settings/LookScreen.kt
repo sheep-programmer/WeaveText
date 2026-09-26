@@ -98,6 +98,10 @@ fun LookScreen() {
         GroupCard {
             SwitchRow("按键气泡", "按下时放大显示字符", WeavePrefs.keyPreview(p)) { p.edit().putBoolean(WeavePrefs.KEY_PREVIEW, it).apply() }
             RowDivider(false)
+            SwitchRow("宽屏分体键盘", "横屏、平板或展开的折叠屏上，26 键分成左右两半", WeavePrefs.splitWide(p)) {
+                p.edit().putBoolean(WeavePrefs.SPLIT_WIDE, it).apply()
+            }
+            RowDivider(false)
             SwitchRow("记录剪贴板", "在本机保存 24 小时，密码框中不记录；关闭后只显示当前剪贴板", WeavePrefs.clipboardRecord(p), subtitleMaxLines = 2) {
                 p.edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, it).apply()
             }

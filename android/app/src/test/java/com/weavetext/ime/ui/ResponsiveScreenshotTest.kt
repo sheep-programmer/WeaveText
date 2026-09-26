@@ -87,6 +87,27 @@ class ResponsiveScreenshotTest : KeyboardSnapshotSupport() {
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landVoice() = voice("land")
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landT9() = t9("land")
 
+    // ---------------------------------------------------------------- 宽屏分体 / wide split
+
+    @Config(qualifiers = "w840dp-h1200dp-port-xhdpi") @Test fun wideSplitMain() = main("w840_split")
+    @Config(qualifiers = "w840dp-h1200dp-port-xhdpi") @Test fun wideSplitEnglishDark() {
+        val (_, c) = keyboard(true)
+        c.previewState(ImeState(chinese = false, engineReady = true))
+        snap("w840_split_english_dark")
+    }
+    @Config(qualifiers = "w840dp-h1200dp-port-xhdpi") @Test fun wideSplitOff() {
+        keyboard(false) { putBoolean(WeavePrefs.SPLIT_WIDE, false) }
+        snap("w840_unsplit")
+    }
+    @Config(qualifiers = "w840dp-h1200dp-port-xhdpi") @Test fun wideSplitCellsLeaveNoDeadZone() {
+        val (k, _) = keyboard(false)
+        val kv = k.keyboardView
+        val t = kv.keyOf('t'.code)!!
+        val y = kv.keyOf('y'.code)!!
+        org.junit.Assert.assertTrue("gap between T and Y", y.rect.left - t.rect.right > kv.width * 0.15f)
+        org.junit.Assert.assertEquals(t.cell.right, y.cell.left, 0.5f)
+    }
+
     // ---------------------------------------------------------------- 字号 1.3 / font scale 1.3
 
     @Test fun font13Main() { fontScale(1.3f); main("font13") }

@@ -131,9 +131,13 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         invalidate()
     }
 
+    /** 允许宽屏分体（设置项）。 Split allowed on wide screens (setting). */
+    var splitWide = true
+        set(v) { if (field != v) { field = v; relayout() } }
+
     fun setQwerty(list: List<Key>) {
         keys = list; side = null; layoutKind = Layouts.QWERTY
-        builder = { w -> Layouts.layoutQwerty(list, w, metrics, layoutStyle.qwerty) }
+        builder = { w -> Layouts.layoutQwerty(list, w, metrics, layoutStyle.qwerty, Layouts.splitGap(w, metrics, splitWide)) }
         relayout()
     }
 

@@ -64,6 +64,8 @@ object WeavePrefs {
     const val TRADITIONAL = "traditional"
     /** 0 关，1 靠左，2 靠右。 0 off, 1 left, 2 right. */
     const val ONE_HAND = "one_hand"
+    /** 宽屏（键区宽于 600dp）时 26 键分成左右两半（06 §8）。 Split QWERTY on wide screens. */
+    const val SPLIT_WIDE = "split_wide"
     /** 悬浮键盘（06 §5）。 Floating keyboard. */
     const val FLOATING = "floating"
     /** 悬浮卡片位置 "fx,fy"（0–1 的比例），横竖屏各记一份。 Card position as fractions, per orientation. */
@@ -138,5 +140,6 @@ object WeavePrefs {
     fun traditional(p: SharedPreferences) = p.getBoolean(TRADITIONAL, false)
     fun oneHand(p: SharedPreferences) = p.getInt(ONE_HAND, 0)
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
+    fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
 }

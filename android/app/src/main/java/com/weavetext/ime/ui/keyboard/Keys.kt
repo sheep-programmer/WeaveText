@@ -173,11 +173,19 @@ object Layouts {
         return keys
     }
 
+    /** 键区宽于此值（dp）时分体。 Split when the key area is wider than this (dp). */
+    const val SPLIT_MIN_DP = 600f
+
+    /** 分体中缝宽度 px；不分体为 0。 Width of the split gap in px; 0 when not split. */
+    fun splitGap(w: Float, m: KbMetrics, allowed: Boolean): Float =
+        if (allowed && w / m.density > SPLIT_MIN_DP) w * 0.2f else 0f
+
     /**
      * 布置 26 键几何：单位宽 = 可用宽 / max(10, 最宽行权重)，较窄的行居中，行两端空白并入首尾键的触控区（无死区）。
      * Lay out QWERTY: unit = width / max(10, widest row); narrower rows are centred and their side gaps join the edge keys.
      */
-    fun layoutQwerty(keys: List<Key>, w: Float, m: KbMetrics, spec: QwertySpec = DEFAULT.qwerty) {
+    fun layoutQwerty(keys: List<Key>, w: Float, m: KbMetrics, spec: QwertySpec = DEFAULT.qwerty, splitGap: Float = 0f) {
+        if (splitGap > 0f) { layoutSplit(keys, w, m, spec, splitGap); return }
         val rows = (keys.maxOfOrNull { it.row } ?: -1) + 1
         val rowWeights = FloatArray(rows)
         for (k in keys) rowWeights[k.row] += k.weight + k.gapBefore + k.gapAfter
@@ -222,6 +230,44 @@ object Layouts {
                 else -> m.label(spec.funcSize)
             }
         }
+    }
+
+    /**
+     * 分体：先按去掉中缝的宽度正常排布，再把中线右侧的键整体右移；跨中线的功能键（空格）横跨中缝，
+     * 跨中线的字母键按中心归到一侧。中缝的触控区两侧各分一半，没有死区。
+     * Split: lay out at the width minus the gap, then shift keys right of the midline; function keys straddling
+     * it (the space bar) span the gap, straddling letters go by their centre. The gap's touch area is shared.
+     */
+    private fun layoutSplit(keys: List<Key>, w: Float, m: KbMetrics, spec: QwertySpec, gap: Float) {
+        val inner = w - gap
+        layoutQwerty(keys, inner, m, spec)
+        val mid = inner / 2f
+        val eps = 1f
+        val rows = (keys.maxOfOrNull { it.row } ?: -1) + 1
+        for (r in 0 until rows) {
+            var lastLeft: Key? = null
+            var firstRight: Key? = null
+            for (k in keys) {
+                if (k.row != r) continue
+                val straddles = k.rect.left < mid - eps && k.rect.right > mid + eps
+                when {
+                    straddles && !(k.code in 'a'.code..'z'.code) -> { k.rect.right += gap; k.cell.right += gap }
+                    k.rect.centerX() > mid + eps -> {
+                        k.rect.offset(gap, 0f); k.cell.offset(gap, 0f)
+                        if (firstRight == null) firstRight = k
+                    }
+                    else -> lastLeft = k
+                }
+            }
+            val a = lastLeft
+            val b = firstRight
+            if (a != null && b != null && b.cell.left > a.cell.right) {
+                val half = (a.cell.right + b.cell.left) / 2f
+                a.cell.right = half
+                b.cell.left = half
+            }
+        }
+        for (k in keys) if (k.cell.right >= inner - 1f && k.cell.right < w) k.cell.right = w
     }
 
     private val T9_LETTERS = arrayOf("ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ")
