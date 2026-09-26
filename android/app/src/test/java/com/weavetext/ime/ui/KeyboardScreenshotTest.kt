@@ -172,6 +172,24 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("english_typing_light")
     }
 
+    /** 按住字母时的预览气泡（单独的小视图）。 The key-preview bubble (its own small view) while a letter is held. */
+    @Test fun keyPreview() {
+        val (k, _) = keyboard(false)
+        val kv = k.keyboardView
+        val g = kv.keyOf('g'.code)!!
+        val t = android.os.SystemClock.uptimeMillis()
+        val e = android.view.MotionEvent.obtain(t, t, android.view.MotionEvent.ACTION_DOWN, g.rect.centerX(), g.rect.centerY(), 0)
+        kv.dispatchTouchEvent(e)
+        e.recycle()
+        idle()
+        assertTrue(k.overlay!!.bubbleVisible)
+        assertTrue("bubble view is small", k.overlay!!.bubbleView.width in 1 until k.view.width / 2)
+        snap("key_preview_light")
+        kv.cancelTouch()
+        idle()
+        assertEquals(android.view.View.INVISIBLE, k.overlay!!.bubbleView.visibility)
+    }
+
     @Test fun numberPad() {
         val (k, _) = keyboard(false)
         k.onKey(k.keyboardView.keyOf(KeyCode.NUMBER)!!)

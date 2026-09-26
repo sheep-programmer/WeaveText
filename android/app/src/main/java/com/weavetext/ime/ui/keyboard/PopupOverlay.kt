@@ -32,13 +32,22 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private val bubble = RectF()
     private var bubbleText = ""
     private var bubbleAccent = false
-    private var bubbleAlpha = 0f
     private var bubbleShown = false
     private val fadeOut = Runnable { animateBubbleOut() }
-    private var bubbleAnim: ValueAnimator? = null
     /** 与按键相连的气泡轮廓（显示时构建一次）。 Attached bubble outline, built once per show. */
     private val bubblePath = Path()
     private var bubbleAttached = false
+    /** 气泡在自己的小视图里画（与本层同一坐标原点）。 [bubbleView] 左上角在本层坐标中的位置。 */
+    private var bubbleOx = 0f
+    private var bubbleOy = 0f
+
+    /**
+     * 预览气泡单独一个小视图（需加到与本层相同的父布局、左上对齐）：每键只重录这一小块，
+     * 淡出只改视图透明度，不重画整个覆盖层。
+     * The preview bubble lives in its own small view (add it to the same parent, top-left aligned): a key
+     * press re-records only that view, and the fade only animates its alpha — the overlay is never redrawn.
+     */
+    val bubbleView: View = BubbleView(ctx)
 
     // 浮动组合串 / floating composing text
     private var preedit: String? = null
@@ -88,8 +97,12 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         metrics = s.metrics
         spec = s.layout.popup
         // API 28 起硬件加速支持 setShadowLayer。 HW shadow layers need API 28+.
-        if (android.os.Build.VERSION.SDK_INT < 28) setLayerType(LAYER_TYPE_SOFTWARE, null)
+        if (android.os.Build.VERSION.SDK_INT < 28) {
+            setLayerType(LAYER_TYPE_SOFTWARE, null)
+            bubbleView.setLayerType(LAYER_TYPE_SOFTWARE, null)
+        }
         invalidate()
+        bubbleView.invalidate()
     }
 
     /** 把 [src] 内的矩形映射到本层坐标。 Map a rect from [src] into overlay coordinates. */
@@ -108,7 +121,8 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     fun showBubble(key: RectF, label: String) {
         if (spec.bubble == "none") return
         removeCallbacks(fadeOut)
-        bubbleAnim?.cancel()
+        val bv = bubbleView
+        bv.animate().cancel()
         val m = metrics
         bubbleAttached = spec.bubble == "attached"
         if (bubbleAttached) {
@@ -138,36 +152,78 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         }
         bubbleText = label
         bubbleAccent = false
-        bubbleAlpha = 1f
         bubbleShown = true
-        invalidate()
+        // 视图只需覆盖气泡（与相连的按键）加阴影；尺寸只增不减，平时不触发布局。
+        // The view covers the bubble (and the joined key) plus the shadow; it only ever grows, so no layout per key.
+        val pad = m.dp(16f)
+        val bottom = if (bubbleAttached) key.bottom else bubble.bottom
+        bubbleOx = bubble.left.coerceAtMost(key.left) - pad
+        bubbleOy = bubble.top - pad
+        val needW = (maxOf(bubble.right, key.right) - bubbleOx + pad).toInt() + 1
+        val needH = (bottom - bubbleOy + pad).toInt() + 1
+        val lp = bv.layoutParams
+        if (lp != null && (lp.width < needW || lp.height < needH)) {
+            lp.width = maxOf(lp.width, needW)
+            lp.height = maxOf(lp.height, needH)
+            bv.layoutParams = lp
+        }
+        bv.translationX = bubbleOx
+        bv.translationY = bubbleOy
+        bv.alpha = 1f
+        bv.visibility = VISIBLE
+        bv.invalidate()
     }
 
     fun updateBubble(label: String, accent: Boolean) {
         if (!bubbleShown) return
         bubbleText = label
         bubbleAccent = accent
-        invalidate()
+        bubbleView.invalidate()
     }
 
     fun hideBubble(immediate: Boolean = false) {
         if (!bubbleShown) return
         if (immediate || animScale() == 0f) {
+            removeCallbacks(fadeOut)
+            bubbleView.animate().cancel()
             bubbleShown = false
-            invalidate()
+            bubbleView.visibility = INVISIBLE
         } else {
             postDelayed(fadeOut, 40)
         }
     }
 
+    /** 已显示气泡（测试用）。 Whether the preview bubble shows (for tests). */
+    val bubbleVisible get() = bubbleShown
+
     private fun animateBubbleOut() {
-        bubbleAnim = ValueAnimator.ofFloat(1f, 0f).apply {
-            duration = 70
-            addUpdateListener { bubbleAlpha = it.animatedValue as Float; invalidate() }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(a: android.animation.Animator) { if (bubbleAlpha <= 0.01f) bubbleShown = false; invalidate() }
-            })
-            start()
+        bubbleView.animate().alpha(0f).setDuration(70).withEndAction {
+            bubbleShown = false
+            bubbleView.visibility = INVISIBLE
+        }.start()
+    }
+
+    private inner class BubbleView(c: Context) : View(c) {
+        init { visibility = INVISIBLE }
+
+        // 淡出时不必离屏合成（填充与文字不重叠）。 No offscreen pass needed while fading.
+        override fun hasOverlappingRendering() = false
+
+        override fun onDraw(canvas: Canvas) {
+            if (!bubbleShown || !::palette.isInitialized) return
+            val p = palette
+            val m = metrics
+            val r = m.dp(spec.radius)
+            canvas.translate(-bubbleOx, -bubbleOy)
+            fill.color = p.popup
+            fill.alpha = 255
+            fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
+            if (bubbleAttached) canvas.drawPath(bubblePath, fill) else canvas.drawRoundRect(bubble, r, r, fill)
+            fill.clearShadowLayer()
+            text.color = if (bubbleAccent) p.keyAccent else p.label
+            text.textSize = m.dp(spec.textSize)
+            text.typeface = Typeface.DEFAULT
+            canvas.drawText(bubbleText, bubble.centerX(), bubble.centerY() - (text.ascent() + text.descent()) / 2, text)
         }
     }
 
@@ -369,7 +425,6 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         if (!::palette.isInitialized) return
         val p = palette
         val m = metrics
-        val r = m.dp(spec.radius)
         val pre = preedit
         if (pre != null) {
             fill.color = p.popup
@@ -389,19 +444,6 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             canvas.drawText(pre, x, preeditBox.centerY() - (text.ascent() + text.descent()) / 2, text)
             canvas.restore()
             text.textAlign = Paint.Align.CENTER
-        }
-        if (bubbleShown) {
-            fill.color = p.popup
-            fill.alpha = (255 * bubbleAlpha).toInt()
-            fill.setShadowLayer(m.dp(12f), 0f, m.dp(4f), p.popupShadow)
-            if (bubbleAttached) canvas.drawPath(bubblePath, fill) else canvas.drawRoundRect(bubble, r, r, fill)
-            fill.clearShadowLayer()
-            text.color = if (bubbleAccent) p.keyAccent else p.label
-            text.alpha = (255 * bubbleAlpha).toInt()
-            text.textSize = m.dp(spec.textSize)
-            text.typeface = Typeface.DEFAULT
-            canvas.drawText(bubbleText, bubble.centerX(), bubble.centerY() - (text.ascent() + text.descent()) / 2, text)
-            text.alpha = 255
         }
         if (altItems.isNotEmpty()) {
             canvas.save()

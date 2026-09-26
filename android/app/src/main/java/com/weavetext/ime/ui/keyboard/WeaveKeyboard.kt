@@ -141,6 +141,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         card.addView(board)
         card.addView(grip)
         root.addView(card)
+        // 预览气泡在覆盖层之下（长按浮层、提示盖在它上面）。 The preview bubble sits below the overlay.
+        root.addView(popup.bubbleView, FrameLayout.LayoutParams(0, 0, android.view.Gravity.TOP or android.view.Gravity.START))
         root.addView(popup, FrameLayout.LayoutParams(-1, -1))
         full.visibility = View.GONE
         root.setOnApplyWindowInsetsListener { _, insets ->

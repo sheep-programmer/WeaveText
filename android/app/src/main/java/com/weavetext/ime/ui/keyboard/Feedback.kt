@@ -40,8 +40,12 @@ class Feedback(ctx: Context) {
     private val thread = HandlerThread("weave-feedback").apply { start() }
     private val handler = Handler(thread.looper)
 
-    /** 0 关 1 系统 2 轻 3 中 4 强。 */
+    /** 0 关 1 系统 2 轻 3 中 4 强。振动效果在 feedback 线程预先建好。 Effects are prebuilt on the feedback thread. */
     var vibration = WeavePrefs.VIBRATION_DEFAULT
+        set(v) {
+            field = v
+            if (v >= 1 && vibrator != null) handler.post { effect(v) }
+        }
 
     /** [WeavePrefs.SOUND_STYLE] 的取值。 A [WeavePrefs.SOUND_STYLE] value. */
     @Volatile var soundStyle: String = WeavePrefs.SOUND_OFF
@@ -52,10 +56,13 @@ class Feedback(ctx: Context) {
     /** 0–100。 */
     @Volatile var soundVolume = WeavePrefs.SOUND_VOLUME_DEFAULT
 
+    /** 只在 feedback 线程访问。 Feedback thread only. */
     private val effects = arrayOfNulls<VibrationEffect>(5)
     /** 预先分配的投递任务：按键路径上零分配。 Preallocated tasks: no allocation on the key path. */
     private val soundTasks = Array(Sound.entries.size) { i -> Runnable { play(Sound.entries[i]) } }
-    private val vibrateTasks = Array(5) { lv -> Runnable { effects[lv]?.let { vibrator?.vibrate(it) } } }
+    private val vibrateTasks = Array(5) { lv -> Runnable { vibrate(lv) } }
+    /** 触摸反馈用途（遵从系统的触摸振动开关与强度）。 Touch usage, honouring the system touch-haptics setting. */
+    private val touchAttrs: Any? = if (Build.VERSION.SDK_INT >= 33) android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_TOUCH) else null
 
     // 以下只在 feedback 线程访问。 Accessed on the feedback thread only.
     private var pool: SoundPool? = null
@@ -140,18 +147,42 @@ class Feedback(ctx: Context) {
         }
     }
 
+    /**
+     * 按键振动。都投递到 feedback 线程，UI 线程上不走系统 IPC；只有 Android 13 以前的「系统」档
+     * 仍用 performHapticFeedback（需要它来遵从系统的触摸反馈开关）。
+     * Key haptics, posted to the feedback thread so the UI thread does no system IPC; only the "system"
+     * level before Android 13 still uses performHapticFeedback, which is what honours the system switch there.
+     */
     fun haptic(view: View) {
-        when (val lv = vibration) {
-            0 -> {}
-            1 -> view.performHapticFeedback(
+        val lv = vibration
+        if (lv == 0) return
+        if (lv == 1 && (Build.VERSION.SDK_INT < 33 || vibrator == null)) {
+            view.performHapticFeedback(
                 if (Build.VERSION.SDK_INT >= 27) HapticFeedbackConstants.KEYBOARD_PRESS else HapticFeedbackConstants.KEYBOARD_TAP,
             )
-            else -> {
-                val v = vibrator ?: return
-                if (effects[lv] == null) effects[lv] = build(v, lv)
-                handler.post(vibrateTasks[lv])
-            }
+            return
         }
+        if (vibrator == null) return
+        handler.post(vibrateTasks[lv])
+    }
+
+    /** feedback 线程上振动。 Vibrate, on the feedback thread. */
+    private fun vibrate(lv: Int) {
+        val v = vibrator ?: return
+        val e = effect(lv) ?: return
+        if (lv == 1 && Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes) else v.vibrate(e)
+    }
+
+    /** 取（必要时新建）某档的效果；feedback 线程。 Get or build the effect for a level, on the feedback thread. */
+    private fun effect(lv: Int): VibrationEffect? {
+        effects[lv]?.let { return it }
+        val v = vibrator ?: return null
+        val e = if (lv == 1) {
+            if (Build.VERSION.SDK_INT < 33) return null
+            VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
+        } else build(v, lv)
+        effects[lv] = e
+        return e
     }
 
     private fun build(v: Vibrator, lv: Int): VibrationEffect {
