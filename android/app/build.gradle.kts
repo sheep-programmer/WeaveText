@@ -109,6 +109,9 @@ val fetchSherpa by tasks.registering {
 val fetchBuiltinModels by tasks.registering {
     group = "weave"
     inputs.file(catalogFile)
+    // 轻量版与离线语音版的输出不同，必须作为输入，否则先构建轻量版后语音版会沿用空目录。
+    // Lite and voice produce different outputs; without this input a voice build after a lite one reuses the empty dir.
+    inputs.property("lite", liteBuild)
     outputs.dir(modelAssetsDir)
     doLast {
         @Suppress("UNCHECKED_CAST")
