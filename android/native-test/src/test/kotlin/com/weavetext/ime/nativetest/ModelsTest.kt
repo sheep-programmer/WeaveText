@@ -44,7 +44,8 @@ class ModelsTest {
     fun catalogParses() {
         val cat = ModelCatalog.parse(File("../app/src/main/assets/models/catalog.json").readText())
         assertTrue(cat.mirrors.first().template == "{url}")
-        assertTrue(cat.models.count { it.builtin } >= 2)
+        // 离线语音版只内置实时识别小模型，终稿模型改为按需安装。 Only the small streaming model is built in.
+        assertEquals(listOf("asr-stream-small"), cat.models.filter { it.builtin }.map { it.id })
         assertTrue(cat.models.all { m -> m.archiveSha256.length == 64 && m.files.isNotEmpty() && m.files.all { it.sha256.length == 64 } })
         assertTrue(cat.hfMirrors.isNotEmpty())
         assertTrue(cat.models.all { m -> m.archives.all { it.sha256.length == 64 && it.size > 0 } })

@@ -54,12 +54,12 @@ tasks.test {
     // 可选：真实插件目录与 16k wav（不在仓库中）。 Optional real plugins + wav (outside the repo).
     System.getenv("WEAVE_PLUGIN_DIR")?.let { systemProperty("weave.pluginDir", it) }
     System.getenv("WEAVE_TEST_WAV")?.let { systemProperty("weave.wav", it) }
-    systemProperty("weave.models", project(":app").layout.buildDirectory.dir("modelAssets/models").get().asFile.absolutePath)
+    systemProperty("weave.models", project(":app").layout.buildDirectory.dir("testModels/models").get().asFile.absolutePath)
     systemProperty("weave.cache", refCache.absolutePath)
     systemProperty("weave.asrRuntime", desktopRuntimeDir.resolve("lib").absolutePath)
     systemProperty("weave.testWavs", rootProject.projectDir.resolve("../.ref/sherpa/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/test_wavs").absolutePath)
     dependsOn(fetchDesktopRuntime)
-    dependsOn(":app:fetchBuiltinModels")
+    dependsOn(":app:fetchTestModels")
     testLogging { events("passed", "failed", "skipped"); showStandardStreams = true; exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
 

@@ -23,6 +23,7 @@ import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.ui.VoiceAccess
 import com.weavetext.ime.voice.SYSTEM_ENGINE_ID
 import com.weavetext.ime.voice.VoiceHelp
+import com.weavetext.ime.voice.VoiceIme
 import com.weavetext.ime.voice.VoicePlugin
 import kotlin.math.PI
 import kotlin.math.max
@@ -125,7 +126,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private val comma = RectF(); private val kbd = RectF(); private val del = RectF(); private val enter = RectF()
         private val mic = RectF(); private val seg = RectF(); private val segTap = RectF(); private val segHold = RectF()
         private val permCard = RectF(); private val importBtn = RectF()
-        private val offlineBtn = RectF(); private val sysBtn = RectF()
+        private val offlineBtn = RectF(); private val sysBtn = RectF(); private val imeBtn = RectF()
+        /** 手机上其他带语音的输入法（零下载的办法）。 Another voice IME on the phone, the zero-download option. */
+        private var voiceIme: VoiceIme.Option? = null
         private val tmp = RectF()
         private val tmp2 = RectF()
         private val area = RectF()
@@ -140,6 +143,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             engines = e?.list()?.size ?: 0
             plugin = e?.active()
             extras = ((e?.let { runCatching { it.selection().size }.getOrDefault(1) } ?: 1) - 1).coerceAtLeast(0)
+            voiceIme = if (engines == 0 || plugin?.id == SYSTEM_ENGINE_ID) VoiceIme.find(kb.ctx).firstOrNull() else null
             icon.bind(plugin)
         }
 
@@ -247,11 +251,15 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val titleSize = min(m.dp(15f), m.dp(15f) * (area.width() / max(1f, text.measureText(title))))
             text.textSize = titleSize
             c.drawText(title, area.centerX(), area.centerY() - m.dp(12f), text)
+            val ime = voiceIme
+            imeBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty()
+            // 最多三个按钮：有其他语音输入法时它排第一，替换「系统语音设置」。 At most three pills.
             val labels = buildList {
+                if (ime != null) add(imeBtn to (if (ime.enabled) "切换到${VoiceIme.shortLabel(ime)}" else "启用${VoiceIme.shortLabel(ime)}"))
                 if (VoiceHelp.canOfferOfflineBuild) add(offlineBtn to "安装离线语音")
-                add(sysBtn to "系统语音设置")
+                if (ime == null || !VoiceHelp.canOfferOfflineBuild) add(sysBtn to "系统语音设置")
                 add(importBtn to "导入插件")
-            }
+            }.take(3)
             text.textSize = m.dp(13f); text.typeface = medium
             val pad = m.dp(12f); val gap = m.dp(8f); val bh = m.dp(32f)
             val total = labels.sumOf { (text.measureText(it.second) + 2 * pad).toDouble() }.toFloat() + gap * (labels.size - 1)
@@ -260,7 +268,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             for ((rect, label) in labels) {
                 val bw = text.measureText(label) + 2 * pad
                 rect.set(x, top, x + bw, top + bh)
-                val id = when { rect === offlineBtn -> OFFLINE; rect === sysBtn -> SYSVOICE; else -> IMPORT }
+                val id = when { rect === offlineBtn -> OFFLINE; rect === sysBtn -> SYSVOICE; rect === imeBtn -> OTHER_IME; else -> IMPORT }
                 fill.color = if (pressed == id) pal.keyPressed else pal.card
                 c.drawRoundRect(rect, bh / 2, bh / 2, fill)
                 text.color = pal.candidateFirst
@@ -282,7 +290,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 drawNoEngine(c, (session.error ?: "系统语音识别暂时用不了") + "。可以：")
                 return
             }
-            importBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty()
+            importBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty(); imeBtn.setEmpty()
             val done = session.committed.toString()
             val part = session.partial
             if (done.isEmpty() && part.isEmpty()) return
@@ -580,6 +588,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             !importBtn.isEmpty && importBtn.contains(x, y) -> IMPORT
             !offlineBtn.isEmpty && offlineBtn.contains(x, y) -> OFFLINE
             !sysBtn.isEmpty && sysBtn.contains(x, y) -> SYSVOICE
+            !imeBtn.isEmpty && imeBtn.contains(x, y) -> OTHER_IME
             segTap.contains(x, y) -> SEG_TAP
             segHold.contains(x, y) -> SEG_HOLD
             else -> NONE
@@ -647,6 +656,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 IMPORT -> kb.openSettings("voice")
                 OFFLINE -> kb.openSettings("voice/upgrade")
                 SYSVOICE -> VoiceHelp.openSystemVoiceSettings(kb.ctx)
+                OTHER_IME -> voiceIme?.let { o ->
+                    if (o.enabled) kb.switchToIme(o.id, o.subtype) else VoiceHelp.openInputMethodSettings(kb.ctx)
+                }
                 MIC -> if (!holdMode) {
                     when {
                         engines == 0 -> kb.openSettings("voice")
@@ -670,6 +682,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private const val MIC = 7; private const val PERM = 8; private const val IMPORT = 9
         private const val SEG_TAP = 10; private const val SEG_HOLD = 11
         private const val R_CANCEL = 12; private const val R_COMMIT = 13; private const val R_REDO = 14
-        private const val OFFLINE = 15; private const val SYSVOICE = 16
+        private const val OFFLINE = 15; private const val SYSVOICE = 16; private const val OTHER_IME = 17
     }
 }

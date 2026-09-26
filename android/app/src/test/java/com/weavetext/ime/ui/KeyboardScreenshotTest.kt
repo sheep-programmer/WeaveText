@@ -365,6 +365,22 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         }
     }
 
+    /** 手机上有其他语音输入法：零下载的办法排第一。 Another voice IME present: the zero-download option first. */
+    @Test fun voiceNoEngineOtherIme() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        engines.plugins = emptyList()
+        com.weavetext.ime.models.AsrRuntime.bundled = false
+        com.weavetext.ime.voice.VoiceIme.finder = { listOf(com.weavetext.ime.voice.VoiceIme.Option("org.example.voice/.Ime", "示例语音输入", null, enabled = true)) }
+        try {
+            val (k, _) = keyboard(false)
+            k.showPanel("voice")
+            snap("voice_no_engine_other_ime_light")
+        } finally {
+            com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
+            com.weavetext.ime.voice.VoiceIme.finder = { emptyList() }
+        }
+    }
+
     /** 系统识别连接失败：说明原因并给出办法。 System recognizer failed: reason plus ways out. */
     @Test fun voiceSystemError() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)

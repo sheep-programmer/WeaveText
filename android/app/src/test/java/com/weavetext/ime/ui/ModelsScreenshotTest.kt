@@ -154,6 +154,6 @@ class ModelsScreenshotTest {
 
     @Test fun voiceListCard() {
         open(FakeModels(mixed), routes = listOf(Route.Home, Route.Voice))
-        compose.onNodeWithText("已安装 3 项 · 占用 75.5\u00A0MB").assertExists()
+        compose.onNodeWithText("已安装 2 项 · 占用 75.5\u00A0MB").assertExists()
     }
 }

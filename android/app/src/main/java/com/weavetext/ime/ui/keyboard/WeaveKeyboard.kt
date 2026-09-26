@@ -45,11 +45,25 @@ abstract class KbPanel(val kb: WeaveKeyboard) {
 interface ImeWindowHost {
     fun hideKeyboard()
     val window: android.view.Window?
+    /** 切换到另一个输入法（如其他语音输入法）；做不到返回 false。 Switch to another IME; false if impossible. */
+    fun switchToIme(id: String, subtype: android.view.inputmethod.InputMethodSubtype?): Boolean = false
 }
 
 private class ServiceWindowHost(private val service: WeaveImeService) : ImeWindowHost {
     override fun hideKeyboard() = service.requestHideSelf(0)
     override val window: android.view.Window? get() = service.window?.window
+
+    override fun switchToIme(id: String, subtype: android.view.inputmethod.InputMethodSubtype?): Boolean = runCatching {
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            service.switchInputMethod(id, subtype)
+        } else {
+            val token = service.window?.window?.attributes?.token ?: return false
+            val imm = service.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+            @Suppress("DEPRECATION")
+            if (subtype != null) imm.setInputMethodAndSubtype(token, id, subtype) else imm.setInputMethod(token, id)
+        }
+        true
+    }.getOrDefault(false)
 }
 
 /**
@@ -897,6 +911,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (panel != null) { closePanel(); return true }
         if (numberMode) { numberMode = false; refreshLayout(); return true }
         return false
+    }
+
+    /** 切换到另一个输入法；做不到时打开系统的输入法选择框。 Switch IME, falling back to the system picker. */
+    fun switchToIme(id: String, subtype: android.view.inputmethod.InputMethodSubtype?) {
+        if (!host.switchToIme(id, subtype)) {
+            runCatching { ctx.getSystemService(android.view.inputmethod.InputMethodManager::class.java).showInputMethodPicker() }
+        }
     }
 
     fun openSettings(route: String?) {

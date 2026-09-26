@@ -108,10 +108,10 @@
       "kind": "asr-offline",
       "arch": "zipformer-ctc",
       "name": "终稿识别 · 小",
-      "description": "每句说完后重新识别一遍，抗噪最好。内置，约 63 MB。",
+      "description": "每句说完后重新识别一遍，抗噪最好，约 63 MB。",
       "descriptionLite": "每句说完后重新识别一遍，抗噪最好，约 63 MB。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
-      "builtin": true,
+      "builtin": false,
       "archive": {
         "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ctc-small-zh-int8-2025-07-16.tar.bz2",
         "sha256": "6a71c0cc442ba85ac1455ca23e4561e2a1ef18e55269a184a649d54e9cd0524c",

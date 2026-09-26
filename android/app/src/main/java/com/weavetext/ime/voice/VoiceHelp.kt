@@ -14,7 +14,7 @@ import com.weavetext.ime.models.AsrRuntime
  */
 object VoiceHelp {
     /** 发布页（离线语音版的下载地址）。 Release page hosting the offline-voice build. */
-    const val RELEASES_URL = "https://github.com/sheep-programmer/WeaveText/releases/latest"
+    const val RELEASES_URL = "https://github.com/sheep-programmer/WeaveText/releases"
 
     /**
      * 运行库不随包（轻量版）：没有引擎时引导去下载语音包。运行库随包时本地引擎总在，不需要引导。
@@ -32,6 +32,11 @@ object VoiceHelp {
         for (action in listOf(Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_INPUT_METHOD_SETTINGS, Settings.ACTION_SETTINGS)) {
             if (start(ctx, Intent(action))) return
         }
+    }
+
+    /** 打开系统的输入法管理（启用其他语音输入法）。 Open the system IME settings to enable another voice IME. */
+    fun openInputMethodSettings(ctx: Context) {
+        if (!start(ctx, Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))) start(ctx, Intent(Settings.ACTION_SETTINGS))
     }
 
     private fun start(ctx: Context, intent: Intent): Boolean = try {

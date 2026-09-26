@@ -14,6 +14,10 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- 找到其他带语音的输入法，便于一键切过去。 To find other voice IMEs for one-tap switching. -->
+        <intent>
+            <action android:name="android.view.InputMethod" />
+        </intent>
     </queries>
 
     <application

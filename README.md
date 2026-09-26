@@ -19,10 +19,10 @@
   *mainstream-IME-style layout, light/dark, candidate grid, symbols, cursor panel, clipboard (off by default),
   phrases, one-handed mode, height, traditional output, emoji suggestions; a draggable, resizable floating keyboard,
   automatic split on wide screens, an optional number row; fast multi-finger typing without dropped keys, chars on press.*
-- **语音**：内置**本地离线两遍识别**（实时 + 终稿小模型，语音不离开手机）；可下载 SenseVoice、Paraformer、高精度实时与智能标点模型，
+- **语音**：**本地离线识别**（语音不离开手机）；「语音包」逐项安装、卸载：识别运行库、实时 / 终稿识别（含 SenseVoice、Paraformer、高精度实时）与智能标点，
   经 hf-mirror 与多个 GitHub 加速镜像测速下载、断点续传、逐文件校验（见 [docs/models.md](docs/models.md)）；另有系统语音识别，
   以及在沙箱中运行的 Lua 语音插件（`.xipk`）；可多个引擎同时识别，一次录音，在结果列表里选一条上屏。
-  *Voice: built-in on-device two-pass recognition; optional SenseVoice / Paraformer / high-accuracy streaming / punctuation
+  *Voice: on-device recognition; voice packs installed and removed one by one (runtime, streaming / final models incl. SenseVoice, Paraformer, high-accuracy streaming, punctuation)
   models downloaded through hf-mirror and several GitHub mirrors with resume and per-file checks; plus the platform
   recognizer and sandboxed Lua voice plugins; several engines can recognize one recording, pick a result from a list.*
 
@@ -31,7 +31,7 @@
 在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64），两个版本签名相同、可互相覆盖安装：
 
 - **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件，也可在应用内一键下载约 30 MB 的离线语音包（识别运行库 + 实时模型），无需重装即可在手机上识别，效果与离线语音版相同。
-- **离线语音版**：在轻量版基础上内置端侧语音识别（语音不离开手机），可再下载更准的模型。
+- **离线语音版**（约 64 MB）：内置识别运行库与实时识别模型，装好即可离线说话；轻量版也能在「语音包」里安装同样的识别。
 
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 

@@ -106,6 +106,33 @@ val fetchSherpa by tasks.registering {
 }
 
 /** 下载并解出内置模型到 assets/models/<id>/。 Fetch built-in models into assets/models/<id>/. */
+/** 下载（带缓存与校验）并解出一个模型到 outRoot/models/<id>。 Fetch (cached, verified) and extract one model. */
+fun extractModel(m: Map<String, Any>, outRoot: File, workDir: File) {
+    val id = m["id"] as String
+    @Suppress("UNCHECKED_CAST")
+    val archive = (m["archive"] ?: (m["archives"] as List<Map<String, Any>>).first()) as Map<String, Any>
+    @Suppress("UNCHECKED_CAST")
+    val fileSpecs = m["files"] as List<Map<String, Any>>
+    val files = fileSpecs.map { it["name"] as String }
+    val url = archive["url"] as String
+    val cached = rootProject.projectDir.resolve("../.ref/cache/" + url.substringAfterLast('/'))
+    fetchVerified(url, archive["sha256"] as String, cached)
+    val out = outRoot.resolve("models/$id")
+    val ok = { fileSpecs.all { f -> out.resolve(f["name"] as String).let { it.isFile && sha256(it) == f["sha256"] } } }
+    if (ok()) return
+    val tmp = workDir.resolve(id).apply { deleteRecursively(); mkdirs() }
+    providers.exec { commandLine("tar", "xjf", cached.absolutePath, "-C", tmp.absolutePath) }.result.get()
+    out.mkdirs()
+    for (f in files) {
+        val found = tmp.walkTopDown().firstOrNull { it.isFile && it.name == f }
+            ?: throw GradleException("$id: $f not found in archive")
+        found.copyTo(out.resolve(f), overwrite = true)
+    }
+    tmp.deleteRecursively()
+    if (!ok()) throw GradleException("$id: extracted files do not match catalog sha256")
+    logger.lifecycle("model $id ready")
+}
+
 val fetchBuiltinModels by tasks.registering {
     group = "weave"
     inputs.file(catalogFile)
@@ -116,31 +143,23 @@ val fetchBuiltinModels by tasks.registering {
     doLast {
         @Suppress("UNCHECKED_CAST")
         val models = (catalog()["models"] as List<Map<String, Any>>).filter { it["builtin"] == true && !liteBuild }
-        for (m in models) {
-            val id = m["id"] as String
-            @Suppress("UNCHECKED_CAST")
-            val archive = m["archive"] as Map<String, Any>
-            @Suppress("UNCHECKED_CAST")
-            val fileSpecs = m["files"] as List<Map<String, Any>>
-            val files = fileSpecs.map { it["name"] as String }
-            val url = archive["url"] as String
-            val cached = rootProject.projectDir.resolve("../.ref/cache/" + url.substringAfterLast('/'))
-            fetchVerified(url, archive["sha256"] as String, cached)
-            val out = modelAssetsDir.resolve("models/$id")
-            val ok = { fileSpecs.all { f -> out.resolve(f["name"] as String).let { it.isFile && sha256(it) == f["sha256"] } } }
-            if (ok()) continue
-            val tmp = temporaryDir.resolve(id).apply { deleteRecursively(); mkdirs() }
-            providers.exec { commandLine("tar", "xjf", cached.absolutePath, "-C", tmp.absolutePath) }.result.get()
-            out.mkdirs()
-            for (f in files) {
-                val found = tmp.walkTopDown().firstOrNull { it.isFile && it.name == f }
-                    ?: throw GradleException("$id: $f not found in archive")
-                found.copyTo(out.resolve(f), overwrite = true)
-            }
-            tmp.deleteRecursively()
-            if (!ok()) throw GradleException("$id: extracted files do not match catalog sha256")
-            logger.lifecycle("built-in model $id ready")
-        }
+        // 不再内置的模型从资源目录里清掉。 Drop models that are no longer built in.
+        val keep = models.map { it["id"] as String }.toSet()
+        modelAssetsDir.resolve("models").listFiles()?.filter { it.isDirectory && it.name !in keep }?.forEach { it.deleteRecursively() }
+        for (m in models) extractModel(m, modelAssetsDir, temporaryDir)
+    }
+}
+
+/** 桌面测试用的模型（与是否内置无关）。 Models for the desktop tests, independent of what is built in. */
+val testModelsDir = layout.buildDirectory.dir("testModels").get().asFile
+val fetchTestModels by tasks.registering {
+    group = "weave"
+    inputs.file(catalogFile)
+    outputs.dir(testModelsDir)
+    doLast {
+        @Suppress("UNCHECKED_CAST")
+        val models = (catalog()["models"] as List<Map<String, Any>>).filter { it["id"] in setOf("asr-stream-small", "asr-final-small") }
+        for (m in models) extractModel(m, testModelsDir, temporaryDir)
     }
 }
 
@@ -197,7 +216,9 @@ android {
     // 端侧语音适配层：轻量版换成空实现，不依赖 sherpa-onnx。 Lite swaps the ASR adapter for a stub.
     sourceSets["main"].java.srcDir(if (liteBuild) "src/nosherpa/java" else "src/sherpa/java")
     packaging {
-        jniLibs.useLegacyPackaging = false
+        // 离线语音版的原生库（约 31 MB）压缩存放，安装包小一半以上；轻量版只有 4 MB 的内核库，保持不压缩直接映射。
+        // The voice build compresses its ~31 MB of native libraries; lite keeps its single 4 MB library uncompressed.
+        jniLibs.useLegacyPackaging = !liteBuild
         // sherpa-onnx 的 JNI 库只依赖 onnxruntime，C/C++ API 库用不到。 JNI lib needs only onnxruntime.
         jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
     }
