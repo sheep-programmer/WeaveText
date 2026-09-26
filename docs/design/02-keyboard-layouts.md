@@ -157,7 +157,7 @@
 | 符 | F | 符 | — | — | 打开符号面板（§8） |
 | 123 | F | 123 | — | — | 打开数字键盘（§7） |
 | ， | 字符 | ， | ↑ 「，」→「,」切半角 | `， 、 ； ： ,` | 输入中：先上屏首选再输出 |
-| 空格 | 字符 w2.8 | 中央 `ic_space` 24dp + 上方 `ic_mic` 12dp（均为 `kb.labelHint`）| — | 长按 350ms 不动 → 按住说话 | 输入中：上屏首选；空闲：空格；左右拖动 → 移动光标（§14）|
+| 空格 | 字符 w2.8 | 中央 `ic_space` 24dp + 上方 `ic_mic` 12dp（均为 `kb.labelHint`）| — | 长按 500ms 不动 → 按住说话 | 输入中：上屏首选；空闲：空格；左右拖动 → 移动光标（§14）|
 | 。 | 字符 | 。 | ↑ `.` | `。 ？ ！ … ·` | 同「，」 |
 | 中/英 | F | **中**/英（当前语言 16dp 500，另一半 12dp `kb.labelHint`，中间 `/`） | — | 弹出方案小气泡：全拼/九键/双拼/五笔/英文 | 切换中英 |
 | ⏎ | F 或 A | 见下表 | — | — | 输入中：**上屏原始字母**（不上屏汉字）；空闲：执行 editorAction |
@@ -521,6 +521,34 @@
 | 空格 | 上滑 → `0`；输入中上屏首选 |
 | 组合串 | 候选栏显示**拼音**（`ni'hao`），不是数字串；未锁定部分按首选方案显示 |
 
+### 13.1 14 键拼音 / 14-key Pinyin
+
+26 个字母两两合并成 14 个键（`qw er ty ui op / as df gh jk l / zx cv bn m`），键码依次为 `A`–`N`，内核方案 `t14`，
+与九键共用歧义解码与左侧拼音列。在「输入方案」里与 26 键、九键并列启用。
+*Letters paired into 14 keys coded `A`–`N` (engine schema `t14`), sharing the keypad decoder and pinyin column with T9.*
+
+```
+┌──────┬──────┬──────┬──────┬──────┬──────┐
+│  ，  │  QW  │  ER  │  TY  │  UI  │  OP  │
+│  。  ├──────┼──────┼──────┼──────┼──────┤
+│  ？  │  AS  │  DF  │  GH  │  JK  │  L   │
+│  ！ ↕├──────┼──────┼──────┼──────┼──────┤
+│      │  ZX  │  CV  │  BN  │  M   │  ⌫   │
+├────┬─┴──┬───┴─┬────┴──────┴─┬────┴┬─────┤
+│ 符 │123 │分词 │   空格 🎙    │中/英│  ⏎  │
+└────┴────┴─────┴──────────────┴─────┴─────┘
+```
+
+| 区域 | 规格 |
+|---|---|
+| 左列（跨行 1–3） | 与九键相同：空闲为标点，输入中为拼音选择列；宽度取九键第 0 列的权重 |
+| 字母键 | 三行 5/5/4，等宽；主标签为两个字母（跟随布局的大小写），19dp 500；长按列出单个字母（首行另带对应数字），不设上滑 |
+| ⌫ | 第三行末格；手势同 §14.3 |
+| 底行 | 九键底行的键（去掉删除/回车/重输）+ 空格前插入「分词」键（空闲「，。?!」）+ 末尾回车；空格权重 2.2，回车 1.4；空格无上滑 |
+
+![14 键（浅色）/ 14-key light](../../android/app/src/test/snapshots/keyboard_t14_idle_light.png)
+![14 键输入中（深色）/ 14-key composing, dark](../../android/app/src/test/snapshots/keyboard_t14_composing_dark.png)
+
 ---
 
 ## 14. 手势规则 / Gesture rules
@@ -530,25 +558,27 @@
 | 常量 Constant | 值 |
 |---|---|
 | `TOUCH_SLOP` | 8dp |
-| `LONG_PRESS_MS` | 300ms（空格 350ms）|
+| `LONG_PRESS_MS` | 450ms（空格 500ms），从按下事件时刻起算 |
 | `SWIPE_UP_MIN` | `max(20dp, keyHeight × 0.45)` |
 | `CURSOR_STEP` | 12dp / 字符 |
 | `DELETE_CLEAR_DX` | 1.5 × 字母格宽（约 60dp）|
 | `REPEAT_DELAY_MS / REPEAT_INTERVAL_MS` | 400ms / 50ms |
 
 ### 14.1 字符键 / Character keys
-1. **点击**：ACTION_DOWN 显示按下态 + 气泡；ACTION_UP 在**按下时命中的键**上输出（抬手位置偏移不改键，除非超出该键格子 1.5 倍）。
-   *Output on UP for the key hit at DOWN.*
-2. **上滑副字符**：按下后纵向位移 ≤ −`SWIPE_UP_MIN` 且横向位移 < 纵向位移 → 气泡内容实时切换为副字符（气泡字色改 `kb.keyAccent`）并振动一次；抬起输出副字符。未达到阈值回落 → 恢复主字符。
-   *Swipe-up switches the bubble to the hint char; UP commits it.*
-3. **长按候选气泡**：`LONG_PRESS_MS` 未移出 `TOUCH_SLOP` → 弹出长按气泡（§04 组件 3），默认选中与副字符相同的项；手指左右/上下滑动选择，抬起输出；移出气泡 24dp 以外抬起 → 取消。
-4. **多点触控**：第二指按下时，第一指立即按“点击”输出（快速打字 rollover）。*Multi-touch rollover.*
+1. **点击**：ACTION_DOWN 显示按下态 + 气泡，**同时输出该字符**（06 §8.2）；抬起不再输出。
+   *The char is emitted on DOWN (06 §8.2).*
+2. **上滑副字符**：按下后纵向位移 ≤ −`SWIPE_UP_MIN` 且横向位移 < 纵向位移 → 气泡内容实时切换为副字符（气泡字色改 `kb.keyAccent`）并振动一次；抬起时用副字符**替换**按下时输出的字。未达到阈值回落 → 恢复主字符。
+   *Swipe-up switches the bubble to the hint char; UP replaces the emitted char with it.*
+3. **长按候选气泡**：`LONG_PRESS_MS` 未移出 `TOUCH_SLOP` → 弹出长按气泡（§04 组件 3），与副字符对齐但**不预选**；手指移到某项上才选中，抬起时用它替换；原地松手或移出气泡 → 保留原字符。
+   *The popup preselects nothing; lifting in place keeps the key's own char.*
+4. **多点触控**：每根手指独立跟踪，输出顺序 = 按下顺序；另一根手指在任何手势中，新按键都照常输出（06 §8.1）。*Per-pointer tracking.*
 5. 下滑：**不定义**（保留，避免误触）。*Swipe-down intentionally unassigned.*
 
 ### 14.2 空格键 / Space
-- 横向位移 > `TOUCH_SLOP` → 进入**光标移动**模式：每移动 `CURSOR_STEP` 发送一次 `DPAD_LEFT/RIGHT`；速度 > 600dp/s 时步长减半（加速）；空格标签替换为 `‹ 移动光标 ›`（`kb.labelSecondary` 13dp）。输入中则改为移动组合串内光标。
-  *Horizontal drag moves the cursor, accelerated.*
-- 按住 350ms 且未移动 → **按住说话**（浮动语音条，§12.2）。未授予权限时改为提示 Toast 式气泡。
+- 横向位移 > `TOUCH_SLOP` → 进入**光标移动**模式：每移动 `CURSOR_STEP` 发送一次 `DPAD_LEFT/RIGHT`；速度 > 600dp/s 时步长减半（加速）；空格标签替换为 `‹ 移动光标 ›`（`kb.labelSecondary` 13dp）。
+  松手时若光标一步都没移动 → 按一次空格。输入中不进入光标模式，横滑照常按空格处理。
+  *Horizontal drag moves the cursor; a drag that never moved it types a space; no cursor mode while composing.*
+- 按住 500ms 且未移动 → **按住说话**（浮动语音条，§12.2）。未授予权限时改为提示 Toast 式气泡。
 - 上滑（仅九键）→ 输出 0。
 
 ### 14.3 删除键 / Backspace
@@ -566,3 +596,32 @@
 - **，/。** 在输入中点击：上屏首选 + 标点；连续两次点「，」无特殊行为。
 - **顶栏候选**左右快速横扫：滚动候选（系统惯性滚动）。
 - **键盘区整体下滑**（从顶栏向下拖动 > 80dp，仅工具栏态）：收起键盘。*Drag the idle toolbar down 80dp to hide.*
+
+---
+
+## 15. 宽屏分体与数字行 / Wide-screen split & number row
+
+### 15.1 分体 / Split
+
+- 键区宽于 **600dp**（横屏手机的键区上限 720dp、平板、展开的折叠屏）时，26 键（中文、英文）分成左右两半，中缝宽为键区宽的 20%。
+  *When the key area is wider than 600dp, QWERTY splits into two halves with a gap of 20% of the width.*
+- 排布：先按去掉中缝的宽度正常排布，再把中线右侧的键整体右移；跨中线的功能键（空格）横跨中缝，跨中线的字母按中心归到一侧
+  （第二行 `ASDFG | HJKL`，第三行 `⇧ZXCV | BNM⌫`）。中缝的触控区左右两键各分一半，没有死区。
+  *Keys right of the midline shift right; the space bar spans the gap; the gap's touch area is shared.*
+- 九键、14 键与数字键盘不分体；悬浮卡片宽度达不到阈值，也不会分体。*T9, 14-key and the number pad never split.*
+- 设置：外观与手感 › 「宽屏分体键盘」，默认开（`split_wide`）。*Setting: Look & feel › split on wide screens, on by default.*
+
+![分体（840dp 宽）/ Split at 840dp](../../android/app/src/test/snapshots/keyboard_w840_split_main.png)
+![分体英文（深色）/ Split English, dark](../../android/app/src/test/snapshots/keyboard_w840_split_english_dark.png)
+![关闭分体 / Split off](../../android/app/src/test/snapshots/keyboard_w840_unsplit.png)
+![横屏 / Landscape](../../android/app/src/test/snapshots/keyboard_land_main.png)
+
+### 15.2 数字行布局 / Number-row layout
+
+- 新布局风格「数字行」：26 键上方多一行 `1–0`，常输数字时不必切到 123。数字键长按给出上标、下标与圈码。
+  *A layout style with a `1–0` row above the letters; long press offers super/subscript and circled digits.*
+- 5 行均分键区高度，因此该布局把行高系数设为 1.14、行距 8dp，单行仍接近常规档；字母副标签默认关闭。
+  *Five rows share the height; the preset raises the row scale to 1.14 so each row stays close to normal.*
+- 布局 JSON 的 `qwerty.rows` 允许 5 行，首行必须恰好是 0–9 十个数字（05 §3）。*`qwerty.rows` may have a leading digit row.*
+
+![数字行布局 / Number-row layout](../../android/app/src/test/snapshots/style_numrow_composing_light.png)

@@ -5,24 +5,26 @@
 
 ## 特性 / Features
 
-- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
+- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、14 键（每键两个字母）、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
   *Schemes: full pinyin (sentences, abbreviations, fuzzy sounds, typo correction, mixed English), double pinyin
-  (Xiaohe / Ziranma / Microsoft / Sogou), T9, Wubi 86, English with suggestions.*
+  (Xiaohe / Ziranma / Microsoft / Sogou), T9, 14-key (two letters per key), Wubi 86, English with suggestions.*
 - **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.6%。
   *Beam search, a character collocation model and user learning: 75.6% top-1 on a 1000-sentence benchmark.*
 - **零部署、体积小**：预编译词库分块压缩后直接从 APK 读取、按需解压，手机上不再多占一份；全部词库与模型约 24 MB。
   用户词写只追加日志。
   *Zero deployment and small: precompiled, block-compressed dictionaries are read straight from the APK and decoded
   on demand — about 24 MB for all data, nothing extracted. User words go to an append-only log.*
-- **键盘**：主流输入法式布局、亮/暗主题、候选展开、符号、光标编辑、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想。
+- **键盘**：主流输入法式布局、亮/暗主题、候选展开、符号、光标编辑、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想；
+  可拖动、可缩放的悬浮键盘，宽屏（横屏、平板、折叠屏）自动分体，可选数字行布局；多指快速输入不丢键，字符按下即出。
   *mainstream-IME-style layout, light/dark, candidate grid, symbols, cursor panel, clipboard (off by default),
-  phrases, one-handed mode, height, traditional output, emoji suggestions.*
+  phrases, one-handed mode, height, traditional output, emoji suggestions; a draggable, resizable floating keyboard,
+  automatic split on wide screens, an optional number row; fast multi-finger typing without dropped keys, chars on press.*
 - **语音**：内置**本地离线两遍识别**（实时 + 终稿小模型，语音不离开手机）；可下载 SenseVoice、Paraformer、高精度实时与智能标点模型，
   经 hf-mirror 与多个 GitHub 加速镜像测速下载、断点续传、逐文件校验（见 [docs/models.md](docs/models.md)）；另有系统语音识别，
-  以及在沙箱中运行的 Lua 语音插件（`.xipk`）。
+  以及在沙箱中运行的 Lua 语音插件（`.xipk`）；可多个引擎同时识别，一次录音，在结果列表里选一条上屏。
   *Voice: built-in on-device two-pass recognition; optional SenseVoice / Paraformer / high-accuracy streaming / punctuation
   models downloaded through hf-mirror and several GitHub mirrors with resume and per-file checks; plus the platform
-  recognizer and sandboxed Lua voice plugins.*
+  recognizer and sandboxed Lua voice plugins; several engines can recognize one recording, pick a result from a list.*
 
 ## 下载 / Download
 

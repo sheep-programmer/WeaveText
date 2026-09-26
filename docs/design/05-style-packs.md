@@ -51,7 +51,7 @@ light / dark / system switch.
 | `geometry.padH` | 0–16 | 3 | 键区左右留白 / side padding |
 | `geometry.rowScale` | 0.8–1.25 | 1.0 | 行高比例 / row pitch scale |
 | `geometry.radius` / `radiusLarge` | 0–24 / 0–28 | 6 / 8 | 普通键 / 大键（九键、数字）圆角 / corner radii |
-| `qwerty.rows` | 4 行记号数组 | 见 fresh | 26 键行定义，见 §3.1 / QWERTY rows, see §3.1 |
+| `qwerty.rows` | 4 行记号数组（可在前面加一行数字，共 5 行） | 见 fresh | 26 键行定义，见 §3.1 / QWERTY rows, see §3.1 |
 | `qwerty.rowsEnglish` | 同上，可省 | — | 英文键盘单独的行 / separate English rows |
 | `qwerty.letterCase` | `upper` / `lower` | `upper` | 中文键盘字母大小写 / letter case (Chinese) |
 | `qwerty.hint` | `top` / `topRight` | `top` | 副标签（数字符号提示）位置 / hint position |
@@ -93,6 +93,8 @@ light / dark / system switch.
   Function tokens as listed; the bottom row needs `space`, and `delete` and `enter` must appear somewhere.
 - `gap`：留空，不产生按键，触控区由两侧键平分。
   `gap` is empty space; its touch area is split between neighbours.
+- 可选数字行：共 5 行时首行须恰好含 `0`–`9` 十个数字（如 `"1234567890"`，可加 `gap`），其后 4 行规则同上；5 行均分键区高度（见内置「数字行」布局）。
+  Optional number row: with five rows the first must hold exactly the digits 0–9; the other four follow the rules above and the rows share the height.
 - `名称:权重` 设置键宽（字母键 = 1）；键 0.5–6，`gap` 0.05–3。每行按 `max(10, 最宽行)` 等分，较窄的行居中。
   `name:weight` sets the width (letter = 1); keys 0.5–6, `gap` 0.05–3. Rows share `max(10, widest row)` units; narrower rows are centred.
 
