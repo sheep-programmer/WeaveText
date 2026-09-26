@@ -15,6 +15,7 @@ import android.view.VelocityTracker
 import android.view.View
 import android.widget.OverScroller
 import com.weavetext.ime.R
+import com.weavetext.ime.core.Candidate
 import com.weavetext.ime.style.KeyboardStyle
 import com.weavetext.ime.style.LayoutStyle
 import com.weavetext.ime.style.ToolIds
@@ -69,11 +70,15 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var preedit = ""
     private var preeditShown = ""
     private var english = false
-    private var texts: Array<String> = emptyArray()
-    private var shown: Array<String> = emptyArray()
-    private var comments: Array<String> = emptyArray()
-    private var widths = FloatArray(0)
-    private var lefts = FloatArray(0)
+    // 缓冲区复用，只增不减；只测量到可见范围再多一屏，滚动时再补。
+    // Buffers are reused and only grow; only the visible range plus one screen is measured, the rest on scroll.
+    private val texts = ArrayList<String>(64)
+    private val comments = ArrayList<String>(64)
+    private var shown = arrayOfNulls<String>(64)
+    private var widths = FloatArray(64)
+    private var lefts = FloatArray(64)
+    /** 已测量的候选数。 Candidates measured so far. */
+    private var measured = 0
     private var contentWidth = 0f
     private var total = 0
     private var hasMore = false
@@ -92,7 +97,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private val actionRect = RectF()
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val text = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val small = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fade = Paint()
     private var fadeShader: LinearGradient? = null
@@ -175,38 +180,54 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { fadeShader = null; remeasure() }
 
     /**
-     * 设置候选内容。 Set candidates.
+     * 设置候选内容（内核候选）。 Set engine candidates.
      * @param english 英文模式（不显示组合串，候选行垂直居中）。
      */
-    fun setCandidates(preedit: String, items: List<String>, comments: List<String>, total: Int, english: Boolean, keepScroll: Boolean) {
-        val changed = preedit != this.preedit || items.size != texts.size || items.indices.any { items[it] != texts[it] }
+    fun setCandidates(preedit: String, items: List<Candidate>, total: Int, english: Boolean, keepScroll: Boolean) {
+        var changed = preedit != this.preedit || items.size != texts.size
+        if (!changed) for (i in items.indices) if (items[i].text != texts[i]) { changed = true; break }
+        texts.clear(); comments.clear()
+        for (i in items.indices) { texts += items[i].text; comments += items[i].comment }
+        apply(preedit, total, english, keepScroll, changed)
+    }
+
+    /** 设置纯文字候选（本地标点列表、预览）。 Set plain text candidates (local lists, previews). */
+    fun setCandidateTexts(preedit: String, items: List<String>, total: Int, english: Boolean, keepScroll: Boolean) {
+        val changed = preedit != this.preedit || items != texts
+        texts.clear(); comments.clear()
+        for (t in items) { texts += t; comments += "" }
+        apply(preedit, total, english, keepScroll, changed)
+    }
+
+    private fun apply(preedit: String, total: Int, english: Boolean, keepScroll: Boolean, changed: Boolean) {
+        val preeditChanged = preedit != this.preedit
         this.preedit = preedit
         this.english = english
-        this.texts = items.toTypedArray()
-        this.comments = comments.toTypedArray()
         this.total = total
-        candidateMode = preedit.isNotEmpty() || items.isNotEmpty()
+        candidateMode = preedit.isNotEmpty() || texts.isNotEmpty()
         if (floating) host.onFloatingPreedit(if (!english && preedit.isNotEmpty()) preedit else null)
         if (changed && !keepScroll) { scrollX0 = 0f; scroller.forceFinished(true) }
         lastInput = SystemClock.uptimeMillis()
         cursorOn = true
         removeCallbacks(blink)
         if (preedit.isNotEmpty()) postDelayed(blink, 530)
-        remeasure()
+        remeasure(preeditChanged)
         invalidate()
         if (changed) a11y.invalidate()
     }
 
     /** 追加候选（分页）。 Append a page of candidates. */
-    fun appendCandidates(items: List<String>, comments: List<String>) {
-        texts = texts + items
-        this.comments = this.comments + comments
-        remeasure()
+    fun appendCandidates(items: List<Candidate>) {
+        for (c in items) { texts += c.text; comments += c.comment }
+        hasMore = total > texts.size || measured < texts.size || contentWidth > width - leadW() - expandW()
+        ensureMeasured(scrollX0 + width * 2f)
         invalidate()
         a11y.invalidate()
     }
 
     val loadedCount get() = texts.size
+    /** 已测量（可绘制）的候选数。 Candidates measured so far. */
+    val measuredCount get() = measured
 
     fun showAction(msg: String, label: String?, timeoutMs: Long, onAction: (() -> Unit)?) {
         actionMsg = msg
@@ -231,37 +252,22 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private fun rowTop() = if (english || floating) 0f else metrics.dp(18f) * metrics.topScale
     private fun expandW() = metrics.dp(44f)
 
-    private fun remeasure() {
+    private fun remeasure(preeditChanged: Boolean = true) {
         if (!::metrics.isInitialized || width == 0) return
         val m = metrics
-        text.textSize = m.dp(layout.candidates.textSize) * m.candScale
-        small.textSize = m.dp(10f) * m.candScale
-        if (strip) { remeasureStrip(); return }
-        val maxItem = (width - expandW()) * 0.7f
         val n = texts.size
-        widths = FloatArray(n)
-        lefts = FloatArray(n)
-        shown = Array(n) { i ->
-            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
-            val s = texts[i]
-            if (text.measureText(s) > maxItem - m.dp(24f)) {
-                TextUtils.ellipsize(s, android.text.TextPaint(text), maxItem - m.dp(24f), TextUtils.TruncateAt.MIDDLE).toString()
-            } else s
+        if (shown.size < n) {
+            val cap = maxOf(n, shown.size * 2)
+            shown = shown.copyOf(cap)
+            widths = widths.copyOf(cap)
+            lefts = lefts.copyOf(cap)
         }
-        var x = 0f
-        for (i in 0 until n) {
-            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
-            var w = text.measureText(shown[i]) + m.dp(24f)
-            val c = comments.getOrNull(i)
-            if (!c.isNullOrEmpty()) w += small.measureText(c) + m.dp(3f)
-            w = max(w, m.dp(40f))
-            lefts[i] = x
-            widths[i] = w
-            x += w
-        }
-        contentWidth = x
-        hasMore = total > n || contentWidth > width - leadW() - expandW()
-        // 组合串左侧省略。 Ellipsize the preedit from the left.
+        if (strip) { remeasureStrip(); return }
+        measured = 0
+        contentWidth = 0f
+        ensureMeasured(scrollX0 + width * 2f)
+        if (!preeditChanged) return
+        // 组合串左侧省略（只在组合串变化时算）。 Ellipsize the preedit from the left, only when it changed.
         small.textSize = m.dp(12.5f) * m.candScale
         val maxPre = width * 0.6f
         preeditShown = if (small.measureText(preedit) > maxPre) {
@@ -271,34 +277,81 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         } else preedit
     }
 
+    /** 测量候选直到内容宽度超过 [x]。 Measure candidates until the content reaches [x]. */
+    private fun ensureMeasured(x: Float) {
+        if (!::metrics.isInitialized || width == 0 || strip) return
+        val m = metrics
+        val n = texts.size
+        if (shown.size < n) {
+            val cap = maxOf(n, shown.size * 2)
+            shown = shown.copyOf(cap)
+            widths = widths.copyOf(cap)
+            lefts = lefts.copyOf(cap)
+        }
+        if (measured >= n || contentWidth > x) { hasMore = total > n || measured < n || contentWidth > width - leadW() - expandW(); return }
+        text.textSize = m.dp(layout.candidates.textSize) * m.candScale
+        small.textSize = m.dp(10f) * m.candScale
+        val maxItem = (width - expandW()) * 0.7f - m.dp(24f)
+        while (measured < n && contentWidth <= x) {
+            val i = measured
+            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
+            val s = texts[i]
+            var tw = text.measureText(s)
+            val out = if (tw > maxItem) {
+                TextUtils.ellipsize(s, text, maxItem, TextUtils.TruncateAt.MIDDLE).toString().also { tw = text.measureText(it) }
+            } else s
+            var w = tw + m.dp(24f)
+            val c = comments[i]
+            if (c.isNotEmpty()) w += small.measureText(c) + m.dp(3f)
+            w = max(w, m.dp(40f))
+            shown[i] = out
+            lefts[i] = contentWidth
+            widths[i] = w
+            contentWidth += w
+            measured++
+        }
+        hasMore = total > n || measured < n || contentWidth > width - leadW() - expandW()
+    }
+
     /** 三格：首选居中，第二、三名在左右；不滚动、无展开。 Strip: best in the middle, no scrolling or expand. */
     private fun remeasureStrip() {
         val m = metrics
         val n = min(3, texts.size)
         val slot = width / 3f
-        widths = FloatArray(n) { slot }
-        lefts = FloatArray(n) { i -> slot * STRIP_SLOTS[i] }
-        shown = Array(n) { i ->
+        text.textSize = m.dp(layout.candidates.textSize) * m.candScale
+        for (i in 0 until n) {
+            widths[i] = slot
+            lefts[i] = slot * STRIP_SLOTS[i]
             val s = texts[i]
-            if (text.measureText(s) > slot - m.dp(16f)) TextUtils.ellipsize(s, android.text.TextPaint(text), slot - m.dp(16f), TextUtils.TruncateAt.END).toString() else s
+            shown[i] = if (text.measureText(s) > slot - m.dp(16f)) TextUtils.ellipsize(s, text, slot - m.dp(16f), TextUtils.TruncateAt.END).toString() else s
         }
+        measured = n
         contentWidth = width.toFloat()
         hasMore = false
         preeditShown = ""
     }
 
-    private fun maxScroll() = max(0f, contentWidth - (width - leadW() - (if (hasMore) expandW() else 0f)))
+    private fun maxScroll(): Float {
+        // 还有没测量的候选时允许继续滚，滚动中再补测。 Unmeasured candidates remain: allow scrolling on, measuring as we go.
+        val extra = if (measured < texts.size) width.toFloat() else 0f
+        return max(0f, contentWidth + extra - (width - leadW() - (if (hasMore) expandW() else 0f)))
+    }
+
+    private fun scrollTo(x: Float) {
+        ensureMeasured(x + width * 2f)
+        scrollX0 = x.coerceIn(0f, maxScroll())
+    }
 
     override fun computeScroll() {
         if (scroller.computeScrollOffset()) {
-            scrollX0 = scroller.currX.toFloat()
+            scrollTo(scroller.currX.toFloat())
             checkMore()
             postInvalidateOnAnimation()
         }
     }
 
     private fun checkMore() {
-        if (texts.size < total && scrollX0 > maxScroll() - width * 0.5f) host.onNeedMore()
+        if (measured >= texts.size && texts.size < total && scrollX0 > maxScroll() - width * 0.5f) host.onNeedMore()
     }
 
     // ================================================================ draw
@@ -392,7 +445,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
         val base = top + rowH / 2 - (text.ascent() + text.descent()) / 2
-        for (i in shown.indices) {
+        for (i in 0 until measured) {
             val l = lead + lefts[i] - scrollX0
             if (l > right) break
             if (l + widths[i] < lead) continue
@@ -409,11 +462,12 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             }
             text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
             text.color = if (i == 0) p.candidateFirst else p.label
-            c.drawText(shown[i], l + m.dp(12f), base, text)
-            val cm = comments.getOrNull(i)
-            if (!cm.isNullOrEmpty()) {
+            val sh = shown[i] ?: continue
+            c.drawText(sh, l + m.dp(12f), base, text)
+            val cm = comments[i]
+            if (cm.isNotEmpty()) {
                 small.color = p.labelHint
-                c.drawText(cm, l + m.dp(12f) + text.measureText(shown[i]) + m.dp(3f), base, small)
+                c.drawText(cm, l + m.dp(12f) + text.measureText(sh) + m.dp(3f), base, small)
             }
         }
         c.restore()
@@ -446,7 +500,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         val base = rowH / 2 - (text.ascent() + text.descent()) / 2
         text.textAlign = Paint.Align.CENTER
-        for (i in shown.indices) {
+        for (i in 0 until measured) {
             val l = lefts[i]
             if (i == pressedCand) {
                 fill.color = p.toolbarActive
@@ -456,7 +510,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             }
             text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
             text.color = p.label
-            c.drawText(shown[i], l + widths[i] / 2, base, text)
+            c.drawText(shown[i] ?: continue, l + widths[i] / 2, base, text)
         }
         fill.color = p.divider
         for (k in 1..2) {
@@ -506,7 +560,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             candidateMode -> {
                 val lead = if (leadW() > 0f && !strip) intArrayOf(tools[0]) else IntArray(0)
                 val first = if (!english && preedit.isNotEmpty() && !floating) intArrayOf(PREEDIT) else IntArray(0)
-                lead + first + IntArray(shown.size) { CAND_BASE + it } + (if (hasMore) intArrayOf(EXPAND) else IntArray(0))
+                lead + first + IntArray(measured) { CAND_BASE + it } + (if (hasMore) intArrayOf(EXPAND) else IntArray(0))
             }
             clipChip != null -> intArrayOf(CHIP) + tools.filterIndexed { i, _ -> !chipHides(i) }.toIntArray()
             else -> tools.copyOf()
@@ -521,7 +575,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 id == EXPAND -> out.set(candRight(), 0f, width.toFloat(), height.toFloat())
                 id >= CAND_BASE -> {
                     val i = id - CAND_BASE
-                    if (i !in shown.indices) return false
+                    if (i !in 0 until measured) return false
                     val l = (if (strip) 0f else leadW()) + lefts[i] - (if (strip) 0f else scrollX0)
                     out.set(max(if (strip) 0f else leadW(), l), rowTop(), min(candRight(), l + widths[i]), height.toFloat())
                 }
@@ -584,7 +638,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         override fun a11yScroll(forward: Boolean): Boolean {
             if (!a11yCanScroll(forward)) return false
             val page = candRight() * 0.8f
-            scrollX0 = (scrollX0 + if (forward) page else -page).coerceIn(0f, maxScroll())
+            scrollTo(scrollX0 + if (forward) page else -page)
             checkMore()
             invalidate()
             a11y.invalidate()
@@ -596,7 +650,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
     private fun candAt(x: Float): Int {
         val xx = if (strip) x else x - leadW() + scrollX0
-        for (i in lefts.indices) if (xx >= lefts[i] && xx < lefts[i] + widths[i]) return i
+        for (i in 0 until measured) if (xx >= lefts[i] && xx < lefts[i] + widths[i]) return i
         return -1
     }
 
@@ -652,7 +706,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                         pressedCand = -1
                     }
                     if (dragging) {
-                        scrollX0 = (downScroll - dx).coerceIn(0f, maxScroll())
+                        scrollTo(downScroll - dx)
                         checkMore()
                         invalidate()
                     }

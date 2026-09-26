@@ -173,7 +173,11 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     // ------------------------------------------------------------ alternatives
 
-    fun showAlternatives(key: RectF, items: List<String>, initial: Int) {
+    /**
+     * 长按候选浮层。[anchor] 项对齐按键；[selected] 为初始高亮（-1 = 不预选，需移动手指才选中）。
+     * Long-press alternatives; item [anchor] sits over the key, [selected] is highlighted initially (-1 = none).
+     */
+    fun showAlternatives(key: RectF, items: List<String>, anchor: Int, selected: Int = anchor) {
         hideBubble(true)
         val m = metrics
         val cw = key.width().coerceAtLeast(m.dp(40f))
@@ -183,7 +187,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         val pad = m.dp(4f)
         val boxW = perRow * cw + 2 * pad
         val boxH = rows * ch + 2 * pad
-        val init = initial.coerceIn(0, items.size - 1)
+        val init = anchor.coerceIn(0, items.size - 1)
         var left = key.centerX() - pad - (init % perRow) * cw - cw / 2
         left = left.coerceIn(m.dp(4f), width - m.dp(4f) - boxW)
         val bottom = key.top - m.dp(6f)
@@ -194,7 +198,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             RectF(left + pad + c * cw, altBox.top + pad + r * ch, left + pad + (c + 1) * cw, altBox.top + pad + (r + 1) * ch)
         }
         altItems = items
-        altSelected = init
+        altSelected = if (selected in items.indices) selected else -1
         altPivotX = key.centerX()
         altPivotY = altBox.bottom
         if (animScale() == 0f) {

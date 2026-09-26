@@ -6,7 +6,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import com.weavetext.ime.core.Candidate
 import com.weavetext.ime.core.EngineSnapshot
-import com.weavetext.ime.core.NativeEngine
+import com.weavetext.ime.core.KeyEngine
 
 /** 回车键此刻的语义（决定回车键文字与颜色）。 What Enter does right now. */
 enum class EnterAction { NEWLINE, SEND, SEARCH, GO, NEXT, DONE, PREVIOUS }
@@ -43,7 +43,7 @@ data class ImeState(
  */
 class InputController(private val icProvider: () -> InputConnection?) {
 
-    private var engine: NativeEngine? = null
+    private var engine: KeyEngine? = null
     var state = ImeState()
         private set
     private val listeners = mutableListOf<(ImeState) -> Unit>()
@@ -54,17 +54,25 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private var englishSuggest = false
     /** 上一次「单词后补空格」的时间，用于双击空格。 When the last word-space was committed. */
     private var lastSpaceAt = 0L
+    /**
+     * 每次改动内核或编辑器时递增；[undoStamp] 等于它时，最近一次字符输入仍可撤销（上滑/长按替换按下时已输出的字）。
+     * Bumped by every engine/editor change; the last char input is undoable while [undoStamp] equals it.
+     */
+    private var stamp = 0
+    private var undoStamp = -1
+    /** null = 上次输入进了内核组合；否则为直接上屏的文字。 null = went into the engine; else the committed text. */
+    private var undoText: String? = null
 
     fun addListener(l: (ImeState) -> Unit) { listeners += l; l(state) }
     fun removeListener(l: (ImeState) -> Unit) { listeners -= l }
 
-    fun attachEngine(e: NativeEngine) {
+    fun attachEngine(e: KeyEngine) {
         engine = e
         e.setSchema(chineseSchema)
         update { it.copy(engineReady = true, schema = chineseSchema) }
     }
 
-    fun detachEngine(): NativeEngine? = engine.also { engine = null }
+    fun detachEngine(): KeyEngine? = engine.also { engine = null }
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -111,12 +119,16 @@ class InputController(private val icProvider: () -> InputConnection?) {
         lastSpaceAt = 0L
         // 中文方案，或普通文本框里的英文联想，都交给内核组合。 Chinese, or English with suggestions.
         if (e != null && (state.chinese || englishSuggest) && e.inputChar(codePoint)) {
+            stamp++
             refresh()
+            markUndo(null)
             return
         }
         e?.commitFirst()
         drainCommit()
-        commit(if (state.chinese) fullWidthPunct(ch) ?: ch.toString() else ch.toString())
+        val text = if (state.chinese) fullWidthPunct(ch) ?: ch.toString() else ch.toString()
+        commit(text)
+        markUndo(text)
     }
 
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
@@ -124,6 +136,33 @@ class InputController(private val icProvider: () -> InputConnection?) {
         engine?.commitFirst()
         drainCommit()
         commit(text)
+        markUndo(text)
+    }
+
+    private fun markUndo(text: String?) {
+        undoText = text
+        undoStamp = stamp
+    }
+
+    /**
+     * 撤销最近一次 [onChar] / [onText]（其后没有别的改动时）：组合中退一格，直接上屏的删掉。返回是否撤销。
+     * Undo the latest [onChar] / [onText] if nothing changed since: one engine backspace, or delete the committed text.
+     */
+    fun undoLastInput(): Boolean {
+        if (undoStamp != stamp) return false
+        undoStamp = -1
+        val t = undoText
+        if (t == null) {
+            val e = engine ?: return false
+            if (!e.backspace()) return false
+            refresh()
+            return true
+        }
+        if (t.isEmpty()) return true
+        val ic = ic() ?: return false
+        if (ic.getTextBeforeCursor(t.length, 0)?.toString() != t) return false
+        ic.deleteSurroundingText(t.length, 0)
+        return true
     }
 
     fun onBackspace() {
@@ -132,7 +171,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val sel = ic.getSelectedText(0)
         if (!sel.isNullOrEmpty()) {
             ic.commitText("", 1)
@@ -154,7 +193,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val now = android.os.SystemClock.uptimeMillis()
         if (!state.chinese && lastSpaceAt != 0L && now - lastSpaceAt < DOUBLE_SPACE_MS) {
             lastSpaceAt = 0L
-            val ic = icProvider()
+            val ic = ic()
             if (ic != null && ic.getTextBeforeCursor(1, 0) == " ") {
                 ic.beginBatchEdit()
                 ic.deleteSurroundingText(1, 0)
@@ -181,7 +220,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val info = editorInfo
         val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
         val noEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
@@ -249,7 +288,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun sendKey(code: Int, meta: Int = 0) {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val now = android.os.SystemClock.uptimeMillis()
         ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta))
         ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, meta))
@@ -280,7 +319,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 复制/剪切/粘贴/全选。 Copy / cut / paste / select all. */
     fun contextMenuAction(id: Int) {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         if (id == android.R.id.paste) {
             engine?.commitFirst()
             drainCommit()
@@ -302,7 +341,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return null
         }
-        val ic = icProvider() ?: return null
+        val ic = ic() ?: return null
         val sel = ic.getSelectedText(0)
         if (!sel.isNullOrEmpty()) {
             ic.commitText("", 1)
@@ -321,7 +360,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val before = ic.getTextBeforeCursor(64, 0)?.toString().orEmpty()
         if (before.isEmpty()) { sendKey(KeyEvent.KEYCODE_DEL); return }
         var i = before.length
@@ -354,7 +393,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 英文双击空格 → ". "。 Double-space period; true if applied. */
     fun doubleSpacePeriod(): Boolean {
-        val ic = icProvider() ?: return false
+        val ic = ic() ?: return false
         val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: return false
         if (before.length < 2 || before[1] != ' ' || !before[0].isLetterOrDigit()) return false
         ic.deleteSurroundingText(1, 0)
@@ -385,7 +424,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      */
     fun cursorToEdge(end: Boolean, select: Boolean) {
         commitRawIfComposing()
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val et = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
         if (et?.text == null) {
             var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
@@ -427,20 +466,20 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 语音中间结果以 composing 文本显示（带下划线）。 Voice interim result as composing text. */
     fun voicePartial(text: String) {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         if (engine?.isComposing() == true) { engine?.commitFirst(); drainCommit(); refresh() }
         ic.setComposingText(text, 1)
     }
 
     /** 语音最终结果上屏（替换 composing）。 Commit a final voice segment. */
     fun voiceFinal(text: String) {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         if (text.isEmpty()) ic.finishComposingText() else ic.commitText(text, 1)
     }
 
     /** 插件事后修正已上屏文本。 Post-hoc correction of committed voice text. */
     fun voiceReplace(old: String, new: String) {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         val before = ic.getTextBeforeCursor(old.length, 0)?.toString() ?: return
         if (before == old) {
             ic.deleteSurroundingText(old.length, 0)
@@ -450,7 +489,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 取消语音：丢弃 composing。 Drop the voice composing text. */
     fun voiceCancel() {
-        val ic = icProvider() ?: return
+        val ic = ic() ?: return
         ic.setComposingText("", 1)
         ic.finishComposingText()
     }
@@ -467,10 +506,17 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     private fun commit(text: String) {
         if (text.isEmpty()) return
-        icProvider()?.commitText(text, 1)
+        ic()?.commitText(text, 1)
+    }
+
+    /** 要改动编辑器时取连接（使撤销失效）。 Connection for an edit; invalidates the pending undo. */
+    private fun ic(): InputConnection? {
+        stamp++
+        return icProvider()
     }
 
     private fun drainCommit(): EngineSnapshot? {
+        stamp++
         val snap = engine?.snapshot() ?: return null
         if (snap.commit.isNotEmpty()) commit(snap.commit)
         return snap

@@ -3,39 +3,61 @@ package com.weavetext.ime.core
 import java.nio.ByteBuffer
 
 /**
+ * 输入控制器用到的内核接口（测试里可用假实现替换）。 The engine surface the input controller uses (fakeable in tests).
+ */
+interface KeyEngine {
+    fun setSchema(key: String): Boolean
+    fun setOption(key: String, value: Boolean): Boolean
+    fun inputChar(codePoint: Int): Boolean
+    fun backspace(): Boolean
+    fun select(index: Int): Boolean
+    fun selectPinyin(index: Int): Boolean
+    fun forget(index: Int): Boolean
+    fun commitFirst()
+    fun commitRaw()
+    fun clear()
+    fun flush()
+    fun isComposing(): Boolean
+    fun setLearning(on: Boolean)
+    fun setContext(prevWord: String?)
+    fun snapshot(): EngineSnapshot
+    fun candidates(offset: Int, limit: Int): List<Candidate>
+}
+
+/**
  * Rust 内核的薄封装（JNI）。只能在同一线程（IME 主线程）上调用。
  * Thin JNI wrapper over the Rust engine. Call from a single thread (the IME main thread).
  */
-class NativeEngine private constructor(private var handle: Long) : AutoCloseable {
+class NativeEngine private constructor(private var handle: Long) : KeyEngine, AutoCloseable {
 
     val isValid: Boolean get() = handle != 0L
 
-    /** 切换输入方案："pinyin"、"shuangpin:xiaohe"、"t9"、"wubi86"、"english"。 */
-    fun setSchema(key: String): Boolean = nativeSetSchema(handle, key)
+    /** 切换输入方案："pinyin"、"shuangpin:xiaohe"、"t9"、"t14"、"wubi86"、"english"。 */
+    override fun setSchema(key: String): Boolean = nativeSetSchema(handle, key)
 
     /** 设置选项，见 weave-ffi `nativeSetOption`。 */
-    fun setOption(key: String, value: Boolean): Boolean = nativeSetOption(handle, key, value.toString())
+    override fun setOption(key: String, value: Boolean): Boolean = nativeSetOption(handle, key, value.toString())
 
     /** 输入一个字符；false 表示引擎不处理，调用方应直接上屏。 */
-    fun inputChar(codePoint: Int): Boolean = nativeInputChar(handle, codePoint)
+    override fun inputChar(codePoint: Int): Boolean = nativeInputChar(handle, codePoint)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
-    fun backspace(): Boolean = nativeBackspace(handle)
-    fun select(index: Int): Boolean = nativeSelect(handle, index)
-    fun selectPinyin(index: Int): Boolean = nativeSelectPinyin(handle, index)
-    fun forget(index: Int): Boolean = nativeForget(handle, index)
-    fun commitFirst() { nativeCommitFirst(handle) }
-    fun commitRaw() { nativeCommitRaw(handle) }
-    fun clear() { nativeClear(handle) }
-    fun flush() { nativeFlush(handle) }
-    fun isComposing(): Boolean = nativeIsComposing(handle)
-    fun setLearning(on: Boolean) = nativeSetLearning(handle, on)
-    fun setContext(prevWord: String?) = nativeSetContext(handle, prevWord)
+    override fun backspace(): Boolean = nativeBackspace(handle)
+    override fun select(index: Int): Boolean = nativeSelect(handle, index)
+    override fun selectPinyin(index: Int): Boolean = nativeSelectPinyin(handle, index)
+    override fun forget(index: Int): Boolean = nativeForget(handle, index)
+    override fun commitFirst() { nativeCommitFirst(handle) }
+    override fun commitRaw() { nativeCommitRaw(handle) }
+    override fun clear() { nativeClear(handle) }
+    override fun flush() { nativeFlush(handle) }
+    override fun isComposing(): Boolean = nativeIsComposing(handle)
+    override fun setLearning(on: Boolean) = nativeSetLearning(handle, on)
+    override fun setContext(prevWord: String?) = nativeSetContext(handle, prevWord)
 
     /** 读取快照；其中的 commit 文本读取后即被清空。 Snapshot; commit text is drained. */
-    fun snapshot(): EngineSnapshot = EngineSnapshot.decode(nativeSnapshot(handle))
+    override fun snapshot(): EngineSnapshot = EngineSnapshot.decode(nativeSnapshot(handle))
 
-    fun candidates(offset: Int, limit: Int): List<Candidate> {
+    override fun candidates(offset: Int, limit: Int): List<Candidate> {
         val bytes = nativeCandidates(handle, offset, limit) ?: return emptyList()
         return EngineSnapshot.decodeCandidates(ByteBuffer.wrap(bytes))
     }

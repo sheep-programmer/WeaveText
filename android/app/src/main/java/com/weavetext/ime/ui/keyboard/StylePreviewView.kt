@@ -44,8 +44,8 @@ class StylePreviewView(ctx: Context) : ViewGroup(ctx) {
         keys.applyStyle(s, icons)
         keys.chinese = true
         keys.setQwerty(Layouts.qwerty(english = false, s.layout.qwerty, s.layout.labels))
-        if (composing) topBar.setCandidates("ni'hao", SAMPLE, emptyList(), 40, english = false, keepScroll = false)
-        else topBar.setCandidates("", emptyList(), emptyList(), 0, english = false, keepScroll = false)
+        if (composing) topBar.setCandidateTexts("ni'hao", SAMPLE, 40, english = false, keepScroll = false)
+        else topBar.setCandidateTexts("", emptyList(), 0, english = false, keepScroll = false)
         requestLayout()
         invalidate()
     }

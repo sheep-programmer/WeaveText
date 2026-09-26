@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -111,6 +112,14 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var clipChipTimeout = Runnable { topBar.clipChip = null }
 
     private val stateListener: (ImeState) -> Unit = { onState(it) }
+    /** 上一次渲染到界面的状态。 State last rendered. */
+    private var rendered: ImeState? = null
+    private var renderPending = false
+    private val frameRender = Choreographer.FrameCallback { flushRender() }
+    /** 已完成的渲染次数（测试用）。 Number of renders done (for tests). */
+    @get:androidx.annotation.VisibleForTesting
+    var renderCount = 0
+        private set
 
     init {
         overlay = popup
@@ -324,8 +333,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     private var wasReady = false
 
+    /**
+     * 状态立即生效（按键逻辑读到的总是最新值），界面渲染合并到下一帧、每帧最多一次：
+     * 连打时触摸分发里只剩内核调用，候选栏与键面在帧回调里画最后一个状态。
+     * State applies at once (key logic always sees the latest), rendering is coalesced to at most
+     * once per frame: touch dispatch only runs the engine call, the frame callback draws the final state.
+     */
     private fun onState(s: ImeState) {
-        val prev = state
         state = s
         if (s.engineReady && !wasReady) {
             wasReady = true
@@ -338,20 +352,35 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             topBar.clipChip = null
             topBar.clearAction()
         }
+        if (!renderPending) {
+            renderPending = true
+            Choreographer.getInstance().postFrameCallback(frameRender)
+        }
+    }
+
+    /** 把待渲染的状态画出来（帧回调；测试也可直接调用）。 Render the pending state (frame callback; tests may call it). */
+    fun flushRender() {
+        if (!renderPending) return
+        renderPending = false
+        Choreographer.getInstance().removeFrameCallback(frameRender)
+        val prev = rendered
+        val s = state
+        rendered = s
         refreshLayout()
         updateCandidates(prev)
         panel?.onState(s)
+        renderCount++
     }
 
     private fun updateCandidates(prev: ImeState?) {
         val lc = localCands
         if (lc != null) {
-            topBar.setCandidates("", lc, emptyList(), lc.size, english = true, keepScroll = false)
+            topBar.setCandidateTexts("", lc, lc.size, english = true, keepScroll = false)
             return
         }
         val s = state
         topBar.setCandidates(
-            s.preedit, s.candidates.map { it.text }, s.candidates.map { it.comment }, s.totalCandidates,
+            s.preedit, s.candidates, s.totalCandidates,
             english = !s.chinese, keepScroll = prev != null && prev.preedit == s.preedit,
         )
     }
@@ -374,6 +403,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val sig = "$kind:$hintsOn"
         if (sig != layoutSig) {
             layoutSig = sig
+            labelsFor = null
             val l = style.layout
             when {
                 kind.startsWith("num") -> {
@@ -415,8 +445,18 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
+    /** 上次更新键面标签时的输入（相同则跳过，不重绘整个键区）。 Inputs of the last label update; skip when unchanged. */
+    private var labelsFor: ImeState? = null
+    private var labelsShift = -1
+
     private fun updateLabels() {
         val s = state
+        val last = labelsFor
+        if (last != null && labelsShift == shift.value && last.chinese == s.chinese && last.composing == s.composing &&
+            last.enterAction == s.enterAction && last.schema == s.schema && last.pinyinOptions == s.pinyinOptions
+        ) return
+        labelsFor = s
+        labelsShift = shift.value
         val kv = keyboardView
         kv.chinese = s.chinese
         if (!layoutSig.startsWith("cn")) kv.cornerMode = false
@@ -585,6 +625,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         afterKey()
     }
 
+    override fun onKeyReplace(key: Key, text: String) {
+        controller.undoLastInput()
+        onKeyText(key, text)
+    }
+
+    override fun cursorDragAllowed() = !state.composing
+
     override fun onCursorSteps(steps: Int) {
         if (state.composing) return
         controller.moveCursor(steps)
@@ -683,7 +730,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val loaded = topBar.loadedCount
         if (loaded >= state.totalCandidates) return
         val more = controller.loadCandidates(loaded, 30)
-        if (more.isNotEmpty()) topBar.appendCandidates(more.map { it.text }, more.map { it.comment })
+        if (more.isNotEmpty()) topBar.appendCandidates(more)
     }
 
     override fun onClipChip() {
@@ -968,6 +1015,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     val clipboard: ClipboardRepo by lazy { ClipboardRepo(ctx, this) }
 
     override fun dispose() {
+        Choreographer.getInstance().removeFrameCallback(frameRender)
+        renderPending = false
         controller.removeListener(stateListener)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         voiceStrip?.end(true)

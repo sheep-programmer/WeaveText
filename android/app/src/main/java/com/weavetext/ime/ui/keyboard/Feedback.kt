@@ -44,15 +44,18 @@ class Feedback(ctx: Context) {
     var vibration = WeavePrefs.VIBRATION_DEFAULT
 
     /** [WeavePrefs.SOUND_STYLE] 的取值。 A [WeavePrefs.SOUND_STYLE] value. */
-    var soundStyle: String = WeavePrefs.SOUND_OFF
+    @Volatile var soundStyle: String = WeavePrefs.SOUND_OFF
         set(v) {
             field = v
             if (v in KeySoundSynth.STYLES) handler.post { prepare(v) }
         }
     /** 0–100。 */
-    var soundVolume = WeavePrefs.SOUND_VOLUME_DEFAULT
+    @Volatile var soundVolume = WeavePrefs.SOUND_VOLUME_DEFAULT
 
     private val effects = arrayOfNulls<VibrationEffect>(5)
+    /** 预先分配的投递任务：按键路径上零分配。 Preallocated tasks: no allocation on the key path. */
+    private val soundTasks = Array(Sound.entries.size) { i -> Runnable { play(Sound.entries[i]) } }
+    private val vibrateTasks = Array(5) { lv -> Runnable { effects[lv]?.let { vibrator?.vibrate(it) } } }
 
     // 以下只在 feedback 线程访问。 Accessed on the feedback thread only.
     private var pool: SoundPool? = null
@@ -72,23 +75,27 @@ class Feedback(ctx: Context) {
         if (style == WeavePrefs.SOUND_OFF || vol <= 0) return
         val am = audio ?: return
         if (am.ringerMode != AudioManager.RINGER_MODE_NORMAL) return
-        val gain = gain(vol)
-        handler.post {
-            if (style == WeavePrefs.SOUND_SYSTEM) {
-                am.playSoundEffect(
-                    when (s) {
-                        Sound.STANDARD -> AudioManager.FX_KEYPRESS_STANDARD
-                        Sound.DELETE -> AudioManager.FX_KEYPRESS_DELETE
-                        Sound.RETURN -> AudioManager.FX_KEYPRESS_RETURN
-                        Sound.SPACE -> AudioManager.FX_KEYPRESS_SPACEBAR
-                    },
-                    gain,
-                )
-                return@post
-            }
-            val id = samples[style]?.get(s.ordinal) ?: 0
-            if (id != 0 && id in loaded) pool?.play(id, gain, gain, 1, 0, 1f)
+        handler.post(soundTasks[s.ordinal])
+    }
+
+    /** feedback 线程上按当前风格与音量放音。 Play with the current style and volume, on the feedback thread. */
+    private fun play(s: Sound) {
+        val style = soundStyle
+        val gain = gain(soundVolume)
+        if (style == WeavePrefs.SOUND_SYSTEM) {
+            audio?.playSoundEffect(
+                when (s) {
+                    Sound.STANDARD -> AudioManager.FX_KEYPRESS_STANDARD
+                    Sound.DELETE -> AudioManager.FX_KEYPRESS_DELETE
+                    Sound.RETURN -> AudioManager.FX_KEYPRESS_RETURN
+                    Sound.SPACE -> AudioManager.FX_KEYPRESS_SPACEBAR
+                },
+                gain,
+            )
+            return
         }
+        val id = samples[style]?.get(s.ordinal) ?: 0
+        if (id != 0 && id in loaded) pool?.play(id, gain, gain, 1, 0, 1f)
     }
 
     /** 设置页试听：样本还在加载时，加载完成后补放一次。 Settings preview; plays once loading finishes. */
@@ -141,8 +148,8 @@ class Feedback(ctx: Context) {
             )
             else -> {
                 val v = vibrator ?: return
-                val effect = effects[lv] ?: build(v, lv).also { effects[lv] = it }
-                handler.post { v.vibrate(effect) }
+                if (effects[lv] == null) effects[lv] = build(v, lv)
+                handler.post(vibrateTasks[lv])
             }
         }
     }

@@ -20,8 +20,13 @@ interface KeyboardHost {
     val overlay: PopupOverlay?
     val feedback: Feedback?
     val previewEnabled: Boolean
+    /** 按键输出：字符键在按下时调用，功能键在抬起时调用。 Key output: char keys on DOWN, function keys on release. */
     fun onKey(key: Key)
     fun onKeyText(key: Key, text: String)
+    /** 用上滑/长按选中的 [text] 替换按下时已输出的字符。 Replace the char already emitted on DOWN with [text]. */
+    fun onKeyReplace(key: Key, text: String) = onKeyText(key, text)
+    /** 空格横滑能否移动光标（中文组合中不能）。 Whether a space-bar slide may move the cursor. */
+    fun cursorDragAllowed(): Boolean = true
     fun onCursorSteps(steps: Int)
     fun onDeleteRepeat(count: Int)
     fun onDeleteClear()
@@ -78,31 +83,41 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else it
     }
 
-    // 触摸状态 / touch state
-    private var pointerId = -1
-    private var down: Key? = null
-    private var downX = 0f
-    private var downY = 0f
-    private var mode = M_NONE
-    private var cursorAnchor = 0f
-    private var lastMoveT = 0L
-    private var lastMoveX = 0f
-    private var repeatCount = 0
+    // 触摸状态：每根手指一份，预先分配，按下时零分配。 Touch state: one preallocated slot per finger.
+    private inner class Ptr {
+        var id = -1
+        var key: Key? = null
+        var downX = 0f
+        var downY = 0f
+        var mode = M_NONE
+        /** 字符已在按下时输出。 The char was emitted on DOWN. */
+        var emitted = false
+        var cursorAnchor = 0f
+        var cursorSteps = 0
+        var lastMoveT = 0L
+        var lastMoveX = 0f
+        var repeatCount = 0
+        val longPress = Runnable { onLongPress(this) }
+        val repeat: Runnable = object : Runnable {
+            override fun run() {
+                val k = key ?: return
+                if (k.code != KeyCode.DELETE || mode != M_TAP) return
+                repeatCount++
+                if (repeatCount == 1 || repeatCount % 5 == 0) host?.feedback?.haptic(this@KeyboardView)
+                host?.onDeleteRepeat(repeatCount)
+                postDelayed(this, if (repeatCount > 20) 80 else 50)
+            }
+        }
+    }
+
+    private val ptrs = Array(MAX_POINTERS) { Ptr() }
+    /** 当前显示按键气泡的手指。 Finger owning the preview bubble. */
+    private var bubbleOwner: Ptr? = null
+    /** 正在操作左侧列表的手指。 Finger on the side list. */
+    private var sideOwner: Ptr? = null
     private var dangerKey: Key? = null
     private var sideDownScroll = 0f
     private var sideDragging = false
-
-    private val longPress = Runnable { onLongPress() }
-    private val repeat = object : Runnable {
-        override fun run() {
-            val k = down ?: return
-            if (k.code != KeyCode.DELETE || mode != M_TAP) return
-            repeatCount++
-            if (repeatCount == 1 || repeatCount % 5 == 0) host?.feedback?.haptic(this@KeyboardView)
-            host?.onDeleteRepeat(repeatCount)
-            postDelayed(this, if (repeatCount > 20) 80 else 50)
-        }
-    }
 
     fun applyStyle(s: KeyboardStyle, i: Icons) {
         palette = s.palette
@@ -266,7 +281,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     private fun drawKey(c: Canvas, k: Key) {
         val p = palette
         val m = metrics
-        val pressed = k === down && mode != M_NONE && mode != M_SIDE
+        val pressed = isPressed(k)
         val danger = k === dangerKey
         val radius = if (k.pill) k.rect.height() / 2f else if (k.large) m.keyRadiusLarge else m.keyRadius
         val bg = when {
@@ -373,7 +388,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     private fun drawSpace(c: Canvas, k: Key, cx: Float, cy: Float) {
         val m = metrics
         val p = palette
-        if (mode == M_CURSOR && k === down) {
+        if (inCursorMode(k)) {
             drawText(c, "‹  移动光标  ›", cx, cy, m.label(13f), p.labelSecondary, false)
             return
         }
@@ -464,7 +479,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         for (i in s.items.indices) {
             val top = s.rect.top + i * s.itemHeight - s.scroll
             if (top > s.rect.bottom || top + s.itemHeight < s.rect.top) continue
-            if (i == s.highlighted && mode == M_SIDE && !sideDragging) {
+            if (i == s.highlighted && sideOwner != null && !sideDragging) {
                 fill.color = if (keyColour) p.keyPressed else p.keyFuncPressed
                 c.drawRect(s.rect.left, top, s.rect.right, top + s.itemHeight, fill)
             }
@@ -480,12 +495,24 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     // ================================================================ touch
 
+    private fun isPressed(k: Key): Boolean {
+        for (p in ptrs) if (p.key === k && p.mode != M_NONE && p.mode != M_SIDE) return true
+        return false
+    }
+
+    private fun inCursorMode(k: Key): Boolean {
+        for (p in ptrs) if (p.key === k && p.mode == M_CURSOR) return true
+        return false
+    }
+
     private fun keyAt(x: Float, y: Float): Key? {
-        for (k in keys) if (k.cell.contains(x, y)) return k
+        val list = keys
+        for (i in list.indices) if (list[i].cell.contains(x, y)) return list[i]
         // 容差：取最近的格子。 Fallback to nearest cell.
         var best: Key? = null
         var bd = Float.MAX_VALUE
-        for (k in keys) {
+        for (i in list.indices) {
+            val k = list[i]
             val dx = if (x < k.cell.left) k.cell.left - x else if (x > k.cell.right) x - k.cell.right else 0f
             val dy = if (y < k.cell.top) k.cell.top - y else if (y > k.cell.bottom) y - k.cell.bottom else 0f
             val d = dx + dy
@@ -494,36 +521,49 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         return if (bd < metrics.dp(8f)) best else null
     }
 
+    private fun ptrOf(id: Int): Ptr? {
+        for (p in ptrs) if (p.id == id) return p
+        return null
+    }
+
+    /**
+     * 多指按 pointer id 各自跟踪：按下顺序即输出顺序，任何手势进行中新手指的按键照常输出。
+     * Every pointer is tracked on its own: output follows press order, and a new finger always types,
+     * whatever gesture another finger is in.
+     */
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (!::metrics.isInitialized) return false
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> startPointer(e, 0)
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                // 快速打字 rollover：第一指立即按点击输出。 Rollover: commit the first finger as a tap.
-                if (mode == M_TAP || mode == M_SWIPE) finishPointer(commit = true)
-                else if (mode != M_NONE) return true
-                startPointer(e, e.actionIndex)
+            MotionEvent.ACTION_DOWN -> {
+                // 上一轮没收到抬起（被系统截走等）时先复位。 Drop leftovers of a gesture that never ended.
+                for (p in ptrs) if (p.id >= 0) finishPointer(p, commit = false)
+                startPointer(e, 0)
             }
-            MotionEvent.ACTION_MOVE -> {
-                val i = e.findPointerIndex(pointerId)
-                if (i >= 0) movePointer(e.getX(i), e.getY(i))
+            MotionEvent.ACTION_POINTER_DOWN -> startPointer(e, e.actionIndex)
+            MotionEvent.ACTION_MOVE -> for (i in 0 until e.pointerCount) {
+                val p = ptrOf(e.getPointerId(i)) ?: continue
+                movePointer(p, e.getX(i), e.getY(i), e.eventTime)
             }
-            MotionEvent.ACTION_POINTER_UP -> if (e.getPointerId(e.actionIndex) == pointerId) finishPointer(commit = true)
-            MotionEvent.ACTION_UP -> if (e.getPointerId(e.actionIndex) == pointerId) finishPointer(commit = true)
-            MotionEvent.ACTION_CANCEL -> finishPointer(commit = false)
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> ptrOf(e.getPointerId(e.actionIndex))?.let { finishPointer(it, commit = true) }
+            MotionEvent.ACTION_CANCEL -> for (p in ptrs) if (p.id >= 0) finishPointer(p, commit = false)
         }
         return true
     }
 
     private fun startPointer(e: MotionEvent, index: Int) {
+        var p: Ptr? = null
+        for (q in ptrs) if (q.id < 0) { p = q; break }
+        if (p == null) return // 超过 4 根手指忽略。 More than four fingers are ignored.
         val x = e.getX(index)
         val y = e.getY(index)
-        pointerId = e.getPointerId(index)
-        downX = x; downY = y
         val s = side
         if (s != null && s.rect.contains(x, y)) {
-            mode = M_SIDE
+            if (sideOwner != null) return
+            p.id = e.getPointerId(index)
+            p.downX = x; p.downY = y
+            p.mode = M_SIDE
+            sideOwner = p
             sideDragging = false
             sideDownScroll = s.scroll
             s.highlighted = ((y - s.rect.top + s.scroll) / s.itemHeight).toInt()
@@ -531,11 +571,16 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             invalidate()
             return
         }
-        val k = keyAt(x, y) ?: run { mode = M_NONE; return }
-        if (k.disabled) { mode = M_NONE; return }
-        down = k
-        mode = M_TAP
-        repeatCount = 0
+        val k = keyAt(x, y) ?: return
+        if (k.disabled) return
+        settleOthers()
+        p.id = e.getPointerId(index)
+        p.key = k
+        p.downX = x; p.downY = y
+        p.mode = M_TAP
+        p.emitted = false
+        p.repeatCount = 0
+        p.cursorSteps = 0
         host?.feedback?.key(
             this,
             when (k.code) {
@@ -546,19 +591,56 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             },
         )
         if (k.isChar && k.preview && host?.previewEnabled == true) {
-            host.overlay?.let { ov -> ov.map(this, k.rect, tmp); ov.showBubble(tmp, k.label) }
+            host.overlay?.let { ov -> ov.map(this, k.rect, tmp); ov.showBubble(tmp, k.label); bubbleOwner = p }
         }
-        postDelayed(longPress, if (k.code == KeyCode.SPACE) 350L else 300L)
-        if (k.code == KeyCode.DELETE) postDelayed(repeat, 400)
         invalidate()
+        // 长按计时从按下事件的时刻算起，主线程忙时也稳定。 Long press counts from the event time, stable under load.
+        val timeout = if (k.code == KeyCode.SPACE) LONG_PRESS_SPACE_MS else LONG_PRESS_MS
+        postDelayed(p.longPress, (e.eventTime + timeout - SystemClock.uptimeMillis()).coerceAtLeast(0L))
+        if (k.code == KeyCode.DELETE) postDelayed(p.repeat, 400)
+        // 字符键按下即输出；上滑、长按改写时替换这一个字。 Char keys emit on DOWN; swipe/long-press replace it.
+        if (k.isChar) {
+            p.emitted = true
+            host?.onKey(k)
+        }
     }
 
-    private fun movePointer(x: Float, y: Float) {
+    /**
+     * 新手指按下前，结算其它手指：未输出的功能键立即按点击输出（保持按下顺序），
+     * 已输出的字符键不再触发上滑/长按，打开的长按浮层收起。
+     * Before a new finger lands, settle the others: pending function keys fire now (press order is kept),
+     * emitted char keys lose their swipe/long-press, and an open popup closes.
+     */
+    private fun settleOthers() {
+        val ov = host?.overlay
+        for (o in ptrs) {
+            if (o.id < 0) continue
+            val k = o.key
+            when (o.mode) {
+                M_TAP, M_SWIPE -> {
+                    removeCallbacks(o.longPress)
+                    removeCallbacks(o.repeat)
+                    if (o.mode == M_SWIPE && bubbleOwner === o && k != null) ov?.updateBubble(k.label, false)
+                    val m = o.mode
+                    o.mode = M_DONE
+                    if (k != null && !o.emitted) {
+                        if (m == M_SWIPE) k.up?.let { host?.onKeyText(k, it) }
+                        else if (!(k.code == KeyCode.DELETE && o.repeatCount > 0)) host?.onKey(k)
+                    }
+                }
+                M_ALT -> { ov?.hideAlternatives(); o.mode = M_DONE }
+                M_INFO -> { ov?.hideInfo(); o.mode = M_DONE }
+                M_CURSOR -> if (o.cursorSteps == 0 && k != null) { o.mode = M_DONE; host?.onKey(k) }
+            }
+        }
+    }
+
+    private fun movePointer(p: Ptr, x: Float, y: Float, t: Long) {
         val m = metrics
-        val dx = x - downX
-        val dy = y - downY
+        val dx = x - p.downX
+        val dy = y - p.downY
         val slop = m.dp(8f)
-        when (mode) {
+        when (p.mode) {
             M_SIDE -> {
                 val s = side ?: return
                 if (!sideDragging && abs(dy) > slop) sideDragging = true
@@ -568,22 +650,23 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 }
             }
             M_TAP, M_SWIPE -> {
-                val k = down ?: return
+                val k = p.key ?: return
                 val swipeMin = max(m.dp(20f), m.keyHeight * 0.45f)
-                if (k.code == KeyCode.SPACE && abs(dx) > slop && abs(dx) > abs(dy)) {
-                    removeCallbacks(longPress)
-                    mode = M_CURSOR
-                    cursorAnchor = x
-                    lastMoveT = SystemClock.uptimeMillis(); lastMoveX = x
+                if (k.code == KeyCode.SPACE && abs(dx) > slop && abs(dx) > abs(dy) && host?.cursorDragAllowed() != false) {
+                    removeCallbacks(p.longPress)
+                    p.mode = M_CURSOR
+                    p.cursorAnchor = x
+                    p.cursorSteps = 0
+                    p.lastMoveT = t; p.lastMoveX = x
                     invalidate()
                     return
                 }
                 if (k.code == KeyCode.DELETE) {
-                    if (abs(dx) > slop || abs(dy) > slop) removeCallbacks(repeat)
-                    val unit = keys.firstOrNull { it.code == 'q'.code }?.cell?.width() ?: m.dp(40f)
+                    if (abs(dx) > slop || abs(dy) > slop) removeCallbacks(p.repeat)
+                    val unit = keyOf('q'.code)?.cell?.width() ?: m.dp(40f)
                     if (dx <= -1.5f * unit) {
-                        removeCallbacks(longPress)
-                        mode = M_CLEAR
+                        removeCallbacks(p.longPress)
+                        p.mode = M_CLEAR
                         dangerKey = k
                         host?.feedback?.haptic(this)
                         host?.overlay?.let { ov -> ov.map(this, k.rect, tmp); ov.showInfo(tmp, "松手清空") }
@@ -593,38 +676,39 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 }
                 val up = k.up
                 if (up != null && dy <= -swipeMin && abs(dx) < abs(dy)) {
-                    if (mode != M_SWIPE) {
-                        mode = M_SWIPE
-                        removeCallbacks(longPress)
+                    if (p.mode != M_SWIPE) {
+                        p.mode = M_SWIPE
+                        removeCallbacks(p.longPress)
                         host?.feedback?.haptic(this)
-                        host?.overlay?.updateBubble(up, true)
+                        if (bubbleOwner === p) host?.overlay?.updateBubble(up, true)
                     }
-                } else if (mode == M_SWIPE) {
-                    mode = M_TAP
-                    host?.overlay?.updateBubble(k.label, false)
+                } else if (p.mode == M_SWIPE) {
+                    p.mode = M_TAP
+                    if (bubbleOwner === p) host?.overlay?.updateBubble(k.label, false)
                 } else if (abs(dx) > slop || abs(dy) > slop) {
-                    removeCallbacks(longPress)
+                    removeCallbacks(p.longPress)
                 }
             }
             M_CURSOR -> {
-                val now = SystemClock.uptimeMillis()
-                val dt = (now - lastMoveT).coerceAtLeast(1)
-                val speed = abs(x - lastMoveX) / m.density / dt * 1000f
-                lastMoveT = now; lastMoveX = x
+                // 速度按事件时间计算，主线程卡顿时不会虚高。 Speed from event time, not processing time.
+                val dt = (t - p.lastMoveT).coerceAtLeast(1)
+                val speed = abs(x - p.lastMoveX) / m.density / dt * 1000f
+                p.lastMoveT = t; p.lastMoveX = x
                 val step = m.dp(12f) * (if (speed > 600f) 0.5f else 1f)
                 var n = 0
-                while (x - cursorAnchor >= step) { cursorAnchor += step; n++ }
-                while (cursorAnchor - x >= step) { cursorAnchor -= step; n-- }
+                while (x - p.cursorAnchor >= step) { p.cursorAnchor += step; n++ }
+                while (p.cursorAnchor - x >= step) { p.cursorAnchor -= step; n-- }
                 if (n != 0) {
+                    p.cursorSteps += n
                     host?.feedback?.haptic(this)
                     host?.onCursorSteps(n)
                 }
             }
             M_CLEAR -> {
-                val k = down ?: return
-                val unit = keys.firstOrNull { it.code == 'q'.code }?.cell?.width() ?: m.dp(40f)
+                val k = p.key ?: return
+                val unit = keyOf('q'.code)?.cell?.width() ?: m.dp(40f)
                 if (dx > -1.5f * unit) {
-                    mode = M_TAP
+                    p.mode = M_TAP
                     dangerKey = null
                     host?.overlay?.hideInfo()
                     invalidate()
@@ -639,14 +723,15 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
     }
 
-    private fun onLongPress() {
-        val k = down ?: return
-        if (mode != M_TAP) return
+    private fun onLongPress(p: Ptr) {
+        val k = p.key ?: return
+        if (p.mode != M_TAP) return
         val ov = host?.overlay
         val info = k.longInfo
         if (info != null && ov != null) {
-            mode = M_INFO
+            p.mode = M_INFO
             ov.hideBubble(true)
+            if (bubbleOwner === p) bubbleOwner = null
             ov.map(this, k.rect, tmp)
             ov.showInfo(tmp, info)
             host.feedback?.haptic(this)
@@ -655,49 +740,61 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val list = k.longPress
         if (k.isChar || k.code == KeyCode.LANG) {
             if (!list.isNullOrEmpty() && ov != null) {
-                mode = M_ALT
+                p.mode = M_ALT
+                if (bubbleOwner === p) bubbleOwner = null
                 ov.map(this, k.rect, tmp)
-                val init = if (k.code == KeyCode.LANG) list.indexOf(k.label).coerceAtLeast(0) else list.indexOf(k.up).coerceAtLeast(0)
-                ov.showAlternatives(tmp, list, init)
+                if (k.code == KeyCode.LANG) {
+                    val init = list.indexOf(k.label).coerceAtLeast(0)
+                    ov.showAlternatives(tmp, list, init, init)
+                } else {
+                    // 浮层对齐上滑字符，但不预选：不移动就松手仍是这个键本身。
+                    // Anchored at the swipe-up char but nothing preselected: lifting in place keeps the key itself.
+                    ov.showAlternatives(tmp, list, list.indexOf(k.up).coerceAtLeast(0), -1)
+                }
                 host.feedback?.haptic(this)
             }
             return
         }
         when (host?.onLongPressFunc(k) ?: 0) {
-            LONG_VOICE -> { mode = M_VOICE; invalidate() }
-            LONG_CONSUMED -> { mode = M_CONSUMED; invalidate() }
+            LONG_VOICE -> { p.mode = M_VOICE; invalidate() }
+            LONG_CONSUMED -> { p.mode = M_CONSUMED; invalidate() }
         }
     }
 
-    private fun finishPointer(commit: Boolean) {
-        removeCallbacks(longPress)
-        removeCallbacks(repeat)
-        val k = down
+    private fun finishPointer(p: Ptr, commit: Boolean) {
+        removeCallbacks(p.longPress)
+        removeCallbacks(p.repeat)
+        val k = p.key
         val ov = host?.overlay
-        val m = mode
-        mode = M_NONE
-        down = null
-        dangerKey = null
-        pointerId = -1
-        ov?.hideBubble()
+        val m = p.mode
+        p.id = -1
+        p.key = null
+        p.mode = M_NONE
+        if (bubbleOwner === p) { ov?.hideBubble(); bubbleOwner = null }
+        if (m == M_CLEAR) dangerKey = null
         when (m) {
             M_SIDE -> {
+                sideOwner = null
                 val s = side
                 if (commit && s != null && !sideDragging && s.highlighted in s.items.indices) host?.onSideItem(s.highlighted)
                 s?.highlighted = -1
             }
-            M_TAP -> if (commit && k != null && !(k.code == KeyCode.DELETE && repeatCount > 0)) host?.onKey(k)
-            M_SWIPE -> if (commit && k != null) k.up?.let { host?.onKeyText(k, it) }
+            M_TAP -> if (commit && k != null && !p.emitted && !(k.code == KeyCode.DELETE && p.repeatCount > 0)) host?.onKey(k)
+            M_SWIPE -> if (commit && k != null) k.up?.let { if (p.emitted) host?.onKeyReplace(k, it) else host?.onKeyText(k, it) }
             M_ALT -> {
                 val sel = ov?.selectedAlternative()
                 ov?.hideAlternatives()
-                if (commit && k != null && sel != null) host?.onKeyText(k, sel)
+                if (commit && k != null && sel != null) {
+                    if (p.emitted) host?.onKeyReplace(k, sel) else host?.onKeyText(k, sel)
+                }
             }
             M_INFO -> ov?.hideInfo()
             M_CLEAR -> {
                 ov?.hideInfo()
                 if (commit) host?.onDeleteClear()
             }
+            // 横滑没真正移动过光标：按一次空格处理。 A slide that never moved the cursor is a plain space.
+            M_CURSOR -> if (commit && k != null && p.cursorSteps == 0) host?.onKey(k)
             M_VOICE -> host?.onVoiceHoldEnd(!commit)
         }
         invalidate()
@@ -705,7 +802,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     /** 面板切换等场合复位触摸。 Reset any in-flight gesture. */
     fun cancelTouch() {
-        if (mode != M_NONE) finishPointer(commit = false)
+        for (p in ptrs) if (p.id >= 0) finishPointer(p, commit = false)
     }
 
     companion object {
@@ -723,5 +820,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private const val M_SIDE = 7
         private const val M_INFO = 8
         private const val M_CONSUMED = 9
+        /** 已输出、不再有手势（另一根手指按下后）。 Emitted, no gesture left (another finger landed). */
+        private const val M_DONE = 10
+        private const val MAX_POINTERS = 4
+        const val LONG_PRESS_MS = 450L
+        const val LONG_PRESS_SPACE_MS = 500L
     }
 }
