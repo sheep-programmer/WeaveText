@@ -27,8 +27,14 @@ object WeavePrefs {
     // 外观与手感 / Look & feel
     /** "system" / "light" / "dark" */
     const val THEME = "theme"
+    /** 键盘高度档位 0–4（[com.weavetext.ime.ui.keyboard.KbMetrics.LEVEL_FACTORS]）。 Height level 0–4. */
     const val HEIGHT_LEVEL = "height_level"
+    /** 默认「较高」：1080×2400 一类的长屏上标准档偏矮（docs/design/06 §2）。 Default: the second-tallest level. */
+    const val HEIGHT_LEVEL_DEFAULT = 3
+    /** 0 关，1 跟随系统（旧版选项，仍然生效），2 轻，3 中，4 强。 0 off, 1 system (legacy), 2 light, 3 medium, 4 strong. */
     const val VIBRATION = "vibration"
+    /** 默认关闭，用户在设置里打开。 Off by default. */
+    const val VIBRATION_DEFAULT = 0
     const val SOUND = "sound"
     const val KEY_PREVIEW = "key_preview"
     /** 未设置 = 尚未询问（默认关闭，首次打开剪贴板面板时询问）。 Unset = not asked yet (off). */
@@ -94,10 +100,10 @@ object WeavePrefs {
     }
 
     fun theme(p: SharedPreferences) = p.getString(THEME, "system") ?: "system"
-    fun heightLevel(p: SharedPreferences) = p.getInt(HEIGHT_LEVEL, 2)
+    fun heightLevel(p: SharedPreferences) = p.getInt(HEIGHT_LEVEL, HEIGHT_LEVEL_DEFAULT)
     fun styleLayout(p: SharedPreferences) = p.getString(STYLE_LAYOUT, null) ?: "fresh"
     fun styleTheme(p: SharedPreferences) = p.getString(STYLE_THEME, null) ?: "auto"
-    fun vibration(p: SharedPreferences) = p.getInt(VIBRATION, 1)
+    fun vibration(p: SharedPreferences) = p.getInt(VIBRATION, VIBRATION_DEFAULT)
     fun sound(p: SharedPreferences) = p.getInt(SOUND, 0)
     fun keyPreview(p: SharedPreferences) = p.getBoolean(KEY_PREVIEW, true)
     fun clipboardRecord(p: SharedPreferences) = p.getBoolean(CLIPBOARD_RECORD, false)

@@ -228,6 +228,6 @@ class HeightPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     }
 
     companion object {
-        val NAMES = arrayOf("紧凑", "较矮", "标准", "较高", "高")
+        val NAMES = arrayOf("紧凑", "较矮", "适中", "较高", "高")
     }
 }

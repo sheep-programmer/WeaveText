@@ -84,4 +84,4 @@ fun schemeSummary(p: SharedPreferences): String {
 }
 
 fun themeName(t: String) = when (t) { "light" -> "浅色"; "dark" -> "深色"; else -> "跟随系统" }
-val HEIGHT_NAMES = listOf("紧凑", "较矮", "标准高度", "较高", "高")
+val HEIGHT_NAMES = listOf("紧凑", "较矮", "适中", "较高", "高")

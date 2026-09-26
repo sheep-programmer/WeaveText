@@ -30,7 +30,7 @@ class Feedback(ctx: Context) {
     private val handler = Handler(thread.looper)
 
     /** 0 关 1 系统 2 轻 3 中 4 强。 */
-    var vibration = 1
+    var vibration = com.weavetext.ime.settings.WeavePrefs.VIBRATION_DEFAULT
     /** 0–4。 */
     var sound = 0
 

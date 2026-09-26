@@ -91,7 +91,7 @@ fun LookScreen() {
             }
         }
         GroupTitle("键盘高度")
-        StepSlider(WeavePrefs.heightLevel(p), listOf("紧凑", "", "标准", "", "高")) {
+        StepSlider(WeavePrefs.heightLevel(p), listOf("紧凑", "", "适中", "较高", "高")) {
             p.edit().putInt(WeavePrefs.HEIGHT_LEVEL, it).apply()
         }
         GroupTitle("振动")
