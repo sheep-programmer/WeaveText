@@ -79,5 +79,8 @@
   },
   "popup": {
     "radius": 8
+  },
+  "symbols": {
+    "categories": "side"
   }
 }

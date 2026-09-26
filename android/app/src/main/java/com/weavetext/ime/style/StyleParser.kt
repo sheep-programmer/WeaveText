@@ -192,7 +192,10 @@ object StyleParser {
                 textSize = num(p, "textSize", 30f, 18f, 40f),
                 altRadius = num(p, "altRadius", 10f, 0f, 24f),
             ),
-            symbols = SymbolSpec(indicator = enum(s, "indicator", "underline", "underline", "pill")),
+            symbols = SymbolSpec(
+                indicator = enum(s, "indicator", "underline", "underline", "pill"),
+                categories = enum(s, "categories", "bottom", "bottom", "side"),
+            ),
         )
     }
 

@@ -11,6 +11,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowLooper
 import java.io.File
 
 /**
@@ -130,5 +131,28 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
         org.junit.Assert.assertTrue("fade differs from backdrop by $worst", worst <= 2)
         kb?.dispose()
         kb = null
+    }
+
+    /** 左侧分类布局：向上一划翻到下一页，页码随之变化。 Side-category layout: a swipe up turns one page. */
+    @Test fun sideSymbolsPage() {
+        val (k, _) = keyboard(false) { clear(); putString(WeavePrefs.STYLE_LAYOUT, "classic") }
+        k.showPanel("symbol")
+        val panel = k.panelNamed("symbol") as com.weavetext.ime.ui.keyboard.SymbolPanel
+        panel.selectEmoji()
+        idle()
+        val body = (panel.view as android.view.ViewGroup).getChildAt(0) as android.view.ViewGroup
+        val grid = body.getChildAt(1) as com.weavetext.ime.ui.keyboard.ScrollGridView
+        org.junit.Assert.assertTrue(grid.pageHeight() > 0f)
+        val t = android.os.SystemClock.uptimeMillis()
+        val x = grid.width / 2f
+        val y0 = grid.height * 0.8f
+        fun ev(dt: Long, action: Int, y: Float) = android.view.MotionEvent.obtain(t, t + dt, action, x, y, 0).also { grid.dispatchTouchEvent(it); it.recycle() }
+        ev(0, android.view.MotionEvent.ACTION_DOWN, y0)
+        for (i in 1..5) ev(i * 100L, android.view.MotionEvent.ACTION_MOVE, y0 - grid.height * 0.1f * i)
+        ev(600, android.view.MotionEvent.ACTION_UP, y0 - grid.height * 0.5f)
+        ShadowLooper.idleMainLooper(1, java.util.concurrent.TimeUnit.SECONDS)
+        grid.computeScroll()
+        org.junit.Assert.assertEquals(1, grid.page)
+        snap("classic_symbols_emoji_page2_light")
     }
 }

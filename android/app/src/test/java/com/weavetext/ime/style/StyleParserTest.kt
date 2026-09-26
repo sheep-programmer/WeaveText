@@ -197,4 +197,13 @@ class StyleParserTest {
         val again = layout(""""qwerty":{"rows":$rows}""")
         assertEquals(l.qwerty.rows.toString(), again.qwerty.rows.toString())
     }
+
+    /** 符号面板结构由布局选择，默认底行分类。 The symbol panel structure is chosen per layout; bottom tabs by default. */
+    @Test fun symbolPanelStructure() {
+        assertEquals("bottom", layout(""""name":"t"""").symbols.categories)
+        assertEquals("side", layout(""""symbols":{"categories":"side"}""").symbols.categories)
+        assertRejects("符号面板结构") { layout(""""symbols":{"categories":"top"}""") }
+        val side = repo.layoutIds.filter { repo.layout(it).symbols.categories == "side" }
+        assertEquals(listOf("classic", "bright"), side)
+    }
 }

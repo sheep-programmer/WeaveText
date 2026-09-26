@@ -46,6 +46,10 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
     open fun onItemLong(index: Int): Boolean = false
     abstract fun drawContent(c: Canvas)
     open fun onScrolledNearEnd() {}
+    /** 翻页高度（> 0 时松手后停在整页，无障碍滚动也按页）；0 = 自由滚动。 Page height: > 0 snaps to whole pages; 0 scrolls freely. */
+    open fun pageHeight(): Float = 0f
+    /** 滚动位置变化（拖动、惯性、翻页、回顶）。 Scroll position changed. */
+    open fun onScrollMoved() {}
     /** 长按成立后的手指移动 / 抬起（如肤色选择气泡）。 Finger move / up after a long-press fired. */
     open fun onLongMove(x: Float, y: Float) {}
     open fun onLongUp(cancel: Boolean) {}
@@ -76,7 +80,10 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
         override fun a11yCanScroll(forward: Boolean) = if (forward) scroll < maxScroll() - 1f else scroll > 0f
         override fun a11yScroll(forward: Boolean): Boolean {
             if (!a11yCanScroll(forward)) return false
-            scroll = (scroll + (if (forward) 0.8f else -0.8f) * height).coerceIn(0f, maxScroll())
+            val page = pageHeight()
+            scroll = if (page > 0f) ((Math.round(scroll / page) + if (forward) 1 else -1) * page).coerceIn(0f, maxScroll())
+            else (scroll + (if (forward) 0.8f else -0.8f) * height).coerceIn(0f, maxScroll())
+            onScrollMoved()
             invalidate()
             a11yChanged()
             return true
@@ -90,7 +97,20 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
     override fun dispatchHoverEvent(event: MotionEvent): Boolean = a11y.onHover(event) || super.dispatchHoverEvent(event)
 
     fun maxScroll() = (contentHeight() - height).coerceAtLeast(0f)
-    fun scrollToTop() { scroll = 0f; scroller.forceFinished(true); invalidate() }
+    fun scrollToTop() { scroll = 0f; scroller.forceFinished(true); onScrollMoved(); invalidate() }
+
+    /** 平滑滚到第 [page] 页（翻页模式）。 Smoothly scroll to [page] (paged mode). */
+    fun scrollToPage(page: Int) {
+        val ph = pageHeight()
+        if (ph <= 0f) return
+        val target = (page * ph).coerceIn(0f, maxScroll())
+        scroller.forceFinished(true)
+        scroller.startScroll(0, scroll.toInt(), 0, (target - scroll).toInt(), 220)
+        postInvalidateOnAnimation()
+    }
+
+    /** 当前页（翻页模式）。 Current page in paged mode. */
+    val page: Int get() = pageHeight().let { if (it > 0f) Math.round(scroll / it) else 0 }
 
     override fun onDraw(canvas: Canvas) {
         canvas.save()
@@ -104,6 +124,7 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
         if (scroller.computeScrollOffset()) {
             scroll = scroller.currY.toFloat()
             nearEnd()
+            onScrollMoved()
             postInvalidateOnAnimation()
         }
     }
@@ -139,6 +160,7 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
                 if (dragging) {
                     scroll = (downScroll - dy).coerceIn(0f, maxScroll())
                     nearEnd()
+                    onScrollMoved()
                     invalidate()
                 }
             }
@@ -149,7 +171,20 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
                 if (dragging) {
                     velocity?.computeCurrentVelocity(1000)
                     val vy = velocity?.yVelocity ?: 0f
-                    scroller.fling(0, scroll.toInt(), 0, -vy.toInt(), 0, 0, 0, maxScroll().toInt())
+                    val ph = pageHeight()
+                    if (ph > 0f) {
+                        // 翻页：快速一划或拖过 1/5 页就翻到相邻页，否则回弹。 Flick or drag past a fifth to turn one page.
+                        val from = Math.round(downScroll / ph)
+                        val moved = scroll - downScroll
+                        val fast = 600 * density
+                        scrollToPage(when {
+                            vy < -fast || (vy <= fast && moved > ph * 0.2f) -> from + 1
+                            vy > fast || moved < -ph * 0.2f -> from - 1
+                            else -> from
+                        })
+                    } else {
+                        scroller.fling(0, scroll.toInt(), 0, -vy.toInt(), 0, 0, 0, maxScroll().toInt())
+                    }
                     postInvalidateOnAnimation()
                 } else if (!longFired && pressed >= 0) {
                     val idx = pressed

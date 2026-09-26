@@ -129,6 +129,8 @@ class PopupSpec(
 class SymbolSpec(
     /** 分类选中指示："underline" / "pill"。 Selected category indicator. */
     val indicator: String,
+    /** 面板结构："bottom"（底行分类 + 滚动网格）/ "side"（左侧分类 + 翻页网格）。 Panel structure. */
+    val categories: String = "bottom",
 )
 
 /** 工具栏项名与功能编号（编号与 TopBarHost.onToolbar 一致）。 Toolbar item names and ids. */

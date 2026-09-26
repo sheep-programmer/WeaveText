@@ -83,7 +83,8 @@ light / dark / system switch.
 | `toolbar.menuIcon` / `menuAccent` | `logo`/`grid`；布尔 | `logo` / false | 菜单图标及是否着强调色 |
 | `popup.bubble` | `float` / `attached` / `none` | `float` | 按键气泡：悬浮 / 与按键相连 / 无 |
 | `popup.radius` `textSize` `altRadius` | 数字 | 10 / 30 / 10 | 气泡圆角、字号、长按候选框圆角 |
-| `symbols.indicator` | `underline` / `pill` | `underline` | 符号面板分类选中样式 |
+| `symbols.indicator` | `underline` / `pill` | `underline` | 符号面板分类选中样式 / selected category style |
+| `symbols.categories` | `bottom` / `side` | `bottom` | 符号面板结构：底行分类 + 滚动网格 / 左侧分类 + 翻页网格（02 §8.1）；分类数据相同 / panel structure: bottom tabs with a scrolling grid, or side categories with a paged grid |
 
 ### 3.1 行记号 / Row tokens
 
@@ -203,8 +204,8 @@ A zip with `style.json` at the root and 1–3 optional images.
 | 布局 Layout | 默认主题 Theme | 特征 Traits |
 |---|---|---|
 | 清爽 `fresh` | 清爽 | 默认外观：大写字母带数字符号提示、1dp 底边、左下 ⇧（输入中变分词） |
-| 经典 `classic` | 暖橙 | 键距紧凑、常驻分词键、九键 0 键、工具栏首图标着强调色 |
-| 明快 `bright` | 湛蓝 | 行距宽松、实色底边、回车常驻强调色并显示文字、工具栏圆形按钮靠右 |
+| 经典 `classic` | 暖橙 | 键距紧凑、常驻分词键、九键 0 键、工具栏首图标着强调色、符号面板左侧分类 |
+| 明快 `bright` | 湛蓝 | 行距宽松、实色底边、回车常驻强调色并显示文字、工具栏圆形按钮靠右、符号面板左侧分类 |
 | 素雅 `plain` | 青翠 | 极简工具栏、Shift/删除内缩、空格留白、文字回车、相连气泡、胶囊首选 |
 | 圆润 `round` | 雾蓝 | 小写、平面键、胶囊数字键与回车、地球键、空格显示语言、英文三格联想 |
 | 精致 `refined` | 银灰 | 小写、无副标签、Shift/删除内缩、地球键、文字回车、相连气泡、首选不着色 |
@@ -220,4 +221,4 @@ all icons are self-drawn (`build_icons.py`, incl. filled variants).
 ## 8. 验收截图 / Snapshots
 
 `android/app/src/test/snapshots/`：`style_<布局>_{composing,t9,symbols,idle}_{light,dark}.png`、`theme_<主题>_{light,dark}.png`、
-`theme_glass_popup_{light,dark}.png`、`style_round_english_light.png`、`settings_styles*.png`、`settings_style_tweak.png`、`settings_style_import*.png`。
+`theme_glass_popup_{light,dark}.png`、`style_classic_symbols_emoji_page2_light.png`、`style_round_english_light.png`、`settings_styles*.png`、`settings_style_tweak.png`、`settings_style_import*.png`。
