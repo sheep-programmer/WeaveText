@@ -89,7 +89,7 @@ fun LookScreen() {
             }
         }
         GroupTitle("键盘高度")
-        StepSlider(WeavePrefs.heightLevel(p), listOf("紧凑", "", "适中", "较高", "高")) {
+        StepSlider(WeavePrefs.heightLevel(p), HEIGHT_NAMES) {
             p.edit().putInt(WeavePrefs.HEIGHT_LEVEL, it).apply()
         }
         GroupTitle("按键手感")

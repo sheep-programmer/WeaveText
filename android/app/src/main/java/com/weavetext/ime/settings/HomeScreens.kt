@@ -158,7 +158,7 @@ private fun StepCard(
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "$n  $title", style = MaterialTheme.typography.titleMedium,
+                        title, style = MaterialTheme.typography.titleMedium,
                         color = if (done || active) cs.onSurface else cs.onSurfaceVariant,
                         fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
                     )
