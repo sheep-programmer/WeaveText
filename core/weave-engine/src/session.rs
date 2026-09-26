@@ -245,6 +245,10 @@ pub struct Engine {
     wubi_reverse: Option<HashMap<String, String>>,
     st_sources: (Option<Source>, Option<Source>),
     traditional: Option<Traditional>,
+    /// 本次刷新最多生成的候选数。 Candidate budget for the current refresh.
+    cand_cap: usize,
+    /// 候选列表是否因预算截断（翻页时补齐）。 Whether the list was cut by the budget.
+    cands_more: bool,
     emoji: Emoji,
     gram: Option<Gram>,
 }
@@ -254,6 +258,9 @@ fn open_lex(p: &Option<Source>) -> Option<Lexicon> {
 }
 
 const PAGE_INITIAL: usize = 60;
+/// 每次按键先生成的候选数；翻页超出时再补齐（每键不必把几百个候选都构造一遍）。
+/// Candidates built per keystroke; the rest are built only when paging goes past them.
+const CAND_FIRST: usize = 120;
 
 impl Engine {
     pub fn new(paths: &Paths) -> Self {
@@ -282,6 +289,8 @@ impl Engine {
             emoji: paths.emoji.as_ref().map(Emoji::load).unwrap_or_default(),
             st_sources: (paths.st_phrases.clone(), paths.st_characters.clone()),
             traditional: None,
+            cand_cap: CAND_FIRST,
+            cands_more: false,
             gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
         }
     }
@@ -760,14 +769,24 @@ impl Engine {
             preedit: self.preedit.clone(),
             composing: self.is_composing(),
             candidates: self.cands[..page].iter().map(|c| c.view.clone()).collect(),
-            total_candidates: self.cands.len(),
+            // 截断时报上限，界面会一直翻到拿不到为止。 When cut, report the cap; the UI pages until empty.
+            total_candidates: if self.cands_more {
+                crate::decoder::MAX_CANDIDATES.max(self.cands.len())
+            } else {
+                self.cands.len()
+            },
             pinyin_options: self.t9_options.iter().map(t9_option_label).collect(),
             schema: self.schema.key(),
         }
     }
 
-    /// 分页取候选。 Page through candidates.
-    pub fn candidates(&self, offset: usize, limit: usize) -> Vec<CandidateView> {
+    /// 分页取候选；超出已生成的部分时补齐完整列表。 Page through candidates, completing the list on demand.
+    pub fn candidates(&mut self, offset: usize, limit: usize) -> Vec<CandidateView> {
+        if self.cands_more && offset + limit > self.cands.len() {
+            self.cand_cap = crate::decoder::MAX_CANDIDATES;
+            self.refresh();
+            self.cand_cap = CAND_FIRST;
+        }
         self.cands
             .iter()
             .skip(offset)
@@ -896,6 +915,7 @@ impl Engine {
 
     fn refresh(&mut self) {
         self.cands.clear();
+        self.cands_more = false;
         self.t9_options.clear();
         let selected: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         match self.schema {
@@ -937,7 +957,8 @@ impl Engine {
         };
         let lat = dec.decode();
         let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&keys[s..e]).into_owned();
-        let cands = dec.candidates(&lat, &raw_text);
+        let cands = dec.candidates(&lat, &raw_text, self.cand_cap);
+        self.cands_more = cands.len() >= self.cand_cap.min(crate::decoder::MAX_CANDIDATES);
         self.preedit = format!("{selected}{}", self.display_rest(&lat, &keys));
         self.cands = cands
             .into_iter()
@@ -1096,7 +1117,7 @@ impl Engine {
             let keys = letters.keys.clone();
             let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&keys[s..e]).into_owned();
             let found: Vec<Candidate> = dec
-                .candidates(&lat, &raw_text)
+                .candidates(&lat, &raw_text, crate::decoder::MAX_CANDIDATES)
                 .into_iter()
                 .filter(|c| c.end == g.len && c.kind == CandKind::Word)
                 .take(80)

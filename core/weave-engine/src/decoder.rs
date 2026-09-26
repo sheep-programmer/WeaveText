@@ -34,7 +34,7 @@ const SPAN_LIST_LIMIT: usize = 600;
 /// 次优整句与最优相差多少以内才列出。 Max cost gap for listing the runner-up sentence.
 const ALT_SENTENCE_MARGIN: u32 = 3500;
 /// 候选总数上限。 Hard cap on listed candidates.
-const MAX_CANDIDATES: usize = 800;
+pub const MAX_CANDIDATES: usize = 800;
 
 /// 词图中的一条跨度。 One span of the word lattice.
 #[derive(Clone, Debug)]
@@ -446,14 +446,7 @@ impl<'a> Decoder<'a> {
         let mut out: Vec<Scored> = Vec::new();
         let mut top: Option<u32> = None;
         if let (Some(lex), Some(n)) = (self.lex, span.sys) {
-            let count = lex.entry_count_of(n) as usize;
-            // 用户用过的系统词可能排在 limit 之外，需要全扫一遍名字；只在有用户词时这么做。
-            let scan = if user_entries.is_empty() {
-                count.min(limit)
-            } else {
-                count
-            };
-            for (i, e) in lex.entries(n).take(scan).enumerate() {
+            for e in lex.entries(n).take(limit) {
                 let text = lex.text(e.text_id, &span.key);
                 let t = *top.get_or_insert(e.cost as u32);
                 let mut cost = e.cost as u32;
@@ -461,10 +454,24 @@ impl<'a> Decoder<'a> {
                 if let Some(ue) = user_entries.iter().find(|u| u.text == text) {
                     cost = learn_cost::promoted(cost, t, tick, ue);
                     origin = Origin::User;
-                } else if i >= limit {
-                    continue;
                 }
                 out.push(Scored { text, cost, origin });
+            }
+            // 用户用过、但排在 limit 之外的系统词：按存储字节直接查，不解码整个节点。
+            // System words the user has used that rank beyond `limit`: looked up by bytes, no full decode.
+            if let Some(t) = top {
+                for ue in user_entries {
+                    if out.iter().any(|s| s.text == ue.text) {
+                        continue;
+                    }
+                    if let Some(e) = lex.find_entry(n, &span.key, &ue.text) {
+                        out.push(Scored {
+                            text: ue.text.clone(),
+                            cost: learn_cost::promoted(e.cost as u32, t, tick, ue),
+                            origin: Origin::User,
+                        });
+                    }
+                }
             }
         }
         for ue in user_entries {
@@ -636,11 +643,15 @@ impl<'a> Decoder<'a> {
     }
 
     /// 生成候选列表。 Produce the candidate list.
+    /// `cap` 为最多生成多少个；返回的列表长度达到 `cap` 表示可能还有更多。
+    /// `cap` bounds the list; a list of length `cap` may have more behind it.
     pub fn candidates(
         &self,
         lat: &Lattice,
         raw_text: &dyn Fn(usize, usize) -> String,
+        cap: usize,
     ) -> Vec<Candidate> {
+        let cap = cap.min(MAX_CANDIDATES);
         let n = self.graph.len;
         let mut out: Vec<Candidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = Default::default();
@@ -710,7 +721,7 @@ impl<'a> Decoder<'a> {
             }
             group.sort_by_key(|(w, si)| (w.cost, lat.spans[*si].key.len()));
             for (w, si) in group {
-                if out.len() >= MAX_CANDIDATES {
+                if out.len() >= cap {
                     return out;
                 }
                 if !seen.insert(w.text.clone()) {
@@ -781,7 +792,7 @@ mod debug_tests {
         };
         let lat = d.decode();
         let raw = |_: usize, _: usize| String::new();
-        for c in d.candidates(&lat, &raw).iter().take(8) {
+        for c in d.candidates(&lat, &raw, MAX_CANDIDATES).iter().take(8) {
             println!(
                 "{} cost={} key={:?}",
                 c.text,

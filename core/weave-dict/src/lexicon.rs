@@ -682,6 +682,63 @@ impl Lexicon {
         (start..start + count).map(move |i| self.entry_at(i))
     }
 
+    /// 在节点 `n` 的词条里找文本 `text`，不解码其他词条（按存储编码直接比较字节）。
+    /// Find `text` among node `n`'s entries by comparing encoded bytes, without decoding the others.
+    pub fn find_entry(&self, n: NodeId, key: &[u16], text: &str) -> Option<Entry> {
+        let count = self.entry_count_of(n) as usize;
+        if count == 0 {
+            return None;
+        }
+        let (starts, chars) = &*self.chartab;
+        let mut coded = Vec::new();
+        let mut raw = Vec::with_capacity(text.len() + 1);
+        if starts.is_empty() {
+            raw.extend_from_slice(text.as_bytes());
+        } else {
+            raw.push(RAW_MARK);
+            raw.extend_from_slice(text.as_bytes());
+            if text.chars().count() == key.len() {
+                for (&s, c) in key.iter().zip(text.chars()) {
+                    let (Some(&lo), Some(&hi)) = (starts.get(s as usize), starts.get(s as usize + 1)) else {
+                        coded.clear();
+                        break;
+                    };
+                    match chars[lo as usize..hi as usize].iter().position(|&x| x == c) {
+                        Some(r) if (r as u32) < RANK_ONE => coded.push(r as u8),
+                        Some(r) if (r as u32) < MAX_RANK => {
+                            coded.push((RANK_ONE + (r as u32 >> 8)) as u8);
+                            coded.push(r as u8);
+                        }
+                        _ => {
+                            coded.clear();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let first = self.starts(n).1 as usize;
+        let k = first / TEXT_SAMPLE;
+        let mut off = self.blob.u32(self.tsamp_off + k * 4) as usize;
+        let head = first - k * TEXT_SAMPLE;
+        let lens = self.blob.with(self.len_off + k * TEXT_SAMPLE, head + count, |b| b.to_vec());
+        off += lens[..head].iter().map(|&l| l as usize).sum::<usize>();
+        let lens = &lens[head..];
+        let total: usize = lens.iter().map(|&l| l as usize).sum();
+        let hit = self.blob.with(self.tdata_off + off, total, |b| {
+            let mut pos = 0;
+            for (i, &l) in lens.iter().enumerate() {
+                let t = &b[pos..pos + l as usize];
+                if t == raw.as_slice() || (!coded.is_empty() && t == coded.as_slice()) {
+                    return Some(i);
+                }
+                pos += l as usize;
+            }
+            None
+        })?;
+        Some(self.entry_at((first + hit) as u32))
+    }
+
     /// 词条文本。`key` 是词条所在节点的符号序列（拼音词库解码需要；字母词库忽略）。
     /// Text of an entry. `key` is the entry's node key (needed for pinyin; ignored for letters).
     pub fn text(&self, id: u32, key: &[u16]) -> String {
@@ -781,6 +838,11 @@ mod tests {
         assert_eq!(texts(&[5, 9]), vec!["中国", "种过"]);
         assert_eq!(texts(&[5]), vec!["中", "钟"]);
         assert_eq!(texts(&[9, 5]), vec!["卡拉OK"]);
+        let zg = lex.find(&[5, 9]).unwrap();
+        assert_eq!(lex.find_entry(zg, &[5, 9], "种过").map(|e| e.cost), Some(20));
+        assert!(lex.find_entry(zg, &[5, 9], "中果").is_none());
+        let m = lex.find(&[9, 5]).unwrap();
+        assert_eq!(lex.find_entry(m, &[9, 5], "卡拉OK").map(|e| e.cost), Some(30));
         // 错误的 key 得到空串而不是乱码或崩溃。 A wrong key yields "" rather than garbage or a panic.
         let n = lex.find(&[5, 9]).unwrap();
         let e = lex.entries(n).next().unwrap();
