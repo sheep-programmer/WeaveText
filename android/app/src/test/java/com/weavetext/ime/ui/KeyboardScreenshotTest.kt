@@ -139,6 +139,49 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("t14_composing_dark")
     }
 
+    @Test fun handIdleLight() {
+        val (_, c) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "hand,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "hand") }
+        c.previewState(ImeState(schema = "hand", engineReady = true))
+        snap("hand_idle_light")
+    }
+
+    @Test fun handWritingLight() {
+        val (k, c) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "hand,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "hand") }
+        c.previewState(composing("hand", preedit = "", cands = handCands))
+        writeZhong(k)
+        snap("hand_writing_light")
+    }
+
+    @Test fun handWritingDark() {
+        val (k, c) = keyboard(true) { putString(WeavePrefs.KEYBOARDS, "hand,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "hand") }
+        c.previewState(composing("hand", preedit = "", cands = handCands))
+        writeZhong(k)
+        snap("hand_writing_dark")
+    }
+
+    private val handCands = "中申巾由甲电串史央虫".map { Candidate(it.toString(), "", false) }
+
+    /** 在书写区写一个「中」（四笔，书写区内的比例坐标）。 Write 中 on the pad (four strokes, pad fractions). */
+    private fun writeZhong(k: WeaveKeyboard) {
+        val kv = k.keyboardView
+        val r = kv.hand!!.rect
+        val strokes = listOf(
+            floatArrayOf(0.36f, 0.30f, 0.37f, 0.45f, 0.38f, 0.62f),
+            floatArrayOf(0.36f, 0.30f, 0.50f, 0.29f, 0.64f, 0.28f, 0.635f, 0.45f, 0.63f, 0.60f),
+            floatArrayOf(0.38f, 0.60f, 0.50f, 0.605f, 0.62f, 0.60f),
+            floatArrayOf(0.50f, 0.10f, 0.502f, 0.45f, 0.50f, 0.92f),
+        )
+        var t = android.os.SystemClock.uptimeMillis()
+        for (s in strokes) {
+            fun ev(action: Int, i: Int) = android.view.MotionEvent.obtain(t, t, action, r.left + s[i] * r.width(), r.top + s[i + 1] * r.height(), 0)
+                .also { kv.dispatchTouchEvent(it); it.recycle() }
+            ev(android.view.MotionEvent.ACTION_DOWN, 0)
+            for (i in 2 until s.size step 2) ev(android.view.MotionEvent.ACTION_MOVE, i)
+            ev(android.view.MotionEvent.ACTION_UP, s.size - 2)
+            t += 100
+        }
+    }
+
     @Test fun wubiHints() {
         val (_, c) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "wubi86,english").putBoolean(WeavePrefs.WUBI_ROOT_HINTS, true) }
         c.previewState(
