@@ -5,9 +5,10 @@
 
 ## 特性 / Features
 
-- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、14 键（每键两个字母）、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
+- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、14 键（每键两个字母）、手写（单字，笔顺不限、可连笔）、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
   *Schemes: full pinyin (sentences, abbreviations, fuzzy sounds, typo correction, mixed English), double pinyin
-  (Xiaohe / Ziranma / Microsoft / Sogou), T9, 14-key (two letters per key), Wubi 86, English with suggestions.*
+  (Xiaohe / Ziranma / Microsoft / Sogou), T9, 14-key (two letters per key), handwriting (single
+  characters, any stroke order, cursive strokes), Wubi 86, English with suggestions.*
 - **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.6%。
   *Beam search, a character collocation model and user learning: 75.6% top-1 on a 1000-sentence benchmark.*
 - **零部署、体积小**：预编译词库分块压缩后直接从 APK 读取、按需解压，手机上不再多占一份；全部词库与模型约 24 MB。

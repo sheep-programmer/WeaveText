@@ -579,6 +579,42 @@ arrangement differs.
 ![14 键（浅色）/ 14-key light](../../android/app/src/test/snapshots/keyboard_t14_idle_light.png)
 ![14 键输入中（深色）/ 14-key composing, dark](../../android/app/src/test/snapshots/keyboard_t14_composing_dark.png)
 
+### 13.2 手写 / Handwriting
+
+单字手写，内核方案 `hand`，在「输入方案」里与 26 键、九键、14 键并列启用；布局沿用九键的列权重。
+书写区占九键左列与数字键的位置（前三行、前四列），右列为删除、重写与回车，底行与九键一致，空格两侧加中文逗号、句号。
+*Single-character handwriting, engine schema `hand`, enabled next to QWERTY / T9 / 14-key in Input schemes. It reuses
+the T9 column weights: the pad covers the side column and digit keys (three rows × four columns), the right column
+holds Delete, Rewrite and Enter, and the bottom row matches T9 with a Chinese comma and full stop beside the space bar.*
+
+```
+┌───────────────────────────────────┬──────┐
+│ 在此书写          ┆               │  ⌫   │
+│                   ┆               ├──────┤
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─┼─ ─ ─ ─ ─ ─ ─  │ 重写 │
+│                   ┆               ├──────┤
+│                   ┆               │      │
+├──────┬──────┬───┬─┴─────┬───┬─────┤  ⏎   │
+│  符  │ 123  │ ，│ 空格🎙 │ 。│中/英│(跨2行)│
+└──────┴──────┴───┴───────┴───┴─────┴──────┘
+```
+
+| 区域 | 规格 |
+|---|---|
+| 书写区 | 键色底板（`t9.sideColor: "key"` 的布局用功能键色），圆角 `radius.keyLarge`；居中一条横、一条竖的 1dp 虚线参考线（`kb.divider`）；空白时左上角显示「在此书写」（13dp，`kb.labelHint`） |
+| 墨迹 | `kb.label` 色、约 4dp（随图标缩放）、圆头圆角；以相邻两点的中点连二次曲线，笔画平滑、无压感；落笔即出一个点。点距小于 1.5dp 的移动忽略；书写中复用 Path 与点缓冲区，移动时不分配 |
+| 识别 | 每一笔**抬起**时把这个字的全部笔画（书写区坐标，y 向下）交给内核识别，移动过程中不调用；候选栏实时显示结果（最多 12 个），墨迹保留 |
+| 上屏 | 点候选、空格、逗号/句号（及符号面板里的标点）、回车 → 立即上屏（回车上屏首选、不换行）；停笔 ≥ 600ms（`HandPad.COMMIT_PAUSE_MS`，仅代码可调）后再次落笔 → 先上屏首选，新的一笔算下一个字。上屏后墨迹约 160ms 淡出（关闭动画时立即清除） |
+| ⌫ | 有笔画时退一笔并重新识别；没有笔画时正常删除；有笔画时长按 = 清空笔画（不再连删）；左滑清空同 §14.3 |
+| 重写 | 清空这个字的笔画；没有笔画时为禁用态 |
+| 底行 | 九键底行的键（去掉删除/回车/重输/0），空格两侧插入「，」「。」（权重 0.8，空格 1.8），长按列出同类标点；中/英、123、符号与其他方案相同 |
+| 多指 | 书写中其它手指一律忽略（手掌、误触）；触摸被取消时丢弃正在写的一笔 |
+| 其它 | 悬浮键盘、单手模式按键区尺寸重新排布；手写不分体（与九键相同） |
+
+![手写（浅色）/ Handwriting light](../../android/app/src/test/snapshots/keyboard_hand_idle_light.png)
+![手写书写中（浅色）/ Writing, light](../../android/app/src/test/snapshots/keyboard_hand_writing_light.png)
+![手写书写中（深色）/ Writing, dark](../../android/app/src/test/snapshots/keyboard_hand_writing_dark.png)
+
 ---
 
 ## 14. 手势规则 / Gesture rules
