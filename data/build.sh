@@ -19,13 +19,16 @@ fetch_repo() { # <github repo> <dir> <commit>
 }
 fetch_repo amzxyz/rime_wanxiang rime_wanxiang 516b1bb66bdce1fd5785f5481c415f13ff736548
 fetch_repo rime/rime-wubi rime-wubi 152a0d3f3efe40cae216d1e3b338242446848d07
+# 手写模板：Make Me a Hanzi 的 graphics.txt（Arphic Public License，派生数据仍适用该许可，见 docs/licenses/）。
+# Handwriting templates from Make Me a Hanzi's graphics.txt (Arphic Public License; see docs/licenses/).
+fetch_repo skishore/makemeahanzi makemeahanzi bddc96d41bef78427ed0e034e9f7e31d71fd1b92
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
 "$CARGO" build -q --release -p weave-dict --features pack --manifest-path "$ROOT/core/Cargo.toml" --bins
 DICTGEN="$ROOT/core/target/release/dictgen"
 WX="$REF/rime_wanxiang/dicts"
 stamp="$OUT/.stamp"
-newest=$(find "$WX" "$REF/rime-wubi/wubi86.dict.yaml" "$DICTGEN" "$0" -newer "$stamp" 2>/dev/null | head -1 || true)
-if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ]; then
+newest=$(find "$WX" "$REF/rime-wubi/wubi86.dict.yaml" "$REF/makemeahanzi/graphics.txt" "$DICTGEN" "$0" -newer "$stamp" 2>/dev/null | head -1 || true)
+if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ] && [ -f "$OUT/hand.wvz" ]; then
   echo "dictionaries up to date"; exit 0
 fi
 # 基础字词 + 地名/人名/名人/诗词/联想长词/多音词：整句评测 71.7% → 75.6%。
@@ -47,9 +50,10 @@ fi
 cp "$REF/rime_wanxiang/opencc/wanxiang/STPhrases.txt" "$REF/rime_wanxiang/opencc/wanxiang/STCharacters.txt" "$REF/rime_wanxiang/opencc/wanxiang/emoji.txt" "$OUT/"
 # 分块压缩版（WVPK）：APK 内不压缩存放、由内核按需解压，手机上不再解压出第二份。
 # Block-compressed copies (WVPK), stored uncompressed in the APK and decoded on demand by the engine.
+"$ROOT/core/target/release/handgen" "$REF/makemeahanzi/graphics.txt" "$OUT/hand.wvh" "$WX/zi.dict.yaml"
 PACK="$ROOT/core/target/release/wvpack"
 for pair in pinyin:pinyin.wvl wubi86:wubi86.wvl english:english.wvl grammar:grammar.wvg \
-    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt; do
+    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh; do
   "$PACK" "$OUT/${pair#*:}" "$OUT/${pair%%:*}.wvz"
 done
 touch "$stamp"

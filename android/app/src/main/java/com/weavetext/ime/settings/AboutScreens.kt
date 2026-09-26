@@ -109,6 +109,7 @@ fun LicensesScreen() = SubPage("开源许可") {
             Triple("万象拼音词库", "CC BY 4.0", "amzxyz/rime_wanxiang：拼音字词、词频、英文词频、表情联想"),
             Triple("OpenCC 简繁转换表", "Apache-2.0", "BYVoid/OpenCC（经 rime_wanxiang 整理）"),
             Triple("五笔 86 码表", "LGPL-3.0", "rime/rime-wubi：作为独立可替换的数据文件分发"),
+            Triple("手写识别模板", "Arphic Public License", "skishore/makemeahanzi 的笔画数据（源自文鼎 PL 字体），作为独立数据文件分发"),
         ),
     )
     GroupTitle("内核（Rust）")

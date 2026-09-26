@@ -26,3 +26,7 @@ path = "src/bin/gramdump.rs"
 name = "wvpack"
 path = "src/bin/wvpack.rs"
 required-features = ["pack"]
+
+[[bin]]
+name = "handgen"
+path = "src/bin/handgen.rs"

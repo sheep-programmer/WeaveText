@@ -3,6 +3,7 @@
 
 pub mod blob;
 pub mod gram;
+pub mod hand;
 pub mod lexicon;
 pub mod syllable;
 

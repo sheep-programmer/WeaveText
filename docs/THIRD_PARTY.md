@@ -13,6 +13,7 @@ Every new dependency must be registered here.
 | 表情联想表（`emoji.txt`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 词后表情候选 | 内容不变，以分块压缩文件 `emoji.wvz` 随包分发 |
 | 字符搭配模型（`grammar.wvg`） | [amzxyz/RIME-LMDG](https://github.com/amzxyz/RIME-LMDG) `wanxiang-lts-zh-hans.gram` | CC BY 4.0 | 整句组词 | 构建时读取原始模型，剪枝为 2~3 字搭配并转为织文格式 |
 | 五笔 86 码表 | [rime/rime-wubi](https://github.com/rime/rime-wubi) | LGPL-3.0 | 五笔 86 编码 | 作为**独立、可替换**的数据文件 `wubi86.wvz` 分发，附许可证全文与源地址；后续计划替换为自建码表 |
+| 手写识别模板（`hand.wvz`） | [skishore/makemeahanzi](https://github.com/skishore/makemeahanzi) 的 `graphics.txt`（提交 `bddc96d4`），源自文鼎 Arphic PL KaitiM GB / UKai 字体 | Arphic Public License | 手写输入（9574 字，含 GB2312 全部 6763 字） | 由 `core/weave-dict/src/bin/handgen.rs` 从上游数据生成（可复现），作为**独立数据文件**分发，派生数据仍适用 Arphic Public License，许可证全文见 `docs/licenses/ARPHIC-PUBLIC-LICENSE*.txt`；字频先验取自万象 `zi.dict.yaml`（CC BY 4.0） |
 
 *Wanxiang data (CC BY 4.0) is tone-stripped and compiled into `pinyin.wvl` / `english.wvl`, attributed on the
 About page. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvz` with the license

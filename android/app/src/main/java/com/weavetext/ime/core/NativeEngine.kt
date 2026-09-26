@@ -22,6 +22,11 @@ interface KeyEngine {
     fun setContext(prevWord: String?)
     fun snapshot(): EngineSnapshot
     fun candidates(offset: Int, limit: Int): List<Candidate>
+    /**
+     * 手写（方案 "hand"）：当前这个字的全部笔画，每笔为 x0,y0,x1,y1… 的点列（y 向下）；返回是否有候选。
+     * Handwriting (schema "hand"): all strokes of the current char, each x0,y0,x1,y1…; y points down.
+     */
+    fun handInput(strokes: List<FloatArray>): Boolean = false
 }
 
 /**
@@ -47,6 +52,18 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     override fun selectPinyin(index: Int): Boolean = nativeSelectPinyin(handle, index)
     override fun forget(index: Int): Boolean = nativeForget(handle, index)
     override fun commitFirst() { nativeCommitFirst(handle) }
+
+    override fun handInput(strokes: List<FloatArray>): Boolean {
+        val lens = IntArray(strokes.size) { strokes[it].size / 2 }
+        val xy = FloatArray(lens.sum() * 2)
+        var at = 0
+        for (s in strokes) {
+            val n = s.size / 2 * 2
+            s.copyInto(xy, at, 0, n)
+            at += n
+        }
+        return nativeHandInput(handle, xy, lens)
+    }
     override fun commitRaw() { nativeCommitRaw(handle) }
     override fun clear() { nativeClear(handle) }
     override fun flush() { nativeFlush(handle) }
@@ -123,6 +140,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeSelectPinyin(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeForget(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeCommitFirst(h: Long): Boolean
+        @JvmStatic private external fun nativeHandInput(h: Long, xy: FloatArray, lens: IntArray): Boolean
         @JvmStatic private external fun nativeCommitRaw(h: Long): Boolean
         @JvmStatic private external fun nativeClear(h: Long): Boolean
         @JvmStatic private external fun nativeFlush(h: Long): Boolean

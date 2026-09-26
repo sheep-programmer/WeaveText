@@ -277,6 +277,37 @@ bool_op!(
     Java_com_weavetext_ime_core_NativeEngine_nativeBackspace,
     |e| e.backspace()
 );
+/// 手写：`xy` 为所有点的 x、y 交替排列，`lens` 为每笔的点数；返回是否有候选。
+/// Handwriting: `xy` holds interleaved x, y of all points, `lens` the point count of each stroke.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandInput(
+    env: JNIEnv,
+    _c: JClass,
+    h: jlong,
+    xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray,
+) -> jboolean {
+    let (Ok(n_xy), Ok(n_lens)) = (env.get_array_length(&xy), env.get_array_length(&lens)) else {
+        return JNI_FALSE;
+    };
+    let mut pts = vec![0f32; n_xy.max(0) as usize];
+    let mut ls = vec![0i32; n_lens.max(0) as usize];
+    if env.get_float_array_region(&xy, 0, &mut pts).is_err() || env.get_int_array_region(&lens, 0, &mut ls).is_err() {
+        return JNI_FALSE;
+    }
+    let mut strokes = Vec::with_capacity(ls.len());
+    let mut at = 0usize;
+    for &l in &ls {
+        let l = l.max(0) as usize;
+        if at + l * 2 > pts.len() {
+            break;
+        }
+        strokes.push(pts[at..at + l * 2].chunks_exact(2).map(|p| (p[0], p[1])).collect::<Vec<_>>());
+        at += l * 2;
+    }
+    if with_engine(h, false, |e| e.hand_input(strokes)) { JNI_TRUE } else { JNI_FALSE }
+}
+
 bool_op!(
     Java_com_weavetext_ime_core_NativeEngine_nativeCommitFirst,
     |e| {

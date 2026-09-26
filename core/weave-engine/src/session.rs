@@ -30,6 +30,8 @@ pub enum Schema {
     Keypad(Grouping),
     Wubi86,
     English,
+    /** 手写（单字）。 Handwriting, one character at a time. */
+    Hand,
 }
 
 impl Schema {
@@ -41,6 +43,7 @@ impl Schema {
             "t14" => Some(Schema::Keypad(Grouping::Fourteen)),
             "wubi86" => Some(Schema::Wubi86),
             "english" => Some(Schema::English),
+            "hand" => Some(Schema::Hand),
             _ => k
                 .strip_prefix("shuangpin:")
                 .and_then(SchemeId::from_key)
@@ -55,6 +58,7 @@ impl Schema {
             Schema::Keypad(Grouping::Fourteen) => "t14".into(),
             Schema::Wubi86 => "wubi86".into(),
             Schema::English => "english".into(),
+            Schema::Hand => "hand".into(),
             Schema::Shuangpin(s) => format!("shuangpin:{}", s.key()),
         }
     }
@@ -168,6 +172,8 @@ pub struct Paths {
     pub st_characters: Option<Source>,
     /// 表情联想表。 Emoji suggestion table.
     pub emoji: Option<Source>,
+    /// 手写识别模板（.wvh）。 Handwriting templates.
+    pub hand: Option<Source>,
     /// 字符搭配模型（.wvg）。 Character collocation model.
     pub gram_model: Option<Source>,
     /// 用户数据目录。 User data directory.
@@ -176,7 +182,7 @@ pub struct Paths {
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
 /// Resource key → raw file name; packed copies are named `<key>.wvz`.
-pub const RESOURCES: [(&str, &str); 7] = [
+pub const RESOURCES: [(&str, &str); 8] = [
     ("pinyin", "pinyin.wvl"),
     ("wubi86", "wubi86.wvl"),
     ("english", "english.wvl"),
@@ -184,6 +190,7 @@ pub const RESOURCES: [(&str, &str); 7] = [
     ("st_phrases", "STPhrases.txt"),
     ("st_characters", "STCharacters.txt"),
     ("emoji", "emoji.txt"),
+    ("hand", "hand.wvh"),
 ];
 
 impl Paths {
@@ -197,6 +204,7 @@ impl Paths {
             "st_phrases" => &mut self.st_phrases,
             "st_characters" => &mut self.st_characters,
             "emoji" => &mut self.emoji,
+            "hand" => &mut self.hand,
             _ => return false,
         };
         *slot = Some(src);
@@ -248,6 +256,11 @@ pub struct Engine {
     wubi_reverse: Option<HashMap<String, String>>,
     st_sources: (Option<Source>, Option<Source>),
     traditional: Option<Traditional>,
+    /// 手写模板来源与（首次使用时载入的）识别器。 Handwriting source and the recognizer, loaded on first use.
+    hand_src: Option<Source>,
+    hand: Option<weave_dict::hand::Recognizer>,
+    /// 当前这个字已写的笔画。 Strokes of the character being written.
+    hand_strokes: Vec<weave_dict::hand::Stroke>,
     /// 本次刷新最多生成的候选数。 Candidate budget for the current refresh.
     cand_cap: usize,
     /// 候选列表是否因预算截断（翻页时补齐）。 Whether the list was cut by the budget.
@@ -264,6 +277,8 @@ const PAGE_INITIAL: usize = 60;
 /// 每次按键先生成的候选数；翻页超出时再补齐（每键不必把几百个候选都构造一遍）。
 /// Candidates built per keystroke; the rest are built only when paging goes past them.
 const CAND_FIRST: usize = 120;
+/// 手写每次给出的候选数。 Candidates per handwriting recognition.
+const HAND_CANDIDATES: usize = 12;
 
 impl Engine {
     pub fn new(paths: &Paths) -> Self {
@@ -292,6 +307,9 @@ impl Engine {
             emoji: paths.emoji.as_ref().map(Emoji::load).unwrap_or_default(),
             st_sources: (paths.st_phrases.clone(), paths.st_characters.clone()),
             traditional: None,
+            hand_src: paths.hand.clone(),
+            hand: None,
+            hand_strokes: Vec::new(),
             cand_cap: CAND_FIRST,
             cands_more: false,
             gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
@@ -434,6 +452,7 @@ impl Engine {
             Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) => self.pinyin.is_some(),
             Schema::Wubi86 => self.wubi.is_some(),
             Schema::English => self.english.is_some(),
+            Schema::Hand => self.hand_src.is_some(),
         }
     }
 
@@ -463,7 +482,7 @@ impl Engine {
     }
 
     pub fn is_composing(&self) -> bool {
-        !self.raw.is_empty() || !self.t9_units.is_empty() || !self.selected.is_empty()
+        !self.raw.is_empty() || !self.t9_units.is_empty() || !self.selected.is_empty() || !self.hand_strokes.is_empty()
     }
 
     // ------------------------------------------------------------ keys
@@ -543,6 +562,8 @@ impl Engine {
                 }
                 false
             }
+            // 手写不接受按键字符（笔画经 hand_input 进来）。 Handwriting takes strokes via hand_input, not keys.
+            Schema::Hand => false,
         }
     }
 
@@ -551,6 +572,12 @@ impl Engine {
     pub fn backspace(&mut self) -> bool {
         if !self.is_composing() {
             return false;
+        }
+        // 手写：退掉最后一笔并重新识别。 Handwriting: drop the last stroke and recognise again.
+        if self.schema == Schema::Hand {
+            self.hand_strokes.pop();
+            self.refresh();
+            return true;
         }
         let rest_empty = match self.schema {
             Schema::Keypad(_) => self.t9_units.len() <= self.consumed,
@@ -704,6 +731,7 @@ impl Engine {
     }
 
     pub fn clear(&mut self) {
+        self.hand_strokes.clear();
         self.raw.clear();
         self.t9_units.clear();
         self.consumed = 0;
@@ -957,9 +985,39 @@ impl Engine {
             s if s.is_pinyin_family() => self.refresh_pinyin(selected),
             Schema::Wubi86 => self.refresh_wubi(),
             Schema::English => self.refresh_english(),
+            Schema::Hand => self.refresh_hand(),
             _ => {}
         }
         self.decorate();
+    }
+
+    /// 手写：给出当前这个字的全部笔画（每笔是 y 向下的点列），识别并刷新候选；返回是否有候选。
+    /// Handwriting: pass all strokes of the current character (y pointing down); recognises and refreshes the
+    /// candidates. Returns whether there are any.
+    pub fn hand_input(&mut self, strokes: Vec<weave_dict::hand::Stroke>) -> bool {
+        if self.schema != Schema::Hand {
+            return false;
+        }
+        self.hand_strokes = strokes;
+        self.refresh();
+        !self.cands.is_empty()
+    }
+
+    fn refresh_hand(&mut self) {
+        if self.hand_strokes.is_empty() {
+            return;
+        }
+        if self.hand.is_none() {
+            self.hand = self.hand_src.as_ref().and_then(|s| weave_dict::hand::Recognizer::open(s).ok());
+        }
+        let Some(r) = &self.hand else { return };
+        for (c, _) in r.recognize(&self.hand_strokes, HAND_CANDIDATES) {
+            let text = c.to_string();
+            self.cands.push(Cand {
+                view: CandidateView { text: text.clone(), comment: String::new(), user: false },
+                action: Action::Table { text },
+            });
+        }
     }
 
     fn refresh_pinyin(&mut self, selected: String) {
@@ -1326,5 +1384,40 @@ mod wubi_tests {
         assert_eq!(e.snapshot().preedit, "wq");
         e.select(0);
         assert_eq!(e.snapshot().commit, "你");
+    }
+}
+
+#[cfg(test)]
+mod hand_tests {
+    use super::*;
+
+    fn line(x0: f32, y0: f32, x1: f32, y1: f32) -> weave_dict::hand::Stroke {
+        vec![(x0, y0), ((x0 + x1) / 2.0, (y0 + y1) / 2.0), (x1, y1)]
+    }
+
+    #[test]
+    fn handwriting_schema_recognizes_selects_and_undoes_strokes() {
+        let mut b = weave_dict::hand::Builder::default();
+        b.push('一', 255, &[line(0.0, 50.0, 100.0, 50.0)]);
+        b.push('十', 200, &[line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)]);
+        let dir = std::env::temp_dir().join(format!("weave-hand-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hand.wvh");
+        std::fs::write(&file, b.build()).unwrap();
+        let mut e = Engine::new(&Paths { hand: Some(Source::file(&file)), ..Default::default() });
+        assert!(e.has_lexicon(Schema::Hand));
+        e.set_schema(Schema::Hand);
+        assert!(!e.input_char('a'), "keys are not handwriting input");
+        assert!(e.hand_input(vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)]));
+        assert!(e.is_composing());
+        assert_eq!(e.snapshot().candidates[0].text, "十");
+        // 退一笔：剩一横，首选变成「一」。 Undo one stroke: a single horizontal is 一.
+        assert!(e.backspace());
+        assert_eq!(e.snapshot().candidates[0].text, "一");
+        assert!(e.select(0));
+        let s = e.snapshot();
+        assert_eq!(s.commit, "一");
+        assert!(!s.composing);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
