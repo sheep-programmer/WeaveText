@@ -85,8 +85,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private val grip = ResizeGrip(service)
     /** 悬浮卡片的缩放（按当前方向读取）。 Floating card scale for the current orientation. */
     private var floatScale = 1f
-    /** 正在拖动缩放：布局时不按保存的比例重新放置。 Resizing: layout keeps the card where it is. */
+    /** 正在拖动缩放：布局时保持右下角不动，不按保存的比例重新放置。 Resizing: layout keeps the bottom-right corner. */
     private var resizing = false
+    private var resizeRight = 0
+    private var resizeBottom = 0
     val board = FrameLayout(service)
     val topBar = TopBarView(service, this)
     val main = FrameLayout(service)
@@ -221,8 +223,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             card.layoutParams = FrameLayout.LayoutParams(w, handleH + kbH)
             handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
             handle.visibility = View.VISIBLE
-            val g = m.dp(GRIP_DP).toInt()
-            grip.layoutParams = FrameLayout.LayoutParams(g, g, android.view.Gravity.BOTTOM or android.view.Gravity.END)
+            // 缩放手柄在拖动条左端，不压住任何按键。 The grip sits in the drag bar, clear of every key.
+            val g = FloatingGeometry.gripBox(handleH, m.density)
+            grip.layoutParams = FrameLayout.LayoutParams(g.width, g.height, android.view.Gravity.TOP or android.view.Gravity.START)
             grip.visibility = View.VISIBLE
             grip.bringToFront()
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = handleH }
@@ -967,7 +970,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             contentDescription = "拖动悬浮键盘；双击停靠到底部"
         }
 
-        private fun dockButtonLeft() = width - metrics.dp(44f)
+        private fun dockButtonLeft() = FloatingGeometry.dockBox(width, height, metrics.density).left
 
         override fun onDraw(canvas: android.graphics.Canvas) {
             val m = metrics
@@ -1023,9 +1026,20 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         updateCandidates(null)
     }
 
+    /** 缩放中：保持右下角不动，再夹回屏幕内。 While resizing: keep the bottom-right corner, then clamp on screen. */
+    private fun placeResizing() {
+        val (l, t) = FloatingGeometry.anchorBottomRight(resizeRight, resizeBottom, card.width, card.height)
+        val b = FloatingGeometry.clamp(l, t, root.width, card.width, card.height, floatMinTop(), floatMaxBottom())
+        card.translationX = b.left.toFloat()
+        card.translationY = b.top.toFloat()
+        syncOverlayAnchor()
+    }
+
     /**
-     * 悬浮卡片右下角的缩放手柄：拖动整体缩放（按键保持比例），范围见 [FloatingGeometry.clampScale]，横竖屏各记一份。
-     * Resize grip in the card's bottom-right corner: drag to scale the whole card, remembered per orientation.
+     * 悬浮卡片的缩放手柄：在顶部拖动条的左端（不占键区），向左上拖放大、向右下拖缩小，右下角不动；
+     * 按键保持比例，范围见 [FloatingGeometry.clampScale]，横竖屏各记一份。
+     * Resize grip at the left end of the top drag bar (outside the key area): drag up/left to grow,
+     * down/right to shrink, with the bottom-right corner fixed; remembered per orientation.
      */
     private inner class ResizeGrip(c: Context) : View(c) {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -1043,11 +1057,14 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             val m = metrics
             paint.color = palette.labelHint
             paint.strokeWidth = m.dp(1.5f)
-            val r = width - m.dp(6f)
-            val b = height - m.dp(6f)
-            for (i in 1..2) {
-                val d = m.dp(5f) * i
-                canvas.drawLine(r - d, b, r, b - d, paint)
+            // 左上角的双层直角标记。 Two nested corner marks pointing to the top-left.
+            val l = width / 2f - m.dp(6f)
+            val t = height / 2f - m.dp(6f)
+            for (i in 0..1) {
+                val o = m.dp(4f) * i
+                val len = m.dp(10f) - o
+                canvas.drawLine(l + o, t + o, l + o + len, t + o, paint)
+                canvas.drawLine(l + o, t + o, l + o, t + o + len, paint)
             }
         }
 
@@ -1057,6 +1074,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 android.view.MotionEvent.ACTION_DOWN -> {
                     downX = e.rawX; downY = e.rawY
                     startScale = floatScale; startW = card.width; startH = card.height
+                    resizeRight = card.translationX.toInt() + card.width
+                    resizeBottom = card.translationY.toInt() + card.height
                     resizing = true
                     keyboardView.cancelTouch()
                     popup.hideAll()
@@ -1152,7 +1171,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             super.onLayout(changed, left, top, right, bottom)
-            if (floating) { if (resizing) moveCardBy(0f, 0f) else placeCard() } else syncOverlayAnchor()
+            if (floating) { if (resizing) placeResizing() else placeCard() } else syncOverlayAnchor()
         }
     }
 
@@ -1160,7 +1179,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         /** 悬浮卡片使用的键高档位。 Height level used by the floating card. */
         const val FLOAT_LEVEL = 0
         private const val HANDLE_DP = 22f
-        private const val GRIP_DP = 28f
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

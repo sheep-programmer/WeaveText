@@ -66,10 +66,30 @@ class FloatingGeometryTest {
 
     @Test fun resizeFollowsTheCornerDrag() {
         assertEquals(1f, FloatingGeometry.resizeScale(1f, 800, 600, 0f, 0f), 1e-4f)
-        // 宽 +10%、高 +10% → 1.1。 +10% both ways.
-        assertEquals(1.1f, FloatingGeometry.resizeScale(1f, 800, 600, 80f, 60f), 1e-4f)
-        // 只拖宽度：取平均，按键保持比例。 Width only: averaged, keys keep their proportions.
-        assertEquals(0.9f, FloatingGeometry.resizeScale(1f, 800, 600, -160f, 0f), 1e-4f)
+        // 左上角向左上拖：宽 +10%、高 +10% → 1.1。 Top-left corner dragged up/left by 10% both ways.
+        assertEquals(1.1f, FloatingGeometry.resizeScale(1f, 800, 600, -80f, -60f), 1e-4f)
+        // 只拖宽度（向右 = 缩小）：取平均，按键保持比例。 Width only (right = smaller): averaged.
+        assertEquals(0.9f, FloatingGeometry.resizeScale(1f, 800, 600, 160f, 0f), 1e-4f)
+        // 右下角保持不动。 The bottom-right corner stays put.
+        assertEquals(100 to 1300, FloatingGeometry.anchorBottomRight(1000, 2000, 900, 700))
+    }
+
+    @Test fun gripAndDockStayOutOfTheKeyArea() {
+        val d = 2.625f
+        val handleH = (22 * d).toInt()
+        for (cardW in listOf((220 * d).toInt(), 810, 1026)) {
+            val keys = FloatingGeometry.keyArea(cardW, handleH + 700, handleH)
+            val grip = FloatingGeometry.gripBox(handleH, d)
+            val dock = FloatingGeometry.dockBox(cardW, handleH, d)
+            for (b in listOf(grip, dock)) {
+                assertTrue("$b overlaps keys $keys", b.bottom <= keys.top)
+                assertTrue(b.left >= 0 && b.right <= cardW)
+            }
+            // 手柄与停靠按钮之间留出拖动区。 Room to drag between the grip and the dock button.
+            assertTrue(dock.left - grip.right >= 36 * d)
+            // 手柄至少 44dp 宽，便于按住。 The grip is at least 44 dp wide.
+            assertTrue(grip.width >= (44 * d).toInt())
+        }
     }
 
     @Test fun scaleStaysWithinLimits() {

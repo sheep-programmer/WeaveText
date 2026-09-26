@@ -57,6 +57,8 @@ object FloatingGeometry {
     fun insets(windowH: Int, card: Box) = Insets(windowH, windowH, card)
 
     const val MIN_SCALE = 0.7f
+    private const val GRIP_W_DP = 44f
+    private const val DOCK_W_DP = 44f
     const val MAX_SCALE = 1.3f
 
     /**
@@ -71,11 +73,29 @@ object FloatingGeometry {
         return scale.coerceIn(lo, hi)
     }
 
-    /** 拖动右下角：宽、高的相对变化取平均，按键保持比例。 Corner drag: average of the relative width and height change. */
+    /**
+     * 拖动条左端的缩放手柄（卡片坐标）：只在拖动条里，不占任何按键的触控区。
+     * The resize grip at the left end of the drag bar (card coordinates); it never covers a key.
+     */
+    fun gripBox(handleH: Int, density: Float) = Box(0, 0, (GRIP_W_DP * density).roundToInt(), handleH)
+
+    /** 拖动条右端的停靠按钮（卡片坐标）。 The dock button at the right end of the drag bar. */
+    fun dockBox(cardW: Int, handleH: Int, density: Float) = Box(cardW - (DOCK_W_DP * density).roundToInt(), 0, cardW, handleH)
+
+    /** 拖动条下方的键区（卡片坐标）。 The key area below the drag bar (card coordinates). */
+    fun keyArea(cardW: Int, cardH: Int, handleH: Int) = Box(0, handleH, cardW, cardH)
+
+    /**
+     * 拖动左上角：向左上为放大，宽、高的相对变化取平均，按键保持比例。
+     * Top-left corner drag: up/left grows; average of the relative width and height change.
+     */
     fun resizeScale(startScale: Float, startW: Int, startH: Int, dx: Float, dy: Float): Float {
         if (startW <= 0 || startH <= 0) return startScale
-        return startScale * ((startW + dx) / startW + (startH + dy) / startH) / 2f
+        return startScale * ((startW - dx) / startW + (startH - dy) / startH) / 2f
     }
+
+    /** 缩放时右下角保持不动：新尺寸 → 左上角。 Resizing keeps the bottom-right corner: new size → top-left. */
+    fun anchorBottomRight(right: Int, bottom: Int, cardW: Int, cardH: Int) = (right - cardW) to (bottom - cardH)
 
     fun decodeScale(s: String?): Float = s?.toFloatOrNull()?.takeIf { !it.isNaN() }?.coerceIn(MIN_SCALE, MAX_SCALE) ?: 1f
 
