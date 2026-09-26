@@ -13,11 +13,14 @@ use jni::JNIEnv;
 /// 单个文件上限，防止异常包写满存储。 Per-file cap.
 const MAX_FILE: u64 = 1024 * 1024 * 1024;
 
-/// 解出 `keep` 中列出的文件名（按文件名匹配，忽略所在目录）；`keep` 为空则全部解出（仍去掉顶层目录）。
+/// 解出 `keep` 中列出的文件（文件名，或 `abi/文件名` 这样的路径后缀）；`keep` 为空则全部解出（仍去掉顶层目录）。
 /// 先写入 `dest` 下的临时目录，全部成功后再逐个改名，失败时不留残缺文件。
 /// Extract files named in `keep` (matched by file name) or everything when empty. Writes into a temp
 /// dir under `dest` and renames on success, so failures leave nothing half-written.
 pub fn extract_tar_bz2(archive: &Path, dest: &Path, keep: &[String]) -> Result<Vec<String>, String> {
+    if keep.iter().any(|k| k.starts_with('/') || k.split('/').any(|c| c == ".." || c.is_empty())) {
+        return Err("invalid keep path".into());
+    }
     let file = fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let decoder = bzip2::read::BzDecoder::new(BufReader::with_capacity(1 << 16, file));
     let mut tar = tar::Archive::new(decoder);
@@ -35,10 +38,14 @@ pub fn extract_tar_bz2(archive: &Path, dest: &Path, keep: &[String]) -> Result<V
             let path = entry.path().map_err(|e| e.to_string())?.into_owned();
             let rel = strip_top(&path).ok_or_else(|| format!("unsafe path in archive: {}", path.display()))?;
             let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            // `keep` 的每一项是文件名或带目录的路径后缀（如 arm64-v8a/libfoo.so，用来在多架构包里只取一份），
+            // 解出后的相对路径就是这一项本身。 Each `keep` item is a file name or a path suffix such as
+            // arm64-v8a/libfoo.so (to pick one ABI out of a multi-ABI archive); it is also the output path.
             let target = if keep.is_empty() {
                 rel.clone()
-            } else if keep.iter().any(|k| k == &name) {
-                PathBuf::from(&name)
+            } else if let Some(k) = keep.iter().find(|k| rel_str == **k || rel_str.ends_with(&format!("/{k}"))) {
+                PathBuf::from(k)
             } else {
                 continue;
             };
@@ -158,6 +165,31 @@ mod tests {
         let missing = extract_tar_bz2(&archive, &root.join("out2"), &["nope.onnx".to_string()]);
         assert!(missing.unwrap_err().contains("missing"));
         assert!(!root.join("out2/.extracting").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 多架构包：按 `abi/文件名` 只取一份，输出保留这个相对路径。 Pick one ABI out of a multi-ABI archive.
+    #[test]
+    fn picks_one_abi_by_path_suffix() {
+        let root = std::env::temp_dir().join(format!("weave-abi-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for abi in ["arm64-v8a", "x86_64"] {
+            let d = root.join("src/jniLibs").join(abi);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("libfoo.so"), abi.as_bytes()).unwrap();
+        }
+        let archive = root.join("a.tar.bz2");
+        let ok = std::process::Command::new("tar")
+            .args(["cjf", archive.to_str().unwrap(), "-C", root.join("src").to_str().unwrap(), "./jniLibs"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let dest = root.join("out");
+        extract_tar_bz2(&archive, &dest, &["arm64-v8a/libfoo.so".to_string()]).unwrap();
+        assert_eq!(fs::read(dest.join("arm64-v8a/libfoo.so")).unwrap(), b"arm64-v8a");
+        assert!(!dest.join("x86_64").exists());
+        assert!(extract_tar_bz2(&archive, &dest, &["../evil.so".to_string()]).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 
