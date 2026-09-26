@@ -247,6 +247,20 @@ class TypingFeelTest {
         assertEquals("", engine.raw.toString())
     }
 
+    @Test fun shortOrSlantedUpwardDragsKeepTheLetter() {
+        val q = key('q')
+        val min = maxOf(dp(KeyboardView.SWIPE_MIN_DP), kb.metrics.keyHeight * KeyboardView.SWIPE_MIN_KEY)
+        // 不够长。 Too short.
+        press(0, q); move(0, 0f, -(min - dp(2f))); release(0)
+        // 够长但斜着（|dy| ≤ 1.5 |dx|）。 Long enough but slanted.
+        press(0, key('w')); move(0, min * 0.8f, -min * 1.1f); release(0)
+        assertEquals("qw", engine.raw.toString())
+        assertEquals("", ic.text)
+        // 明显朝上且够长：上滑字符。 Clearly vertical and long: the swipe-up char.
+        press(0, key('e')); move(0, min * 0.3f, -(min + dp(2f))); release(0)
+        assertEquals("【qw】3", ic.text)
+    }
+
     // ------------------------------------------------------------ 14-key
 
     @Test fun fourteenKeySendsGroupCodesAndSeparator() {

@@ -663,7 +663,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             }
             M_TAP, M_SWIPE -> {
                 val k = p.key ?: return
-                val swipeMin = max(m.dp(20f), m.keyHeight * 0.45f)
+                // 上滑要明显朝上、够长，快速连打时的手指拖动不会把字母变成数字。
+                // Swipe-up needs a clearly vertical, long movement so fast typing never turns letters into digits.
+                val swipeMin = max(m.dp(SWIPE_MIN_DP), m.keyHeight * SWIPE_MIN_KEY)
                 if (k.code == KeyCode.SPACE && abs(dx) > slop && abs(dx) > abs(dy) && host?.cursorDragAllowed() != false) {
                     removeCallbacks(p.longPress)
                     p.mode = M_CURSOR
@@ -687,7 +689,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                     return
                 }
                 val up = k.up
-                if (up != null && dy <= -swipeMin && abs(dx) < abs(dy)) {
+                if (up != null && dy <= -swipeMin && -dy > SWIPE_VERTICAL * abs(dx)) {
                     if (p.mode != M_SWIPE) {
                         p.mode = M_SWIPE
                         removeCallbacks(p.longPress)
@@ -836,6 +838,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private const val M_DONE = 10
         private const val MAX_POINTERS = 4
         const val LONG_PRESS_MS = 450L
+        /** 上滑的最小距离：max(28 dp, 0.55 × 键高)，且 |dy| > 1.5 |dx|。 Swipe-up minimum and verticality. */
+        const val SWIPE_MIN_DP = 28f
+        const val SWIPE_MIN_KEY = 0.55f
+        const val SWIPE_VERTICAL = 1.5f
         const val LONG_PRESS_SPACE_MS = 500L
     }
 }
