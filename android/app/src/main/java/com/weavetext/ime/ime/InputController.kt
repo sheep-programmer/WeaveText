@@ -137,8 +137,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
             markUndo(null)
             return
         }
+        // 组合中的首选先上屏，并刷新状态（候选栏收起、手写墨迹清掉）。 Commit the pending top candidate and refresh.
         e?.commitFirst()
-        drainCommit()
+        refresh()
         val text = if (state.chinese) fullWidthPunct(ch) ?: ch.toString() else ch.toString()
         commit(text)
         markUndo(text)
@@ -147,7 +148,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
     fun onText(text: String) {
         engine?.commitFirst()
-        drainCommit()
+        refresh()
         commit(text)
         markUndo(text)
     }
@@ -248,8 +249,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val e = engine
         lastSpaceAt = 0L
         if (e != null && e.isComposing()) {
-            // 英文候选首项即原样输入（保留撇号）。 English: the first candidate is the typed word.
-            if (state.chinese) e.commitRaw() else e.select(0)
+            // 英文候选首项即原样输入（保留撇号）；手写没有输入码，上屏首选。
+            // English: the first candidate is the typed word; handwriting has no raw keys, so the top candidate goes.
+            if (state.chinese && state.schema == "hand") e.commitFirst() else if (state.chinese) e.commitRaw() else e.select(0)
             refresh()
             return
         }
@@ -269,6 +271,26 @@ class InputController(private val icProvider: () -> InputConnection?) {
         refresh()
         // 英文：选词上屏后补空格。 English: a space follows a chosen suggestion.
         if (!state.chinese && !state.composing) commitSpaceAfterWord()
+    }
+
+    /**
+     * 手写：一笔写完后交给内核这个字的全部笔画，候选随快照更新。没有内核时不改动状态。
+     * Handwriting: after each stroke the engine gets all strokes of the char; candidates follow via the snapshot.
+     */
+    fun onHandStrokes(strokes: List<FloatArray>) {
+        val e = engine ?: return
+        lastSpaceAt = 0L
+        e.handInput(strokes)
+        stamp++
+        refresh()
+    }
+
+    /** 上屏当前首选（手写停笔后再落笔）。 Commit the top candidate (handwriting: pen down after a pause). */
+    fun commitFirst() {
+        val e = engine ?: return
+        if (!e.isComposing()) return
+        e.commitFirst()
+        refresh()
     }
 
     fun onPinyinOption(index: Int) {

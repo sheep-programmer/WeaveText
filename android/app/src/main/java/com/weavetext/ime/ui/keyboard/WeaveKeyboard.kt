@@ -412,6 +412,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             applySchemaPref()
         }
         if (s.privateField && topBar.clipChip != null) { topBar.clipChip = null; pendingClip = null }
+        // 这个字已上屏或被丢弃：墨迹随即清掉（同步进行，下一笔不会混进旧笔画）。
+        // The char was committed or dropped: clear its ink right away, so the next stroke never joins old ones.
+        if (!s.composing && keyboardView.hand?.strokes?.isNotEmpty() == true) keyboardView.clearInk()
         if (s.composing || s.candidates.isNotEmpty()) {
             localCands = null
             topBar.clipChip = null
@@ -459,6 +462,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             !s.chinese -> "en"
             s.schema == "t9" -> "t9"
             s.schema == "t14" -> "t14"
+            s.schema == "hand" -> "hand"
             else -> "cn:" + s.schema
         }
         val hintsOn = when {
@@ -477,6 +481,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                     keyboardView.side?.items = Layouts.NUM_SYMBOLS.map { it.toString() }
                 }
                 kind == "t9" -> keyboardView.setT9(Layouts.t9(l.t9, l.labels))
+                kind == "hand" -> keyboardView.setHand(Layouts.hand(l.t9, l.labels))
                 kind == "t14" -> keyboardView.setT14(Layouts.t14(l.t9, l.labels, lower = l.qwerty.letterCase == "lower"))
                 kind == "en" -> keyboardView.setQwerty(Layouts.qwerty(english = true, l.qwerty, l.labels))
                 else -> {
@@ -591,6 +596,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 if (items != side.items) { side.items = items; side.scroll = 0f }
             }
         }
+        kv.keyOf(KeyCode.HAND_CLEAR)?.disabled = !composing
         // 中/英 长按：已启用的方案 / enabled schemes on long-press
         kv.keyOf(KeyCode.LANG)?.let { k ->
             val names = WeavePrefs.keyboards(prefs).map { WeavePrefs.KEYBOARD_NAMES[it] ?: it }
@@ -607,7 +613,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         topBar.clearAction()
         when (key.code) {
             KeyCode.SHIFT -> onShift()
-            KeyCode.DELETE -> controller.onBackspace()
+            KeyCode.DELETE -> {
+                // 手写有笔画时退一笔（内核同样退掉最后一笔并重新识别）。 Handwriting: undo the last stroke.
+                keyboardView.undoStroke()
+                controller.onBackspace()
+            }
+            KeyCode.HAND_CLEAR -> clearHand()
             KeyCode.SYMBOL -> showPanel("symbol")
             KeyCode.EMOJI -> { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji() }
             KeyCode.NUMBER -> { numberMode = true; refreshLayout() }
@@ -704,9 +715,27 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.moveCursor(steps)
     }
 
-    override fun onDeleteRepeat(count: Int) {
+    override fun onDeleteRepeat(count: Int): Boolean {
+        // 手写有笔画时长按删除 = 重写，之后不再连删。 Handwriting: holding Delete clears the strokes, then stops.
+        if (keyboardView.hand?.hasInk == true || (state.composing && state.schema == "hand")) {
+            clearHand()
+            return false
+        }
         if (count > 20) controller.deleteWordBefore() else controller.onBackspace()
+        return true
     }
+
+    private fun clearHand() {
+        controller.reset()
+        keyboardView.clearInk()
+    }
+
+    override fun onHandStroke(strokes: List<FloatArray>) {
+        topBar.clearAction()
+        controller.onHandStrokes(strokes)
+    }
+
+    override fun onHandCommit() { controller.commitFirst() }
 
     override fun onDeleteClear() {
         val removed = controller.clearBeforeCursor() ?: return

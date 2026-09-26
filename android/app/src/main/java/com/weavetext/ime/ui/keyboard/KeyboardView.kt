@@ -28,13 +28,18 @@ interface KeyboardHost {
     /** 空格横滑能否移动光标（中文组合中不能）。 Whether a space-bar slide may move the cursor. */
     fun cursorDragAllowed(): Boolean = true
     fun onCursorSteps(steps: Int)
-    fun onDeleteRepeat(count: Int)
+    /** 长按删除连发；返回 false 停止连发。 Delete auto-repeat; false stops repeating. */
+    fun onDeleteRepeat(count: Int): Boolean
     fun onDeleteClear()
     /** 功能键长按；返回 [KeyboardView.LONG_VOICE] / [KeyboardView.LONG_CONSUMED] / 0。 */
     fun onLongPressFunc(key: Key): Int
     fun onVoiceHoldMove(dy: Float) {}
     fun onVoiceHoldEnd(cancelled: Boolean) {}
     fun onSideItem(index: Int)
+    /** 手写：一笔写完，[strokes] 为这个字的全部笔画。 Handwriting: a stroke ended; [strokes] are all of this char's. */
+    fun onHandStroke(strokes: List<FloatArray>) {}
+    /** 手写：停笔后又落笔，先上屏首选。 Handwriting: pen down after a pause; commit the top candidate first. */
+    fun onHandCommit() {}
 }
 
 /**
@@ -57,6 +62,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private set
     var side: SideList? = null
         private set
+    /** 手写书写区（仅手写布局）。 The handwriting pad (handwriting layout only). */
+    var hand: HandPad? = null
+        private set
+    private val handPad = HandPad()
     private var layoutKind = Layouts.QWERTY
     private var builder: ((Float) -> Unit)? = null
 
@@ -104,7 +113,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 if (k.code != KeyCode.DELETE || mode != M_TAP) return
                 repeatCount++
                 if (repeatCount == 1 || repeatCount % 5 == 0) host?.feedback?.haptic(this@KeyboardView)
-                host?.onDeleteRepeat(repeatCount)
+                if (host?.onDeleteRepeat(repeatCount) == false) return
                 postDelayed(this, if (repeatCount > 20) 80 else 50)
             }
         }
@@ -115,6 +124,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     private var bubbleOwner: Ptr? = null
     /** 正在操作左侧列表的手指。 Finger on the side list. */
     private var sideOwner: Ptr? = null
+    /** 正在书写的手指。 Finger writing on the pad. */
+    private var inkOwner: Ptr? = null
     private var dangerKey: Key? = null
     private var sideDownScroll = 0f
     private var sideDragging = false
@@ -136,31 +147,58 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         set(v) { if (field != v) { field = v; relayout() } }
 
     fun setQwerty(list: List<Key>) {
-        keys = list; side = null; layoutKind = Layouts.QWERTY
+        keys = list; side = null; dropHand(); layoutKind = Layouts.QWERTY
         builder = { w -> Layouts.layoutQwerty(list, w, metrics, layoutStyle.qwerty, Layouts.splitGap(w, metrics, splitWide)) }
         relayout()
     }
 
     fun setT9(list: List<Key>) {
         val s = SideList()
-        keys = list; side = s; layoutKind = Layouts.T9
+        keys = list; side = s; dropHand(); layoutKind = Layouts.T9
         builder = { w -> Layouts.layoutT9(list, s, w, metrics, layoutStyle.t9) }
         relayout()
     }
 
     fun setT14(list: List<Key>) {
         val s = SideList()
-        keys = list; side = s; layoutKind = Layouts.T14
+        keys = list; side = s; dropHand(); layoutKind = Layouts.T14
         builder = { w -> Layouts.layoutT14(list, s, w, metrics, layoutStyle.t9) }
         relayout()
     }
 
     fun setNumpad(list: List<Key>) {
         val s = SideList()
-        keys = list; side = s; layoutKind = Layouts.NUMPAD
+        keys = list; side = s; dropHand(); layoutKind = Layouts.NUMPAD
         builder = { w -> Layouts.layoutNumpad(list, s, w, metrics, layoutStyle.numpad) }
         relayout()
     }
+
+    /** 手写布局；笔迹在重建布局（换主题等）时保留。 Handwriting layout; the ink survives rebuilds (theme changes). */
+    fun setHand(list: List<Key>) {
+        keys = list; side = null; hand = handPad; layoutKind = Layouts.HAND
+        builder = { w -> Layouts.layoutHand(list, handPad, w, metrics, layoutStyle.t9) }
+        relayout()
+    }
+
+    private fun dropHand() {
+        if (hand == null) return
+        cancelTouch()
+        hand = null
+        handPad.reset()
+    }
+
+    /**
+     * 清掉手写区已写完的笔画（上屏或丢弃了这个字）；有动画时短暂淡出。
+     * Clear the pad's finished strokes (the char was committed or dropped), fading briefly when animations are on.
+     */
+    fun clearInk() {
+        val pad = hand ?: return
+        pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+        invalidate()
+    }
+
+    /** 手写区退一笔。 Drop the pad's last stroke. */
+    fun undoStroke(): Boolean = (hand?.undo() == true).also { if (it) invalidate() }
 
     fun keyOf(code: Int): Key? = keys.firstOrNull { it.code == code }
 
@@ -193,6 +231,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         KeyCode.BACK -> "返回"
         KeyCode.T9_RESET -> if (k.label == "@") "艾特" else k.label
         KeyCode.T9_ONE -> if (k.medium) k.label else "1，标点"
+        KeyCode.HAND_CLEAR -> "重写"
         else -> when {
             k.sub != null -> "${k.sub}，${k.label}"
             layoutKind == Layouts.T14 && k.code in 'A'.code..'N'.code -> k.label.lowercase().toList().joinToString("，")
@@ -205,10 +244,15 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         override fun a11yIds(): IntArray {
             val s = side
             val sideIds = if (s == null) IntArray(0) else IntArray(s.items.size) { SIDE_BASE + it }
-            return IntArray(keys.size) { it } + sideIds
+            val padIds = if (hand == null) IntArray(0) else intArrayOf(PAD_ID)
+            return IntArray(keys.size) { it } + sideIds + padIds
         }
 
         override fun a11yBounds(id: Int, out: RectF): Boolean {
+            if (id == PAD_ID) {
+                out.set(hand?.rect ?: return false)
+                return true
+            }
             if (id >= SIDE_BASE) {
                 val s = side ?: return false
                 val i = id - SIDE_BASE
@@ -223,11 +267,13 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
 
         override fun a11yLabel(id: Int): CharSequence? {
+            if (id == PAD_ID) return "手写区，用手指书写一个字"
             if (id >= SIDE_BASE) return side?.items?.getOrNull(id - SIDE_BASE)?.let { VirtualA11y.speak(it) }
             return keys.getOrNull(id)?.let { describe(it) }
         }
 
         override fun a11yState(id: Int): CharSequence? {
+            if (id == PAD_ID) return hand?.strokes?.size?.takeIf { it > 0 }?.let { "已写 $it 笔" }
             val k = keys.getOrNull(id) ?: return null
             if (k.code != KeyCode.SHIFT || k.icon == 0) return null
             return when (k.icon) {
@@ -238,6 +284,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
 
         override fun a11yClick(id: Int): Boolean {
+            if (id == PAD_ID) return false
             if (id >= SIDE_BASE) {
                 val i = id - SIDE_BASE
                 if (side?.items?.indices?.contains(i) != true) return false
@@ -288,6 +335,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (!::palette.isInitialized) return
         side?.let { drawSide(canvas, it) }
         for (k in keys) drawKey(canvas, k)
+        hand?.let { drawHand(canvas, it) }
     }
 
     private fun drawKey(c: Canvas, k: Key) {
@@ -505,6 +553,58 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         c.restore()
     }
 
+    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private var guideDash: android.graphics.DashPathEffect? = null
+    private var guideDashFor = 0f
+
+    /**
+     * 书写区：键色底板、居中的虚线十字参考线，空白时显示提示；墨迹用标签色，上一个字短暂淡出。
+     * The pad: a key-coloured plate with a dashed centre cross, a hint while empty; ink in the label colour,
+     * the previous character fading briefly.
+     */
+    private fun drawHand(c: Canvas, pad: HandPad) {
+        val p = palette
+        val m = metrics
+        val r = m.keyRadiusLarge
+        val keyColour = layoutStyle.t9.sideColor == "key"
+        KeyPainter.draw(c, pad.rect, tmp, tmp2, fill, if (keyColour) p.keyFunc else p.key, false, r, p, m)
+        val dashLen = m.dp(5f)
+        if (guideDashFor != dashLen) { guideDash = android.graphics.DashPathEffect(floatArrayOf(dashLen, dashLen), 0f); guideDashFor = dashLen }
+        guidePaint.pathEffect = guideDash
+        guidePaint.strokeWidth = max(1f, m.dp(1f))
+        guidePaint.color = p.divider
+        val cx = pad.rect.centerX()
+        val cy = pad.rect.centerY()
+        val inset = m.dp(12f)
+        c.drawLine(pad.rect.left + inset, cy, pad.rect.right - inset, cy, guidePaint)
+        c.drawLine(cx, pad.rect.top + inset, cx, pad.rect.bottom - inset, guidePaint)
+        val fade = pad.fadeProgress()
+        if (!pad.hasInk && fade < 0f) {
+            text.textSize = m.label(13f)
+            text.typeface = Typeface.DEFAULT
+            text.color = p.labelHint
+            text.textAlign = Paint.Align.LEFT
+            c.drawText("在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
+            text.textAlign = Paint.Align.CENTER
+        }
+        c.save()
+        c.clipRect(pad.rect)
+        c.translate(pad.rect.left, pad.rect.top)
+        inkPaint.strokeWidth = m.dp(4f) * m.iconScale.coerceIn(0.9f, 1.3f)
+        inkPaint.color = p.label
+        if (fade >= 0f) {
+            inkPaint.alpha = ((1f - fade) * (p.label ushr 24)).toInt()
+            c.drawPath(pad.fading, inkPaint)
+            inkPaint.color = p.label
+            postInvalidateOnAnimation()
+        }
+        c.drawPath(pad.ink, inkPaint)
+        c.restore()
+    }
+
     // ================================================================ touch
 
     private fun isPressed(k: Key): Boolean {
@@ -555,6 +655,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             MotionEvent.ACTION_POINTER_DOWN -> startPointer(e, e.actionIndex)
             MotionEvent.ACTION_MOVE -> for (i in 0 until e.pointerCount) {
                 val p = ptrOf(e.getPointerId(i)) ?: continue
+                if (p.mode == M_INK) { inkMove(e, i); continue }
                 movePointer(p, e.getX(i), e.getY(i), e.eventTime)
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> ptrOf(e.getPointerId(e.actionIndex))?.let { finishPointer(it, commit = true) }
@@ -567,8 +668,26 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         var p: Ptr? = null
         for (q in ptrs) if (q.id < 0) { p = q; break }
         if (p == null) return // 超过 4 根手指忽略。 More than four fingers are ignored.
+        // 正在书写时忽略其它手指（手掌、误触）。 While writing, other fingers are ignored (palm, stray touches).
+        if (inkOwner != null) return
         val x = e.getX(index)
         val y = e.getY(index)
+        val pad = hand
+        if (pad != null && pad.rect.contains(x, y)) {
+            settleOthers()
+            p.id = e.getPointerId(index)
+            p.key = null
+            p.mode = M_INK
+            inkOwner = p
+            // 停笔够久后落笔：先上屏上一个字的首选。 Pen down after a pause commits the previous char first.
+            if (pad.strokes.isNotEmpty() && pad.sinceLastStroke() >= HandPad.COMMIT_PAUSE_MS) {
+                host?.onHandCommit()
+                pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+            }
+            pad.begin(x - pad.rect.left, y - pad.rect.top)
+            invalidate()
+            return
+        }
         val s = side
         if (s != null && s.rect.contains(x, y)) {
             if (sideOwner != null) return
@@ -737,6 +856,16 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
     }
 
+    /** 书写中的移动：连同历史点一起追加，平滑且不分配。 Ink move: historical points too; smooth, no allocation. */
+    private fun inkMove(e: MotionEvent, i: Int) {
+        val pad = hand ?: return
+        val l = pad.rect.left
+        val t = pad.rect.top
+        for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t)
+        pad.add(e.getX(i) - l, e.getY(i) - t)
+        invalidate()
+    }
+
     private fun onLongPress(p: Ptr) {
         val k = p.key ?: return
         if (p.mode != M_TAP) return
@@ -787,6 +916,13 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (bubbleOwner === p) { ov?.hideBubble(); bubbleOwner = null }
         if (m == M_CLEAR) dangerKey = null
         when (m) {
+            M_INK -> {
+                inkOwner = null
+                val pad = hand
+                if (pad != null) {
+                    if (commit && pad.end() != null) host?.onHandStroke(pad.strokes) else pad.cancel()
+                }
+            }
             M_SIDE -> {
                 sideOwner = null
                 val s = side
@@ -822,6 +958,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     companion object {
         /** 左侧列表项的虚拟 id 起点。 Virtual id base for side-list items. */
         private const val SIDE_BASE = 1000
+        /** 书写区的虚拟 id。 Virtual id of the handwriting pad. */
+        private const val PAD_ID = 999
         const val LONG_VOICE = 1
         const val LONG_CONSUMED = 2
         private const val M_NONE = 0
@@ -836,6 +974,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private const val M_CONSUMED = 9
         /** 已输出、不再有手势（另一根手指按下后）。 Emitted, no gesture left (another finger landed). */
         private const val M_DONE = 10
+        /** 在书写区写字。 Writing on the handwriting pad. */
+        private const val M_INK = 11
         private const val MAX_POINTERS = 4
         const val LONG_PRESS_MS = 450L
         /** 上滑的最小距离：max(28 dp, 0.55 × 键高)，且 |dy| > 1.5 |dx|。 Swipe-up minimum and verticality. */

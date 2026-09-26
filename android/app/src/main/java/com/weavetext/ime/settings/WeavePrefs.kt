@@ -11,7 +11,7 @@ object WeavePrefs {
     const val FILE = "weave_settings"
 
     // 输入方案 / Input schemes
-    /** 启用的键盘（逗号分隔、有序）：pinyin, shuangpin, t9, t14, wubi86, english。 */
+    /** 启用的键盘（逗号分隔、有序）：pinyin, shuangpin, t9, t14, hand, wubi86, english。 */
     const val KEYBOARDS = "keyboards"
     const val KEYBOARDS_DEFAULT = "pinyin,english"
     /** 当前中文键盘（上述键之一，english 除外）。 Current Chinese keyboard. */
@@ -93,7 +93,7 @@ object WeavePrefs {
     )
 
     val KEYBOARD_NAMES = mapOf(
-        "pinyin" to "全拼 26 键", "shuangpin" to "双拼", "t9" to "九键拼音", "t14" to "14 键拼音", "wubi86" to "五笔 86", "english" to "英文 26 键",
+        "pinyin" to "全拼 26 键", "shuangpin" to "双拼", "t9" to "九键拼音", "t14" to "14 键拼音", "hand" to "手写", "wubi86" to "五笔 86", "english" to "英文 26 键",
     )
 
     fun of(ctx: Context): SharedPreferences = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)

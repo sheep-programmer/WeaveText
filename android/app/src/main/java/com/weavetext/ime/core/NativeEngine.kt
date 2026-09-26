@@ -37,7 +37,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
 
     val isValid: Boolean get() = handle != 0L
 
-    /** 切换输入方案："pinyin"、"shuangpin:xiaohe"、"t9"、"t14"、"wubi86"、"english"。 */
+    /** 切换输入方案："pinyin"、"shuangpin:xiaohe"、"t9"、"t14"、"hand"、"wubi86"、"english"。 */
     override fun setSchema(key: String): Boolean = nativeSetSchema(handle, key)
 
     /** 设置选项，见 weave-ffi `nativeSetOption`。 */

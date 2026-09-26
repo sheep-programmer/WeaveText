@@ -22,6 +22,8 @@ object KeyCode {
     const val SEPARATOR = -10
     const val T9_ONE = -11
     const val EMOJI = -12
+    /** 手写：清掉这个字的笔画。 Handwriting: clear the strokes of the current char. */
+    const val HAND_CLEAR = -13
 }
 
 /** 按键风格。 Key styles. */
@@ -103,6 +105,7 @@ object Layouts {
     const val T9 = 1
     const val NUMPAD = 2
     const val T14 = 3
+    const val HAND = 4
 
     private const val ROW1 = "qwertyuiop"
     private const val ROW2 = "asdfghjkl"
@@ -398,6 +401,55 @@ object Layouts {
         side.textSize = minOf(m.label(15f), side.itemHeight * 0.6f)
         for (k in keys) {
             k.labelSize = if (k.code in '2'.code..'9'.code) m.label(17f) else m.label(16f)
+            if (k.cell.left <= m.padH + 1f) k.cell.left = 0f
+            if (k.cell.right >= w - m.padH - 1f) k.cell.right = w
+        }
+    }
+
+    /**
+     * 手写：书写区占九键的拼音列与数字键（前三行、前四列），右列为删除、重写、回车（跨两行）；
+     * 底行沿用九键的底行定义，空格两侧加上中文逗号、句号。
+     * Handwriting: the pad covers the 9-key side column and digit keys (three rows, four columns); the right
+     * column holds Delete, Rewrite and Enter (two rows). The bottom row follows the 9-key one, with a Chinese
+     * comma and full stop beside the space bar.
+     */
+    fun hand(spec: T9Spec = DEFAULT.t9, labels: LabelSpec = DEFAULT.labels): List<Key> {
+        val keys = ArrayList<Key>(10)
+        keys += func(KeyCode.DELETE, icon = com.weavetext.ime.R.drawable.ic_backspace).apply { large = true; gx = 4; gy = 0 }
+        keys += func(KeyCode.HAND_CLEAR, "重写").apply { large = true; gx = 4; gy = 1 }
+        keys += t9Key("enter", labels).apply { gx = 4; gy = 2; gh = 2 }
+        for (t in spec.bottom) {
+            if (t.name == "delete" || t.name == "enter" || t.name == "reset" || t.name == "zero") continue
+            if (t.name == "space") {
+                keys += Key(','.code, "，", longPress = listOf("，", "、", "；", "：", ",")).apply { large = true; row = 3; weight = 0.8f }
+                keys += t9Key("space", labels).apply { row = 3; weight = 1.8f * t.span; up = null }
+                keys += Key('.'.code, "。", longPress = listOf("。", "？", "！", "…", "·")).apply { large = true; row = 3; weight = 0.8f }
+            } else {
+                keys += t9Key(t.name, labels).apply { row = 3; weight = t.span.toFloat() }
+            }
+        }
+        return keys
+    }
+
+    fun layoutHand(keys: List<Key>, pad: HandPad, w: Float, m: KbMetrics, spec: T9Spec = DEFAULT.t9) {
+        val xs = columns(w, spec.columns, m)
+        pad.rect.set(xs[0], 0f, xs[4], 3 * m.rowPitch)
+        pad.rect.inset(m.insetH, m.insetV)
+        pad.minStep = m.dp(1.5f)
+        var units = 0f
+        for (k in keys) if (k.row == 3) units += k.weight
+        var x = xs[0]
+        for (k in keys) {
+            if (k.row == 3) {
+                val bw = (xs[4] - xs[0]) * k.weight / units
+                k.cell.set(x, 3 * m.rowPitch, x + bw, 4 * m.rowPitch)
+                k.rect.set(k.cell)
+                k.rect.inset(m.insetH, m.insetV)
+                x += bw
+            } else {
+                grid(k, xs, m)
+            }
+            k.labelSize = if (k.code == ','.code || k.code == '.'.code) m.label(18f) else m.label(16f)
             if (k.cell.left <= m.padH + 1f) k.cell.left = 0f
             if (k.cell.right >= w - m.padH - 1f) k.cell.right = w
         }
