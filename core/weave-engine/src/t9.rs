@@ -1,6 +1,7 @@
-//! 九键拼音：数字串 → 音节图。 T9 pinyin: digit string → syllable graph.
+//! 九键与 14 键拼音：键码串 → 音节图。 T9 / 14-key pinyin: key-code string → syllable graph.
 //!
-//! 数字 2-9 对应手机键盘字母，`1` 作为分隔符。用户可以在左侧拼音栏里把最前面一段
+//! 九键：数字 2-9 对应手机键盘字母；14 键：每键两个相邻字母（qw er ty ui op / as df gh jk l / zx cv bn m），
+//! 键码为 `A`-`N`。两者共用同一套歧义解码，`1` 作为分隔符。用户可以在左侧拼音栏里把最前面一段
 //! 锁定为某个音节（或只锁定声母字母），锁定段作为固定边参与解码。
 //! Digits 2-9 map to phone letters and `1` is a separator. The user may lock the leading
 //! part to a syllable (or a bare letter) from the pinyin column; locked parts become fixed edges.
@@ -39,8 +40,65 @@ pub fn digit_letters(d: u8) -> &'static str {
     }
 }
 
-fn digits_of(s: &str) -> String {
-    s.bytes().map(|c| letter_digit(c) as char).collect()
+/// 14 键的字母分组（键码 `A` 起依次编号）。 14-key letter groups, coded from `A`.
+const FOURTEEN: [&str; 14] = [
+    "qw", "er", "ty", "ui", "op", "as", "df", "gh", "jk", "l", "zx", "cv", "bn", "m",
+];
+
+/// 按键分组：一个键对应哪些字母。 Key grouping: which letters share a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Grouping {
+    /// 九键（2-9）。 Phone keypad.
+    Nine,
+    /// 14 键（A-N，每键两个字母）。 14 keys of two letters each.
+    Fourteen,
+}
+
+impl Grouping {
+    /// 字母 → 键码。 Letter → key code.
+    pub fn code(self, c: u8) -> u8 {
+        match self {
+            Grouping::Nine => letter_digit(c),
+            Grouping::Fourteen => FOURTEEN
+                .iter()
+                .position(|g| g.as_bytes().contains(&c))
+                .map_or(b'A', |i| b'A' + i as u8),
+        }
+    }
+
+    /// 键码 → 字母。 Key code → letters.
+    pub fn letters(self, code: u8) -> &'static str {
+        match self {
+            Grouping::Nine => digit_letters(code),
+            Grouping::Fourteen => code
+                .checked_sub(b'A')
+                .and_then(|i| FOURTEEN.get(i as usize))
+                .copied()
+                .unwrap_or(""),
+        }
+    }
+
+    /// 是否为本分组的键码。 Whether `c` is a key code of this grouping.
+    pub fn is_code(self, c: char) -> bool {
+        match self {
+            Grouping::Nine => ('2'..='9').contains(&c),
+            Grouping::Fourteen => ('A'..='N').contains(&c),
+        }
+    }
+
+    fn codes_of(self, s: &str) -> String {
+        s.bytes().map(|c| self.code(c) as char).collect()
+    }
+
+    fn index(self) -> &'static Index {
+        static NINE: OnceLock<Index> = OnceLock::new();
+        static FOURTEEN_IDX: OnceLock<Index> = OnceLock::new();
+        let cell = match self {
+            Grouping::Nine => &NINE,
+            Grouping::Fourteen => &FOURTEEN_IDX,
+        };
+        cell.get_or_init(|| Index::build(self))
+    }
 }
 
 struct Index {
@@ -50,20 +108,19 @@ struct Index {
     prefix: HashMap<String, Vec<SyllableId>>,
 }
 
-fn index() -> &'static Index {
-    static IDX: OnceLock<Index> = OnceLock::new();
-    IDX.get_or_init(|| {
+impl Index {
+    fn build(g: Grouping) -> Index {
         let mut exact: HashMap<String, Vec<SyllableId>> = HashMap::new();
         let mut prefix: HashMap<String, Vec<SyllableId>> = HashMap::new();
         for sy in syllable::all_ids() {
-            let d = digits_of(syllable::spelling(sy));
+            let d = g.codes_of(syllable::spelling(sy));
             exact.entry(d.clone()).or_default().push(sy);
             for l in 1..=d.len() {
                 prefix.entry(d[..l].to_string()).or_default().push(sy);
             }
         }
         Index { exact, prefix }
-    })
+    }
 }
 
 /// 九键输入中的一个单位。 One unit of T9 input.
@@ -84,6 +141,7 @@ pub enum T9Unit {
 /// 展开后的九键键序：每个位置一个数字（锁定段也展开成数字，便于统一建图）。
 /// Flattened: one digit per position; locked units are expanded too.
 pub struct T9Input {
+    pub grouping: Grouping,
     pub digits: Vec<u8>,
     /// (start, end, 锁定内容)。 Locked spans.
     pub locks: Vec<(usize, usize, T9Unit)>,
@@ -91,7 +149,7 @@ pub struct T9Input {
 }
 
 impl T9Input {
-    pub fn from_units(units: &[T9Unit]) -> Self {
+    pub fn from_units(units: &[T9Unit], grouping: Grouping) -> Self {
         let mut digits = Vec::new();
         let mut locks = Vec::new();
         let mut boundary = vec![false];
@@ -109,7 +167,7 @@ impl T9Input {
                 T9Unit::Syllable { id, .. } => {
                     let start = digits.len();
                     for c in syllable::spelling(*id).bytes() {
-                        digits.push(letter_digit(c));
+                        digits.push(grouping.code(c));
                         boundary.push(false);
                     }
                     locks.push((start, digits.len(), u.clone()));
@@ -118,7 +176,7 @@ impl T9Input {
                 }
                 T9Unit::Letter(c) => {
                     let start = digits.len();
-                    digits.push(letter_digit(*c));
+                    digits.push(grouping.code(*c));
                     boundary.push(false);
                     locks.push((start, start + 1, u.clone()));
                     *boundary.last_mut().unwrap() = true;
@@ -127,6 +185,7 @@ impl T9Input {
             }
         }
         T9Input {
+            grouping,
             digits,
             locks,
             boundary,
@@ -153,13 +212,21 @@ const MAX_SPELLING: usize = 6;
 /// 2500 keeps accuracy while pruning cuts T9 decode time ~7×; a 4-digit pure abbreviation still fits.
 const T9_ABBREV: u16 = 1800;
 
-fn t9_abbrev_penalty() -> u16 {
-    T9_ABBREV
+/// 14 键每键只有两个字母，句中简拼更少见：惩罚取 4500，准确率与 1800 相同而解码快约 2.7 倍。
+/// 14 keys hold two letters each, so mid-input abbreviations are rarer: 4500 matches 1800's accuracy and
+/// decodes ~2.7× faster.
+const T14_ABBREV: u16 = 4500;
+
+fn t9_abbrev_penalty(g: Grouping) -> u16 {
+    match g {
+        Grouping::Nine => T9_ABBREV,
+        Grouping::Fourteen => T14_ABBREV,
+    }
 }
 
 /// 建音节图。 Build the graph.
 pub fn build_graph(input: &T9Input) -> SyllableGraph {
-    let idx = index();
+    let idx = input.grouping.index();
     let n = input.digits.len();
     let mut g = SyllableGraph::new(n);
     let locked_at: HashMap<usize, &(usize, usize, T9Unit)> =
@@ -215,7 +282,7 @@ pub fn build_graph(input: &T9Input) -> SyllableGraph {
                         .copied()
                         .filter(|s| !exact.is_some_and(|e| e.contains(s)))
                         .collect();
-                    let pen = if at_end { penalty::ABBREV_END } else { t9_abbrev_penalty() };
+                    let pen = if at_end { penalty::ABBREV_END } else { t9_abbrev_penalty(input.grouping) };
                     g.push(Edge {
                         start,
                         end,
@@ -263,7 +330,7 @@ pub fn build_graph(input: &T9Input) -> SyllableGraph {
 /// Pinyin column: spellings available at the first free position (longest first) plus the
 /// bare letters of its first digit.
 pub fn pinyin_options(input: &T9Input) -> Vec<T9Unit> {
-    let idx = index();
+    let idx = input.grouping.index();
     let start = input.free_start();
     let n = input.digits.len();
     if start >= n {
@@ -285,7 +352,7 @@ pub fn pinyin_options(input: &T9Input) -> Vec<T9Unit> {
             }
         }
     }
-    for c in digit_letters(input.digits[start]).bytes() {
+    for c in input.grouping.letters(input.digits[start]).bytes() {
         out.push(T9Unit::Letter(c));
     }
     out
@@ -310,7 +377,7 @@ mod tests {
     #[test]
     fn zhongguo() {
         // zhong=94664 guo=486
-        let inp = T9Input::from_units(&units("94664486"));
+        let inp = T9Input::from_units(&units("94664486"), Grouping::Nine);
         let g = build_graph(&inp);
         let zhong = syllable::id_of("zhong").unwrap();
         assert!(g.out[0]
@@ -332,10 +399,26 @@ mod tests {
             digits: 5,
         }];
         u.extend(units("486"));
-        let inp = T9Input::from_units(&u);
+        let inp = T9Input::from_units(&u, Grouping::Nine);
         assert_eq!(inp.free_start(), 5);
         let g = build_graph(&inp);
         assert_eq!(g.out[0].len(), 1);
         assert_eq!(g.out[0][0].syls, vec![xiong]);
+    }
+
+    #[test]
+    fn fourteen_keys() {
+        let g = Grouping::Fourteen;
+        // 26 个字母各属于且只属于一个键。 Every letter belongs to exactly one key.
+        for c in b'a'..=b'z' {
+            assert!(g.letters(g.code(c)).as_bytes().contains(&c));
+        }
+        // zhong guo → zx gh op bn gh  gh ui op
+        let codes: Vec<T9Unit> = g.codes_of("zhongguo").bytes().map(T9Unit::Digit).collect();
+        let inp = T9Input::from_units(&codes, g);
+        let graph = build_graph(&inp);
+        let zhong = syllable::id_of("zhong").unwrap();
+        assert!(graph.out[0].iter().any(|e| e.end == 5 && e.syls.contains(&zhong)));
+        assert!(pinyin_options(&inp).contains(&T9Unit::Letter(b'x')));
     }
 }

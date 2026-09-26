@@ -69,7 +69,8 @@ fn main() {
         e.options.lm_baseline = b;
     }
     e.set_schema(match schema.as_str() {
-        "t9" => Schema::T9,
+        "t9" => Schema::Keypad(t9::Grouping::Nine),
+        "t14" => Schema::Keypad(t9::Grouping::Fourteen),
         "xiaohe" => Schema::Shuangpin(SchemeId::Xiaohe),
         _ => Schema::Pinyin,
     });
@@ -91,6 +92,11 @@ fn main() {
                 .iter()
                 .flat_map(|&s| syllable::spelling(s).bytes())
                 .map(|c| t9::letter_digit(c) as char)
+                .collect(),
+            "t14" => ids
+                .iter()
+                .flat_map(|&s| syllable::spelling(s).bytes())
+                .map(|c| t9::Grouping::Fourteen.code(c) as char)
                 .collect(),
             "xiaohe" => ids
                 .iter()

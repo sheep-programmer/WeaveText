@@ -15,7 +15,7 @@ use crate::convert::{Emoji, Traditional};
 use crate::decoder::{CandKind, Candidate, Decoder, Lattice, LmParams};
 use crate::graph::{self, FuzzyOptions, Letters, SyllableGraph};
 use crate::shuangpin::{self, SchemeId};
-use crate::t9::{self, T9Input, T9Unit};
+use crate::t9::{self, Grouping, T9Input, T9Unit};
 use crate::table;
 use crate::userdict::UserDict;
 use weave_dict::blob::Source;
@@ -26,17 +26,19 @@ use weave_dict::gram::Gram;
 pub enum Schema {
     Pinyin,
     Shuangpin(SchemeId),
-    T9,
+    /// 九键 / 14 键：一个键对应多个字母。 T9 / 14-key: several letters per key.
+    Keypad(Grouping),
     Wubi86,
     English,
 }
 
 impl Schema {
-    /// 方案标识："pinyin" / "shuangpin:xiaohe" / "t9" / "wubi86" / "english"。
+    /// 方案标识："pinyin" / "shuangpin:xiaohe" / "t9" / "t14" / "wubi86" / "english"。
     pub fn from_key(k: &str) -> Option<Self> {
         match k {
             "pinyin" => Some(Schema::Pinyin),
-            "t9" => Some(Schema::T9),
+            "t9" => Some(Schema::Keypad(Grouping::Nine)),
+            "t14" => Some(Schema::Keypad(Grouping::Fourteen)),
             "wubi86" => Some(Schema::Wubi86),
             "english" => Some(Schema::English),
             _ => k
@@ -49,7 +51,8 @@ impl Schema {
     pub fn key(&self) -> String {
         match self {
             Schema::Pinyin => "pinyin".into(),
-            Schema::T9 => "t9".into(),
+            Schema::Keypad(Grouping::Nine) => "t9".into(),
+            Schema::Keypad(Grouping::Fourteen) => "t14".into(),
             Schema::Wubi86 => "wubi86".into(),
             Schema::English => "english".into(),
             Schema::Shuangpin(s) => format!("shuangpin:{}", s.key()),
@@ -57,7 +60,7 @@ impl Schema {
     }
 
     fn is_pinyin_family(&self) -> bool {
-        matches!(self, Schema::Pinyin | Schema::Shuangpin(_) | Schema::T9)
+        matches!(self, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_))
     }
 }
 
@@ -329,6 +332,14 @@ impl Engine {
         }
     }
 
+    /// 当前的按键分组（非九键/14 键时按九键）。 Current key grouping (T9 when not a keypad schema).
+    fn grouping(&self) -> Grouping {
+        match self.schema {
+            Schema::Keypad(g) => g,
+            _ => Grouping::Nine,
+        }
+    }
+
     /// 分块压缩数据的缓存统计：(资源, 命中, 未命中)。 Cache stats of packed data: (resource, hits, misses).
     pub fn cache_stats(&self) -> Vec<(&'static str, u64, u64)> {
         let mut out = Vec::new();
@@ -420,7 +431,7 @@ impl Engine {
 
     pub fn has_lexicon(&self, schema: Schema) -> bool {
         match schema {
-            Schema::Pinyin | Schema::Shuangpin(_) | Schema::T9 => self.pinyin.is_some(),
+            Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) => self.pinyin.is_some(),
             Schema::Wubi86 => self.wubi.is_some(),
             Schema::English => self.english.is_some(),
         }
@@ -482,8 +493,8 @@ impl Engine {
                 }
                 false
             }
-            Schema::T9 => {
-                if ('2'..='9').contains(&c) {
+            Schema::Keypad(g) => {
+                if g.is_code(c) {
                     self.t9_units.push(T9Unit::Digit(c as u8));
                 } else if c == '1' || c == '\'' {
                     if self.t9_units.len() <= self.consumed
@@ -542,19 +553,19 @@ impl Engine {
             return false;
         }
         let rest_empty = match self.schema {
-            Schema::T9 => self.t9_units.len() <= self.consumed,
+            Schema::Keypad(_) => self.t9_units.len() <= self.consumed,
             _ => self.raw.len() <= self.consumed,
         };
         if rest_empty {
             if let Some(sel) = self.selected.pop() {
                 self.consumed = sel.consumed_before;
             }
-        } else if self.schema == Schema::T9 {
+        } else if let Schema::Keypad(g) = self.schema {
             if let Some(T9Unit::Syllable { id, .. }) = self.t9_units.pop() {
                 // 退掉锁定的拼音：恢复数字（去掉最后一个）。 Unlock and drop one digit.
                 let spelling = syllable::spelling(id);
                 for b in spelling.bytes().take(spelling.len() - 1) {
-                    self.t9_units.push(T9Unit::Digit(t9::letter_digit(b)));
+                    self.t9_units.push(T9Unit::Digit(g.code(b)));
                 }
             }
         } else {
@@ -625,7 +636,7 @@ impl Engine {
         let sel: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         let mut text = self.out(&sel);
         match self.schema {
-            Schema::T9 => {
+            Schema::Keypad(_) => {
                 for u in &self.t9_units[self.consumed.min(self.t9_units.len())..] {
                     match u {
                         T9Unit::Digit(d) => text.push(*d as char),
@@ -643,7 +654,7 @@ impl Engine {
 
     /// 九键：选择左侧拼音栏第 i 项。 T9: pick the i-th entry of the pinyin column.
     pub fn select_pinyin_option(&mut self, index: usize) -> bool {
-        if self.schema != Schema::T9 {
+        if !matches!(self.schema, Schema::Keypad(_)) {
             return false;
         }
         let Some(opt) = self.t9_options.get(index).cloned() else {
@@ -827,7 +838,7 @@ impl Engine {
 
     fn skip_separators(&mut self) {
         match self.schema {
-            Schema::T9 => {
+            Schema::Keypad(_) => {
                 while matches!(self.t9_units.get(self.consumed), Some(T9Unit::Sep)) {
                     self.consumed += 1;
                 }
@@ -878,7 +889,7 @@ impl Engine {
         match self.schema {
             Schema::Pinyin => Letters::parse(self.rest_raw()).keys.len(),
             Schema::Shuangpin(_) => self.rest_raw().len(),
-            Schema::T9 => T9Input::from_units(&self.t9_units[self.consumed..])
+            Schema::Keypad(_) => T9Input::from_units(&self.t9_units[self.consumed..], self.grouping())
                 .digits
                 .len(),
             _ => 0,
@@ -901,7 +912,7 @@ impl Engine {
                 self.rest_raw().len()
             }
             Schema::Shuangpin(_) => end,
-            Schema::T9 => {
+            Schema::Keypad(_) => {
                 let mut pos = 0;
                 for (i, u) in self.t9_units[self.consumed..].iter().enumerate() {
                     if pos >= end {
@@ -929,8 +940,8 @@ impl Engine {
                 let keys = self.rest_raw().as_bytes().to_vec();
                 (shuangpin::build_graph(id, &keys, &self.options.fuzzy), keys)
             }
-            Schema::T9 => {
-                let inp = T9Input::from_units(&self.t9_units[self.consumed..]);
+            Schema::Keypad(_) => {
+                let inp = T9Input::from_units(&self.t9_units[self.consumed..], self.grouping());
                 (t9::build_graph(&inp), inp.digits)
             }
             _ => (SyllableGraph::new(0), Vec::new()),
@@ -998,8 +1009,8 @@ impl Engine {
         if self.schema == Schema::Pinyin {
             self.mix_english(&lat, &keys);
         }
-        if self.schema == Schema::T9 {
-            let inp = T9Input::from_units(&self.t9_units[self.consumed..]);
+        if matches!(self.schema, Schema::Keypad(_)) {
+            let inp = T9Input::from_units(&self.t9_units[self.consumed..], self.grouping());
             let mut opts = t9::pinyin_options(&inp);
             // 按该音节在词库里的最优 cost 排序，常用的在前。 Frequent spellings first.
             if let Some(lex) = &self.pinyin {
@@ -1069,8 +1080,8 @@ impl Engine {
     /// 组合串中未选部分的显示：按最优路径切分。 Display of the unselected part.
     fn display_rest(&self, lat: &Lattice, keys: &[u8]) -> String {
         let mut parts: Vec<String> = Vec::new();
-        let locks: Vec<(usize, usize, T9Unit)> = if self.schema == Schema::T9 {
-            T9Input::from_units(&self.t9_units[self.consumed..]).locks
+        let locks: Vec<(usize, usize, T9Unit)> = if matches!(self.schema, Schema::Keypad(_)) {
+            T9Input::from_units(&self.t9_units[self.consumed..], self.grouping()).locks
         } else {
             Vec::new()
         };
@@ -1080,18 +1091,18 @@ impl Engine {
             for (i, &cut) in span.cuts.iter().enumerate() {
                 let piece = match self.schema {
                     Schema::Pinyin => String::from_utf8_lossy(&keys[s..cut]).into_owned(),
-                    Schema::Shuangpin(_) | Schema::T9 => match span.key.get(i) {
+                    Schema::Shuangpin(_) | Schema::Keypad(_) => match span.key.get(i) {
                         Some(&id) => {
                             let full = syllable::spelling(id);
                             let lock = locks.iter().find(|(ls, le, _)| *ls == s && *le == cut);
                             let locked = lock.is_some();
                             if let Some((_, _, T9Unit::Letter(c))) = lock {
                                 (*c as char).to_string()
-                            } else if self.schema == Schema::T9 && cut - s < full.len() && !locked {
+                            } else if matches!(self.schema, Schema::Keypad(_)) && cut - s < full.len() && !locked {
                                 full[..cut - s].to_string()
-                            } else if self.schema == Schema::T9 && locked {
+                            } else if matches!(self.schema, Schema::Keypad(_)) && locked {
                                 full.to_string()
-                            } else if cut - s == 1 && self.schema != Schema::T9 {
+                            } else if cut - s == 1 && !matches!(self.schema, Schema::Keypad(_)) {
                                 String::from_utf8_lossy(&keys[s..cut]).into_owned()
                             } else {
                                 full.to_string()
