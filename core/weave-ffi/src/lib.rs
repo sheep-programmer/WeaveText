@@ -144,7 +144,9 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeCreateFrom
         if cache_kb > 0 {
             weave_dict::blob::set_cache_budget(cache_kb as usize * 1024);
         }
-        let engine = Engine::new(&Paths::from_spec(&spec, &PathBuf::from(user)));
+        let mut engine = Engine::new(&Paths::from_spec(&spec, &PathBuf::from(user)));
+        // 创建发生在后台加载线程，顺便预热缓存。 Creation runs on the loader thread; warm the caches.
+        engine.warm_up();
         Box::into_raw(Box::new(Mutex::new(engine))) as jlong
     })
     .unwrap_or(0)

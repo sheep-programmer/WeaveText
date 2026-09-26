@@ -295,6 +295,30 @@ impl Engine {
         }
     }
 
+    /// 预热：在后台加载线程上用常见输入走一遍解码，把最常用的数据块提前解压进缓存，
+    /// 避免第一次打字时在按键路径上解压。学习关闭，不影响用户词库。
+    /// Warm up on the loader thread: decode common inputs once so the hottest blocks are cached before
+    /// the first real keystroke. Learning is off, so the user dictionary is untouched.
+    pub fn warm_up(&mut self) {
+        const SAMPLES: [&str; 16] = [
+            "wo", "ni", "shi", "de", "zai", "you", "le", "bu", "zhege", "women", "shenme", "keyi",
+            "zhongguo", "xianzai", "jintian", "haode",
+        ];
+        let (schema, learning) = (self.schema, self.user_pinyin.learning);
+        self.user_pinyin.learning = false;
+        self.schema = Schema::Pinyin;
+        for s in SAMPLES {
+            self.clear();
+            for c in s.chars() {
+                self.input_char(c);
+            }
+        }
+        self.clear();
+        self.last_word = None;
+        self.schema = schema;
+        self.user_pinyin.learning = learning;
+    }
+
     /// 清空所有分块压缩数据的解压缓存。 Drop every packed file's decode cache.
     pub fn trim_caches(&self) {
         for l in [&self.pinyin, &self.wubi, &self.english].into_iter().flatten() {
