@@ -35,7 +35,15 @@ object WeavePrefs {
     const val VIBRATION = "vibration"
     /** 默认关闭，用户在设置里打开。 Off by default. */
     const val VIBRATION_DEFAULT = 0
+    /** 旧版按键音音量档 0–4（仅用于兼容：没有 [SOUND_STYLE] 时换算）。 Legacy sound level 0–4. */
     const val SOUND = "sound"
+    /** 按键音风格："off" / "system" / [com.weavetext.ime.ui.keyboard.KeySoundSynth.STYLES]。 Key-sound style. */
+    const val SOUND_STYLE = "sound_style"
+    const val SOUND_OFF = "off"
+    const val SOUND_SYSTEM = "system"
+    /** 按键音音量 0–100。 Key-sound volume 0–100. */
+    const val SOUND_VOLUME = "sound_volume"
+    const val SOUND_VOLUME_DEFAULT = 50
     const val KEY_PREVIEW = "key_preview"
     /** 未设置 = 尚未询问（默认关闭，首次打开剪贴板面板时询问）。 Unset = not asked yet (off). */
     const val CLIPBOARD_RECORD = "clipboard_record"
@@ -104,7 +112,17 @@ object WeavePrefs {
     fun styleLayout(p: SharedPreferences) = p.getString(STYLE_LAYOUT, null) ?: "fresh"
     fun styleTheme(p: SharedPreferences) = p.getString(STYLE_THEME, null) ?: "auto"
     fun vibration(p: SharedPreferences) = p.getInt(VIBRATION, VIBRATION_DEFAULT)
-    fun sound(p: SharedPreferences) = p.getInt(SOUND, 0)
+    private val LEGACY_VOLUMES = intArrayOf(0, 15, 30, 50, 80)
+
+    /** 默认关闭；旧版开过按键音（未选过风格）的用户保持「跟随系统」。 Off by default; legacy users keep the system click. */
+    fun soundStyle(p: SharedPreferences): String =
+        p.getString(SOUND_STYLE, null) ?: if (p.getInt(SOUND, 0) > 0) SOUND_SYSTEM else SOUND_OFF
+
+    fun soundVolume(p: SharedPreferences): Int {
+        if (p.contains(SOUND_VOLUME)) return p.getInt(SOUND_VOLUME, SOUND_VOLUME_DEFAULT).coerceIn(0, 100)
+        val legacy = p.getInt(SOUND, 0)
+        return if (legacy > 0) LEGACY_VOLUMES[legacy.coerceIn(1, 4)] else SOUND_VOLUME_DEFAULT
+    }
     fun keyPreview(p: SharedPreferences) = p.getBoolean(KEY_PREVIEW, true)
     fun clipboardRecord(p: SharedPreferences) = p.getBoolean(CLIPBOARD_RECORD, false)
     fun clipboardAsked(p: SharedPreferences) = p.contains(CLIPBOARD_RECORD)

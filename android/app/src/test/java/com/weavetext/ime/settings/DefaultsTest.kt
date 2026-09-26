@@ -26,12 +26,23 @@ class DefaultsTest {
     @Test fun absentKeysReadNewDefaults() {
         assertEquals(3, WeavePrefs.heightLevel(p))
         assertEquals(0, WeavePrefs.vibration(p))
+        assertEquals(WeavePrefs.SOUND_OFF, WeavePrefs.soundStyle(p))
+        assertEquals(WeavePrefs.SOUND_VOLUME_DEFAULT, WeavePrefs.soundVolume(p))
     }
 
     @Test fun explicitChoicesAreKept() {
         p.edit().putInt(WeavePrefs.HEIGHT_LEVEL, 2).putInt(WeavePrefs.VIBRATION, 1).commit()
         assertEquals(2, WeavePrefs.heightLevel(p))
         assertEquals(1, WeavePrefs.vibration(p))
+    }
+
+    @Test fun legacySoundLevelMapsToSystemStyle() {
+        p.edit().putInt(WeavePrefs.SOUND, 3).commit()
+        assertEquals(WeavePrefs.SOUND_SYSTEM, WeavePrefs.soundStyle(p))
+        assertEquals(50, WeavePrefs.soundVolume(p))
+        p.edit().putString(WeavePrefs.SOUND_STYLE, "wood").putInt(WeavePrefs.SOUND_VOLUME, 20).commit()
+        assertEquals("wood", WeavePrefs.soundStyle(p))
+        assertEquals(20, WeavePrefs.soundVolume(p))
     }
 
     @Test fun defaultHeightIsTallerThanStandard() {

@@ -164,6 +164,12 @@ class SettingsScreenshotTest {
 
     @Test fun look() = show("look", Route.Home, Route.Look)
     @Test fun lookDark() = show("look_dark", Route.Home, Route.Look, dark = true)
+    /** 选了自有按键音：出现音量滑块。 An own key-sound style shows the volume slider. */
+    @Test fun lookKeySound() {
+        WeavePrefs.of(app).edit().putString(WeavePrefs.SOUND_STYLE, "wood").putInt(WeavePrefs.SOUND_VOLUME, 60)
+            .putInt(WeavePrefs.VIBRATION, 3).commit()
+        show("look_key_sound", Route.Home, Route.Look)
+    }
     @Test fun dictionary() = show("dictionary", Route.Home, Route.Dictionary)
     @Test fun userWords() = show("user_words", Route.Home, Route.Dictionary, Route.UserWords)
     @Test fun about() = show("about", Route.Home, Route.About)

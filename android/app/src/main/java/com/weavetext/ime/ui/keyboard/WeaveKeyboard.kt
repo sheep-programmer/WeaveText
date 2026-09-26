@@ -135,7 +135,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     private fun applyAllPrefs() {
         feedback.vibration = WeavePrefs.vibration(prefs)
-        feedback.sound = WeavePrefs.sound(prefs)
+        feedback.soundStyle = WeavePrefs.soundStyle(prefs)
+        feedback.soundVolume = WeavePrefs.soundVolume(prefs)
         previewEnabled = WeavePrefs.keyPreview(prefs)
         applyTheme()
         applyEngineOptions()
@@ -226,7 +227,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.THEME, WeavePrefs.HEIGHT_LEVEL, WeavePrefs.STYLE_LAYOUT, WeavePrefs.STYLE_THEME,
             WeavePrefs.STYLE_OVERRIDES, WeavePrefs.STYLE_STAMP -> { applyTheme(); layoutSig = ""; refreshLayout(); updateCandidates(null) }
             WeavePrefs.VIBRATION -> feedback.vibration = WeavePrefs.vibration(p)
-            WeavePrefs.SOUND -> feedback.sound = WeavePrefs.sound(p)
+            WeavePrefs.SOUND, WeavePrefs.SOUND_STYLE, WeavePrefs.SOUND_VOLUME -> {
+                feedback.soundStyle = WeavePrefs.soundStyle(p)
+                feedback.soundVolume = WeavePrefs.soundVolume(p)
+            }
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
             WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL -> applyEngineOptions()

@@ -1,7 +1,6 @@
 package com.weavetext.ime.settings
 
 import android.content.SharedPreferences
-import android.media.AudioManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -52,7 +51,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
 
-/** 外观与手感（03 §7）：6 个控件 + 实时预览。 Look & feel: six controls plus a live preview. */
+/** 外观与手感（03 §7、06 §4）：控件 + 实时预览。 Look & feel: controls plus a live preview. */
 @Composable
 fun LookScreen() {
     val deps = LocalDeps.current
@@ -62,7 +61,6 @@ fun LookScreen() {
     val nav = LocalNav.current
     val feedback = remember { Feedback(ctx) }
     DisposableEffect(feedback) { onDispose { feedback.release() } }
-    val audio = remember { ctx.getSystemService(AudioManager::class.java) }
     var confirmClear by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -94,18 +92,8 @@ fun LookScreen() {
         StepSlider(WeavePrefs.heightLevel(p), listOf("紧凑", "", "适中", "较高", "高")) {
             p.edit().putInt(WeavePrefs.HEIGHT_LEVEL, it).apply()
         }
-        GroupTitle("振动")
-        StepSlider(WeavePrefs.vibration(p), listOf("关", "系统", "轻", "中", "强")) {
-            p.edit().putInt(WeavePrefs.VIBRATION, it).apply()
-            // 拖动时即时振动一次预览。 Preview the new strength.
-            feedback.vibration = it
-            feedback.haptic(view)
-        }
-        GroupTitle("按键音")
-        StepSlider(WeavePrefs.sound(p), listOf("关", "1", "2", "3", "4")) {
-            p.edit().putInt(WeavePrefs.SOUND, it).apply()
-            if (it > 0) audio?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, floatArrayOf(0f, 0.15f, 0.3f, 0.5f, 0.8f)[it])
-        }
+        GroupTitle("按键手感")
+        GroupCard { KeyFeelCard(p, feedback, view) }
         androidx.compose.foundation.layout.Spacer(Modifier.height(GroupGap))
         GroupCard {
             SwitchRow("按键气泡", "按下时放大显示字符", WeavePrefs.keyPreview(p)) { p.edit().putBoolean(WeavePrefs.KEY_PREVIEW, it).apply() }
@@ -192,6 +180,98 @@ private fun KeyboardPreview(prefs: SharedPreferences) {
                         transformOrigin = TransformOrigin.Center
                     },
                 )
+            }
+        }
+    }
+}
+
+/** 按键音风格（顺序即界面顺序）。 Key-sound styles in display order. */
+val SOUND_STYLES = listOf(
+    WeavePrefs.SOUND_OFF to "关", WeavePrefs.SOUND_SYSTEM to "跟随系统", "crisp" to "清脆", "bubble" to "气泡",
+    "wood" to "木质", "typewriter" to "打字机", "drop" to "水滴",
+)
+
+/** 震动档位（旧版的「系统」档 1 仍然生效，但不再提供）。 Vibration choices; legacy level 1 still works. */
+private val VIBRATION_LEVELS = listOf(0 to "关", 2 to "轻", 3 to "中", 4 to "强")
+
+fun soundSummary(p: SharedPreferences): String {
+    val style = WeavePrefs.soundStyle(p)
+    val name = SOUND_STYLES.firstOrNull { it.first == style }?.second ?: "关"
+    return if (style == WeavePrefs.SOUND_OFF) name else "$name · ${WeavePrefs.soundVolume(p)}%"
+}
+
+/**
+ * 按键音（风格 + 音量）与按键震动（关 / 轻 / 中 / 强），各占一行（06 §4）。
+ * Key sound (style + volume) and key vibration (off / light / medium / strong), one row each.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun KeyFeelCard(p: SharedPreferences, feedback: Feedback, view: android.view.View) {
+    val style = WeavePrefs.soundStyle(p)
+    val volume = WeavePrefs.soundVolume(p)
+    androidx.compose.runtime.SideEffect { feedback.soundStyle = style; feedback.soundVolume = volume }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("按键音", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text(soundSummary(p), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        ) {
+            for ((key, name) in SOUND_STYLES) {
+                androidx.compose.material3.FilterChip(
+                    selected = style == key,
+                    onClick = {
+                        p.edit().putString(WeavePrefs.SOUND_STYLE, key).apply()
+                        feedback.soundStyle = key
+                        feedback.preview()
+                    },
+                    label = { Text(name) },
+                )
+            }
+        }
+        if (style != WeavePrefs.SOUND_OFF) {
+            var v by remember(volume) { mutableStateOf(volume.toFloat()) }
+            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("音量", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(
+                    value = v, onValueChange = { v = it }, valueRange = 0f..100f,
+                    onValueChangeFinished = {
+                        val n = v.roundToInt()
+                        p.edit().putInt(WeavePrefs.SOUND_VOLUME, n).apply()
+                        feedback.soundVolume = n
+                        feedback.preview()
+                    },
+                    modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                )
+            }
+            Text(
+                "静音或振动模式下不发声", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    RowDivider(false)
+    val vib = WeavePrefs.vibration(p)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("按键震动", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            if (vib == 1) Text("跟随系统", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().height(40.dp)) {
+            VIBRATION_LEVELS.forEachIndexed { i, (lv, name) ->
+                SegmentedButton(
+                    selected = vib == lv,
+                    onClick = {
+                        p.edit().putInt(WeavePrefs.VIBRATION, lv).apply()
+                        // 选中即振动一次预览。 Preview the new strength.
+                        feedback.vibration = lv
+                        feedback.haptic(view)
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(i, VIBRATION_LEVELS.size),
+                ) { Text(name) }
             }
         }
     }
