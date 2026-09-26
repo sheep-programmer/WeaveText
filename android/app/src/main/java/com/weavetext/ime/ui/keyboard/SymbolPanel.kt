@@ -17,6 +17,7 @@ import com.weavetext.ime.settings.WeavePrefs
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 符号面板（02 §8）。两种结构共用同一份分类数据（[SymbolData]），由布局风格 `symbols.categories` 选择：
@@ -442,7 +443,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             c.drawText("返回", r.centerX(), r.centerY() - (text.ascent() + text.descent()) / 2, text)
             val lk = locked
             drawKey(c, lock, pressed == LOCK, lk)
-            kb.icons.draw(c, if (lk) R.drawable.ic_lock else R.drawable.ic_lock_open, if (lk) pal.keyAccent else pal.icon, r.centerX(), r.centerY(), m.dp(22f))
+            kb.icons.draw(c, if (lk) R.drawable.ic_lock else R.drawable.ic_lock_open, if (lk) pal.keyAccent else pal.icon, r.centerX(), r.centerY(), m.icon(22f))
             drawKey(c, del, pressed == DEL, false)
             kb.icons.draw(c, R.drawable.ic_backspace, pal.icon, r.centerX(), r.centerY(), m.icon(22f))
             if (sideMode) { drawPages(c); return }
@@ -469,7 +470,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 if (i == tab && !pill) {
                     // 下划线 24×3dp，距文字 6dp。 Active underline 24 × 3dp, 6dp below the label.
                     fill.color = pal.keyAccent
-                    val top = cy + (text.descent() - text.ascent()) / 2 + m.dp(6f)
+                    // 矮键盘上也离底边至少 3dp。 Keep ≥ 3dp above the bottom edge on short keyboards.
+                    val top = min(cy + (text.descent() - text.ascent()) / 2 + m.dp(6f), height - m.dp(6f))
                     r.set(cx - m.dp(12f), top, cx + m.dp(12f), top + m.dp(3f))
                     c.drawRoundRect(r, m.dp(1.5f), m.dp(1.5f), fill)
                 }
