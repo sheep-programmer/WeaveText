@@ -23,6 +23,7 @@ class FakeEngines(var plugins: List<VoicePlugin> = SAMPLE) : VoiceEngines {
     private val config = HashMap<String, String>()
     override fun list() = plugins
     override var activeId: String? = plugins.firstOrNull()?.id
+    override var extraIds: Set<String> = emptySet()
     override fun install(xipkPath: String) = Result.failure<VoicePlugin>(IllegalArgumentException("不是有效的 .xipk 包"))
     override fun uninstall(id: String): Result<Unit> { plugins = plugins.filter { it.id != id }; return Result.success(Unit) }
     override fun getConfig(id: String, key: String) = config["$id/$key"]
@@ -58,6 +59,29 @@ class FakeEngines(var plugins: List<VoicePlugin> = SAMPLE) : VoiceEngines {
             VoicePlugin("org.example.asr.c", "示例插件 C", "示例插件：低延迟流式识别。", "1.0.1", null, emptyList(), configured = false, unrestrictedNetwork = true),
         )
     }
+}
+
+/**
+ * 可由测试驱动的识别器：记下监听者，按选中的引擎回调 onEngines。
+ * A recognizer driven by the test: keeps the listener and reports the selected engines.
+ */
+class ScriptedRecognizer(private val engines: VoiceEngines) : VoiceRecognizer {
+    var listener: VoiceListener? = null
+    var stops = 0
+    var cancels = 0
+    override var isRunning = false
+    override fun start(listener: VoiceListener): Boolean {
+        this.listener = listener
+        isRunning = true
+        val sel = engines.selection()
+        if (sel.size > 1) (listener as? com.weavetext.ime.voice.MultiVoiceListener)?.onEngines(sel)
+        return true
+    }
+    override fun stop() { stops++ }
+    override fun cancel() { cancels++; isRunning = false; listener?.onEnd() }
+    val multi get() = listener as com.weavetext.ime.voice.MultiVoiceListener
+    /** 模拟全部引擎结束。 All engines ended. */
+    fun endAll() { isRunning = false; listener?.onEnd() }
 }
 
 /** 不做任何事的识别器。 A recognizer that never produces results. */

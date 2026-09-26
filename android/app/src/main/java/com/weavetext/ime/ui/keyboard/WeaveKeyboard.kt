@@ -620,6 +620,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     private var voiceStrip: VoiceStrip? = null
+    /** 语音面板与浮动语音条共用的会话（多引擎结果可以从语音条交给面板）。 Shared voice session. */
+    val voiceSession: VoiceSession by lazy { VoiceSession(ctx, controller) }
 
     private fun startHoldVoice(): Boolean {
         val strip = voiceStrip ?: VoiceStrip(this).also { voiceStrip = it }

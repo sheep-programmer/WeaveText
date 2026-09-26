@@ -131,16 +131,68 @@ fun VoiceListScreen() {
                     }, onDetail = { nav.push(Route.VoiceDetail(p.id)) })
                 }
             }
+            if (plugins.size >= 2) CombineCard(engines, plugins, active) { tick++ }
         }
         Row(Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(painterResource(R.drawable.ic_info), null, Modifier.size(16.dp).padding(top = 1.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                "本地离线识别在手机上完成；导入的插件会把语音发送到其服务进行识别，且只能访问声明的域名。点击行切换引擎，点击右侧图标查看详情与设置。",
+                "本地离线识别在手机上完成；导入的插件会把语音发送到其服务进行识别，且只能访问声明的域名。点击行切换主引擎，点击右侧图标查看详情与设置。",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
     importer.Sheet()
+}
+
+/**
+ * 「同时使用」（06 §6）：一次录音同时交给主引擎和勾选的引擎，说完后在键盘上的结果列表里选一条上屏。
+ * 系统语音识别自己占用麦克风，只能单独使用。
+ * "Use together": one recording goes to the primary and the ticked engines; the platform
+ * recognizer owns the mic and can only be used alone.
+ */
+@Composable
+private fun CombineCard(engines: VoiceEngines, plugins: List<VoicePlugin>, active: String?, onChange: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val primaryOk = active != null && engines.canCombine(active)
+    val extra = engines.extraIds
+    GroupTitle("同时使用")
+    GroupCard {
+        val others = plugins.filter { it.id != active }
+        others.forEachIndexed { i, p ->
+            if (i > 0) RowDivider()
+            val can = primaryOk && engines.canCombine(p.id)
+            val checked = can && p.id in extra
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                    .let { m -> if (can) m.clickable { toggleExtra(engines, p.id, !checked); onChange() } else m }
+                    .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PluginAvatar(p, 24, 6)
+                Column(Modifier.weight(1f).padding(start = 16.dp, end = 8.dp)) {
+                    Text(p.name, style = MaterialTheme.typography.bodyLarge, color = if (can) cs.onSurface else cs.onSurface.copy(alpha = 0.7f))
+                    if (!engines.canCombine(p.id)) {
+                        Text("独占麦克风，只能单独使用", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                    }
+                }
+                androidx.compose.material3.Checkbox(
+                    checked = checked, enabled = can,
+                    onCheckedChange = { toggleExtra(engines, p.id, it); onChange() },
+                )
+            }
+        }
+    }
+    val cloud = if (primaryOk) engines.selection().count { !isBuiltinEngine(it.id) } else 0
+    val note = when {
+        !primaryOk -> "当前主引擎独占麦克风，不能与其它引擎同时使用。换一个主引擎后再勾选。"
+        cloud > 0 -> "一次录音同时交给主引擎和勾选的引擎，说完后在键盘上选一条上屏。每次说话会同时连接 $cloud 个插件的服务。"
+        else -> "一次录音同时交给主引擎和勾选的引擎，说完后在键盘上选一条上屏；结果一致时直接上屏。"
+    }
+    Text(note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp))
+}
+
+private fun toggleExtra(engines: VoiceEngines, id: String, on: Boolean) {
+    engines.extraIds = if (on) engines.extraIds + id else engines.extraIds - id
 }
 
 @Composable
@@ -158,7 +210,8 @@ private fun PluginRow(p: VoicePlugin, selected: Boolean, onSelect: () -> Unit, o
                 color = if (p.configured) cs.onSurfaceVariant else cs.error, maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             val n = p.configSchema.size
-            Text("v${p.version}" + if (n > 0) " · $n 项设置" else "", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+            val meta = listOfNotNull(p.version.takeIf { it.isNotEmpty() }?.let { "v$it" }, if (n > 0) "$n 项设置" else null).joinToString(" · ")
+            if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
         }
         RadioButton(selected = selected, onClick = onSelect)
         IconButton(onClick = onDetail) {

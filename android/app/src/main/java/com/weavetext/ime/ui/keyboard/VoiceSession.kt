@@ -8,20 +8,28 @@ import android.os.Looper
 import android.os.SystemClock
 import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.ui.VoiceAccess
-import com.weavetext.ime.voice.VoiceListener
+import com.weavetext.ime.voice.MultiEngineResults
+import com.weavetext.ime.voice.MultiVoiceListener
+import com.weavetext.ime.voice.VoicePlugin
 import com.weavetext.ime.voice.VoiceRecognizer
 
 /**
  * 一次语音输入会话的状态机（02 §12.1）：Idle → Connecting → Listening → Finalizing → Idle，出错 → Error。
- * 识别中间结果作为 composing 文本上屏，最终结果 commit。语音面板与浮动语音条共用。
- * Voice session state machine shared by the voice panel and the floating strip.
+ * 单引擎：识别中间结果作为 composing 文本上屏，最终结果 commit。
+ * 多引擎（06 §6）：说话时只在面板里显示主引擎的文字、不上屏；停止后进入 Choosing，
+ * 显示每个引擎一行的结果列表，点哪行上屏哪行；所有引擎结果一致时直接上屏。
+ * 语音面板与浮动语音条共用同一个会话。
+ * Voice session state machine shared by the voice panel and the floating strip. Single engine:
+ * interim text is composing, finals commit. Multi-engine: the primary engine's text shows in the
+ * panel only; after stopping, Choosing lists one row per engine and the tapped row is committed;
+ * identical results commit directly.
  */
 class VoiceSession(
     private val ctx: Context,
     private val controller: InputController,
     private val recognizerProvider: () -> VoiceRecognizer = { VoiceAccess.recognizer(ctx) },
 ) {
-    enum class State { IDLE, CONNECTING, LISTENING, FINALIZING, ERROR }
+    enum class State { IDLE, CONNECTING, LISTENING, FINALIZING, CHOOSING, ERROR }
 
     var state = State.IDLE
         private set
@@ -36,6 +44,14 @@ class VoiceSession(
         private set
     /** 点按模式下静音 2.5s 自动结束。 Auto-stop after silence (tap mode). */
     var autoStop = true
+    /** 多引擎会话的结果；单引擎为 null。 Multi-engine results; null for single-engine sessions. */
+    var results: MultiEngineResults? = null
+        private set
+    /** 结果列表中高亮的行。 Highlighted row of the result list. */
+    val defaultRow get() = results?.defaultIndex() ?: -1
+    /** 键盘收起时仍在识别：结果出来后自动上屏默认行。 Detached: commit the default row when ready. */
+    private var detached = false
+    private val clock: () -> Long = { SystemClock.uptimeMillis() }
 
     private val main = Handler(Looper.getMainLooper())
     private val listeners = ArrayList<() -> Unit>()
@@ -68,15 +84,49 @@ class VoiceSession(
     /** 开始；缺少权限返回 false。 Start; false without mic permission. */
     fun start(): Boolean {
         if (active) return true
+        if (state == State.CHOOSING) discard()
         if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
         val r = recognizerProvider()
         rec = r
         committed.clear(); partial = ""; error = null; level = 0f
+        results = null; detached = false
         state = State.CONNECTING
         lastLoud = SystemClock.uptimeMillis()
         val my = ++token
-        val ok = r.start(object : VoiceListener {
+        val ok = r.start(object : MultiVoiceListener {
             fun live() = my == token
+            override fun onEngines(engines: List<VoicePlugin>) {
+                if (!live() || engines.size < 2) return
+                results = MultiEngineResults(engines.map { it.id to it.name }, engines.first().id, timeoutMs)
+            }
+            override fun onEnginePartial(id: String, text: String) {
+                val res = results ?: return
+                if (!live()) return
+                res.partial(id, text)
+                if (id == res.primaryId) {
+                    enterListening()
+                    if (text.isNotEmpty()) lastLoud = SystemClock.uptimeMillis()
+                }
+                multiChanged()
+            }
+            override fun onEngineFinal(id: String, text: String) {
+                val res = results ?: return
+                if (!live()) return
+                res.final(id, text)
+                multiChanged()
+            }
+            override fun onEngineReplace(id: String, old: String, new: String) {
+                if (!live()) return
+                results?.replace(id, old, new); multiChanged()
+            }
+            override fun onEngineError(id: String, message: String) {
+                if (!live()) return
+                results?.error(id, message, clock()); multiChanged()
+            }
+            override fun onEngineEnd(id: String) {
+                if (!live()) return
+                results?.end(id, clock()); multiChanged()
+            }
             override fun onPartial(text: String) {
                 if (!live()) return
                 enterListening()
@@ -109,6 +159,13 @@ class VoiceSession(
             }
             override fun onEnd() {
                 if (!live()) return
+                if (results != null) {
+                    // 引擎们自己结束了（未等用户停止）：直接进入结果列表。 Engines ended on their own.
+                    main.removeCallbacks(silenceCheck); main.removeCallbacks(connectTimeout)
+                    level = 0f
+                    if (active) enterChoosing() else multiChanged()
+                    return
+                }
                 if (partial.isNotEmpty()) { controller.voiceFinal(partial); committed.append(partial); partial = "" }
                 controller.voiceFinal("")
                 if (state != State.ERROR) state = State.IDLE
@@ -144,14 +201,89 @@ class VoiceSession(
     /** 结束收音，等待最终结果。 Stop and wait for the final result. */
     fun stop() {
         if (!active || state == State.FINALIZING) return
-        state = State.FINALIZING
         main.removeCallbacks(silenceCheck)
+        if (results != null) {
+            rec?.stop()
+            enterChoosing()
+            return
+        }
+        state = State.FINALIZING
         changed()
         rec?.stop()
     }
 
+    /**
+     * 键盘收起 / 面板关闭时调用：单引擎等同 [stop]；多引擎在说话中则停止并在结果出来后自动上屏默认行，
+     * 结果列表已显示则丢弃（用户看过列表却没选）。
+     * Called when the keyboard or panel goes away. Single engine: [stop]. Multi-engine while speaking:
+     * stop and auto-commit the default row when ready; if the list was already shown, discard it.
+     */
+    fun detach() {
+        when {
+            state == State.CHOOSING -> discard()
+            active && results != null -> { detached = true; stop() }
+            active -> stop()
+        }
+    }
+
+    private fun enterChoosing() {
+        val res = results ?: return
+        res.stop(clock())
+        state = State.CHOOSING
+        partial = ""
+        main.removeCallbacks(timeoutCheck)
+        main.postDelayed(timeoutCheck, res.timeoutMs)
+        multiChanged()
+    }
+
+    private val timeoutCheck = Runnable { multiChanged() }
+
+    /** 结果有变化：检查超时、一致即上屏、收起状态下自动上屏。 Re-evaluate the multi-engine results. */
+    private fun multiChanged() {
+        val res = results ?: return
+        res.tick(clock())
+        if (state != State.CHOOSING) { partial = res.primaryText(); changed(); return }
+        if (res.settled) {
+            main.removeCallbacks(timeoutCheck)
+            val same = res.unanimous()
+            if (same != null) { commitText(same); return }
+            if (detached) { val i = res.defaultIndex(); if (i >= 0) choose(i) else discard(); return }
+            // 超时后不再等剩下的引擎。 Stop waiting for engines that timed out.
+            if (rec?.isRunning == true) { token++; rec?.cancel() }
+        }
+        changed()
+    }
+
+    /** 点选结果列表的一行上屏。 Commit one row of the result list. */
+    fun choose(index: Int) {
+        val row = results?.rows()?.getOrNull(index) ?: return
+        if (!row.selectable) return
+        commitText(row.text)
+    }
+
+    private fun commitText(text: String) {
+        controller.voiceFinal(text)
+        committed.clear(); committed.append(text)
+        finishMulti()
+    }
+
+    /** 丢弃结果列表。 Drop the result list. */
+    private fun discard() = finishMulti()
+
+    private fun finishMulti() {
+        main.removeCallbacks(timeoutCheck)
+        token++
+        if (rec?.isRunning == true) rec?.cancel()
+        results = null
+        detached = false
+        partial = ""; level = 0f
+        state = State.IDLE
+        changed()
+    }
+
     /** 取消：丢弃未确定的文本。 Cancel and drop interim text. */
     fun cancel() {
+        if (state == State.CHOOSING) { discard(); return }
         if (!active) { if (state == State.ERROR) { state = State.IDLE; changed() }; return }
         token++
         rec?.cancel()
@@ -159,6 +291,14 @@ class VoiceSession(
         partial = ""; level = 0f
         state = State.IDLE
         main.removeCallbacks(silenceCheck); main.removeCallbacks(connectTimeout)
+        changed()
+    }
+
+    /** 截图测试 / 预览：直接显示结果列表。 Screenshot tests & previews: show a result list. */
+    @androidx.annotation.VisibleForTesting
+    fun previewResults(res: MultiEngineResults) {
+        results = res
+        state = State.CHOOSING
         changed()
     }
 
@@ -170,6 +310,9 @@ class VoiceSession(
         this.partial = partial; this.level = level; this.error = error
         changed()
     }
+
+    /** 每个引擎停止收音后的最长等待。 Per-engine wait after the recording stops. */
+    var timeoutMs = MultiEngineResults.DEFAULT_TIMEOUT_MS
 
     companion object {
         private const val SILENCE_MS = 2500L

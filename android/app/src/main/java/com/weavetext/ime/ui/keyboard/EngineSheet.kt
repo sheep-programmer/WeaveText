@@ -217,8 +217,10 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
  * Floating hold-to-talk strip drawn on the popup overlay; the gesture stays on the space key.
  */
 class VoiceStrip(private val kb: WeaveKeyboard) {
-    private val session = VoiceSession(kb.ctx, kb.controller).apply { autoStop = false }
+    private val session = kb.voiceSession
     private var cancel = false
+    /** 会话由语音条发起（与语音面板共用同一个会话）。 The shared session was started from the strip. */
+    private var engaged = false
 
     init {
         session.addListener { render() }
@@ -234,7 +236,9 @@ class VoiceStrip(private val kb: WeaveKeyboard) {
         val hasEngine = runCatching { VoiceAccess.engines(kb.ctx).list().isNotEmpty() }.getOrDefault(false)
         if (!hasEngine) { ov.showStripMessage("还没有语音引擎"); return false }
         cancel = false
-        if (!session.start()) return false
+        session.autoStop = false
+        engaged = true
+        if (!session.start()) { engaged = false; return false }
         kb.feedback.haptic(kb.keyboardView)
         render()
         return true
@@ -246,21 +250,30 @@ class VoiceStrip(private val kb: WeaveKeyboard) {
     }
 
     fun end(cancelled: Boolean) {
-        if (!session.active) { kb.overlay?.hideStrip(); return }
+        // 只结束由语音条发起的会话，不影响语音面板。 Only end sessions the strip started.
+        if (!engaged || !session.active) { if (engaged) { engaged = false; kb.overlay?.hideStrip() }; return }
         if (cancelled || cancel) session.cancel() else session.stop()
         cancel = false
         render()
     }
 
     private fun render() {
+        if (!engaged) return
         val ov = kb.overlay ?: return
-        if (!session.active && session.state != VoiceSession.State.ERROR) { ov.hideStrip(); return }
+        if (session.state == VoiceSession.State.CHOOSING) {
+            // 多引擎：松手后在语音面板里选结果。 Multi-engine: pick the result in the voice panel.
+            engaged = false
+            ov.hideStrip()
+            kb.showPanel("voice")
+            return
+        }
+        if (!session.active && session.state != VoiceSession.State.ERROR) { engaged = false; ov.hideStrip(); return }
         val msg = when {
             session.state == VoiceSession.State.ERROR -> session.error ?: "识别失败"
             cancel -> "松手取消"
             else -> (session.committed.toString() + session.partial).ifEmpty { if (session.state == VoiceSession.State.FINALIZING) "识别中…" else "正在聆听…上滑取消" }
         }
         ov.showStrip(msg, session.level, cancel || session.state == VoiceSession.State.ERROR, session.state == VoiceSession.State.LISTENING)
-        if (session.state == VoiceSession.State.ERROR) ov.postDelayed({ ov.hideStrip() }, 1500)
+        if (session.state == VoiceSession.State.ERROR) { engaged = false; ov.postDelayed({ ov.hideStrip() }, 1500) }
     }
 }

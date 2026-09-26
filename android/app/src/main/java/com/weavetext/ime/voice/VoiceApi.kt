@@ -56,12 +56,49 @@ interface VoiceListener {
     fun onLevel(level: Float) {}
 }
 
+/**
+ * 多引擎会话的回调（06 §6）。多于一个引擎时，[VoiceRecognizer.start] 先回调 [onEngines]，
+ * 之后每个引擎的结果走 onEngine*，不再回调 [onPartial] / [onFinal]；音量、会话级错误与
+ * [onEnd]（全部引擎结束）照常回调。
+ * Callbacks of a multi-engine session. With more than one engine, [onEngines] comes first and each
+ * engine reports through onEngine* instead of onPartial/onFinal; level, session errors and [onEnd]
+ * (all engines finished) work as usual.
+ */
+interface MultiVoiceListener : VoiceListener {
+    /** 本次会话使用的引擎，主引擎在前。 Engines of this session, primary first. */
+    fun onEngines(engines: List<VoicePlugin>) {}
+    fun onEnginePartial(id: String, text: String) {}
+    fun onEngineFinal(id: String, text: String) {}
+    fun onEngineReplace(id: String, old: String, new: String) {}
+    fun onEngineError(id: String, message: String) {}
+    fun onEngineEnd(id: String) {}
+}
+
 /** 语音插件管理。 Voice plugin management. */
 interface VoiceEngines {
     fun list(): List<VoicePlugin>
-    /** 当前选用的插件 id（单选）。 Currently selected plugin. */
+    /** 主引擎 id：实时显示它的中间结果，结果列表默认选中它。 Primary engine. */
     var activeId: String?
     fun active(): VoicePlugin? = list().firstOrNull { it.id == activeId } ?: list().firstOrNull()
+
+    /** 与主引擎「同时使用」的其它引擎 id（06 §6）。 Engines used together with the primary one. */
+    var extraIds: Set<String>
+        get() = emptySet()
+        set(@Suppress("UNUSED_PARAMETER") value) {}
+
+    /**
+     * 能否与其它引擎共用一次录音。系统识别服务自己占用麦克风，只能单独使用。
+     * Whether the engine can share one recording; the platform recognizer owns the mic.
+     */
+    fun canCombine(id: String): Boolean = id != SYSTEM_ENGINE_ID
+
+    /** 本次录音要用的引擎，主引擎在前。 Engines for the next recording, primary first. */
+    fun selection(): List<VoicePlugin> {
+        val primary = active() ?: return emptyList()
+        if (!canCombine(primary.id)) return listOf(primary)
+        val extra = extraIds
+        return listOf(primary) + list().filter { it.id != primary.id && it.id in extra && canCombine(it.id) }
+    }
     /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
     fun inspect(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException())
     /** 从 .xipk 文件导入。 Import a .xipk package. */

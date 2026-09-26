@@ -72,6 +72,15 @@ class SettingsScreenshotTest {
     @Test fun fuzzy() = show("fuzzy", Route.Home, Route.Schemes, Route.Fuzzy)
     @Test fun voiceList() = show("voice_list", Route.Home, Route.Voice)
     @Test fun voiceListDark() = show("voice_list_dark", Route.Home, Route.Voice, dark = true)
+    /** 「同时使用」（整页）：系统识别只能单独使用。 Use-together card (whole page); the platform engine is single-only. */
+    @Config(qualifiers = "w411dp-h1600dp-port-420dpi")
+    @Test fun voiceListCombine() {
+        val sys = com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList())
+        engines.plugins = listOf(LOCAL, sys) + FakeEngines.SAMPLE.drop(1)
+        engines.activeId = LOCAL.id
+        engines.extraIds = setOf("org.example.asr.cloud", "org.example.asr.b")
+        show("voice_list_combine", Route.Home, Route.Voice)
+    }
     @Test fun voiceListEmpty() {
         engines.plugins = emptyList()
         show("voice_list_empty", Route.Home, Route.Voice)

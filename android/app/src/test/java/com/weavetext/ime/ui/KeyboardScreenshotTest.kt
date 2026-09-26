@@ -232,6 +232,46 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("voice_listening_light")
     }
 
+    /** 多引擎结果列表：完成 / 识别中 / 超时，默认高亮主引擎。 Multi-engine result list. */
+    private fun multiResults(): com.weavetext.ime.voice.MultiEngineResults {
+        val r = com.weavetext.ime.voice.MultiEngineResults(
+            listOf("weave.local" to "本地离线识别", "org.example.asr.cloud" to "示例云端识别", "org.example.asr.b" to "示例插件 B"),
+            primaryId = "weave.local",
+        )
+        r.final("weave.local", "今天下午三点在会议室开会，记得带上电脑")
+        r.final("org.example.asr.cloud", "今天下午3点在会议室开会，记得带上电脑。")
+        r.stop(0)
+        r.end("weave.local", 420)
+        r.end("org.example.asr.cloud", 1_380)
+        return r
+    }
+
+    private fun useLocalPrimary() {
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.local", "本地离线识别", "", "", null, emptyList())) + FakeEngines.SAMPLE.drop(1)
+        engines.activeId = "weave.local"
+        engines.extraIds = setOf("org.example.asr.cloud", "org.example.asr.b")
+    }
+
+    @Test fun voiceMultiResults() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        useLocalPrimary()
+        val (k, _) = keyboard(false)
+        k.showPanel("voice")
+        (k.panel as VoicePanel).session.previewResults(multiResults())
+        snap("voice_multi_results_light")
+    }
+
+    @Test fun voiceMultiResultsDark() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        useLocalPrimary()
+        val (k, _) = keyboard(true)
+        k.showPanel("voice")
+        val r = multiResults()
+        r.tick(8_000)
+        (k.panel as VoicePanel).session.previewResults(r)
+        snap("voice_multi_results_timeout_dark")
+    }
+
     @Test fun voiceIdleDark() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         val (k, _) = keyboard(true)

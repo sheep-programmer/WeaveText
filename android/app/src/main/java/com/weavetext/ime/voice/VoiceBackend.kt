@@ -167,6 +167,10 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
         get() = prefs.getString("active", null)?.takeIf { id -> cache.any { it.id == id } } ?: cache.firstOrNull()?.id
         set(value) { prefs.edit().putString("active", value).apply() }
 
+    override var extraIds: Set<String>
+        get() = prefs.getStringSet("also", null)?.toSet().orEmpty()
+        set(value) { prefs.edit().putStringSet("also", value.toSet()).apply() }
+
     override fun install(xipkPath: String): Result<VoicePlugin> {
         if (host == 0L) return Result.failure(IllegalStateException("插件宿主不可用"))
         val o = JSONObject(NativePluginHost.nativeInstall(host, xipkPath) ?: """{"error":"install failed"}""")
@@ -200,19 +204,22 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
 }
 
 /**
- * 录音 + 识别。插件引擎：AudioRecord 16k PCM 每 40ms 一块送进插件；系统引擎：SpeechRecognizer。
- * Recording + recognition. Plugins get 40 ms chunks of 16 kHz PCM; the system engine uses
- * SpeechRecognizer.
+ * 录音 + 识别。本地引擎与插件引擎共用一次 AudioRecord 录音：16k PCM 每 40ms 一块，扇出给本次
+ * 选中的每个引擎（06 §6）；系统引擎用 SpeechRecognizer，自己占用麦克风，只能单独使用。
+ * Recording + recognition. The on-device engine and plugins share one AudioRecord capture whose
+ * 40 ms chunks of 16 kHz PCM fan out to every selected engine; the platform engine uses
+ * SpeechRecognizer, owns the mic and always runs alone.
  */
 private class Recognizer(private val ctx: Context, private val engines: PluginEngines) : VoiceRecognizer {
     private val main = Handler(Looper.getMainLooper())
     private val audioThread = Executors.newSingleThreadExecutor { r -> Thread(r, "weave-audio") }
     @Volatile private var recording = false
-    @Volatile private var session = 0L
     private var listener: VoiceListener? = null
     private var systemRecognizer: SpeechRecognizer? = null
     /** 每次会话递增；旧会话的迟到回调据此丢弃。 Bumped per session to drop late callbacks. */
     @Volatile private var generation = 0
+    /** 本次会话中共用录音的引擎。 Engines sharing the recording in this session. */
+    @Volatile private var runs: List<EngineRun> = emptyList()
 
     override val isRunning: Boolean get() = listener != null
 
@@ -256,7 +263,8 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             listener.onEnd()
             return false
         }
-        val id = engines.activeId ?: run {
+        val selection = engines.selection()
+        if (selection.isEmpty()) {
             listener.onError("没有可用的语音引擎")
             listener.onEnd()
             return false
@@ -264,52 +272,145 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         this.listener = listener
         val gen = ++generation
         requestFocus()
-        val ok = when (id) {
-            SYSTEM_ENGINE_ID -> startSystem(gen)
-            LOCAL_ENGINE_ID -> startLocal(gen)
-            else -> startPlugin(id, gen)
+        val primary = selection.first()
+        val ok = if (primary.id == SYSTEM_ENGINE_ID) startSystem(gen) else {
+            // 多引擎只在界面支持时启用；否则只用主引擎。 Multi-engine only when the UI supports it.
+            val multi = listener as? MultiVoiceListener
+            val ids = if (multi != null && selection.size > 1) selection.map { it.id } else listOf(primary.id)
+            if (ids.size > 1) multi!!.onEngines(selection)
+            startShared(ids, gen, multi = ids.size > 1)
         }
-        if (!ok) abandonFocus()
+        if (!ok) { abandonFocus(); this.listener = null }
         return ok
     }
 
-    // ------------------------------------------------------------ plugin engine
+    // ------------------------------------------------------------ shared-recording engines
 
-    private fun startPlugin(id: String, gen: Int): Boolean {
+    /**
+     * 共用录音的一个引擎。单引擎会话把结果当作普通回调转发；多引擎会话带上引擎 id。
+     * One engine on the shared recording. Single-engine sessions forward plain callbacks;
+     * multi-engine sessions tag them with the engine id.
+     */
+    private inner class EngineRun(val id: String, val gen: Int, val multi: Boolean) {
+        @Volatile var ended = false
+        var pluginSession = 0L
+        var local: com.weavetext.ime.voice.local.LocalAsrEngine.Session? = null
+
+        fun partial(text: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEnginePartial(id, text) else l.onPartial(text) }
+        fun final(text: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEngineFinal(id, text) else l.onFinal(text) }
+        fun error(message: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEngineError(id, message) else l.onError(message) }
+        fun replace(old: String, new: String) {
+            // 替换可能在会话结束后才到，转发给最后一个监听者。 May arrive after onEnd.
+            main.post {
+                val l = lastListener ?: return@post
+                if (multi) (l as? MultiVoiceListener)?.onEngineReplace(id, old, new) else l.onReplace(old, new)
+            }
+        }
+
+        /** 引擎结束（主线程）。 Engine finished (main thread). */
+        fun onEnded() {
+            if (gen != generation || ended) return
+            ended = true
+            if (multi) (listener as? MultiVoiceListener)?.onEngineEnd(id)
+            if (runs.all { it.ended }) finishShared()
+        }
+
+        fun feed(b: ByteArray, n: Int) {
+            if (ended) return
+            val s = pluginSession
+            if (s != 0L) NativePluginHost.nativeFeed(s, b, n) else local?.feed(b, n)
+        }
+
+        fun stop() {
+            local?.stop()
+            if (pluginSession != 0L) NativePluginHost.nativeStop(pluginSession)
+        }
+
+        fun cancel() {
+            local?.cancel()
+            local = null
+            val s = pluginSession
+            pluginSession = 0L
+            if (s != 0L) {
+                NativePluginHost.nativeCancel(s)
+                // 取消后宿主仍会回调 onEnd（已被 generation 过滤），稍后释放句柄。
+                main.postDelayed({ NativePluginHost.nativeRelease(s) }, RELEASE_DELAY_MS)
+            }
+        }
+    }
+
+    private var lastListener: VoiceListener? = null
+
+    private fun startShared(ids: List<String>, gen: Int, multi: Boolean): Boolean {
+        lastListener = listener
+        val started = ArrayList<EngineRun>()
+        for (id in ids) {
+            val run = EngineRun(id, gen, multi)
+            val ok = if (id == LOCAL_ENGINE_ID) startLocal(run) else startPlugin(run)
+            if (ok) started += run
+            else if (multi) (listener as? MultiVoiceListener)?.let { l ->
+                // 单个引擎起不来不影响其它引擎。 One engine failing to start doesn't stop the others.
+                l.onEngineError(id, "无法启动")
+                l.onEngineEnd(id)
+            }
+        }
+        if (started.isEmpty()) return false
+        runs = started
+        startRecording(
+            gen,
+            sink = { b, n -> for (r in started) runCatching { r.feed(b, n) } },
+            onFail = { main.post { for (r in started) r.cancel(); if (gen == generation) finishShared() } },
+        )
+        return true
+    }
+
+    private fun startPlugin(run: EngineRun): Boolean {
+        val id = run.id
         val cb = object : NativeSpeechCallback {
-            override fun onPartial(text: String) = post(gen) { it.onPartial(text) }
-            override fun onFinal(text: String) = post(gen) { it.onFinal(text) }
-            // 替换可能在会话结束后才到，按 id 转发给最后一个监听者。 May arrive after onEnd.
-            override fun onReplace(old: String, new: String) = main.post { lastListener?.onReplace(old, new) }.let { }
-            override fun onError(message: String) = post(gen) { it.onError(message) }
+            override fun onPartial(text: String) = run.partial(text)
+            override fun onFinal(text: String) = run.final(text)
+            override fun onReplace(old: String, new: String) = run.replace(old, new)
+            override fun onError(message: String) = run.error(message)
             override fun onEnd() {
                 main.post {
-                    val s = session
-                    if (gen == generation) {
-                        session = 0L
-                        recording = false
-                        abandonFocus()
-                        val l = listener
-                        listener = null
-                        l?.onEnd()
-                    }
+                    val s = run.pluginSession
+                    val current = run.gen == generation
+                    run.onEnded()
                     // 释放会取消会话；插件在 onEnd 之后仍可能回填（onReplace），所以延迟释放。
                     // Releasing cancels the session and plugins may still send onReplace after
                     // onEnd, so release later.
-                    if (s != 0L && gen == generation) main.postDelayed({ NativePluginHost.nativeRelease(s) }, RELEASE_DELAY_MS)
+                    if (s != 0L && current) main.postDelayed({ NativePluginHost.nativeRelease(s) }, RELEASE_DELAY_MS)
                 }
             }
             override fun onLog(level: Int, message: String) = pluginLog(id, level, message)
         }
-        lastListener = listener
         val s = NativePluginHost.nativeStartSpeech(engines.host, id, cb)
         if (s == 0L) return false
-        session = s
-        startRecording(gen, sink = { b, n -> NativePluginHost.nativeFeed(s, b, n) }, onFail = { NativePluginHost.nativeCancel(s) })
+        run.pluginSession = s
         return true
     }
 
-    private var lastListener: VoiceListener? = null
+    private fun startLocal(run: EngineRun): Boolean {
+        run.local = engines.local.Session(
+            listener = object : com.weavetext.ime.voice.local.TwoPassListener {
+                override fun onPartial(text: String) = run.partial(text)
+                override fun onFinal(text: String) = run.final(text)
+            },
+            onEnd = { main.post { run.onEnded() } },
+            onError = { msg -> run.error(msg) },
+        )
+        return true
+    }
+
+    /** 共用录音的所有引擎都结束了。 Every shared-recording engine has ended. */
+    private fun finishShared() {
+        runs = emptyList()
+        recording = false
+        abandonFocus()
+        val l = listener
+        listener = null
+        l?.onEnd()
+    }
 
     @SuppressLint("MissingPermission")
     private fun startRecording(gen: Int, sink: (ByteArray, Int) -> Unit, onFail: () -> Unit) {
@@ -366,38 +467,9 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         return (r * 4).coerceIn(0.0, 1.0).toFloat()
     }
 
-    // ------------------------------------------------------------ on-device engine
-
-    private var localSession: com.weavetext.ime.voice.local.LocalAsrEngine.Session? = null
-
-    private fun startLocal(gen: Int): Boolean {
-        val session = engines.local.Session(
-            listener = object : com.weavetext.ime.voice.local.TwoPassListener {
-                override fun onPartial(text: String) = post(gen) { it.onPartial(text) }
-                override fun onFinal(text: String) = post(gen) { it.onFinal(text) }
-            },
-            onEnd = {
-                main.post {
-                    if (gen == generation) {
-                        localSession = null
-                        recording = false
-                        abandonFocus()
-                        val l = listener
-                        listener = null
-                        l?.onEnd()
-                    }
-                }
-            },
-            onError = { msg -> post(gen) { it.onError(msg) } },
-        )
-        localSession = session
-        startRecording(gen, sink = { b, n -> session.feed(b, n) }, onFail = { session.cancel() })
-        return true
-    }
-
     /** 打开语音面板时预热本地模型。 Warm up local models when the voice panel opens. */
     override fun warmUp() {
-        if (engines.active()?.id == LOCAL_ENGINE_ID) engines.local.preload()
+        if (engines.selection().any { it.id == LOCAL_ENGINE_ID }) engines.local.preload()
     }
 
     // ------------------------------------------------------------ system engine
@@ -452,26 +524,18 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
 
     override fun stop() {
         recording = false
-        localSession?.stop()
-        val s = session
-        if (s != 0L) NativePluginHost.nativeStop(s)
+        for (r in runs) r.stop()
         systemRecognizer?.stopListening()
     }
 
     override fun cancel() {
         recording = false
-        localSession?.cancel()
-        localSession = null
-        val s = session
         val l = listener
         listener = null
         generation++
-        session = 0L
-        if (s != 0L) {
-            NativePluginHost.nativeCancel(s)
-            // 取消后宿主仍会回调 onEnd（已被 generation 过滤），稍后释放句柄。
-            main.postDelayed({ NativePluginHost.nativeRelease(s) }, RELEASE_DELAY_MS)
-        }
+        val old = runs
+        runs = emptyList()
+        for (r in old) r.cancel()
         systemRecognizer?.let { it.cancel(); it.destroy() }
         systemRecognizer = null
         abandonFocus()
