@@ -298,6 +298,36 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("voice_no_permission_light")
     }
 
+    /** 没有可用引擎（轻量版）：给出下载、系统设置、导入三个办法。 No engine on the lite build: three ways out. */
+    @Test fun voiceNoEngineLite() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        engines.plugins = emptyList()
+        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        try {
+            val (k, _) = keyboard(false)
+            k.showPanel("voice")
+            snap("voice_no_engine_lite_light")
+        } finally {
+            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+        }
+    }
+
+    /** 系统识别连接失败：说明原因并给出办法。 System recognizer failed: reason plus ways out. */
+    @Test fun voiceSystemError() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "", "", null, emptyList()))
+        engines.activeId = "weave.system"
+        com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = true
+        try {
+            val (k, _) = keyboard(false)
+            k.showPanel("voice")
+            (k.panel as VoicePanel).session.preview(VoiceSession.State.ERROR, "", "", 0f, "系统语音服务连接失败")
+            snap("voice_system_error_lite_light")
+        } finally {
+            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild = !com.weavetext.ime.BuildConfig.LOCAL_ASR
+        }
+    }
+
     @Test fun voiceEngineSheet() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         val (k, _) = keyboard(false)

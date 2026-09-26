@@ -117,6 +117,19 @@ fun VoiceListScreen() {
             Column(Modifier.fillMaxWidth().padding(top = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(painterResource(R.drawable.ic_waveform), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("还没有语音引擎", style = MaterialTheme.typography.titleMedium)
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                Text(
+                    if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) "轻量版不含离线识别，手机上也没有找到系统语音服务。可以任选一种方式："
+                    else "手机上没有找到系统语音服务。可以任选一种方式：",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 32.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+                if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) {
+                    Button(onClick = { com.weavetext.ime.voice.VoiceHelp.openOfflineBuild(ctx) }) { Text("下载离线语音版（覆盖安装，设置不丢）") }
+                }
+                FilledTonalButton(onClick = { com.weavetext.ime.voice.VoiceHelp.openSystemVoiceSettings(ctx) }) { Text("打开系统语音输入设置") }
                 FilledTonalButton(onClick = importer.launch) { Text("导入 .xipk 插件") }
             }
         } else {

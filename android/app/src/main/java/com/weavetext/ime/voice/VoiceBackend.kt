@@ -34,6 +34,15 @@ internal object VoiceBackend {
 }
 
 private const val TAG = "WeaveVoice"
+
+// SpeechRecognizer 在 API 31 起新增的错误码（minSdk 26，自行定义）。 Error codes added in API 31.
+private const val ERROR_TOO_MANY_REQUESTS = 10
+private const val ERROR_SERVER_DISCONNECTED = 11
+private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
+private const val ERROR_LANGUAGE_UNAVAILABLE = 13
+
+/** 系统语音服务不可用时的说明。 Shown when the system speech service cannot be used. */
+internal const val SYSTEM_UNAVAILABLE = "系统语音服务连接失败"
 private const val RELEASE_DELAY_MS = 15_000L
 private const val MAX_LOG_CHARS = 512
 
@@ -69,7 +78,11 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
     /** 宿主句柄，0 表示不可用。 Host handle; 0 means unavailable. */
     val host: Long
     @Volatile private var cache: List<VoicePlugin> = emptyList()
-    private val systemAvailable = SpeechRecognizer.isRecognitionAvailable(ctx)
+    /** 每次刷新都重新检查：用户可能刚装好或启用了系统语音服务。 Re-checked on refresh: a service may have just been installed. */
+    private val systemAvailable: Boolean get() = runCatching {
+        SpeechRecognizer.isRecognitionAvailable(ctx) ||
+            (android.os.Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx))
+    }.getOrDefault(false)
 
     init {
         pluginsDir.mkdirs()
@@ -474,8 +487,19 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
 
     // ------------------------------------------------------------ system engine
 
-    private fun startSystem(gen: Int): Boolean {
-        val sr = SpeechRecognizer.createSpeechRecognizer(ctx)
+    /**
+     * @param attempt 第几次尝试：服务刚被唤起时第一次连接常会失败，自动重连一次。
+     * @param withLanguage 是否指定中文；服务不支持中文参数时改用它的默认语言再试。
+     * @param attempt retry count — the first bind to a freshly started service often fails, so reconnect once.
+     * @param withLanguage whether to ask for zh-CN; retried with the service default when unsupported.
+     */
+    private fun startSystem(gen: Int, attempt: Int = 0, withLanguage: Boolean = true): Boolean {
+        val sr = runCatching { createRecognizer(attempt) }.getOrNull()
+        if (sr == null) {
+            post(gen) { it.onError(SYSTEM_UNAVAILABLE) }
+            finishSystem(gen)
+            return false
+        }
         systemRecognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
@@ -484,8 +508,22 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
             override fun onError(error: Int) {
+                // 连接失败：换下一个候选服务；不支持中文：同一服务改用它的默认语言。
+                // Bind failure → next candidate service; language unsupported → same service, default language.
+                val retryBind = attempt + 1 < recognizerCandidates().size &&
+                    (error == SpeechRecognizer.ERROR_CLIENT || error == ERROR_SERVER_DISCONNECTED)
+                val retryLanguage = withLanguage && (error == ERROR_LANGUAGE_NOT_SUPPORTED || error == ERROR_LANGUAGE_UNAVAILABLE)
+                if (retryBind || retryLanguage) {
+                    main.post {
+                        if (gen != generation) return@post
+                        sr.destroy()
+                        if (systemRecognizer === sr) systemRecognizer = null
+                        startSystem(gen, if (retryLanguage) attempt else attempt + 1, withLanguage && !retryLanguage)
+                    }
+                    return
+                }
                 if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                    post(gen) { it.onError("系统识别出错（$error）") }
+                    post(gen) { it.onError(systemErrorMessage(error)) }
                 }
                 finishSystem(gen)
             }
@@ -502,10 +540,55 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         })
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        sr.startListening(intent)
-        return true
+            .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
+        if (withLanguage) intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
+        return runCatching { sr.startListening(intent) }.fold(
+            onSuccess = { true },
+            onFailure = {
+                Log.w(TAG, "system recognizer start failed", it)
+                post(gen) { l -> l.onError(SYSTEM_UNAVAILABLE) }
+                finishSystem(gen)
+                false
+            },
+        )
+    }
+
+    /**
+     * 依次尝试的识别服务：系统默认服务 → 手机上找到的每个识别服务（默认设置为空或失效时仍能用）→
+     * Android 13 起的端侧识别。
+     * Recognizers tried in order: the default service, each installed recognition service (works when the
+     * default setting is empty or stale), then on-device recognition on Android 13+.
+     */
+    private fun recognizerCandidates(): List<() -> SpeechRecognizer> {
+        val list = mutableListOf<() -> SpeechRecognizer>({ SpeechRecognizer.createSpeechRecognizer(ctx) })
+        val services = runCatching {
+            ctx.packageManager.queryIntentServices(Intent(android.speech.RecognitionService.SERVICE_INTERFACE), 0)
+        }.getOrDefault(emptyList())
+        for (info in services) {
+            val si = info.serviceInfo ?: continue
+            val cn = android.content.ComponentName(si.packageName, si.name)
+            list += { SpeechRecognizer.createSpeechRecognizer(ctx, cn) }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33 && runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx) }.getOrDefault(false)) {
+            list += { SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx) }
+        }
+        return list
+    }
+
+    private fun createRecognizer(attempt: Int): SpeechRecognizer {
+        val list = recognizerCandidates()
+        return list[attempt.coerceIn(0, list.size - 1)]()
+    }
+
+    /** 系统识别错误码 → 用户看得懂的说明与处理办法。 System error code → a message the user can act on. */
+    private fun systemErrorMessage(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "系统识别需要联网"
+        SpeechRecognizer.ERROR_AUDIO -> "麦克风被其他应用占用"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "系统语音服务缺少麦克风权限"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY, ERROR_TOO_MANY_REQUESTS -> "系统语音服务正忙"
+        ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE -> "系统语音服务不支持中文"
+        else -> SYSTEM_UNAVAILABLE
     }
 
     private fun finishSystem(gen: Int) {
