@@ -393,6 +393,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             numberMode || field != 0 -> "num$field"
             !s.chinese -> "en"
             s.schema == "t9" -> "t9"
+            s.schema == "t14" -> "t14"
             else -> "cn:" + s.schema
         }
         val hintsOn = when {
@@ -411,6 +412,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                     keyboardView.side?.items = Layouts.NUM_SYMBOLS.map { it.toString() }
                 }
                 kind == "t9" -> keyboardView.setT9(Layouts.t9(l.t9, l.labels))
+                kind == "t14" -> keyboardView.setT14(Layouts.t14(l.t9, l.labels, lower = l.qwerty.letterCase == "lower"))
                 kind == "en" -> keyboardView.setQwerty(Layouts.qwerty(english = true, l.qwerty, l.labels))
                 else -> {
                     val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
@@ -514,8 +516,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 k.labelSize = if (upper) metrics.letter(size) else metrics.letter(size + 1f)
             }
         }
-        // 九键 / T9
-        if (layoutSig.startsWith("t9")) {
+        // 九键、14 键 / T9, 14-key
+        if (layoutSig.startsWith("t9") || layoutSig.startsWith("t14")) {
             kv.keyOf(KeyCode.T9_ONE)?.let { it.label = if (composing) "分词" else "，。?!"; it.medium = composing }
             kv.keyOf(KeyCode.T9_RESET)?.let { it.label = if (composing) "重输" else "@" }
             kv.side?.let { side ->
@@ -611,8 +613,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             chooseKeyboard(kb)
             return
         }
-        if (text.length == 1 && state.chinese && state.composing && text[0] in 'a'..'z' && key.code in '2'.code..'9'.code) {
-            // 九键长按单个字母：直接上屏字母。 T9 single letter.
+        if (text.length == 1 && state.chinese && state.composing && text[0] in 'a'..'z' && (key.code in '2'.code..'9'.code || key.code in 'A'.code..'N'.code)) {
+            // 九键 / 14 键长按单个字母：直接上屏字母。 T9 / 14-key single letter.
             controller.onText(text)
             return
         }

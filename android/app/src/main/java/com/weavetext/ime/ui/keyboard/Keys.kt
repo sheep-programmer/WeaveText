@@ -102,6 +102,7 @@ object Layouts {
     const val QWERTY = 0
     const val T9 = 1
     const val NUMPAD = 2
+    const val T14 = 3
 
     private const val ROW1 = "qwertyuiop"
     private const val ROW2 = "asdfghjkl"
@@ -255,6 +256,65 @@ object Layouts {
         // 有独立 0 键时空格不再上滑出 0。 With a dedicated 0 key the space bar drops its swipe-up 0.
         if (keys.any { it.code == '0'.code }) keys.firstOrNull { it.code == KeyCode.SPACE }?.up = null
         return keys
+    }
+
+    /** 14 键的字母分组（键码 'A' 起，与内核 t14 方案一致）。 14-key letter groups, coded from 'A' as in the engine. */
+    val T14_GROUPS = arrayOf("qw", "er", "ty", "ui", "op", "as", "df", "gh", "jk", "l", "zx", "cv", "bn", "m")
+
+    /**
+     * 14 键拼音：三行 5/5/4 个双字母键（第三行末尾是删除），左侧拼音列与底行沿用九键的定义，底行另加分词键与回车。
+     * 14-key pinyin: rows of 5/5/4 two-letter keys (Delete ends the third row); the side column and bottom row
+     * follow the 9-key definition, plus the separator key and Enter.
+     */
+    fun t14(spec: T9Spec = DEFAULT.t9, labels: LabelSpec = DEFAULT.labels, lower: Boolean = false): List<Key> {
+        val keys = ArrayList<Key>(24)
+        for ((i, g) in T14_GROUPS.withIndex()) {
+            val row = if (i < 5) 0 else if (i < 10) 1 else 2
+            // 首行长按带数字（与 26 键上排一致）。 The first row's long press offers its digits, as on QWERTY.
+            val digits = if (row == 0) g.map { ((ROW1.indexOf(it) + 1) % 10).toString() } else emptyList()
+            keys += Key('A'.code + i, if (lower) g else g.uppercase(), longPress = g.map { it.toString() } + digits).apply {
+                this.row = row; gx = if (row == 0) i else if (row == 1) i - 5 else i - 10
+                large = true; medium = true
+            }
+        }
+        keys += func(KeyCode.DELETE, icon = com.weavetext.ime.R.drawable.ic_backspace).apply { row = 2; gx = 4; large = true }
+        val bottom = spec.bottom.filter { it.name != "delete" && it.name != "enter" && it.name != "reset" }
+        for (t in bottom) {
+            if (t.name == "space") keys += Key(KeyCode.T9_ONE, "，。?!", style = KeyStyle.FUNC).apply { preview = false; large = true; row = 3; weight = 1f }
+            // 数字走 123 键，空格不再上滑出 0。 Digits live behind 123; the space bar has no swipe-up 0.
+            keys += t9Key(t.name, labels).apply { row = 3; weight = if (t.name == "space") 2.2f * t.span else t.span.toFloat(); if (code == KeyCode.SPACE) up = null }
+        }
+        keys += t9Key("enter", labels).apply { row = 3; weight = 1.4f }
+        return keys
+    }
+
+    fun layoutT14(keys: List<Key>, side: SideList, w: Float, m: KbMetrics, spec: T9Spec = DEFAULT.t9) {
+        val avail = w - 2 * m.padH
+        val sideW = avail * spec.columns[0] / spec.columns.sum()
+        val x0 = m.padH + sideW
+        val unit = (w - m.padH - x0) / 5f
+        side.rect.set(m.padH, 0f, x0, 3 * m.rowPitch)
+        side.rect.inset(m.insetH, m.insetV)
+        side.itemHeight = m.dp(44f).coerceAtMost(side.rect.height() / 4f)
+        side.textSize = minOf(m.label(15f), side.itemHeight * 0.6f)
+        var bottomUnits = 0f
+        for (k in keys) if (k.row == 3) bottomUnits += k.weight
+        var bx = m.padH
+        for (k in keys) {
+            if (k.row < 3) {
+                val left = x0 + k.gx * unit
+                k.cell.set(left, k.row * m.rowPitch, left + unit, (k.row + 1) * m.rowPitch)
+            } else {
+                val bw = avail * k.weight / bottomUnits
+                k.cell.set(bx, 3 * m.rowPitch, bx + bw, 4 * m.rowPitch)
+                bx += bw
+            }
+            k.rect.set(k.cell)
+            k.rect.inset(m.insetH, m.insetV)
+            k.labelSize = if (k.code in 'A'.code..'N'.code) m.letter(19f) else m.label(16f)
+            if (k.cell.left <= m.padH + 1f) k.cell.left = 0f
+            if (k.cell.right >= w - m.padH - 1f) k.cell.right = w
+        }
     }
 
     /** 5 列网格几何。 Five-column grid geometry. */

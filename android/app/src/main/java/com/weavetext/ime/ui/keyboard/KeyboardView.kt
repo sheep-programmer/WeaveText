@@ -144,6 +144,13 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         relayout()
     }
 
+    fun setT14(list: List<Key>) {
+        val s = SideList()
+        keys = list; side = s; layoutKind = Layouts.T14
+        builder = { w -> Layouts.layoutT14(list, s, w, metrics, layoutStyle.t9) }
+        relayout()
+    }
+
     fun setNumpad(list: List<Key>) {
         val s = SideList()
         keys = list; side = s; layoutKind = Layouts.NUMPAD
@@ -184,6 +191,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         KeyCode.T9_ONE -> if (k.medium) k.label else "1，标点"
         else -> when {
             k.sub != null -> "${k.sub}，${k.label}"
+            layoutKind == Layouts.T14 && k.code in 'A'.code..'N'.code -> k.label.lowercase().toList().joinToString("，")
             k.code in 'a'.code..'z'.code -> if (chinese) k.code.toChar().toString() else k.label
             else -> VirtualA11y.speak(k.label.ifEmpty { String(Character.toChars(k.code)) })
         }

@@ -97,7 +97,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     }
 
     override fun onShow() {
-        val t9 = kb.state.schema == "t9" && kb.state.chinese
+        val t9 = (kb.state.schema == "t9" || kb.state.schema == "t14") && kb.state.chinese
         showPinyin = false
         side.keys = buildSide(t9)
         grid.scrollToTop()
@@ -299,14 +299,14 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         private fun sub(k: String): String = when (k) {
             "pinyin" -> "全拼"
-            "t9" -> "拼音"
+            "t9", "t14" -> "拼音"
             "shuangpin" -> com.weavetext.ime.settings.WeavePrefs.SHUANGPIN_SCHEMES.firstOrNull { it.first == com.weavetext.ime.settings.WeavePrefs.shuangpinScheme(kb.prefs) }?.second ?: ""
             "wubi86" -> "86"
             else -> "English"
         }
 
         private fun title(k: String): String = when (k) {
-            "pinyin" -> "26键"; "t9" -> "九键"; "shuangpin" -> "双拼"; "wubi86" -> "五笔"; else -> "英文"
+            "pinyin" -> "26键"; "t9" -> "九键"; "t14" -> "14键"; "shuangpin" -> "双拼"; "wubi86" -> "五笔"; else -> "英文"
         }
 
         override fun onDraw(c: Canvas) {

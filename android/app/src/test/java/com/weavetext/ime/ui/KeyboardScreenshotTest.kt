@@ -127,6 +127,18 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("t9_idle_dark")
     }
 
+    @Test fun t14IdleLight() {
+        val (_, c) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "t14,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "t14") }
+        c.previewState(ImeState(schema = "t14", engineReady = true))
+        snap("t14_idle_light")
+    }
+
+    @Test fun t14ComposingDark() {
+        val (_, c) = keyboard(true) { putString(WeavePrefs.KEYBOARDS, "t14,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "t14") }
+        c.previewState(composing("t14", pinyin = listOf("ni", "mi", "bi", "n", "m")))
+        snap("t14_composing_dark")
+    }
+
     @Test fun wubiHints() {
         val (_, c) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "wubi86,english").putBoolean(WeavePrefs.WUBI_ROOT_HINTS, true) }
         c.previewState(

@@ -247,6 +247,21 @@ class TypingFeelTest {
         assertEquals("", engine.raw.toString())
     }
 
+    // ------------------------------------------------------------ 14-key
+
+    @Test fun fourteenKeySendsGroupCodesAndSeparator() {
+        WeavePrefs.of(app).edit().putString(WeavePrefs.KEYBOARDS, "t14,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "t14").commit()
+        idle()
+        assertEquals("t14", engine.schema)
+        // n→bn(M) i→ui(D) h→gh(H) a→as(F) o→op(E)
+        for (c in "MDHFE") { press(9, key(c)); release(9) }
+        idle()
+        press(9, key(KeyCode.T9_ONE)); release(9)
+        assertEquals("MDHFE'", engine.raw.toString())
+        assertEquals(14, kv.keys.count { it.code in 'A'.code..'N'.code })
+        assertEquals("q，w", kv.describe(key('A')))
+    }
+
     // ------------------------------------------------------------ rendering
 
     @Test fun charKeysEmitOnDown() {

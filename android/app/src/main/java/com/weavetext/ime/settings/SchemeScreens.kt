@@ -37,7 +37,7 @@ import androidx.compose.ui.zIndex
 import com.weavetext.ime.R
 import kotlin.math.roundToInt
 
-private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "wubi86", "english")
+private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "wubi86", "english")
 
 /** 输入方案（03 §5）。 Input schemes page. */
 @Composable
