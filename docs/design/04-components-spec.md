@@ -66,7 +66,7 @@
 | 附加注释（五笔编码、英文补全来源）| 10dp `kb.labelHint`，距文字右侧 3dp，基线同主文字 |
 | 按下 | `kb.toolbarActive` 圆角 8dp，高 30dp，宽 = item 宽 |
 | 超长词 | 单项最大宽 = 候选行宽 × 0.7，超出中间省略 |
-| 右侧渐隐 | 展开按钮左侧 16dp 线性渐变 `kb.background` 0% → 100% |
+| 右侧渐隐 | 展开按钮左侧 16dp：候选行画进图层，再用 DST_OUT 线性渐变把文字擦到全透明，透出真实背景（渐变 / 图片）；展开区不再铺背景色 / the row is drawn in a layer and erased with a DST_OUT ramp, so the real backdrop shows through |
 | 展开按钮 | 44×48dp，`ic_chevron_down` 22dp `kb.icon`；展开后旋转为 ⌃ |
 | 无障碍 | 每项 `contentDescription = "候选 1，你好"` |
 

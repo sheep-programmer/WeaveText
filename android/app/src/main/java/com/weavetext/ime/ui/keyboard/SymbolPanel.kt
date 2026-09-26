@@ -278,7 +278,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             kb.icons.draw(c, R.drawable.ic_backspace, pal.icon, r.centerX(), r.centerY(), m.icon(22f))
             // tabs
             val pill = kb.style.layout.symbols.indicator == "pill"
-            c.save()
+            // 分类画进图层，两端擦成透明（透出真实背景）。 Tabs go into a layer whose ends are erased to the real backdrop.
+            val layer = c.saveLayer(tabs, null)
             c.clipRect(tabs)
             val cy = height / 2f
             for (i in cats.indices) {
@@ -303,42 +304,42 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                     c.drawRoundRect(r, m.dp(1.5f), m.dp(1.5f), fill)
                 }
             }
-            drawScrollHints(c)
-            c.restore()
+            drawScrollHints(c, layer)
         }
 
         /** 分类可横向滚动时两端 20dp 渐隐 + 12dp 箭头；滑到头隐藏对应一侧。 Edge fades and chevrons. */
-        private fun drawScrollHints(c: Canvas) {
+        private fun drawScrollHints(c: Canvas, layer: Int) {
             val pal = kb.palette
             val m = kb.metrics
             val fw = m.dp(20f)
-            val bg = pal.background
-            if (fadeColor != bg || fadeW != fw) {
-                fadeColor = bg; fadeW = fw
-                // 外侧 40% 不透明，箭头落在实色上。 The outer 40% is solid so the chevron sits on plain background.
-                val clear = bg and 0x00ffffff
-                fadeL = LinearGradient(0f, 0f, fw, 0f, intArrayOf(bg, bg, clear), floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
-                fadeR = LinearGradient(0f, 0f, fw, 0f, intArrayOf(clear, bg, bg), floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP)
+            if (fadeW != fw) {
+                fadeW = fw
+                // 外侧 40% 完全擦掉，箭头落在背景上。 The outer 40% is fully erased so the chevron sits on the backdrop.
+                val on = 0xFF000000.toInt()
+                fadeL = LinearGradient(0f, 0f, fw, 0f, intArrayOf(on, on, 0), floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
+                fadeR = LinearGradient(0f, 0f, fw, 0f, intArrayOf(0, on, on), floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP)
             }
             val cy = height / 2f
-            if (tabScroll > 1f) {
+            val left = tabScroll > 1f
+            val right = tabScroll < maxTabScroll() - 1f
+            if (left) {
                 c.save(); c.translate(tabs.left, 0f)
                 fadePaint.shader = fadeL; c.drawRect(0f, 0f, fw, height.toFloat(), fadePaint)
                 c.restore()
-                kb.icons.draw(c, R.drawable.ic_chevron_left, pal.labelHint, tabs.left + m.dp(5f), cy, m.dp(12f))
             }
-            if (tabScroll < maxTabScroll() - 1f) {
+            if (right) {
                 c.save(); c.translate(tabs.right - fw, 0f)
                 fadePaint.shader = fadeR; c.drawRect(0f, 0f, fw, height.toFloat(), fadePaint)
                 c.restore()
-                kb.icons.draw(c, R.drawable.ic_chevron_right, pal.labelHint, tabs.right - m.dp(5f), cy, m.dp(12f))
             }
+            c.restoreToCount(layer)
+            if (left) kb.icons.draw(c, R.drawable.ic_chevron_left, pal.labelHint, tabs.left + m.dp(5f), cy, m.dp(12f))
+            if (right) kb.icons.draw(c, R.drawable.ic_chevron_right, pal.labelHint, tabs.right - m.dp(5f), cy, m.dp(12f))
         }
 
-        private val fadePaint = Paint()
+        private val fadePaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
         private var fadeL: LinearGradient? = null
         private var fadeR: LinearGradient? = null
-        private var fadeColor = 0
         private var fadeW = 0f
 
         // 无障碍：返回 / 分类 / 锁定 / 删除。 Accessibility: back, categories, lock, delete.

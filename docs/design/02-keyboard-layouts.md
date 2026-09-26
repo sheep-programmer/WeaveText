@@ -79,7 +79,7 @@
 | 组合串 Composing | 左上角 x=12dp，基线 y=15dp，`type.composing`，`kb.labelSecondary`；显示切分后的拼音（`ni'hao`），末尾 1dp 宽 12dp 高光标 `kb.candidateFirst`，光标可点击组合串左右移动（点击组合串进入“编辑拼音”：左右键在候选栏出现）|
 | 候选行 Candidate row | y=18–48dp（30dp 高），横向滚动 `RecyclerView`/自绘 `HorizontalScroll`；每项左右 padding 12dp、最小宽 40dp（文字左对齐）；第 1 项 `kb.candidateFirst` + 500 字重；其余 `kb.label` |
 | 分隔 Separator | 候选之间**无**竖线；靠 24dp 间距区分 / no dividers |
-| 展开箭头 Expand | 右侧固定 44dp 宽，`ic_chevron_down` 22dp，左侧 16dp 渐隐遮罩（背景色 0→100%）盖住滚动内容；无更多候选时隐藏 |
+| 展开箭头 Expand | 右侧固定 44dp 宽，`ic_chevron_down` 22dp，左侧 16dp 渐隐：候选文字在图层里被擦成透明（不是盖一层背景色），渐变与图片背景上也看不出接缝；无更多候选时隐藏 / the 16dp fade erases the text to transparent, so no seam shows on gradients or images |
 | 英文联想 | 英文模式下组合串行隐藏，候选行垂直居中（y 占满 48dp），首项为原样输入，末尾带与组合串相同的闪烁光标（06 §8.5）|
 | 按下态 | 候选项按下显示 `kb.toolbarActive` 圆角 8dp 底块（高 30dp） |
 | 长按候选 | 若为用户词/学习词 → 弹出小气泡「删除该词」；系统词无操作 |
@@ -311,6 +311,7 @@
 | ⌫ | 右侧 F 键 |
 | 成对符号 | `“”` `（）` `《》` `【】` 点击成对输入并把光标放中间（长按只输入单个） |
 | Emoji 肤色 | 长按支持肤色的 emoji → 6 格气泡选择肤色，记住选择 |
+| 分类两端 | 分类可横向滚动时两端 20dp 渐隐（擦成透明，透出背景）+ 12dp 箭头 |
 
 ---
 

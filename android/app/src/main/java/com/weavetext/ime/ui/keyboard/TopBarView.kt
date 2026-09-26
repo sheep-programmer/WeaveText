@@ -99,7 +99,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val text = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val small = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val fade = Paint()
+    /** 候选右端渐隐：在图层里擦去文字（DST_OUT），透出真实背景。 Right-edge fade erases the text in a layer, showing the real backdrop. */
+    private val fade = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
     private var fadeShader: LinearGradient? = null
     private val tmp = RectF()
     private val mediumTf = if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
@@ -443,6 +444,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val top = rowTop()
         val rowH = height - top
         val right = width - (if (hasMore) expandW() else 0f)
+        // 有更多候选时整行画进图层，右端再擦成透明：渐变、图片背景上也看不出接缝。
+        // With more candidates the row goes into a layer whose right end is erased, so no seam shows on gradients or images.
+        val layer = if (hasMore) c.saveLayer(lead, top, right, height.toFloat(), null) else -1
         c.save()
         c.clipRect(lead, top, right, height.toFloat())
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
@@ -484,15 +488,14 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             // 渐隐遮罩 + 展开按钮。 Fade + expand button.
             val fw = m.dp(16f)
             if (fadeShader == null) {
-                fadeShader = LinearGradient(0f, 0f, fw, 0f, p.background and 0x00ffffff, p.background, Shader.TileMode.CLAMP)
+                fadeShader = LinearGradient(0f, 0f, fw, 0f, 0, 0xFF000000.toInt(), Shader.TileMode.CLAMP)
             }
             fade.shader = fadeShader
             c.save()
             c.translate(right - fw, 0f)
             c.drawRect(0f, top, fw, height.toFloat(), fade)
             c.restore()
-            fill.color = p.background
-            c.drawRect(right, 0f, width.toFloat(), height.toFloat(), fill)
+            c.restoreToCount(layer)
             val expandIcon = when {
                 layout.candidates.expandIcon == "grid" -> R.drawable.ic_toolbox
                 expanded -> R.drawable.ic_chevron_up

@@ -148,9 +148,10 @@ icons and pressed state ≥ 3:1. 用户微调的强调色会自动向文字色�
 ```
 
 `colors` 1–4 个（渐变至少 2 个）；`angle` 0–360（0 = 从左到右）；`image` 为风格包内文件名；`blur` 0–25 dp；`dim` 0–0.8。
-图片在解析时解码、缩放、模糊一次；渐变以首末色中点作为渐隐与导航栏的代表色。
+图片在解析时解码、缩放、模糊一次；渐变以首末色中点作为导航栏的代表色（候选栏与分类的渐隐直接擦成透明，不用代表色）。
 `colors`: 1–4 (≥ 2 for gradients); `angle` 0–360; `image` is a file inside the pack; `blur` 0–25 dp; `dim` 0–0.8. Images are
-decoded, scaled and blurred once; gradients use the midpoint of the first and last stop as the representative colour.
+decoded, scaled and blurred once; gradients use the midpoint of the first and last stop as the navigation-bar colour (edge
+fades erase to transparent instead of painting a representative colour).
 
 ## 5. 用户微调 / Overrides（`style_overrides`）
 

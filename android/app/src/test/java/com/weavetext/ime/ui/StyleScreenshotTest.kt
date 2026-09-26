@@ -88,4 +88,31 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
         c.previewState(ImeState(chinese = false, engineReady = true, candidates = listOf("hello", "help", "held").map { Candidate(it, "", false) }, totalCandidates = 3))
         snap("round_english_light")
     }
+
+    /**
+     * 渐变背景上候选栏右端的渐隐与展开区直接透出背景：逐像素等于只画背景的结果。
+     * On a gradient the candidate bar's right-edge fade and expand area show the backdrop itself, pixel for pixel.
+     */
+    @Test fun candidateFadeShowsBackdrop() {
+        val (k, c) = keyboard(false) { clear(); putString(WeavePrefs.STYLE_THEME, "glass") }
+        c.previewState(composing())
+        idle()
+        val board = k.board
+        val full = android.graphics.Bitmap.createBitmap(board.width, board.height, android.graphics.Bitmap.Config.ARGB_8888)
+        board.draw(android.graphics.Canvas(full))
+        val bgOnly = android.graphics.Bitmap.createBitmap(board.width, board.height, android.graphics.Bitmap.Config.ARGB_8888)
+        com.weavetext.ime.ui.keyboard.BackdropDrawable(k.palette.backdrop!!).apply { setBounds(0, 0, board.width, board.height) }
+            .draw(android.graphics.Canvas(bgOnly))
+        val bar = k.topBar
+        val d = app.resources.displayMetrics.density
+        val y = bar.top + bar.height - 3
+        var worst = 0
+        for (x in (bar.right - (60 * d).toInt()) until bar.right) {
+            val a = full.getPixel(x, y); val b = bgOnly.getPixel(x, y)
+            for (sh in intArrayOf(16, 8, 0)) worst = maxOf(worst, kotlin.math.abs(((a shr sh) and 0xFF) - ((b shr sh) and 0xFF)))
+        }
+        org.junit.Assert.assertTrue("fade differs from backdrop by $worst", worst <= 2)
+        kb?.dispose()
+        kb = null
+    }
 }
