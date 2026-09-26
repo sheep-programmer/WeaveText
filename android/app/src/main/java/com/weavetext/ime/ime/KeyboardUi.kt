@@ -16,6 +16,10 @@ interface KeyboardUi {
     /** 系统返回键：先关闭面板；返回 true 表示已处理。 Back key: close a panel first. */
     fun handleBack(): Boolean = false
     fun onSelectionChanged(selStart: Int, selEnd: Int) {}
+    /** 实体键盘模式下代替软键盘显示的候选栏。 The candidate bar shown instead of the keys with a physical keyboard. */
+    val candidatesView: View? get() = null
+    /** 接上 / 拔掉实体键盘。 A physical keyboard was attached or detached. */
+    fun setHardwareMode(on: Boolean) {}
 
     companion object {
         fun create(service: WeaveImeService, controller: InputController): KeyboardUi =

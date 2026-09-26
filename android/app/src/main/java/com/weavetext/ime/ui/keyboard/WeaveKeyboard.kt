@@ -100,6 +100,28 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override val view: View get() = root
 
+    /** 实体键盘模式下顶栏移到这里，单独作为候选栏显示。 With a physical keyboard the top bar moves here. */
+    private val candidatesHost = FrameLayout(service)
+    override val candidatesView: View get() = candidatesHost
+    /** 正在用实体键盘（只显示候选栏）。 A physical keyboard is in use (candidate bar only). */
+    var hardwareMode = false
+        private set
+
+    override fun setHardwareMode(on: Boolean) {
+        if (on == hardwareMode) return
+        hardwareMode = on
+        keyboardView.cancelTouch()
+        popup.hideAll()
+        (topBar.parent as? ViewGroup)?.removeView(topBar)
+        if (on) {
+            if (panel != null) closePanel()
+            candidatesHost.addView(topBar, FrameLayout.LayoutParams(-1, metrics.topBar.toInt()))
+        } else {
+            board.addView(topBar, 0)
+        }
+        applyGeometry()
+    }
+
     var state = ImeState()
         private set
     private var layoutSig = ""
@@ -252,6 +274,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             board.setPadding(0, 0, 0, navInset)
         }
         topBar.layoutParams = FrameLayout.LayoutParams(-1, m.topBar.toInt())
+        paintBackground(candidatesHost)
         val mainTop = (m.topBar + m.padTop).toInt()
         main.layoutParams = FrameLayout.LayoutParams(-1, m.mainHeight.toInt()).apply { topMargin = mainTop }
         full.layoutParams = FrameLayout.LayoutParams(-1, mainTop + m.mainHeight.toInt())

@@ -190,6 +190,29 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         assertEquals(android.view.View.INVISIBLE, k.overlay!!.bubbleView.visibility)
     }
 
+    /** 实体键盘：软键盘隐藏，只剩候选栏；拔掉后顶栏回到键盘里。 Physical keyboard: candidate bar only, restored on detach. */
+    @Test fun hardwareCandidateBar() {
+        val (k, c) = keyboard(false)
+        c.previewState(
+            ImeState(
+                preedit = "ni'hao", composing = true, engineReady = true, totalCandidates = 5,
+                candidates = listOf("你好", "拟好", "你", "尼", "泥").map { Candidate(it, "", false) },
+            ),
+        )
+        k.setHardwareMode(true)
+        val bar = k.candidatesView
+        assertTrue(k.topBar.parent === bar)
+        val frame = FrameLayout(activity).apply { setBackgroundColor(Color.rgb(0xF5, 0xF6, 0xF8)) }
+        frame.addView(bar, FrameLayout.LayoutParams(-1, -2).apply { gravity = android.view.Gravity.BOTTOM })
+        activity.setContentView(frame, ViewGroup.LayoutParams(-1, -1))
+        k.flushRender()
+        idle()
+        bar.captureRoboImage(File(dir, "keyboard_hardware_candidates_light.png").path)
+        frame.removeView(bar)
+        k.setHardwareMode(false)
+        assertTrue(k.topBar.parent === k.board)
+    }
+
     @Test fun numberPad() {
         val (k, _) = keyboard(false)
         k.onKey(k.keyboardView.keyOf(KeyCode.NUMBER)!!)

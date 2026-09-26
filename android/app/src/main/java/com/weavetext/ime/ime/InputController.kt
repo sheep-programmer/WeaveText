@@ -493,6 +493,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** Tab 键输入 \t。 Insert a tab. */
     fun onTab() = onText("\t")
 
+    /** 组合中时原样上屏字母（实体键盘的方向键、快捷键前）。 Commit the raw letters if composing. */
+    fun commitRaw() = commitRawIfComposing()
+
     private fun commitRawIfComposing() {
         val e = engine ?: return
         if (e.isComposing()) { e.commitRaw(); refresh() }
