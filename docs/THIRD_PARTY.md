@@ -55,6 +55,10 @@ text and source link; a self-built table is planned.*
 | base64 | MIT OR Apache-2.0 | `host.crypto` 编码 / encodings |
 | getrandom, rand_core | MIT OR Apache-2.0 | 随机数 / randomness |
 | libloading | ISC | 运行时载入下载的识别运行库 / loading the downloaded speech runtime at run time |
+| snow（含 chacha20poly1305、blake2、x25519-dalek、curve25519-dalek 等 RustCrypto / dalek 组件） | Apache-2.0 OR MIT（dalek：BSD-3-Clause） | 织文互联的 Noise 加密通道 / WeaveLink Noise encrypted channel |
+| spake2 | MIT OR Apache-2.0 | 织文互联配对码的口令认证密钥交换 / WeaveLink pairing-code PAKE |
+| mdns-sd（含 flume、socket2、if-addrs） | Apache-2.0 OR MIT | 织文互联局域网发现 / WeaveLink LAN discovery |
+| serde | MIT OR Apache-2.0 | 织文互联的设备列表 / WeaveLink device list |
 
 ## 3. Android 库 / Android libraries
 

@@ -19,6 +19,7 @@ void weave_destroy(WeaveEngine *h);
 void weave_string_free(char *s);
 
 bool weave_set_schema(WeaveEngine *h, const char *key);
+bool weave_has_schema(WeaveEngine *h, const char *key);
 bool weave_set_option(WeaveEngine *h, const char *key, bool on);
 
 bool weave_input_char(WeaveEngine *h, uint32_t code_point);

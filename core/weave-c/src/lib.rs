@@ -117,6 +117,15 @@ pub extern "C" fn weave_set_schema(h: *mut WeaveEngine, key: *const c_char) -> b
     })
 }
 
+/// 该方案的数据是否可用（不切换）。 Whether the data for a schema is available (without switching).
+#[no_mangle]
+pub extern "C" fn weave_has_schema(h: *mut WeaveEngine, key: *const c_char) -> bool {
+    let Some(schema) = str_arg(key).and_then(Schema::from_key) else {
+        return false;
+    };
+    with(h, false, |e| e.has_lexicon(schema))
+}
+
 #[no_mangle]
 pub extern "C" fn weave_set_option(h: *mut WeaveEngine, key: *const c_char, on: bool) -> bool {
     let Some(k) = str_arg(key) else { return false };
