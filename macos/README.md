@@ -84,42 +84,53 @@ end-to-end encrypted, no server involved, off by default.*
 
 ## 安装 / Install
 
-1. 打开 `WeaveText-<版本>.dmg`，双击里面的 **织文输入法**，在弹出的「安装织文输入法」窗口里点 **安装**。
-   织文会复制到 `~/Library/Input Methods/`（只对当前用户，不要管理员密码），去掉下载带来的隔离属性、核对签名，
-   向系统登记、启用并选中「织文拼音」。安装程序不去启动它：第一次切换到「织文拼音」时系统会拉起织文，菜单栏出现织文的图标。
-   *Open `WeaveText-<version>.dmg`, double-click **织文输入法** inside and click **安装** (Install) in the window. WeaveText
-   is copied into `~/Library/Input Methods/` (current user only, no admin password), the download quarantine is removed,
-   the signature is checked, and 织文拼音 is registered, enabled and selected. The installer does not start it: the system
-   does the first time you switch to 织文拼音, and the menu bar icon appears.*
-2. 完成后在菜单栏右上角的输入法菜单里选择 **织文拼音**（系统语言是英文时显示为「织文拼音 WeaveText」）；
-   窗口里的「打开键盘设置」直达 系统设置 → 键盘。列表里没有时，
-   在 **系统设置 → 键盘 → 输入法 → 编辑…** 里点「+」，在「简体中文」下添加；仍然没有就注销并重新登录一次。
+1. 下载 `WeaveText-<版本>.pkg`（或打开 `WeaveText-<版本>.dmg`，双击里面的 **双击安装织文输入法.pkg**），按「安装器」的提示点
+   「继续」「安装」，输入一次管理员密码。织文装到 `/Library/Input Methods/`（这台 Mac 的所有用户都能用）；安装前会退出正在
+   运行的织文、删掉以前装在 `~/Library/Input Methods/` 里的旧副本（用户词与设置都在 Application Support 里，保留），
+   装好后去掉隔离属性，并以当前登录用户的身份运行 `WeaveText --register`：登记、启用并选中「织文拼音」。
+   *Download `WeaveText-<version>.pkg` (or open `WeaveText-<version>.dmg` and double-click **双击安装织文输入法.pkg**
+   inside), follow Installer (Continue, Install) and enter an administrator password once. WeaveText goes into
+   `/Library/Input Methods/` (for every user of this Mac); before installing, the running WeaveText is quit and an older
+   copy in `~/Library/Input Methods/` is removed (words and settings live in Application Support and stay); afterwards the
+   quarantine attribute is removed and `WeaveText --register` runs as the logged-in user to register, enable and select
+   织文拼音.*
+2. 完成后在菜单栏右上角的输入法菜单里选择 **织文拼音**（系统语言是英文时显示为「织文拼音 WeaveText」）。
+   菜单里没有时注销并重新登录一次；仍然没有就到 **系统设置 → 键盘 → 输入法 → 编辑…** 里点「+」，在「简体中文」下添加。
    *Then pick **织文拼音** from the input menu at the top right of the menu bar (shown as "织文拼音 WeaveText" when the
-   system language is English); 打开键盘设置 opens System Settings → Keyboard. If it is missing, add it
-   under **System Settings → Keyboard → Input Sources → Edit…** (Simplified Chinese); if it still isn't there, log out and
-   back in once.*
+   system language is English). If it is missing, log out and back in once; if it still isn't there, add it under
+   **System Settings → Keyboard → Input Sources → Edit…** (Simplified Chinese).*
 
-第一次打开时，macOS 可能提示无法验证开发者（织文只做了自签名、没有公证）：按住 Control 点「织文输入法」选「打开」，
-或到 **系统设置 → 隐私与安全性** 点「仍要打开」。磁盘映像里的 `使用说明.txt` 写着同样的步骤。
-*On first launch macOS may say it can't verify the developer (WeaveText is ad-hoc signed, not notarized): Control-click
-织文输入法 and choose Open, or click Open Anyway under **System Settings → Privacy & Security**. `使用说明.txt` in the disk
-image has the same steps.*
+安装包没有开发者签名（没有 Developer ID，也没有公证）。macOS 拦下它时，到 **系统设置 → 隐私与安全性**，在页面下方点
+「仍要打开」；或者按住 Control 点安装包，选「打开」。磁盘映像里的 `使用说明.txt` 写着同样的步骤。安装经过记在
+`~/Library/Logs/WeaveText-install.log`（登记）与 `/var/log/install.log`（安装器与脚本）。
+*The package is unsigned (no Developer ID, not notarized). If macOS blocks it, go to **System Settings → Privacy &
+Security** and click Open Anyway near the bottom, or Control-click the package and choose Open. `使用说明.txt` in the disk
+image has the same steps. The install is logged to `~/Library/Logs/WeaveText-install.log` (registration) and
+`/var/log/install.log` (Installer and the scripts).*
 
-更新：打开新版本的磁盘映像再双击，窗口会认出已装的版本，按钮变成「更新到 vX」（同版本为「重新安装」）；
-先让正在运行的旧版本退出，再整体替换，用户词与设置保留。
-*Update: open the new disk image and double-click again; the window recognises the installed version and offers
-更新到 vX (重新安装 for the same version). The running old copy is quit first and then replaced as a whole; your words
-and settings stay.*
+更新：双击新版本的安装包即可，用户词与设置保留。
+*Update: double-click the newer package; your words and settings stay.*
+
+不用安装包时（例如只下载了 `WeaveText-mac.zip`）：双击 `织文输入法.app` 会打开安装窗口。旁边有安装包时主按钮是「打开安装包」；
+没有时退回到复制进 `~/Library/Input Methods/`（只对当前用户，不要管理员密码）；已经用安装包装在 `/Library` 时不再另装一份，
+按钮改为「打开下载页」。出错时窗口里显示系统给出的原因。
+*Without the package (e.g. only `WeaveText-mac.zip`): double-clicking `织文输入法.app` opens the installer window. With a
+package next to it the main button is 打开安装包 (open the package); without one it falls back to copying into
+`~/Library/Input Methods/` (current user, no admin password); if the package already installed it in `/Library`, it
+won't add a second copy and offers 打开下载页 (the download page). Errors show the system's reason in the window.*
 
 ## 卸载 / Uninstall
 
-**设置 → 关于 → 卸载织文输入法…**：停用输入源，把织文移到废纸篓后退出。默认保留用户词、专业词库与设置；
-勾选「同时删除词库与设置」时，`~/Library/Application Support/WeaveText` 也移到废纸篓，偏好一并清除。
-之后如果 系统设置 → 键盘 → 输入法 里还留着条目，移除即可。
-*Settings → 关于 (About) → 卸载织文输入法…: disables the input source, moves WeaveText to the Trash and quits. User
-words, domain dictionaries and settings are kept unless 同时删除词库与设置 is ticked, in which case
-`~/Library/Application Support/WeaveText` goes to the Trash too and the preferences are cleared. Remove any leftover entry
-in System Settings → Keyboard → Input Sources afterwards.*
+**设置 → 关于 → 卸载织文输入法…**：停用输入源，删掉两处「输入法」文件夹里的织文后退出。`~/Library/Input Methods` 里的那份移到
+废纸篓；安装包装在 `/Library/Input Methods` 的那份会弹出系统的管理员密码框，直接删除并忘掉安装包的回执（点「取消」则什么都
+不改，输入源恢复启用）。默认保留用户词、专业词库与设置；勾选「同时删除词库与设置」时，`~/Library/Application Support/WeaveText`
+也移到废纸篓，偏好一并清除。之后如果 系统设置 → 键盘 → 输入法 里还留着条目，移除即可。
+*Settings → 关于 (About) → 卸载织文输入法…: disables the input source, removes WeaveText from both Input Methods folders
+and quits. The copy in `~/Library/Input Methods` goes to the Trash; the package's copy in `/Library/Input Methods` brings
+up the system's administrator prompt, is deleted and the package receipt is forgotten (Cancel changes nothing and the
+source is enabled again). User words, domain dictionaries and settings are kept unless 同时删除词库与设置 is ticked, in
+which case `~/Library/Application Support/WeaveText` goes to the Trash too and the preferences are cleared. Remove any
+leftover entry in System Settings → Keyboard → Input Sources afterwards.*
 
 ## 构建 / Build
 
@@ -127,21 +138,38 @@ in System Settings → Keyboard → Input Sources afterwards.*
 （`rustup target add aarch64-apple-darwin x86_64-apple-darwin`）、已编好的词库 `data/build/*.wvz`（`./data/build.sh`）。
 
 ```bash
-macos/scripts/build-app.sh            # 内核 + 测试 + 通用 .app + 自签名 + zip + dmg / engine, tests, universal .app, ad-hoc sign, zip, DMG
+macos/scripts/build-app.sh            # 内核 + 测试 + 通用 .app + 自签名 + zip + pkg + dmg / engine, tests, universal .app, ad-hoc sign, zip, pkg, DMG
 macos/scripts/build-app.sh --skip-tests
-macos/scripts/make-dmg.sh [WeaveText.app]   # 只重新打磁盘映像 / rebuild just the disk image
+macos/scripts/make-pkg.sh [WeaveText.app]   # 只重新打安装包 / rebuild just the installer package
+macos/scripts/make-dmg.sh [WeaveText.app] [WeaveText-<版本>.pkg]   # 只重新打磁盘映像 / rebuild just the disk image
+WEAVE_CORE=/path/to/core macos/scripts/build-app.sh   # 用另一份内核源码（例如 git archive 导出的已提交版本） / build another copy of the engine sources
 ```
 
-产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）、`macos/build/WeaveText-mac.zip` 与
-`macos/build/WeaveText-<版本>.dmg`。
+产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）、`macos/build/WeaveText-mac.zip`、
+`macos/build/WeaveText-<版本>.pkg`（发布时的主下载 / the main release download）与 `macos/build/WeaveText-<版本>.dmg`。
 
-磁盘映像只用 `hdiutil` 生成：里面是 `织文输入法.app` 与 `使用说明.txt`，卷名「织文输入法」，背景图由程序
-（`--render-dmg-background`）自己画；Finder 可用时用 AppleScript 摆好图标位置（第一次会请求自动化授权，
-拿不到就跳过，映像照常可用），最后压成只读的 UDZO，并用 `hdiutil verify` 与只读挂载后的 `codesign` 检查。
-*The disk image is made with `hdiutil` only: `织文输入法.app` plus `使用说明.txt`, volume 织文输入法, a background the app
-draws itself (`--render-dmg-background`); when Finder is available an AppleScript places the icons (it asks for
-automation consent the first time and is skipped without it, the image still works), then it is compressed to read-only
-UDZO and checked with `hdiutil verify` and `codesign` on a read-only mount.*
+安装包只用系统自带的 `pkgbuild` 与 `productbuild` 生成（`macos/scripts/pkg/`：preinstall、postinstall 与它们共用的
+`weavetext-lib.sh`，Distribution 模板，中英双语的欢迎页与完成页）：装到 `/Library/Input Methods`，组件不可搬动（「安装器」
+不会把它装到别处找到的同标识副本上），`hostArchitectures="x86_64,arm64"`，最低 macOS 13.0，左下角是程序自己画的图标。
+脚本最后检查：`pkgutil --check-signature` 报告没有签名、`pkgutil --payload-files` 里有 `Library/Input Methods/WeaveText.app`、
+`installer -pkginfo`，再用 `pkgutil --expand-full` 展开，核对包内程序的签名、脚本可执行、Distribution 与说明页。
+*The package is made with the system's own `pkgbuild` and `productbuild` (`macos/scripts/pkg/`: preinstall, postinstall and
+their shared `weavetext-lib.sh`, the Distribution template, bilingual welcome and conclusion pages): it installs into
+`/Library/Input Methods`, the component is not relocatable (Installer won't redirect it onto a copy with the same
+identifier found elsewhere), `hostArchitectures="x86_64,arm64"`, macOS 13.0 minimum, with the app's own icon at the bottom
+left. The script then checks that `pkgutil --check-signature` reports no signature, that `pkgutil --payload-files` lists
+`Library/Input Methods/WeaveText.app` and `installer -pkginfo` works, and expands it with `pkgutil --expand-full` to verify
+the app's signature, executable scripts, the Distribution and the pages.*
+
+磁盘映像只用 `hdiutil` 生成：里面是 `双击安装织文输入法.pkg` 与 `使用说明.txt`（程序本身不放进去：系统从磁盘映像「安装」App
+的流程装不了输入法），卷名「织文输入法」，背景图由程序（`--render-dmg-background`）自己画；Finder 可用时用 AppleScript
+摆好图标位置（第一次会请求自动化授权，拿不到就跳过，映像照常可用），最后压成只读的 UDZO，并用 `hdiutil verify` 与只读挂载后
+核对安装包。
+*The disk image is made with `hdiutil` only: `双击安装织文输入法.pkg` plus `使用说明.txt` (not the bare app: the system's
+install-an-app-from-a-disk-image flow cannot install an input method), volume 织文输入法, a background the app draws itself
+(`--render-dmg-background`); when Finder is available an AppleScript places the icons (it asks for automation consent the
+first time and is skipped without it, the image still works), then it is compressed to read-only UDZO and checked with
+`hdiutil verify` and by comparing the package on a read-only mount.*
 
 脚本按内核的资源表（`core/weave-engine/src/session.rs` 的 `RESOURCES`）把 `data/build/` 里对应的 `.wvz` 全部放进包里，
 缺少基础词库或联想表 `follow.wvz` 时报错；专业词库目录 `dictpacks.json` 与 Android 共用一份，
@@ -167,7 +195,8 @@ plugin has to be passed explicitly.*
 |---|---|
 | `WeaveText --selftest` | 用包内词库打 `nihao`（首选「你好」）、算 `v(128+32)*4`、上屏「今天」后应有联想 / types `nihao`, evaluates `v(128+32)*4` and checks predictions after 今天 with the bundled data |
 | `WeaveText --snapshot <目录>` | 把候选窗和各设置页画成 PNG / renders the candidate bar and settings pages to PNG |
-| `WeaveText --register` / `--disable` | 向系统登记并启用 / 停用输入源（安装、卸载脚本使用） / register + enable or disable the input source |
+| `WeaveText --register` | 登记、启用并选中「织文拼音」，可反复运行；成功时不输出，记到 `~/Library/Logs/WeaveText-install.log`；退出码 0 成功、2 已登记但还没列出（注销一次）、1 失败（安装包的 postinstall 使用） / register, enable and select 织文拼音, safe to repeat; silent on success, logged to `~/Library/Logs/WeaveText-install.log`; exit 0 ok, 2 registered but not listed yet (log out once), 1 failed (used by the package's postinstall) |
+| `WeaveText --disable` | 停用输入源（卸载脚本使用） / disable the input source (used by the uninstall script) |
 | `WeaveText --ime` | 不在「输入法」文件夹里也按输入法运行（调试用） / run as the input method even outside Input Methods (debugging) |
 | `WeaveText --render-dmg-background <目录>` | 画磁盘映像的背景图 / draws the disk image background |
 
@@ -179,8 +208,8 @@ input method; anywhere else (the disk image, Downloads, Applications) it opens t
 ### 开发者用的脚本 / Developer scripts
 
 ```bash
-macos/scripts/install.sh              # 复制到 ~/Library/Input Methods 并登记、启用 / copy, register, enable
-macos/scripts/uninstall.sh            # 停用并删除，保留用户词 / disable and remove, keep user words
+macos/scripts/install.sh              # 开发用：复制到 ~/Library/Input Methods 并登记、启用 / development: copy, register, enable
+macos/scripts/uninstall.sh            # 停用并删除两处副本（/Library 的那份用 sudo），保留用户词 / disable and remove both copies (sudo for /Library), keep user words
 macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/WeaveText 与偏好一起删除 / also user data and preferences
 ```
 
@@ -188,6 +217,8 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
 
 | 内容 Content | 位置 Location |
 |---|---|
+| 程序 The app | `/Library/Input Methods/WeaveText.app`（安装包 / the package）或 / or `~/Library/Input Methods/WeaveText.app`（安装窗口 / the installer window） |
+| 安装记录 Install log | `~/Library/Logs/WeaveText-install.log`，`/var/log/install.log` |
 | 只读词库 Read-only dictionaries | `WeaveText.app/Contents/Resources/data/*.wvz` |
 | 用户词 User words | `~/Library/Application Support/WeaveText/` |
 | 专业词库 Domain dictionaries | `~/Library/Application Support/WeaveText/packs/<id>.wvz`（启动时自动载入 / loaded at startup） |
@@ -198,12 +229,16 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
 
 ## 已知限制 / Known limits
 
-- 只做了自签名（ad-hoc），未用开发者证书签名与公证：第一次打开磁盘映像里的程序要按上面的方法放行一次；安装时会自动去掉
+- 程序只做了自签名（ad-hoc），安装包没有签名，都没有公证：第一次打开安装包要按上面的方法放行一次；安装后会自动去掉
   隔离属性。
-  *Ad-hoc signed only, not Developer ID signed or notarized: the app in the disk image has to be allowed once as described
-  above; the installer removes the quarantine flag itself.*
-- 深色模式下磁盘映像窗口里的文件名是浅色字，压在浅色背景上不太清楚。
-  *In dark mode Finder draws the file names in the disk image window in a light colour over the light background.*
+  *The app is ad-hoc signed only and the package is unsigned, neither is notarized: the package has to be allowed once as
+  described above; the quarantine flag is removed after installing.*
+- 安装包只为当时登录在屏幕前的用户登记并选中「织文拼音」；同一台 Mac 的其他用户登录后要在键盘设置里自己添加一次。
+  *The package registers and selects 织文拼音 only for the user logged in at the screen; other users of the same Mac add it
+  once in Keyboard settings.*
+- 深色模式下磁盘映像窗口里的文件名是浅色字，压在浅色背景上不太清楚（直接下载 .pkg 就不经过这个窗口）。
+  *In dark mode Finder draws the file names in the disk image window in a light colour over the light background
+  (downloading the .pkg directly skips that window).*
 - 少数应用（部分终端、Electron / 跨平台框架）报不出光标位置，候选窗会沿用上一次的位置或出现在鼠标附近。
   *A few apps (some terminals, Electron / cross-platform toolkits) do not report the caret; the panel then reuses its
   last position or appears near the mouse.*

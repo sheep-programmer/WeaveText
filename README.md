@@ -48,8 +48,8 @@
 
 - **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件，也可在应用内一键下载约 30 MB 的离线语音包（识别运行库 + 实时模型），无需重装即可在手机上识别，效果与离线语音版相同。
 - **离线语音版**（约 67 MB）：内置识别运行库与实时识别模型，装好即可离线说话；轻量版也能在「语音包」里安装同样的识别。
-- **macOS 版**（`.dmg`，macOS 13+，Apple 芯片与 Intel 通用）：打开磁盘映像，双击「织文输入法」即可安装；
-  尚未经 Apple 公证，首次打开若提示无法验证开发者，请右键 › 打开。
+- **macOS 版**（`.pkg` 安装包，macOS 13+，Apple 芯片与 Intel 通用；另有内含同一安装包的 `.dmg`）：下载后双击，按提示安装即可；
+  安装包没有签名，macOS 拦下时到 系统设置 › 隐私与安全性 点「仍要打开」。
 
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 
@@ -57,18 +57,18 @@
 (recommended) has every input feature and reads its dictionaries straight from the APK, so the footprint is about
 the APK size; voice uses the system recognizer or plugins, or a one-tap ~30 MB offline voice pack (speech runtime +
 streaming model) downloaded in the app — same on-device quality, no reinstall. **Offline voice** adds on-device speech recognition.
-**macOS** (`.dmg`, macOS 13+, universal): open it and double-click 织文输入法 to install; it isn't notarized yet, so
-right-click › Open the first time. Enable WeaveText in system settings after installing.*
+**macOS** (`.pkg`, macOS 13+, universal; a `.dmg` with the same package is also offered): download and double-click it;
+the package is unsigned, so if macOS blocks it click Open Anyway in System Settings › Privacy & Security. Enable WeaveText in system settings after installing.*
 
 ## macOS 版 / macOS
 
 同一内核的 macOS 输入法（InputMethodKit + SwiftUI，macOS 13+，Apple 芯片与 Intel 通用），可通过织文互联与手机互传
-文字、剪贴板和文件。下载 `WeaveText-<版本>.dmg`，打开后双击「织文输入法」、点「安装」即可，不用终端；
+文字、剪贴板和文件。下载 `WeaveText-<版本>.pkg` 双击，按「安装器」的提示装好后在菜单栏的输入法菜单里选「织文拼音」，不用终端；
 构建与使用见 [macos/README.md](macos/README.md)。
 *A macOS input method on the same engine (InputMethodKit + SwiftUI, macOS 13+, universal for Apple silicon and
-Intel) that exchanges text, clipboard and files with the phone over WeaveLink. Download `WeaveText-<version>.dmg`, open
-it, double-click 织文输入法 and click 安装 (Install) — no terminal needed; see [macos/README.md](macos/README.md) to
-build and use it.*
+Intel) that exchanges text, clipboard and files with the phone over WeaveLink. Download `WeaveText-<version>.pkg`,
+double-click it, follow Installer and pick 织文拼音 from the input menu in the menu bar — no terminal needed; see
+[macos/README.md](macos/README.md) to build and use it.*
 
 ## 目录 / Layout
 

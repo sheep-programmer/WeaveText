@@ -6,8 +6,8 @@ import AppKit
 /// at the window's top left, matching the Finder icon positions in make-dmg.sh.
 enum DiskImageBackground {
     static let size = NSSize(width: 600, height: 400)
-    /// 「织文输入法」图标的中心。 The centre of the app icon.
-    static let appIcon = NSPoint(x: 190, y: 190)
+    /// 安装包图标的中心。 The centre of the installer package icon.
+    static let packageIcon = NSPoint(x: 190, y: 190)
 
     static func render(into dir: URL) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -35,23 +35,23 @@ enum DiskImageBackground {
         let bounds = NSRect(origin: .zero, size: size)
         NSGradient(starting: Theme.rgb(0xFBFCFF), ending: Theme.rgb(0xE8EFFD))?.draw(in: bounds, angle: 90)
 
-        // 应用图标后面一圈淡淡的光。 A soft glow behind the app icon.
+        // 安装包图标后面一圈淡淡的光。 A soft glow behind the package icon.
         let glow = NSGradient(colors: [Theme.rgb(0x2E6CF6).withAlphaComponent(0.16), Theme.rgb(0x2E6CF6).withAlphaComponent(0)])
-        glow?.draw(fromCenter: appIcon, radius: 0, toCenter: appIcon, radius: 110, options: [])
+        glow?.draw(fromCenter: packageIcon, radius: 0, toCenter: packageIcon, radius: 110, options: [])
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
         text("织文输入法", size: 22, weight: .semibold, color: Theme.rgb(0x1F2937), centerY: 44)
         text("v\(version) · macOS 13 及以上", size: 12, weight: .regular, color: Theme.rgb(0x6B7280), centerY: 72)
 
         // 提示条。 The hint pill.
-        let hint = attributed("双击「织文输入法」进行安装", size: 15, weight: .medium, color: Theme.rgb(0x2257D1))
+        let hint = attributed("双击安装包，按提示完成安装", size: 15, weight: .medium, color: Theme.rgb(0x2257D1))
         let hs = hint.size()
         let pill = NSRect(x: (size.width - hs.width) / 2 - 18, y: 318 - hs.height / 2 - 8, width: hs.width + 36,
                           height: hs.height + 16)
         Theme.rgb(0x2E6CF6).withAlphaComponent(0.1).setFill()
         NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
         hint.draw(at: NSPoint(x: pill.midX - hs.width / 2, y: pill.midY - hs.height / 2))
-        text("首次打开若提示无法验证开发者，请看「使用说明」", size: 11, weight: .regular, color: Theme.rgb(0x8A94A6),
+        text("macOS 拦下安装包时：系统设置 › 隐私与安全性 › 仍要打开（详见「使用说明」）", size: 11, weight: .regular, color: Theme.rgb(0x8A94A6),
              centerY: 362)
     }
 
