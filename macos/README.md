@@ -85,14 +85,17 @@ end-to-end encrypted, no server involved, off by default.*
 ## 安装 / Install
 
 1. 打开 `WeaveText-<版本>.dmg`，双击里面的 **织文输入法**，在弹出的「安装织文输入法」窗口里点 **安装**。
-   织文会复制到 `~/Library/Input Methods/`（只对当前用户，不要管理员密码），去掉下载带来的隔离属性，向系统登记、
-   启用并选中「织文拼音」，然后启动，菜单栏出现织文的图标。
+   织文会复制到 `~/Library/Input Methods/`（只对当前用户，不要管理员密码），去掉下载带来的隔离属性、核对签名，
+   向系统登记、启用并选中「织文拼音」。安装程序不去启动它：第一次切换到「织文拼音」时系统会拉起织文，菜单栏出现织文的图标。
    *Open `WeaveText-<version>.dmg`, double-click **织文输入法** inside and click **安装** (Install) in the window. WeaveText
    is copied into `~/Library/Input Methods/` (current user only, no admin password), the download quarantine is removed,
-   织文拼音 is registered, enabled and selected, and the app starts with its menu bar icon.*
-2. 完成后在菜单栏的输入法菜单里选择 **织文拼音**；窗口里的「打开键盘设置」直达 系统设置 → 键盘。列表里没有时，
+   the signature is checked, and 织文拼音 is registered, enabled and selected. The installer does not start it: the system
+   does the first time you switch to 织文拼音, and the menu bar icon appears.*
+2. 完成后在菜单栏右上角的输入法菜单里选择 **织文拼音**（系统语言是英文时显示为「织文拼音 WeaveText」）；
+   窗口里的「打开键盘设置」直达 系统设置 → 键盘。列表里没有时，
    在 **系统设置 → 键盘 → 输入法 → 编辑…** 里点「+」，在「简体中文」下添加；仍然没有就注销并重新登录一次。
-   *Then pick **织文拼音** from the input menu; 打开键盘设置 opens System Settings → Keyboard. If it is missing, add it
+   *Then pick **织文拼音** from the input menu at the top right of the menu bar (shown as "织文拼音 WeaveText" when the
+   system language is English); 打开键盘设置 opens System Settings → Keyboard. If it is missing, add it
    under **System Settings → Keyboard → Input Sources → Edit…** (Simplified Chinese); if it still isn't there, log out and
    back in once.*
 

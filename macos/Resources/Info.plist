@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh_CN</string>
+	<string>zh-Hans</string>
 	<key>CFBundleExecutable</key>
 	<string>WeaveText</string>
 	<key>CFBundleIdentifier</key>

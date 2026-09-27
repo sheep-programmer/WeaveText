@@ -41,7 +41,8 @@ cat > "$ROOT/$README" <<'EOF'
 
 安装
   1. 双击「织文输入法」，在弹出的窗口里点「安装」。
-  2. 装好后，在菜单栏的输入法菜单里选择「织文拼音」即可使用。
+  2. 装好后，在菜单栏右上角的输入法菜单里选择「织文拼音」即可使用
+     （系统语言是英文时显示为「织文拼音 WeaveText」）。
      列表里没有时，打开 系统设置 › 键盘 › 输入法 › 编辑…，点「+」，在「简体中文」下添加「织文拼音」；
      仍然没有就注销并重新登录一次。
 
@@ -61,7 +62,7 @@ WeaveText input method · Read me
 
 Install
   1. Double-click 织文输入法 and click 安装 (Install) in the window that opens.
-  2. Then pick 织文拼音 (WeaveText Pinyin) from the input menu in the menu bar.
+  2. Then pick 织文拼音 (shown as "织文拼音 WeaveText" in English) from the input menu at the top right of the menu bar.
      If it is not listed, open System Settings › Keyboard › Input Sources › Edit…, press "+" and add 织文拼音 under
      Simplified Chinese; if it still does not show up, log out and back in once.
 
