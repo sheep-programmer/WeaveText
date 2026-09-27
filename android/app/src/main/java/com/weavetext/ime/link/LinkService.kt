@@ -27,11 +27,18 @@ class LinkService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = LinkNotifications.ongoingNotification(this, 0, null)
-        runCatching {
+        val ok = runCatching {
             if (Build.VERSION.SDK_INT >= 29) startForeground(LinkNotifications.ONGOING_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             else startForeground(LinkNotifications.ONGOING_ID, n)
-        }
+        }.isSuccess
         LinkManager.get(this).ensureRunning()
+        if (!ok) {
+            // 系统不让成为前台服务：马上停掉，免得超时被系统结束整个进程（键盘也会一起没了）；内核照常在进程里运行。
+            // The system refused foreground status: stop now so the timeout can't kill the whole process (and the
+            // keyboard with it); the core keeps running in-process.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
