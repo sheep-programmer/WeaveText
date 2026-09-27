@@ -123,6 +123,36 @@ enum DevTools {
         nav.page = .link
         try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 900),
                    dark: true, to: dir.appendingPathComponent("settings-link-dark.png"))
+        nav.page = .about
+        try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 1500),
+                   dark: false, to: dir.appendingPathComponent("settings-about-full.png"))
+        try snapshotInstaller(into: dir)
+    }
+
+    /// 安装窗口的各个状态（指向一个不存在的目录，只画不装）。 The installer window's states, pointed at a directory that
+    /// does not exist; drawn only, never installed.
+    private static func snapshotInstaller(into dir: URL) throws {
+        let nowhere = FileManager.default.temporaryDirectory.appendingPathComponent("weavetext-snapshot-\(getpid())")
+        let model = InstallerModel(installer: Installer(inputMethodsDir: nowhere, registry: SystemInputSources(),
+                                                        apps: SystemApps()))
+        let v = model.version
+        let states: [(String, InstallerModel.Phase, InstallPlan)] = [
+            ("fresh", .ready, .fresh),
+            ("update", .ready, .update(from: AppVersion("0.0.9", build: "90"))),
+            ("reinstall", .ready, .reinstall),
+            ("newer", .ready, .newerInstalled(AppVersion("9.0.0"))),
+            ("working", .working(.registering), .fresh),
+            ("done", .done(listed: true), .fresh),
+            ("done-relogin", .done(listed: false), .fresh),
+            ("failed", .failed(InstallError.replaceFailed("Operation not permitted").errorDescription!), .update(from: v)),
+        ]
+        for (name, phase, plan) in states {
+            model.preview(phase, plan: plan)
+            for dark in [false, true] where dark == false || name == "fresh" || name == "done" {
+                try render(InstallerView(model: model).background(Color(nsColor: .windowBackgroundColor)), size: nil,
+                           dark: dark, to: dir.appendingPathComponent("installer-\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
     }
 
     private static func linkSample() -> LinkState {

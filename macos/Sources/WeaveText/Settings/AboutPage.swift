@@ -1,4 +1,38 @@
+import ServiceManagement
 import SwiftUI
+import WeaveCore
+
+/// 卸载的临时状态（@State 不可用，见 Pages.swift）。 Transient uninstall state (@State is unavailable, see Pages.swift).
+final class UninstallModel: ObservableObject {
+    @Published var purge = false
+    @Published var confirming = false
+    @Published var error: String?
+
+    /// 停用输入源、移到废纸篓后直接退出；删除数据时不再写回用户词。
+    /// Disable the sources, move to the Trash and quit at once; when the data goes too, nothing is written back.
+    func uninstall() {
+        let bundle = Bundle.main.bundleURL
+        let installer = Installer(inputMethodsDir: bundle.deletingLastPathComponent(), registry: SystemInputSources(),
+                                  apps: SystemApps())
+        if !purge { EngineHost.shared.engine?.flush() }
+        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
+        do {
+            try installer.uninstall(bundle: bundle, trash: SystemTrash(),
+                                    userData: purge ? EngineHost.userDirectory() : nil,
+                                    defaults: purge ? (.standard, Installer.bundleID) : nil)
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return
+        }
+        let done = NSAlert()
+        done.messageText = "已卸载织文输入法"
+        done.informativeText = "如果键盘设置的输入法列表里还留着「织文拼音」，把它移除即可。"
+        done.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        done.runModal()
+        exit(0)
+    }
+}
 
 /// 关于：版本、链接与随包数据的许可（与 docs/THIRD_PARTY.md 一致）。
 /// About: version, links, and licences of the shipped data (as in docs/THIRD_PARTY.md).
@@ -53,6 +87,8 @@ struct AboutPage: View {
         ("织文互联", "默认关闭。开启后只在同一局域网内与你配对过的设备直接通信，全程端到端加密，不经过任何服务器。"),
     ]
 
+    @StateObject private var removal = UninstallModel()
+
     private var version: String {
         let info = Bundle.main.infoDictionary
         let v = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
@@ -104,7 +140,30 @@ struct AboutPage: View {
                 Footnote("本应用词库数据部分来自万象拼音（amzxyz/rime_wanxiang），依 CC BY 4.0 授权使用，已做格式转换；"
                          + "专业词库另含 THUOCL 清华开放中文词库（thunlp/THUOCL，MIT）。")
             }
+            Section {
+                Toggle("同时删除词库与设置", isOn: $removal.purge)
+                HStack {
+                    Spacer()
+                    Button("卸载织文输入法…", role: .destructive) { removal.confirming = true }
+                }
+            } header: {
+                Text("卸载")
+            } footer: {
+                Footnote(removal.purge ? "织文会移到废纸篓；用户词、专业词库、热词与互联配对也一起移到废纸篓，偏好设置会被清除。"
+                         : "织文会移到废纸篓；用户词、专业词库与设置留在本机，以后重新安装还能接着用。")
+            }
         }
         .formStyle(.grouped)
+        .alert("卸载织文输入法？", isPresented: $removal.confirming) {
+            Button("卸载", role: .destructive, action: removal.uninstall)
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(removal.purge ? "输入法与你的词库、设置都会移到废纸篓。" : "输入法会移到废纸篓，词库与设置保留。")
+        }
+        .alert("没能卸载", isPresented: Binding(get: { removal.error != nil }, set: { if !$0 { removal.error = nil } })) {
+            Button("好") {}
+        } message: {
+            Text(removal.error ?? "")
+        }
     }
 }
