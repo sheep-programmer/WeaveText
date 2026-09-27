@@ -78,7 +78,7 @@ struct SettingsRoot: View {
                 case .general: GeneralPage(prefs: prefs)
                 case .schemes: SchemesPage(prefs: prefs)
                 case .appearance: AppearancePage(prefs: prefs)
-                case .dictionary: DictionaryPage()
+                case .dictionary: DictionaryPage(packs: EngineHost.shared.packs, cloud: EngineHost.shared.cloud)
                 case .link: LinkPage(prefs: prefs, link: .shared)
                 case .about: AboutPage()
                 }

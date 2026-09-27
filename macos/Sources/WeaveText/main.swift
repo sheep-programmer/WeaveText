@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let name = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String
             ?? "com.weavetext.inputmethod.WeaveText_Connection"
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
-        _ = EngineHost.shared
+        EngineHost.shared.startBackground()
         LinkService.shared.start()
         StatusBar.shared.start()
     }

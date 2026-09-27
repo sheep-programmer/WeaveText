@@ -90,4 +90,43 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         e.commitFirst()
         #expect(!e.snapshot().predicting)
     }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func hotWordsAndPacksThroughTheCABI() async throws {
+        let fixtures = URL(fileURLWithPath: dataDir).appendingPathComponent("../../core/weave-engine/tests/fixtures").standardized
+        let user = try tempDir("hot")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        let tsv = fixtures.appendingPathComponent("hotwords.tsv").path
+        let sig = fixtures.appendingPathComponent("hotwords.tsv.sig").path
+        #expect(e.loadHotwords(tsv: tsv, sig: sig) == 2)
+        // 签名对不上：-1。 A mismatching signature: -1.
+        let bad = user.appendingPathComponent("bad.tsv")
+        try (String(contentsOfFile: tsv, encoding: .utf8) + "多余\tduo yu\t1\t\n").write(to: bad, atomically: true, encoding: .utf8)
+        #expect(e.loadHotwords(tsv: bad.path, sig: sig) == -1)
+        #expect(e.unloadPack(id: CloudWords.packID))
+
+        // 经 CloudWords 用真内核验签（下载换成本地夹具）。 CloudWords with the real engine verifying fixture bytes.
+        let f = StubFetcher()
+        f.enqueue(CloudWords.url, HTTPResult(status: 200, body: try Data(contentsOf: URL(fileURLWithPath: tsv)), etag: "x"))
+        f.enqueue(CloudWords.url.appendingPathExtension("sig"), HTTPResult(status: 200, body: try Data(contentsOf: URL(fileURLWithPath: sig))))
+        let suite = "weave-mac-hot-\(UUID().uuidString)"
+        let cloud = await MainActor.run {
+            CloudWords(defaults: UserDefaults(suiteName: suite)!, dir: user.appendingPathComponent("cloud"), fetcher: f,
+                       load: { e.loadHotwords(tsv: $0, sig: $1) }, unload: { e.unloadPack(id: CloudWords.packID) })
+        }
+        let task = await MainActor.run { () -> Task<Void, Never>? in
+            cloud.setEnabled(true)
+            return cloud.refreshNow()
+        }
+        await task?.value
+        let words = await MainActor.run { cloud.status.words }
+        #expect(words == 2)
+
+        let pack = URL(fileURLWithPath: dataDir).appendingPathComponent("packs/med.wvz").path
+        if FileManager.default.fileExists(atPath: pack) {
+            #expect(e.loadPack(id: "med", path: pack))
+            #expect(e.unloadPack(id: "med"))
+        }
+    }
 }

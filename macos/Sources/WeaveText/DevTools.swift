@@ -91,6 +91,34 @@ enum DevTools {
             try render(root, size: NSSize(width: 720, height: 560), dark: false,
                        to: dir.appendingPathComponent("settings-\(page.rawValue).png"))
         }
+        // 词库页：示例的专业词库与热词状态（只画，不下载）。 The dictionary pages with sample pack and hot-word states.
+        let host = EngineHost.shared
+        let sample = host.packs.packs
+        var states: [String: PackState] = [:]
+        if sample.count > 3 {
+            states[sample[0].id] = .installed
+            states[sample[1].id] = .downloading(done: sample[1].bytes / 2)
+            states[sample[2].id] = .failed(DictPackStore.failure)
+        }
+        host.packs.preview(states)
+        host.cloud.preview(CloudStatus(enabled: true, words: 1280, checkedAt: Date(timeIntervalSince1970: 1_790_000_000)))
+        nav.page = .dictionary
+        try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 560),
+                   dark: false, to: dir.appendingPathComponent("settings-dictionary-cloud-on.png"))
+        for dark in [false, true] {
+            try render(DictPacksPage(store: host.packs).tint(Theme.accent), size: NSSize(width: 560, height: 900), dark: dark,
+                       to: dir.appendingPathComponent("settings-dictionary-packs-\(dark ? "dark" : "light").png"))
+        }
+        let predicting = CandidateState(preedit: "", candidates: ["晚上", "早上", "下午", "的", "我们"].map { Candidate(text: $0) },
+                                        highlight: -1, hasPrevious: false, hasNext: false, orientation: .horizontal,
+                                        fontSize: 16, hint: "联想")
+        for dark in [false, true] {
+            let view = CandidateBar(state: predicting, pick: { _ in })
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: CandidatePanel.cornerRadius))
+                .padding(12)
+            try render(view, size: nil, dark: dark, to: dir.appendingPathComponent("candidates-predictions-\(dark ? "dark" : "light").png"))
+        }
         nav.page = .link
         try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 900),
                    dark: true, to: dir.appendingPathComponent("settings-link-dark.png"))

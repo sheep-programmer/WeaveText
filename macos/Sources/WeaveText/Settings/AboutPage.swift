@@ -14,8 +14,10 @@ struct AboutPage: View {
     }
 
     private let notices = [
-        Notice(name: "万象拼音词库 rime_wanxiang", use: "拼音字词与词频、英文词频、表情联想", license: "CC BY 4.0",
-               url: "https://github.com/amzxyz/rime_wanxiang"),
+        Notice(name: "万象拼音词库 rime_wanxiang", use: "拼音字词与词频、英文词频、表情联想；专业词库的领域词表",
+               license: "CC BY 4.0", url: "https://github.com/amzxyz/rime_wanxiang"),
+        Notice(name: "THUOCL 清华开放中文词库", use: "专业词库（可选下载）的领域词表，按需下载的独立数据文件", license: "MIT",
+               url: "https://github.com/thunlp/THUOCL"),
         Notice(name: "RIME-LMDG 字符搭配模型", use: "整句组词", license: "CC BY 4.0",
                url: "https://github.com/amzxyz/RIME-LMDG"),
         Notice(name: "OpenCC 简繁转换表", use: "繁体输出", license: "Apache-2.0",
@@ -32,6 +34,8 @@ struct AboutPage: View {
                license: "Apache-2.0 OR MIT", url: "https://github.com/mcginty/snow"),
         Notice(name: "curve25519-dalek、subtle", use: "织文互联的密钥交换", license: "BSD-3-Clause",
                url: "https://github.com/dalek-cryptography/curve25519-dalek"),
+        Notice(name: "ed25519-dalek", use: "云端热词的签名校验", license: "BSD-3-Clause",
+               url: "https://github.com/dalek-cryptography/curve25519-dalek"),
         Notice(name: "spake2（含 hkdf、hmac、sha2）", use: "织文互联配对码的口令认证密钥交换", license: "MIT OR Apache-2.0",
                url: "https://github.com/RustCrypto/PAKEs"),
         Notice(name: "mdns-sd（含 flume、socket2、if-addrs）", use: "织文互联局域网发现", license: "Apache-2.0 OR MIT",
@@ -39,6 +43,14 @@ struct AboutPage: View {
         Notice(name: "serde", use: "织文互联的设备列表", license: "MIT OR Apache-2.0", url: "https://github.com/serde-rs/serde"),
         Notice(name: "mio、spin、zmij、getrandom 等", use: "网络、并发与随机数等基础组件", license: "MIT / MIT OR Apache-2.0",
                url: "https://github.com/tokio-rs/mio"),
+    ]
+
+    /// 隐私说明（与 Android 的隐私页一致）。 The privacy notes, as on Android's privacy page.
+    private let privacy: [(String, String)] = [
+        ("本机处理", "拼音、五笔、联想与用户词学习全部在本机完成，织文不收集、不上传你的输入内容。"),
+        ("云端热词", "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开这台 Mac。"),
+        ("专业词库", "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。"),
+        ("织文互联", "默认关闭。开启后只在同一局域网内与你配对过的设备直接通信，全程端到端加密，不经过任何服务器。"),
     ]
 
     private var version: String {
@@ -66,6 +78,15 @@ struct AboutPage: View {
                 Link("源代码与问题反馈", destination: URL(string: Self.repo)!)
                 Link("第三方组件与数据", destination: URL(string: Self.repo + "/blob/main/docs/THIRD_PARTY.md")!)
             }
+            Section("隐私") {
+                ForEach(privacy, id: \.0) { title, text in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                        Text(text).font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             Section {
                 ForEach(notices) { n in
                     VStack(alignment: .leading, spacing: 2) {
@@ -80,7 +101,8 @@ struct AboutPage: View {
             } header: {
                 Text("开源许可")
             } footer: {
-                Footnote("本应用词库数据部分来自万象拼音（amzxyz/rime_wanxiang），依 CC BY 4.0 授权使用，已做格式转换。")
+                Footnote("本应用词库数据部分来自万象拼音（amzxyz/rime_wanxiang），依 CC BY 4.0 授权使用，已做格式转换；"
+                         + "专业词库另含 THUOCL 清华开放中文词库（thunlp/THUOCL，MIT）。")
             }
         }
         .formStyle(.grouped)

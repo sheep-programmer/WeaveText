@@ -40,6 +40,7 @@ final class WeaveInputController: IMKInputController {
         justCommitted = false
         capsLock = NSEvent.modifierFlags.contains(.capsLock)
         host.syncClock()
+        host.cloud.refreshIfStale()
     }
 
     override func deactivateServer(_ sender: Any!) {
