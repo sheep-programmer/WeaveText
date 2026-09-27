@@ -12,12 +12,19 @@
 └──────────┬──────────────────────────────────────────────┬────────────┘
            │ libweave.so                                  │
 ┌──────────▼──────────── Rust core ───────────────────────▼────────────┐
-│ weave-ffi     JNI 绑定：引擎句柄、快照编码、插件会话回调                 │
-│ weave-engine  会话状态机 · 音节图 · 解码器 · 用户学习 · 码表 · 繁简/表情 │
-│ weave-dict    音节表 · 前缀树词库 .wvl · 字符搭配模型 .wvg · 构建工具    │
+│ weave-ffi     JNI 绑定：引擎句柄、快照编码、插件会话回调、互联            │
+│ weave-c       C 接口（macOS 前端）：快照以 JSON 返回、互联                │
+│ weave-engine  会话状态机 · 音节图 · 解码器 · 联想 · 用户学习 · 码表 ·     │
+│               特殊候选（算式/大写金额/日期）· 云端热词 · 繁简/表情         │
+│ weave-dict    音节表 · 前缀树词库 .wvl · 字符搭配模型 .wvg · 接续表 .wvf ·│
+│               手写模板 · 构建工具（dictgen / followgen / wvpack …）       │
+│ weave-link    织文互联：mDNS 发现 · SPAKE2 + Noise 配对与加密 · 文件传输  │
 │ weave-plugin  Lua 5.4 插件宿主：host.* API、网络白名单、配额、.xipk      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+macOS 版（`macos/`，Swift + InputMethodKit）链接 `weave-c` 的静态库，与 Android 共用同一内核与数据。
+*The macOS app (`macos/`, Swift + InputMethodKit) links the `weave-c` static library and shares the engine and data.*
 
 中文：界面层只和 `InputController`、`VoiceHub` 打交道；内核是一个单线程状态机，每次按键后返回一份快照
 （上屏文字、组合串、候选）。组合中的拼音**不写入编辑器**，只在确定时 `commitText`，避开各 App 对
@@ -79,13 +86,20 @@ sentence raw, 16.0 ms packed with a 12 MB cache, identical accuracy. 16 KiB bloc
 1. **音节图 / Syllable graph** — 全拼、双拼、九键各自把按键切成所有可能的音节边，带惩罚：
    模糊音、常见错拼纠正（zhogn→zhong）、简拼、末尾不完整音节；「悬空」简拼（字母本可属于完整音节，
    如 `wang` 里的 `g`）直接删去。*Full pinyin, shuangpin and T9 each build the same kind of graph.*
-2. **词图 / Lattice** — 从每个起点在音节图与系统、用户两棵前缀树上同步深搜；大音节集合（简拼）按子节点
+2. **词图 / Lattice** — 从每个起点在音节图与系统词库、专业词库（至多 15 个，含云端热词）、用户词库几棵前缀树上同步深搜，
+   同一个词取最低 cost；大音节集合（简拼）按子节点
    扫描位图，避免上百次二分查找。*DFS over the graph and both tries; large sets scan children via a bitset.*
 3. **整句 / Sentence** — 束搜索（束宽 6）。每个词边界加上字符搭配模型的分数（见 §4），用户二元组奖励常用搭配；
    同时输出次优整句作为第 2 候选。*Beam search with collocation scores and user-bigram bonuses; the runner-up
    sentence is offered second.*
 4. **候选 / Candidates** — 整句、次优整句、以 0 开头的词（覆盖越长越靠前），中英混输时插入英文词，
    其后插入表情联想；繁体输出在最后一步转换。
+5. **触点纠错 / Tap-neighbour correction** — 触屏按在两键交界附近时，键盘把另一侧的字母与贴近度一并交给内核；
+   换成邻键才能组成音节时补一条纠正边（惩罚 600–1800，原拼写已是音节时再加 1200）。模拟评测中，1.2% 的按键落到邻键时，
+   整句首选从 57.0% 回到 72.6%，准确点击时不变。*Border taps carry the neighbour letter; the graph gets a correction
+   edge when the neighbour spells a syllable. Simulated 1.2% slips: 57.0% → 72.6% top-1, unchanged for clean taps.*
+6. **特殊候选 / Special candidates** — `v` + 数字（大写金额、中文数字、千分位）、`v` + 算式（结果），
+   `rq` / `sj` / `xq`（日期、时间、星期，插在首选之后）。*`v` numerals and arithmetic, date/time shortcuts.*
 
 ## 4. 字符搭配模型 / Collocation model（`.wvg`）
 
@@ -108,7 +122,45 @@ English: append-only log replayed at start and compacted when large. Chosen word
 recency, multi-step selections become new words, and adjacent pairs become user bigrams. Learning is off in
 password and no-personalized-learning fields.
 
-## 6. 插件宿主 / Plugin host
+### 5.1 衰减、撤销与连续造词 / Decay, undo and chaining
+
+中文：次数按逻辑时钟减半（半衰期 20000 步，约一周的高强度输入），久不用的词慢慢回到原位；二元组同样衰减。
+上屏后 1.5 秒内、中间没有其他输入时的退格视为选错，撤销这次学到的词与搭配。两次上屏间隔不超过 2.5 秒且中间没有
+标点等直接输入时，两段合起来记一次，第二次出现才成为用户词。压缩日志时清掉衰减殆尽的记录，并限制在 2 万词、3 万对。
+English: counts halve every 20 000 ticks; a backspace within 1.5 s of a commit undoes what it learned; two commits
+within 2.5 s form a phrase that is learned the second time; compaction prunes decayed records and caps the sizes.
+
+### 5.2 联想 / Next-word prediction
+
+中文：上屏后（没有组合中的输入）在候选栏给出下一个词，分档排序：①用户二元组 ②接续表——词库里常用的 3–6 字长词按
+前 1–4 字记下剩余部分（`follow.wvz`，0.47 MB，`followgen` 生成），用上文末尾 2–4 字查 ③字符搭配模型给出的下一个字，
+接成词库确有的词（按字的读音在词库里查）④只凭最后一个字的接续。选中联想词会上屏并学习这对搭配，接着再联想；
+打字、退格、空格、回车、标点都会收起。评测（`cargo run --release --example predict -- --eval`，400 句，词边界处）：
+前 8 个里命中 9.6%，每处平均省 0.116 个字，约 1.4 ms/次（桌面）。
+English: after a commit the candidate bar shows next words in tiers — user bigrams, the follow table (the rest of
+common lexicon phrases keyed by their first 1–4 chars), collocation-model continuations checked against the lexicon,
+then single-char-context continuations. Picking one commits it, learns the pair and predicts again.
+
+## 6. 专业词库与云端热词 / Domain packs and cloud hot words
+
+中文：专业词库由 `data/packs.sh` 可复现构建（万象领域词表 CC BY 4.0 与 THUOCL MIT，后者按基础词库最长匹配注音），
+与基础词库同一尺度计分（`dictgen --total`）并整体靠后 800（`--bias`），装上后不会挤掉常用词、选过即由学习提升；
+14 个包共约 1.4 MB，全部装上时整句评测 75.4%（−0.2）。云端热词默认关闭：从公开热词仓库每天最多下载一次
+`hotwords.tsv` 与 Ed25519 签名，内核用内置公钥验签、去掉过期词后作为扩展词库 `cloud` 挂上（靠后 300），只下载不上传。
+English: domain packs are built reproducibly by `data/packs.sh`, scored on the base scale and 800 behind it; all 14
+together cost 0.2 points on the benchmark. Cloud hot words (off by default) are downloaded at most daily with an
+Ed25519 signature checked against the built-in key, and attached as the extra lexicon `cloud`.
+
+## 7. 织文互联 / WeaveLink
+
+中文：同一局域网内的设备用 mDNS（`_weavelink._tcp`，默认端口 47811）互相发现。配对时电脑显示 6 位配对码与二维码，
+SPAKE2 把配对码变成强密钥作为 Noise XXpsk3 的预共享密钥（只能在线猜，截获的握手无法离线穷举），双方记下对方静态公钥；
+之后用 Noise XX 连接并核对公钥。消息：文字（剪贴板或直接发送）、文件（60 KB 分块、SHA-256 校验、文件名清洗）。
+宿主通过 JSON 命令与事件驱动（见 `core/weave-link/src/lib.rs`）。
+English: mDNS discovery; pairing turns the 6-digit code into a PSK with SPAKE2 for Noise XXpsk3 and pins static keys;
+connections use Noise XX with the pinned keys. Text and chunked, checksummed files; hosts drive it with JSON.
+
+## 8. 插件宿主 / Plugin host
 
 详见 [`plugin-host.md`](plugin-host.md)。安全边界：manifest 声明的网络白名单（重定向逐跳复查）、
 每条消息 3 亿条 Lua 指令预算、每实例 64 MiB 内存、`.xipk` 单文件 64 MiB / 合计 256 MiB / 4096 条目、
@@ -116,7 +168,7 @@ password and no-personalized-learning fields.
 *See `plugin-host.md`. Limits: manifest host allow-list re-checked on every redirect, 300 M instructions per
 message, 64 MiB per instance, package caps, no io/debug/package, redacted release logs.*
 
-## 7. 评测 / Benchmarks
+## 9. 评测 / Benchmarks
 
 整句评测集：`data/eval/sentences.tsv`（1000 条原创句子，CC0）。运行：
 *Sentence set: 1000 original sentences (CC0). Run:*
