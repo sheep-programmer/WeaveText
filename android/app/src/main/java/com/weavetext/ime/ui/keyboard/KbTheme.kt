@@ -86,6 +86,8 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
     private val widthDp: Float
     val landscape: Boolean
     val small: Boolean
+    /** 大屏（平板、展开的折叠屏：最短边 ≥ 600dp）；手机横屏不算。 A large screen (shortest side ≥ 600dp); not a phone in landscape. */
+    val largeScreen: Boolean
 
     val rowPitch: Float
     val keyHeight: Float
@@ -122,6 +124,8 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
         val heightDp = dm.heightPixels / density
         landscape = cfg.orientation == Configuration.ORIENTATION_LANDSCAPE
         small = widthDp < 360f
+        val sw = cfg.smallestScreenWidthDp.takeIf { it > 0 }?.toFloat() ?: minOf(widthDp, heightDp)
+        largeScreen = sw >= 600f
         val base = if (landscape) (heightDp * 0.105f).coerceIn(38f, 48f) else (heightDp * 0.0615f).coerceIn(46f, 62f)
         val factor = LEVEL_FACTORS[level.coerceIn(0, 4)]
         val gapV = if (small) geo.gapV - 2f else geo.gapV

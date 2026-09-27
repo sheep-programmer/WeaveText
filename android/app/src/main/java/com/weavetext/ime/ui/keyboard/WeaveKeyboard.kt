@@ -145,6 +145,26 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var localCands: List<String>? = null
     var navInset = 0
         private set
+    /** 横屏时侧边导航栏占的宽度（左、右）。 Side navigation bar widths in landscape (left, right). */
+    private var navLeft = 0
+    private var navRight = 0
+
+    /**
+     * 按系统导航栏（底部或横屏时的侧边）留出空白，键不被三键导航或手势条盖住。
+     * Keep clear of the system navigation bar (bottom, or the side in landscape) so no key sits under it.
+     */
+    private fun applyInsets(insets: WindowInsets) {
+        val (b, l, r) = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val n = insets.getInsets(WindowInsets.Type.navigationBars())
+            Triple(n.bottom, n.left, n.right)
+        } else {
+            @Suppress("DEPRECATION") Triple(insets.systemWindowInsetBottom, insets.systemWindowInsetLeft, insets.systemWindowInsetRight)
+        }
+        if (b != navInset || l != navLeft || r != navRight) {
+            navInset = b; navLeft = l; navRight = r
+            applyGeometry()
+        }
+    }
     /** 当前是否悬浮。 Whether the keyboard floats. */
     var floating = false
         private set
@@ -183,14 +203,15 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         root.addView(popup, FrameLayout.LayoutParams(-1, -1))
         full.visibility = View.GONE
         root.setOnApplyWindowInsetsListener { _, insets ->
-            val nav = if (android.os.Build.VERSION.SDK_INT >= 30) {
-                insets.getInsets(WindowInsets.Type.navigationBars()).bottom
-            } else {
-                @Suppress("DEPRECATION") insets.systemWindowInsetBottom
-            }
-            if (nav != navInset) { navInset = nav; applyGeometry() }
+            applyInsets(insets)
             insets
         }
+        // 视图重建（旋转屏幕、重启输入法）后系统不一定再发一次边衬：挂到窗口上时主动要一次。
+        // After the view is recreated (rotation, IME restart) the system may not resend insets: ask on attach.
+        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) { v.requestApplyInsets(); v.rootWindowInsets?.let(::applyInsets) }
+            override fun onViewDetachedFromWindow(v: View) {}
+        })
         prefs.registerOnSharedPreferenceChangeListener(this)
         applyAllPrefs()
         controller.addListener(stateListener)
@@ -288,7 +309,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             handle.visibility = View.GONE
             grip.visibility = View.GONE
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH)
-            board.setPadding(0, 0, 0, navInset)
+            board.setPadding(navLeft, 0, navRight, navInset)
         }
         topBar.layoutParams = FrameLayout.LayoutParams(-1, m.topBar.toInt())
         paintBackground(candidatesHost)
@@ -304,7 +325,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         // 悬浮卡片本身已经够小，不叠加单手模式。 One-hand mode doesn't apply to the floating card.
         val mode = if (floating) 0 else WeavePrefs.oneHand(prefs)
         val lp = keyboardView.layoutParams as FrameLayout.LayoutParams
-        val w = ctx.resources.displayMetrics.widthPixels
+        // 可用宽度扣掉横屏时的侧边导航栏。 Available width, minus a side navigation bar in landscape.
+        val w = ctx.resources.displayMetrics.widthPixels - if (floating) 0 else navLeft + navRight
         val landscapeMax = if (metrics.landscape) (720 * metrics.density).toInt().coerceAtMost(w) else w
         if (mode == 0) {
             lp.width = if (floating) -1 else landscapeMax
@@ -1207,6 +1229,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     // ================================================================ lifecycle
 
     override fun onShown() {
+        // 每次弹出都按当前边衬校一遍（导航方式、横竖屏可能已变）。 Re-check insets on every show.
+        root.rootWindowInsets?.let(::applyInsets)
+        root.requestApplyInsets()
         numberMode = false
         shift.reset()
         localCands = null

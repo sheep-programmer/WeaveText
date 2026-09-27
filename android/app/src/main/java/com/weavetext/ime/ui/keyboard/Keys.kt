@@ -186,9 +186,14 @@ object Layouts {
     /** 键区宽于此值（dp）时分体。 Split when the key area is wider than this (dp). */
     const val SPLIT_MIN_DP = 600f
 
-    /** 分体中缝宽度 px；不分体为 0。 Width of the split gap in px; 0 when not split. */
+    /**
+     * 分体中缝宽度 px；不分体为 0。只在大屏（平板、展开的折叠屏）上分体：手机横屏两手握持时整块键盘更顺手，
+     * 分开反而让两半错位、中间留空。
+     * Width of the split gap in px; 0 when not split. Only large screens split: a phone held sideways types better
+     * on one whole keyboard, and splitting just misaligns the halves around an empty middle.
+     */
     fun splitGap(w: Float, m: KbMetrics, allowed: Boolean): Float =
-        if (allowed && w / m.density > SPLIT_MIN_DP) w * 0.2f else 0f
+        if (allowed && m.largeScreen && w / m.density > SPLIT_MIN_DP) w * 0.2f else 0f
 
     /**
      * 布置 26 键几何：单位宽 = 可用宽 / max(10, 最宽行权重)，较窄的行居中，行两端空白并入首尾键的触控区（无死区）。

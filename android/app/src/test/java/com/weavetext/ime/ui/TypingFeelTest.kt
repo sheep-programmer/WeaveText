@@ -122,6 +122,28 @@ class TypingFeelTest {
 
     // ------------------------------------------------------------ multi-touch rollover
 
+    /** 导航栏边衬：底部与横屏侧边都要让开；视图重建后也能拿到。 Navigation bar insets, bottom and sides. */
+    @Test fun keepsClearOfTheNavigationBar() {
+        val insets = android.view.WindowInsets.Builder()
+            .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(0, 0, 0, 126))
+            .build()
+        kb.view.dispatchApplyWindowInsets(insets)
+        idle()
+        assertEquals(126, kb.navInset)
+        val side = android.view.WindowInsets.Builder()
+            .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(0, 0, 90, 0))
+            .build()
+        kb.view.dispatchApplyWindowInsets(side)
+        idle()
+        assertEquals(0, kb.navInset)
+        // 键区整体在导航栏左边。 The keys end left of the side bar.
+        val loc = IntArray(2)
+        kv.getLocationInWindow(loc)
+        val root = IntArray(2)
+        kb.view.getLocationInWindow(root)
+        assertTrue("kv=${loc[0]}+${kv.width} root=${root[0]}+${kb.view.width}", loc[0] - root[0] + kv.width <= kb.view.width - 90)
+    }
+
     @Test fun borderTapsCarryTheNeighbourToTheEngine() {
         val z = key('z')
         val x = key('x')
