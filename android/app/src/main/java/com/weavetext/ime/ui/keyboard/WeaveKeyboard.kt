@@ -357,7 +357,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
-            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL -> applyEngineOptions()
+            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
             WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
@@ -372,6 +372,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.setOption("wubi.pinyin_lookup", WeavePrefs.wubiPinyinMix(prefs))
         // 繁体输出：内核暂未提供选项，调用无副作用。 Traditional output: no engine option yet (no-op).
         controller.setOption("output.traditional", WeavePrefs.traditional(prefs))
+        controller.setOption("candidates.prediction", WeavePrefs.prediction(prefs))
     }
 
     private fun applySchemaPref() {

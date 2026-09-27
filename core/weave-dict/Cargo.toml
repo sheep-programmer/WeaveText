@@ -30,3 +30,7 @@ required-features = ["pack"]
 [[bin]]
 name = "handgen"
 path = "src/bin/handgen.rs"
+
+[[bin]]
+name = "followgen"
+path = "src/bin/followgen.rs"

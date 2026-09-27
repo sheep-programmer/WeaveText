@@ -297,6 +297,11 @@ impl UserDict {
         }
     }
 
+    /// 以 `prev` 开头的全部用户二元组（联想用）。 All user bigrams starting with `prev`, for prediction.
+    pub fn bigrams_after(&self, prev: &str) -> Vec<(String, BigramStat)> {
+        self.bigrams.iter().filter(|((p, _), _)| p == prev).map(|((_, n), s)| (n.clone(), *s)).collect()
+    }
+
     pub fn bigram(&self, prev: &str, next: &str) -> Option<BigramStat> {
         // 避免为查询分配：常见路径下 bigrams 很小，但仍用 owned key 查 HashMap。
         self.bigrams

@@ -246,6 +246,57 @@ impl Gram {
         None
     }
 
+    /// id → 字符。 Character of an id.
+    pub fn char_of(&self, id: u16) -> Option<char> {
+        ((id as usize) < self.n_chars).then(|| char::from_u32(self.blob.u32(self.chars_off + id as usize * 4))).flatten()
+    }
+
+    /// 枚举长度为 `len`、以 `prefix` 开头的全部键：回调收到前缀之后的字 id 与分值（nat）。联想用。
+    /// Enumerate every key of length `len` starting with `prefix`; the callback gets the ids after the prefix and
+    /// the score in nats. Used for next-word prediction.
+    pub fn with_prefix(&self, prefix: &[u16], len: usize, mut f: impl FnMut(&[u16], f32)) {
+        if prefix.is_empty() || prefix.len() >= len || !(MIN_LEN..=MAX_LEN).contains(&len) {
+            return;
+        }
+        let (groups, keys, values, _) = self.tables[len];
+        let first = prefix[0] as usize;
+        if first >= self.n_chars {
+            return;
+        }
+        let (lo, hi) = self.blob.with(groups + first * 4, 8, |b| (rd32(b, 0) as usize, rd32(b, 4) as usize));
+        let stride = (len - 1) * 2;
+        let rest = &prefix[1..];
+        let cmp = |i: usize| {
+            self.blob.with(keys + i * stride, stride, |b| {
+                for (j, &r) in rest.iter().enumerate() {
+                    let o = u16::from_le_bytes([b[j * 2], b[j * 2 + 1]]).cmp(&r);
+                    if o != std::cmp::Ordering::Equal {
+                        return o;
+                    }
+                }
+                std::cmp::Ordering::Equal
+            })
+        };
+        // 组内按剩余字升序：二分找到以 rest 开头的区间。 Keys are sorted within the group: binary-search the range.
+        let (mut a, mut b) = (lo, hi);
+        while a < b {
+            let m = (a + b) / 2;
+            if cmp(m) == std::cmp::Ordering::Less { a = m + 1 } else { b = m }
+        }
+        let mut ids = [0u16; MAX_LEN];
+        let tail = len - prefix.len();
+        let mut i = a;
+        while i < hi && cmp(i) == std::cmp::Ordering::Equal {
+            self.blob.with(keys + i * stride + rest.len() * 2, tail * 2, |b| {
+                for (j, slot) in ids.iter_mut().enumerate().take(tail) {
+                    *slot = u16::from_le_bytes([b[j * 2], b[j * 2 + 1]]);
+                }
+            });
+            f(&ids[..tail], self.blob.u8(values + i) as f32 / 2.0);
+            i += 1;
+        }
+    }
+
     pub fn count(&self, len: usize) -> usize {
         self.tables.get(len).map(|t| t.3).unwrap_or(0)
     }

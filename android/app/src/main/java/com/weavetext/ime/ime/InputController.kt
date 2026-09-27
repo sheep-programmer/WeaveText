@@ -170,6 +170,15 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (text == "=" || text == "＝") offerCalc()
     }
 
+    /** 联想词还在候选栏时收起（空格、回车等不选联想的操作）。 Dismiss predictions on space, enter and similar. */
+    private fun dismissPredictions() {
+        val e = engine ?: return
+        if (!state.composing && state.candidates.isNotEmpty()) {
+            e.clear()
+            refresh()
+        }
+    }
+
     /** 敲下等号时，光标前是算式就把结果当候选给出。 After typing "=", offer the result when an expression precedes it. */
     var onCalc: ((List<String>) -> Unit)? = null
 
@@ -250,6 +259,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     fun onSpace() {
         val e = engine
+        dismissPredictions()
         if (e != null && e.isComposing()) {
             e.select(0)
             refresh()
@@ -284,6 +294,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onEnter() {
         val e = engine
         lastSpaceAt = 0L
+        dismissPredictions()
         if (e != null && e.isComposing()) {
             // 英文候选首项即原样输入（保留撇号）；手写没有输入码，上屏首选。
             // English: the first candidate is the typed word; handwriting has no raw keys, so the top candidate goes.

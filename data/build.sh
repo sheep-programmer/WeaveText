@@ -28,7 +28,7 @@ DICTGEN="$ROOT/core/target/release/dictgen"
 WX="$REF/rime_wanxiang/dicts"
 stamp="$OUT/.stamp"
 newest=$(find "$WX" "$REF/rime-wubi/wubi86.dict.yaml" "$REF/makemeahanzi/graphics.txt" "$DICTGEN" "$0" -newer "$stamp" 2>/dev/null | head -1 || true)
-if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ] && [ -f "$OUT/hand.wvz" ]; then
+if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ] && [ -f "$OUT/hand.wvz" ] && [ -f "$OUT/follow.wvz" ]; then
   echo "dictionaries up to date"; exit 0
 fi
 # 基础字词 + 地名/人名/名人/诗词/联想长词/多音词：整句评测 71.7% → 75.6%。
@@ -51,9 +51,11 @@ cp "$REF/rime_wanxiang/opencc/wanxiang/STPhrases.txt" "$REF/rime_wanxiang/opencc
 # 分块压缩版（WVPK）：APK 内不压缩存放、由内核按需解压，手机上不再解压出第二份。
 # Block-compressed copies (WVPK), stored uncompressed in the APK and decoded on demand by the engine.
 "$ROOT/core/target/release/handgen" "$REF/makemeahanzi/graphics.txt" "$OUT/hand.wvh" "$WX/zi.dict.yaml"
+# 联想接续表：词库里常用长词按前缀记下剩余部分（0.47 MB）。 Prediction follow table from common lexicon phrases.
+"$ROOT/core/target/release/followgen" "$OUT/pinyin.wvl" "$OUT/follow.wvf"
 PACK="$ROOT/core/target/release/wvpack"
 for pair in pinyin:pinyin.wvl wubi86:wubi86.wvl english:english.wvl grammar:grammar.wvg \
-    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh; do
+    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh follow:follow.wvf; do
   "$PACK" "$OUT/${pair#*:}" "$OUT/${pair%%:*}.wvz"
 done
 touch "$stamp"

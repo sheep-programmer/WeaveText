@@ -50,6 +50,8 @@ object WeavePrefs {
     /** 设置里「清空剪贴板历史」写入时间戳，键盘收到后清空内存中的历史。 Clear-history signal. */
     const val CLIPBOARD_CLEARED = "clipboard_cleared"
 
+    /** 上屏后推荐下一个词（默认开）。 Suggest the next word after a commit (on by default). */
+    const val PREDICTION = "prediction"
     /** 云端热词（默认关闭）：只下载公开热词库，不上传任何内容。 Cloud hot words, off by default; download only. */
     const val CLOUD_WORDS = "cloud_words"
 
@@ -156,6 +158,7 @@ object WeavePrefs {
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
+    fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
     fun cloudWords(p: SharedPreferences) = p.getBoolean(CLOUD_WORDS, false)
     fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)
     fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)

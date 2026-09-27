@@ -80,6 +80,10 @@ fun SchemesScreen() {
             RowDivider(false)
             val n = WeavePrefs.fuzzy(p).size
             SettingRow("模糊音", onClick = { nav.push(Route.Fuzzy) }) { ValueChevron(if (n == 0) "未开启" else "$n 项") }
+            RowDivider(false)
+            SwitchRow("联想词", "上屏后推荐下一个词，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
+                p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
+            }
         }
         GroupTitle("五笔")
         GroupCard {

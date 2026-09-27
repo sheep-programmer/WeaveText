@@ -87,6 +87,8 @@ pub struct Options {
     pub lm_baseline: f32,
     /// 本地时区相对 UTC 的分钟数（日期时间候选用，宿主设置）。 Local UTC offset in minutes, set by the host.
     pub utc_offset_min: i32,
+    /// 上屏后给出联想词。 Offer next-word predictions after a commit.
+    pub prediction: bool,
 }
 
 impl Default for Options {
@@ -101,6 +103,7 @@ impl Default for Options {
             lm_weight: 0.25,
             lm_baseline: 12.0,
             utc_offset_min: 480,
+            prediction: true,
         }
     }
 }
@@ -128,6 +131,7 @@ impl Options {
             "wubi.completion" => &mut self.wubi_completion,
             "output.traditional" => &mut self.traditional,
             "candidates.emoji" => &mut self.emoji,
+            "candidates.prediction" => &mut self.prediction,
             _ => return false,
         };
         *slot = on;
@@ -209,6 +213,8 @@ pub struct Paths {
     pub hand: Option<Source>,
     /// 字符搭配模型（.wvg）。 Character collocation model.
     pub gram_model: Option<Source>,
+    /// 联想接续表（.wvf）。 Prediction follow table.
+    pub follow: Option<Source>,
     /// 用户数据目录。 User data directory.
     pub user_dir: Option<PathBuf>,
     /// 扩展拼音词库（专业词库、热词）：(id, 来源)。 Extra pinyin lexicons (domain packs, hot words): (id, source).
@@ -217,7 +223,7 @@ pub struct Paths {
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
 /// Resource key → raw file name; packed copies are named `<key>.wvz`.
-pub const RESOURCES: [(&str, &str); 8] = [
+pub const RESOURCES: [(&str, &str); 9] = [
     ("pinyin", "pinyin.wvl"),
     ("wubi86", "wubi86.wvl"),
     ("english", "english.wvl"),
@@ -226,6 +232,7 @@ pub const RESOURCES: [(&str, &str); 8] = [
     ("st_characters", "STCharacters.txt"),
     ("emoji", "emoji.txt"),
     ("hand", "hand.wvh"),
+    ("follow", "follow.wvf"),
 ];
 
 impl Paths {
@@ -246,6 +253,7 @@ impl Paths {
             "st_characters" => &mut self.st_characters,
             "emoji" => &mut self.emoji,
             "hand" => &mut self.hand,
+            "follow" => &mut self.follow,
             _ => return false,
         };
         *slot = Some(src);
@@ -314,6 +322,13 @@ pub struct Engine {
     cands_more: bool,
     emoji: Emoji,
     gram: Option<Gram>,
+    follow: Option<weave_dict::follow::Follow>,
+    /// 单字读音索引（首次联想时建立）。 Char readings, built at the first prediction.
+    readings: Option<crate::predict::Readings>,
+    /// 最近上屏的几个字（联想的上文）。 The last few committed chars, the prediction context.
+    recent: String,
+    /// 候选栏里是联想词（没有组合中的输入）。 The candidates are predictions (nothing is composing).
+    predicting: bool,
 }
 
 fn open_lex(p: &Option<Source>) -> Option<Lexicon> {
@@ -371,6 +386,10 @@ impl Engine {
             cand_cap: CAND_FIRST,
             cands_more: false,
             gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
+            follow: paths.follow.as_ref().and_then(|p| weave_dict::follow::Follow::open_source(p).ok()),
+            readings: None,
+            recent: String::new(),
+            predicting: false,
         }
     }
 
@@ -592,10 +611,68 @@ impl Engine {
     /// 换了输入框：清空上下文。 New editor: forget context.
     pub fn reset_context(&mut self) {
         self.last_word = None;
+        self.recent.clear();
+        self.drop_predictions();
     }
 
+    /// 光标前的上文（宿主告知）：换了位置就不再沿用旧联想。 The text before the cursor, from the host.
     pub fn set_context(&mut self, prev_word: Option<String>) {
         self.last_word = prev_word.filter(|w| !w.is_empty());
+        self.recent = self.last_word.clone().unwrap_or_default();
+        self.drop_predictions();
+    }
+
+    /// 收起联想词。 Dismiss the predictions.
+    pub fn drop_predictions(&mut self) {
+        if self.predicting {
+            self.predicting = false;
+            self.cands.clear();
+        }
+    }
+
+    /// 候选栏里是否是联想词。 Whether the candidates are predictions.
+    pub fn is_predicting(&self) -> bool {
+        self.predicting
+    }
+
+    /// 上屏后按上文给出联想词（关闭、密码框或没有词库时什么都不做）。
+    /// After a commit, offer predictions from the context (no-op when off, learning is off, or there's no lexicon).
+    fn predict_next(&mut self, committed: &str) {
+        self.recent.push_str(committed);
+        let n = self.recent.chars().count();
+        if n > 8 {
+            self.recent = self.recent.chars().skip(n - 8).collect();
+        }
+        if !self.options.prediction || !self.user_pinyin.learning || !committed.chars().last().is_some_and(is_cjk) {
+            return;
+        }
+        if !matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Hand) {
+            return;
+        }
+        let Some(lex) = self.pinyin.as_ref() else { return };
+        let readings = self.readings.get_or_insert_with(|| crate::predict::Readings::build(lex));
+        let list = crate::predict::predict(
+            &self.recent,
+            self.last_word.as_deref(),
+            lex,
+            readings,
+            self.follow.as_ref(),
+            self.gram.as_ref(),
+            &self.user_pinyin,
+            crate::predict::PREDICTIONS,
+        );
+        if list.is_empty() {
+            return;
+        }
+        self.cands = list
+            .into_iter()
+            .map(|p| {
+                let text = self.out(&p.text);
+                Cand { view: CandidateView { text: text.clone(), comment: String::new(), user: p.user }, action: Action::Table { text } }
+            })
+            .collect();
+        self.cands_more = false;
+        self.predicting = true;
     }
 
     pub fn is_composing(&self) -> bool {
@@ -632,6 +709,7 @@ impl Engine {
     /// 输入一个字符；返回 false 表示引擎不处理（界面应直接上屏）。
     /// Feed a character; false means "not mine", the UI should insert it directly.
     pub fn input_char(&mut self, c: char) -> bool {
+        self.drop_predictions();
         match self.schema {
             Schema::Pinyin => {
                 // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
@@ -722,6 +800,7 @@ impl Engine {
     /// Backspace; false when nothing is composing (the UI should delete in the editor).
     pub fn backspace(&mut self) -> bool {
         if !self.is_composing() {
+            self.drop_predictions();
             return false;
         }
         // 手写：退掉最后一笔并重新识别。 Handwriting: drop the last stroke and recognise again.
@@ -766,6 +845,19 @@ impl Engine {
         let Some(c) = self.cands.get(index).cloned() else {
             return false;
         };
+        if self.predicting {
+            // 选了联想词：上屏、记住这对搭配，再接着联想。 A prediction: commit it, learn the pair, predict again.
+            let Action::Table { text } = c.action else { return false };
+            if let Some(prev) = self.last_word.clone() {
+                self.user_pinyin.learn_bigram(&prev, &text);
+            }
+            self.predicting = false;
+            self.cands.clear();
+            self.commit.push_str(&text);
+            self.last_word = Some(text.clone());
+            self.predict_next(&text);
+            return true;
+        }
         match c.action {
             Action::Table { text } => {
                 // 已部分选定的字词先上屏。 Earlier partial selections go first.
@@ -774,6 +866,10 @@ impl Engine {
                 let out = self.out(&all);
                 self.commit.push_str(&out);
                 self.finish_composition();
+                if self.schema == Schema::Hand {
+                    self.last_word = Some(text.clone());
+                }
+                self.predict_next(&all);
             }
             Action::Pinyin(cand) => {
                 let total = self.graph_len();
@@ -799,6 +895,7 @@ impl Engine {
 
     /// 以首选上屏（遇到标点时）。 Commit the top choice (e.g. before punctuation).
     pub fn commit_first(&mut self) {
+        self.drop_predictions();
         let mut guard = 0;
         while self.is_composing() && guard < 64 {
             guard += 1;
@@ -812,6 +909,7 @@ impl Engine {
 
     /// 回车：原样上屏输入码。 Enter: commit the raw keys as typed.
     pub fn commit_raw(&mut self) {
+        self.drop_predictions();
         let sel: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         let mut text = self.out(&sel);
         match self.schema {
@@ -883,6 +981,7 @@ impl Engine {
     }
 
     pub fn clear(&mut self) {
+        self.predicting = false;
         self.hand_strokes.clear();
         self.raw.clear();
         self.near.clear();
@@ -1081,6 +1180,7 @@ impl Engine {
         let out = self.out(&text);
         self.commit.push_str(&out);
         self.clear();
+        self.predict_next(&text);
     }
 
     /// 当前解码图的长度（按键位置数）。 Length of the current graph.
@@ -1650,6 +1750,44 @@ mod wubi_tests {
         assert_eq!(p.packs.len(), 1);
         assert_eq!(p.packs[0].0, "med");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn predictions_follow_a_commit_and_learn_the_pair() {
+        let mut e = pinyin_engine();
+        let k = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        let mut b = Builder::new(Kind::Pinyin);
+        for (py, w, c) in [("shi jian", "时间", 10), ("dao le", "到了", 100), ("bu gou", "不够", 200), ("shi jian dao le", "时间到了", 5000), ("shi jian bu gou", "时间不够", 6000)] {
+            b.insert(&k(py), w, c);
+        }
+        e.pinyin = Some(Lexicon::from_bytes(b.build()).unwrap());
+        let mut f = weave_dict::follow::FollowBuilder::default();
+        f.push_phrase("时间到了", 5000, 1, 4);
+        f.push_phrase("时间不够", 6000, 1, 4);
+        e.follow = Some(weave_dict::follow::Follow::from_bytes(f.build(8)).unwrap());
+        typing(&mut e, "shijian");
+        e.select(0);
+        let s = e.snapshot();
+        assert_eq!(s.commit, "时间");
+        assert!(!s.composing);
+        assert!(e.is_predicting());
+        assert_eq!(s.candidates.iter().map(|c| c.text.as_str()).take(2).collect::<Vec<_>>(), ["到了", "不够"]);
+        // 选第二个：上屏并记住「时间 → 不够」，下次排到前面。 Pick the second; the pair is learned and ranks first next time.
+        e.select(1);
+        assert_eq!(e.snapshot().commit, "不够");
+        e.clear();
+        e.set_context(None);
+        typing(&mut e, "shijian");
+        e.select(0);
+        assert_eq!(e.snapshot().candidates[0].text, "不够");
+        // 打字、退格或直接上屏都会收起联想。 Typing, backspace or a direct commit dismisses them.
+        assert!(!e.backspace());
+        assert!(!e.is_predicting());
+        assert!(e.snapshot().candidates.is_empty());
+        e.options.prediction = false;
+        typing(&mut e, "shijian");
+        e.select(0);
+        assert!(e.snapshot().candidates.is_empty());
     }
 
     #[test]

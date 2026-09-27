@@ -77,6 +77,29 @@ class JniTest {
         }
     }
 
+    /** 联想：上屏「今天」后给出常接的词；选一个接着联想；空格等收起。 Predictions after a commit. */
+    @Test
+    fun predictionsAfterCommit() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            e.type("jintian")
+            e.select(e.snapshot().candidates.indexOfFirst { it.text == "今天" })
+            val s = e.snapshot()
+            assertEquals("今天", s.commit)
+            assertTrue(!s.composing)
+            val words = s.candidates.map { it.text }
+            assertTrue(words.toString(), words.any { it in setOf("晚上", "早上", "下午") })
+            assertTrue(e.select(words.indexOf(words.first { it.length >= 2 })))
+            assertTrue(e.snapshot().commit.isNotEmpty())
+            e.clear()
+            assertTrue(e.snapshot().candidates.isEmpty())
+            assertTrue(e.setOption("candidates.prediction", false))
+            e.type("jintian")
+            e.select(0)
+            assertTrue(e.snapshot().candidates.isEmpty())
+        }
+    }
+
     /** v 模式与算式：v1234 给出大写金额，等号后的算式能算出结果。 The v mode and the calculator. */
     @Test
     fun vModeAndCalculator() {
