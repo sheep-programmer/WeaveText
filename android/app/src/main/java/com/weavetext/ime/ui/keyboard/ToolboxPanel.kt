@@ -35,6 +35,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(CLIPBOARD, R.drawable.ic_clipboard, null, "剪贴板"),
         Item(SETTINGS, R.drawable.ic_settings, null, "设置"),
         Item(FLOAT, R.drawable.ic_float, null, "悬浮键盘"),
+        Item(LINK, R.drawable.ic_send, null, "发到电脑"),
     )
 
     override fun applyTheme() = view.invalidate()
@@ -75,6 +76,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             SETTINGS -> kb.openSettings(null)
             // 帮助入口在设置「关于」里；这一格让给悬浮键盘（06 §5）。 Help lives in Settings › About.
             FLOAT -> { kb.closePanel(); kb.toggleFloating() }
+            LINK -> { kb.closePanel(); kb.sendClipboardToComputer() }
         }
         view.invalidate()
     }
@@ -89,10 +91,12 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             val pad = m.dp(12f)
             val gap = m.dp(8f)
-            val cw = (width - 2 * pad - 3 * gap) / 4
-            val ch = (height - 2 * pad - 2 * gap) / 3
-            val col = i % 4
-            val row = i / 4
+            // 3 行，列数随项目数（12 项 4 列，13 项起 5 列）。 Three rows; columns follow the item count.
+            val cols = (items.size + ROWS - 1) / ROWS
+            val cw = (width - 2 * pad - (cols - 1) * gap) / cols
+            val ch = (height - 2 * pad - (ROWS - 1) * gap) / ROWS
+            val col = i % cols
+            val row = i / cols
             out.set(pad + col * (cw + gap), pad + row * (ch + gap), pad + col * (cw + gap) + cw, pad + row * (ch + gap) + ch)
         }
 
@@ -142,6 +146,8 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         const val SCHEMES = 0; const val HEIGHT = 1; const val DARK = 2; const val TRAD = 3
         const val EMOJI = 4; const val PHRASES = 5; const val ONE_HAND = 6; const val ENGINES = 7
         const val CURSOR = 8; const val CLIPBOARD = 9; const val SETTINGS = 10; const val FLOAT = 11
+        const val LINK = 12
+        private const val ROWS = 3
     }
 }
 

@@ -956,6 +956,29 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
+    /**
+     * 工具箱「发到电脑」：把当前剪贴板文字发给已连接的电脑；未开启或未连接时引导去设置。
+     * Toolbox "send to computer": send the current clipboard text to the connected computer, or point to settings.
+     */
+    fun sendClipboardToComputer() {
+        val link = com.weavetext.ime.link.LinkManager.get(ctx)
+        val s = link.state.value
+        val target = s.connected.firstOrNull()
+        when {
+            !s.enabled || target == null ->
+                topBar.showAction(if (!s.enabled) "织文互联未开启" else "没有已连接的电脑", "去设置", 4000) { openSettings("link") }
+            else -> {
+                val text = clipboard.currentClip()
+                if (text.isNullOrBlank()) {
+                    topBar.showAction("剪贴板是空的", null, 2500, null)
+                } else {
+                    val ok = link.sendText(target.id, text, clip = false)
+                    topBar.showAction(if (ok) "已发送到「${target.name}」" else "发送失败", null, 2500, null)
+                }
+            }
+        }
+    }
+
     fun openSettings(route: String?) {
         val i = Intent(ctx, com.weavetext.ime.settings.SettingsActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
