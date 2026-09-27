@@ -47,6 +47,10 @@ public final class WeaveSession {
     /// 收起联想词。 Dismiss the predictions.
     public func dismissPredictions() { weave_dismiss_predictions(handle) }
     public func setLearning(_ on: Bool) { weave_set_learning(handle, on) }
+    /// 输入法自己写了字或把可打印的键交给了应用：之后的退格不再撤销学习，也不与前面连成新词。
+    /// The IME wrote text itself or passed a printable key to the app: a later backspace no longer undoes
+    /// learning, and the next commit doesn't join the previous one.
+    public func breakChain() { weave_break_chain(handle) }
 
     /// 本地时区相对 UTC 的分钟数（rq / sj / xq 候选）。 Local UTC offset in minutes (rq / sj / xq candidates).
     public func setUTCOffset(minutes: Int) { weave_set_utc_offset(handle, Int32(clamping: minutes)) }
@@ -80,6 +84,11 @@ public final class WeaveSession {
 
     /// 验签并挂上云端热词；返回词数，验签失败 -1。 Verify and attach cloud hot words; the word count, or -1.
     public func loadHotwords(tsv: String, sig: String) -> Int { Int(weave_load_hotwords(handle, tsv, sig)) }
+
+    /// 已挂上的扩展词库 id（含热词 cloud）。 Ids of the attached extra lexicons, "cloud" included.
+    public func packIDs() -> Set<String> {
+        Set(decode([String].self, weave_pack_ids_json(handle)) ?? [])
+    }
 
     public var userWordCount: Int { Int(weave_user_word_count(handle)) }
 

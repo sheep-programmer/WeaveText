@@ -107,3 +107,24 @@ private let busy = KeyContext(composing: true)
         let v6 = d.flagsChanged(shift: false, otherModifiers: false, at: 3); #expect(!v6)
     }
 }
+
+@Suite struct IdlePassTests {
+    private func key(_ s: String, _ code: UInt16 = 0, command: Bool = false, option: Bool = false) -> KeyInput {
+        KeyInput(keyCode: code, characters: s, option: option, command: command)
+    }
+
+    /// 退格总是先给内核（上屏后没写别的字时由内核撤销学习）。 Backspace always reaches the engine first.
+    @Test func backspaceGoesToTheEngine() {
+        #expect(KeyMapper.idlePass(for: key("\u{7f}", KeyCode.delete)) == .backspace)
+        #expect(KeyMapper.idlePass(for: key("\u{7f}", KeyCode.delete, option: true)) == .backspace)
+    }
+
+    /// 会写字或挪光标的键断开连续上屏。 Keys that write or move the caret break the chain.
+    @Test func writingAndMovingKeysBreakTheChain() {
+        for k in [key(","), key(" ", KeyCode.space), key("1"), key("@"), key("\r", KeyCode.returnKey),
+                  key("\t", KeyCode.tab), key("", KeyCode.left), key("v", command: true), key("A")] {
+            #expect(KeyMapper.idlePass(for: k) == .breakChain)
+        }
+        #expect(KeyMapper.idlePass(for: key("\u{1b}", KeyCode.escape)) == .none)
+    }
+}

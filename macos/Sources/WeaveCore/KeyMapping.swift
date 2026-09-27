@@ -99,7 +99,30 @@ public enum PredictionAction: Equatable, Sendable {
     case dismissAndHandle
 }
 
+/// 不在组合时交给应用的键对学习的影响。 What a key handed to the app while idle means for learning.
+public enum IdlePass: Equatable, Sendable {
+    /// 退格：先交给内核（刚上屏又没写别的字时内核撤销学到的词），再由应用删字。
+    /// Backspace: the engine first (it undoes what the last commit learned when nothing was written since),
+    /// then the app deletes.
+    case backspace
+    /// 应用会写字或挪光标（标点、空格、数字、符号、回车、方向键、快捷键…）：断开与上一次上屏的联系。
+    /// The app writes text or moves the caret (punctuation, space, digits, symbols, return, arrows, shortcuts…):
+    /// break the chain with the previous commit.
+    case breakChain
+    /// 什么也不写（Esc）。 Writes nothing (Esc).
+    case none
+}
+
 public enum KeyMapper {
+    /// 不在组合时交给应用的键（纯函数）。 A key handed to the app while idle, a pure function.
+    public static func idlePass(for key: KeyInput) -> IdlePass {
+        switch key.keyCode {
+        case KeyCode.delete: return .backspace
+        case KeyCode.escape: return .none
+        default: return .breakChain
+        }
+    }
+
     /// 联想词显示时的按键（纯函数）：数字选词，Esc 收起，其余收起后照常处理。
     /// Keys while predictions show, a pure function: digits pick, Esc dismisses, anything else dismisses and goes on.
     public static func predictionAction(for key: KeyInput, count: Int, pageSize: Int) -> PredictionAction {

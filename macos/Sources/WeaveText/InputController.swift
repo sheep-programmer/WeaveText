@@ -19,9 +19,6 @@ final class WeaveInputController: IMKInputController {
     private var calcResult: String?
     /// 候选窗里是上屏后的联想词。 The panel shows predictions after a commit.
     private var predicting = false
-    /// 上一个动作是内核上屏（紧接着退格会撤销刚学到的词）。 The last action was an engine commit; a backspace right
-    /// after it undoes what the commit learned.
-    private var justCommitted = false
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         // 鼠标点在文档里时收起联想词。 A click in the document dismisses the predictions.
@@ -32,12 +29,13 @@ final class WeaveInputController: IMKInputController {
         super.activateServer(sender)
         host.activeController = self
         host.engine?.clear()
+        // 换了输入框：上一次上屏与这里无关。 A new field: the previous commit has nothing to do with it.
+        host.engine?.breakChain()
         punctuation.reset()
         afterDigit = false
         preedit = ""
         calcResult = nil
         predicting = false
-        justCommitted = false
         capsLock = NSEvent.modifierFlags.contains(.capsLock)
         host.syncClock()
         host.cloud.refreshIfStale()
@@ -77,7 +75,8 @@ final class WeaveInputController: IMKInputController {
             return keyDown(event, client)
         case .leftMouseDown:
             dismissPredictions()
-            justCommitted = false
+            // 光标挪了：之后的退格删的不是刚上屏的词。 The caret moved: a later backspace isn't deleting that commit.
+            host.engine?.breakChain()
             return false
         default:
             return false
@@ -110,8 +109,6 @@ final class WeaveInputController: IMKInputController {
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
         if calcResult != nil, handleCalcKey(key, client) { return true }
-        let wasJustCommitted = justCommitted
-        justCommitted = false
         if predicting {
             switch KeyMapper.predictionAction(for: key, count: pager.page.count, pageSize: prefs.pageSize) {
             case .select(let n):
@@ -139,16 +136,7 @@ final class WeaveInputController: IMKInputController {
         switch action {
         case .pass:
             afterDigit = !ctx.composing && key.character?.isNumber == true && key.character?.isASCII == true
-            if !ctx.composing, key.keyCode == KeyCode.delete, wasJustCommitted, !key.command, !key.option {
-                // 上屏后马上退格：先让内核撤销刚学到的，再把退格交给应用删字。
-                // A backspace right after a commit: let the engine undo what it learned, then the app deletes.
-                engine.backspace()
-            } else if !ctx.composing, ctx.chinese, !key.command, !key.control, !key.option,
-                      key.character.map({ !$0.isWhitespace || $0 == " " }) == true, !isFunction(key.keyCode) {
-                // 直接上屏的字符隔开前后两次上屏，不让它们连成新词。 Text typed straight through breaks the chain
-                // of consecutive commits, so they don't join into a new word.
-                engine.commitFirst()
-            }
+            if !ctx.composing { passIdle(key, engine) }
             return false
         case .swallow:
             return true
@@ -158,6 +146,7 @@ final class WeaveInputController: IMKInputController {
                 return true
             }
             if ctx.composing { return true }
+            passIdle(key, engine)
             return false
         case .punctuation(let c):
             if ctx.composing {
@@ -168,10 +157,12 @@ final class WeaveInputController: IMKInputController {
                 commitHighlighted(engine, all: true)
                 refresh(client)
             }
-            // 标点隔开前后两次上屏。 Punctuation breaks the chain of consecutive commits.
-            if !ctx.composing { engine.commitFirst() }
             guard host.scheme.isChinese else {
-                if ctx.composing { insert(String(c), client) }
+                if ctx.composing {
+                    insert(String(c), client)
+                } else {
+                    passIdle(key, engine)
+                }
                 return ctx.composing
             }
             insert(punctuation.convert(c, afterDigit: wasAfterDigit && !ctx.composing), client)
@@ -225,10 +216,15 @@ final class WeaveInputController: IMKInputController {
         if calcResult == nil { CandidatePanel.shared.hide() }
     }
 
-    private func isFunction(_ code: UInt16) -> Bool {
-        [KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.tab, KeyCode.delete, KeyCode.escape, KeyCode.forwardDelete,
-         KeyCode.home, KeyCode.end, KeyCode.pageUp, KeyCode.pageDown, KeyCode.left, KeyCode.right, KeyCode.up,
-         KeyCode.down].contains(code)
+    /// 不在组合时把键交给应用：退格先给内核（由它决定是否撤销刚学到的词），会写字或挪光标的键断开连续上屏。
+    /// A key handed to the app while idle: backspace reaches the engine first (it decides whether to undo what was
+    /// just learned); keys that write or move the caret break the chain of commits.
+    private func passIdle(_ key: KeyInput, _ engine: WeaveSession) {
+        switch KeyMapper.idlePass(for: key) {
+        case .backspace: engine.backspace()
+        case .breakChain: engine.breakChain()
+        case .none: break
+        }
     }
 
     private var fetch: Pager.Fetch {
@@ -299,8 +295,15 @@ final class WeaveInputController: IMKInputController {
 
     // MARK: - 上屏与显示 / Commit and display
 
+    /// 输入法自己写的字（标点、等号、算式结果）：之后的退格不撤销学习，也不与前后的上屏连成新词。
+    /// Text the IME writes itself (punctuation, `=`, the result): a later backspace undoes no learning, and the
+    /// commits around it don't join into a new word.
     private func insert(_ text: String, _ client: IMKTextInput) {
-        justCommitted = false
+        host.engine?.breakChain()
+        write(text, client)
+    }
+
+    private func write(_ text: String, _ client: IMKTextInput) {
         client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
@@ -309,8 +312,7 @@ final class WeaveInputController: IMKInputController {
         guard let engine = host.engine else { return }
         let s = engine.snapshot()
         if !s.commit.isEmpty, let client {
-            insert(s.commit, client)
-            justCommitted = true
+            write(s.commit, client)
         }
         predicting = !s.composing && s.predicting && !s.candidates.isEmpty
         if s.composing || predicting {
