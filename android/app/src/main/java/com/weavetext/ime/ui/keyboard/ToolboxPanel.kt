@@ -81,7 +81,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
     @SuppressLint("ViewConstructor")
     inner class Grid(c: Context) : View(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private val rect = RectF()
         private var pressed = -1
 
@@ -158,7 +158,7 @@ class HeightPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
     @SuppressLint("ViewConstructor")
     inner class HeightView(c: Context) : View(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private val rect = RectF()
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         private var pressed = -2

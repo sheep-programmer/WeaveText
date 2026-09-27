@@ -2,6 +2,8 @@ package com.weavetext.ime.ui.keyboard
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Paint
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -183,5 +185,13 @@ class KbGeometry(
     /** 键内文字缩放（用户微调）。 Key text scale (user tweak). */
     val textScale: Float = 1f,
 ) {
-    companion object { val DEFAULT = KbGeometry() }
+    companion object { val DEFAULT = KbGeometry(gapV = 11f, rowScale = 1.035f) }
 }
+
+/**
+ * 画笔按简体中文选字形：系统语言不是中文、或粗体回退到别的字库时，汉字也不会落到日文字形上。
+ * Paints pick Simplified Chinese glyphs, so Han characters never fall back to Japanese shapes when the system
+ * language isn't Chinese or a bold weight falls through to another font.
+ */
+fun <T : Paint> T.zh(): T = apply { textLocale = Locale.SIMPLIFIED_CHINESE }
+

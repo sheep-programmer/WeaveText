@@ -25,7 +25,7 @@ import kotlin.math.max
 @SuppressLint("ViewConstructor")
 class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val text = TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
     private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
     private var plugins: List<VoicePlugin> = emptyList()
     private val icons = ArrayList<PluginIcon>()

@@ -130,9 +130,9 @@ object StyleParser {
             theme = o.optString("theme", "fresh"),
             geometry = KbGeometry(
                 gapH = num(geo, "gapH", 6f, 0f, 16f),
-                gapV = num(geo, "gapV", 10f, 2f, 20f),
+                gapV = num(geo, "gapV", KbGeometry.DEFAULT.gapV, 2f, 20f),
                 padH = num(geo, "padH", 3f, 0f, 16f),
-                rowScale = num(geo, "rowScale", 1f, 0.8f, 1.25f),
+                rowScale = num(geo, "rowScale", KbGeometry.DEFAULT.rowScale, 0.8f, 1.25f),
                 radius = num(geo, "radius", 6f, 0f, 24f),
                 radiusLarge = num(geo, "radiusLarge", 8f, 0f, 28f),
             ),
@@ -441,8 +441,8 @@ object StyleParser {
     val DEFAULT_ROWS: List<List<KeyToken>> = listOf(
         listOf(t("qwertyuiop")),
         listOf(t("asdfghjkl")),
-        listOf(t("shift:1.5"), t("zxcvbnm"), t("delete:1.5")),
-        listOf(t("symbol:1.3"), t("number:1.3"), t("comma"), t("space:2.8"), t("period"), t("lang:1.3"), t("enter:1.3")),
+        listOf(t("shift:1.42"), t("gap:0.08"), t("zxcvbnm"), t("gap:0.08"), t("delete:1.42")),
+        listOf(t("symbol:1.42"), t("number:1.42"), t("comma"), t("space:2.32"), t("period"), t("lang:1.42"), t("enter:1.42")),
     )
     val DEFAULT_T9_RIGHT = listOf(KeyToken("delete"), KeyToken("reset"), KeyToken("enter", span = 2))
     val DEFAULT_T9_BOTTOM = listOf(KeyToken("symbol"), KeyToken("number"), KeyToken("space"), KeyToken("lang"))

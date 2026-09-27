@@ -112,7 +112,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     @SuppressLint("ViewConstructor")
     private inner class Grid(c: Context) : ScrollGridView(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private var items: List<String> = emptyList()
         private var cols = 6
         private var cellH = 0f
@@ -273,7 +273,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
      */
     @SuppressLint("ViewConstructor")
     private inner class SideList(c: Context) : ScrollGridView(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         private val r = RectF()
 
@@ -370,7 +370,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     @SuppressLint("ViewConstructor")
     private inner class BottomRow(c: Context) : View(c) {
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         private val back = RectF()
         private val lock = RectF()

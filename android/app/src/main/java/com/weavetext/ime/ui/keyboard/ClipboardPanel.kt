@@ -194,7 +194,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
 
     @SuppressLint("ViewConstructor")
     private inner class Header(c: Context) : View(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         /** 右侧按钮区（从右往左）。 Right-side hit areas, right to left. */
         private val hits = Array(3) { RectF() }
@@ -329,9 +329,9 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     private inner class Cards(c: Context) : ScrollGridView(c) {
         private val rects = ArrayList<RectF>()
         private val layouts = ArrayList<StaticLayout>()
-        private val body = TextPaint(Paint.ANTI_ALIAS_FLAG)
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val small = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val body = TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
+        private val small = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private var bottom = 0f
         /** 动作行的三个按钮（固定/编辑/删除）。 The three action buttons of the expanded card. */
         private val actions = Array(3) { RectF() }

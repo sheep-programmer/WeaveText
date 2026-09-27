@@ -38,7 +38,7 @@ class PluginIcon {
     private var shader: BitmapShader? = null
     private val matrix = Matrix()
     private val src = RectF()
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
 
     fun bind(plugin: VoicePlugin?) {
         if (plugin?.id == id && plugin?.version == version) return
@@ -113,7 +113,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     @SuppressLint("ViewConstructor")
     inner class VoiceView(c: Context) : View(c) {
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val text = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        private val text = TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         private val icon = PluginIcon()
         private var plugin: VoicePlugin? = null

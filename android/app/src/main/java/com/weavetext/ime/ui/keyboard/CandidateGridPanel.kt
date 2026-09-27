@@ -131,7 +131,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     @SuppressLint("ViewConstructor")
     private inner class Header(c: Context) : View(c) {
         var text = ""
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         override fun onDraw(canvas: Canvas) {
             val pal = kb.palette
             val m = kb.metrics
@@ -161,7 +161,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         private var labels: Array<String> = emptyArray()
         private var nPinyin = 0
         private var rowsBottom = 0f
-        private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private val line = Paint()
 
         fun rebuild() {
@@ -277,7 +277,7 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     @SuppressLint("ViewConstructor")
     inner class PickerView(c: Context) : View(c) {
-        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private val rect = android.graphics.RectF()
         private var pressed = -1
         private val medium = if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD

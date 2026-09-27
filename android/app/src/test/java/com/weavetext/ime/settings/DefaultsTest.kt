@@ -49,7 +49,7 @@ class DefaultsTest {
         val standard = KbMetrics(app, 2)
         val default = KbMetrics(app, WeavePrefs.heightLevel(p))
         assertTrue(default.kbHeight > standard.kbHeight)
-        // 1080×2400（411×914 dp）上默认行距 60 dp。 60 dp row pitch on a 411×914 dp phone.
-        assertEquals(60f, default.rowPitch / default.density, 0.01f)
+        // 1080×2400（411×914 dp）上默认行距 62 dp。 62 dp row pitch on a 411×914 dp phone.
+        assertEquals(62f, default.rowPitch / default.density, 0.01f)
     }
 }

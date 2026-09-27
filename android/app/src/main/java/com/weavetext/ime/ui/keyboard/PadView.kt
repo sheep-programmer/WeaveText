@@ -75,7 +75,7 @@ class PadView(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     var drawShadow = true
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
     private val tmp = RectF()
     private val tmp2 = RectF()
     private var down: PadKey? = null

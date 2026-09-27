@@ -13,8 +13,8 @@
       ["1234567890"],
       ["qwertyuiop"],
       ["asdfghjkl"],
-      ["shift:1.5", "zxcvbnm", "delete:1.5"],
-      ["symbol:1.3", "number:1.3", "comma", "space:2.8", "period", "lang:1.3", "enter:1.3"]
+      ["shift:1.42", "gap:0.08", "zxcvbnm", "gap:0.08", "delete:1.42"],
+      ["symbol:1.42", "number:1.42", "comma", "space:2.32", "period", "lang:1.42", "enter:1.42"]
     ],
     "showHints": false
   }

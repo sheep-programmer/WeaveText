@@ -97,8 +97,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private val actionRect = RectF()
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
-    private val small = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val text = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
+    private val small = Paint(Paint.ANTI_ALIAS_FLAG).zh()
     /** 候选右端渐隐：在图层里擦去文字（DST_OUT），透出真实背景。 Right-edge fade erases the text in a layer, showing the real backdrop. */
     private val fade = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
     private var fadeShader: LinearGradient? = null
