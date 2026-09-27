@@ -21,6 +21,7 @@ kotlin {
 sourceSets["main"].kotlin {
     include(
         "com/weavetext/ime/core/NativeEngine.kt",
+        "com/weavetext/ime/link/NativeLink.kt",
         "com/weavetext/ime/voice/NativePluginHost.kt",
         // 与 Android 无关的模型/语音逻辑。 Android-free model and speech logic.
         "com/weavetext/ime/models/NativeArchive.kt",

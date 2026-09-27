@@ -86,7 +86,12 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
             history.add(text, now)
             notifyChanged()
         }
-        if (recent) kb.onNewClip(text)
+        if (recent) {
+            kb.onNewClip(text)
+            // 织文互联：新复制的文字同步给已连接的电脑（关闭或未连接时什么都不做）。
+            // WeaveLink: a fresh copy goes to the connected computer (no-op when off or disconnected).
+            com.weavetext.ime.link.LinkManager.get(ctx).onLocalClip(text)
+        }
     }
 
     private fun isSensitive(clip: android.content.ClipData): Boolean {

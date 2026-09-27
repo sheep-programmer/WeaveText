@@ -244,6 +244,8 @@ fun HomeScreen(statusVersion: Int) {
                     ) { Chevron() }
                     RowDivider()
                     SettingRow("词库", words?.let { "%,d 个用户词".format(it) } ?: "用户词与学习记录", R.drawable.ic_book, onClick = { nav.push(Route.Dictionary) }) { Chevron() }
+                    RowDivider()
+                    SettingRow("互联", linkSummary(p), R.drawable.ic_devices, onClick = { nav.push(Route.Link) }) { Chevron() }
                 }
                 Spacer(Modifier.height(GroupGap))
                 GroupCard {
@@ -259,3 +261,7 @@ fun HomeScreen(statusVersion: Int) {
         }
     }
 }
+
+/** 首页「互联」副文字。 Home-page summary of WeaveLink. */
+private fun linkSummary(p: android.content.SharedPreferences) =
+    if (WeavePrefs.linkEnabled(p)) "已开启 · 与电脑互传文字和文件" else "与电脑互传文字、图片和文件"

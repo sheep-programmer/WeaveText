@@ -50,6 +50,14 @@ object WeavePrefs {
     /** 设置里「清空剪贴板历史」写入时间戳，键盘收到后清空内存中的历史。 Clear-history signal. */
     const val CLIPBOARD_CLEARED = "clipboard_cleared"
 
+    // 织文互联 / WeaveLink
+    /** 默认关闭：用户在「互联」里打开后才启动局域网服务。 Off by default; the LAN service starts only after opting in. */
+    const val LINK_ENABLED = "link_enabled"
+    /** 已连接时同步剪贴板（默认开）。 Sync the clipboard while connected (on by default). */
+    const val LINK_CLIP_SYNC = "link_clip_sync"
+    /** 本机在对方看到的名字（默认机型名）。 This device's name as others see it (defaults to the model). */
+    const val LINK_NAME = "link_name"
+
     // 键盘风格 / Keyboard style (docs/design/05)
     /** 布局风格 id（内置或 "pack:<id>"）。 Layout style id (built-in or "pack:<id>"). */
     const val STYLE_LAYOUT = "style_layout"
@@ -145,4 +153,7 @@ object WeavePrefs {
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
+    fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)
+    fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)
+    fun linkName(p: SharedPreferences) = p.getString(LINK_NAME, null)?.takeIf { it.isNotBlank() } ?: com.weavetext.ime.link.LinkManager.defaultName()
 }

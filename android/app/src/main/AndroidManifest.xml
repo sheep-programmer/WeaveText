@@ -7,6 +7,13 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 轻量版一键安装离线语音版（覆盖安装同一应用）。 Lite: one-tap install of the offline-voice build over itself. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 织文互联（默认关闭）：局域网发现需要组播，开启期间用前台服务保持连接并显示通知。
+         WeaveLink (off by default): LAN discovery needs multicast; a foreground service keeps it connected while on. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Android 11 起须声明才能找到并连接系统语音识别服务，否则系统识别总是不可用或连接失败。
          Since Android 11 this declaration is required to see and bind the system speech recognition service. -->
@@ -35,7 +42,40 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 电脑上的配对二维码（用系统相机扫描）。 The pairing QR shown on the computer (scanned with the camera). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="weavelink" android:host="pair" />
+            </intent-filter>
         </activity>
+
+        <!-- 系统分享「发送到电脑」。 System share target "send to computer". -->
+        <activity
+            android:name=".link.SendToComputerActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/send_to_computer"
+            android:icon="@drawable/ic_send"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".link.LinkService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <activity
             android:name=".settings.PermissionActivity"

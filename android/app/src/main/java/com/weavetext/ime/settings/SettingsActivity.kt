@@ -62,6 +62,7 @@ sealed class Route {
     data object Help : Route()
     data object Privacy : Route()
     data object Licenses : Route()
+    data object Link : Route()
 
     companion object {
         /**
@@ -81,6 +82,7 @@ sealed class Route {
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
                 "dictionary" -> listOf(Dictionary)
+                "link" -> listOf(Link)
                 "about" -> listOf(About) + when (parts.getOrNull(1)) { "help" -> listOf(Help); "privacy" -> listOf(Privacy); else -> emptyList() }
                 else -> emptyList()
             }
@@ -129,6 +131,7 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Help -> HelpScreen()
                     Route.Privacy -> PrivacyScreen()
                     Route.Licenses -> LicensesScreen()
+                    Route.Link -> LinkScreen()
                 }
             }
         }
@@ -186,7 +189,7 @@ class SettingsActivity : ComponentActivity() {
         val st = deps.status()
         val done = WeavePrefs.of(this).getBoolean(WeavePrefs.ONBOARDING_DONE, false)
         val start = if (!done && !(st.enabled && st.isDefault)) listOf<Route>(Route.Onboarding) else listOf(Route.Home)
-        nav = Navigator(start + Route.fromPath(intent?.data?.path, runtimeReady()))
+        nav = Navigator(start + (linkIntent(intent) ?: Route.fromPath(intent?.data?.path, runtimeReady())))
         registerReceiver(imeChanged, IntentFilter(Intent.ACTION_INPUT_METHOD_CHANGED))
         setContent { SettingsApp(deps, nav, statusVersion) }
     }
@@ -195,13 +198,26 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val extra = Route.fromPath(intent.data?.path, runtimeReady())
+        val extra = linkIntent(intent) ?: Route.fromPath(intent.data?.path, runtimeReady())
         if (extra.isNotEmpty()) { nav.replaceAll(Route.Home); extra.forEach(nav::push) }
+    }
+
+    /**
+     * 相机扫到电脑上的配对二维码（weavelink://pair?…）：交给互联页，确认后直接配对。
+     * A pairing QR scanned with the camera (weavelink://pair?…) goes to the link page, which pairs after confirmation.
+     */
+    private fun linkIntent(i: Intent?): List<Route>? {
+        val u = i?.data ?: return null
+        if (u.scheme != "weavelink" || u.host != "pair") return null
+        val pair = com.weavetext.ime.link.LinkUri.parse(u.toString())
+        if (pair != null) com.weavetext.ime.link.LinkManager.get(this).offerPair(pair)
+        return listOf(Route.Link)
     }
 
     override fun onResume() {
         super.onResume()
         statusVersion++
+        com.weavetext.ime.link.LinkManager.get(this).ensureRunning()
     }
 
     override fun onDestroy() {
