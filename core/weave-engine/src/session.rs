@@ -635,7 +635,10 @@ impl Engine {
         match self.schema {
             Schema::Pinyin => {
                 // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
-                if self.raw.starts_with('v') && self.consumed == 0 && crate::special::v_accepts(c) {
+                // 只在 v 之后紧跟数字或运算符（或只有 v）时才进入；very 之类的英文不受影响。
+                // Only when nothing but digits/operators follow `v` (or `v` alone), so words like "very" are untouched.
+                let in_v = self.raw.strip_prefix('v').is_some_and(|b| b.chars().all(crate::special::v_accepts));
+                if in_v && self.consumed == 0 && crate::special::v_accepts(c) {
                     self.raw.push(c);
                     self.refresh();
                     return true;
@@ -1666,6 +1669,9 @@ mod wubi_tests {
         e.clear();
         // 普通拼音里数字不进组合串。 Digits don't enter normal pinyin.
         typing(&mut e, "ri");
+        assert!(!e.input_char('1'));
+        e.clear();
+        typing(&mut e, "very");
         assert!(!e.input_char('1'));
     }
 

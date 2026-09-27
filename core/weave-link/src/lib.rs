@@ -13,6 +13,11 @@
 //! 事件 / events (`type`):
 //! `peerFound` · `peerLost` · `connected` · `disconnected` · `paired` · `pairFailed` · `pairAttempt` · `text` ·
 //! `fileStart` · `fileProgress` · `fileDone` · `fileFailed` · `error`
+//!
+//! 发送文件时，若连报价都没发出去，只会收到 `fileFailed`（没有 `fileStart`）。每次 `sendFile` 各开一个线程，
+//! 同一连接上的多个文件会交错传输；需要逐个发送时由宿主排队。
+//! A send that fails before the offer goes out yields only `fileFailed` (no `fileStart`). Each `sendFile` runs on
+//! its own thread, so files on one connection interleave; hosts queue them when they want one at a time.
 
 pub mod discovery;
 pub mod secure;
