@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-Hans"><head><meta charset="utf-8">@STYLE@</head><body>
+<h2>织文输入法已安装</h2>
+<p>在<b>菜单栏右上角的输入法菜单</b>里选择 <b>「织文拼音」</b>即可开始输入（系统语言是英文时显示为「织文拼音 WeaveText」）。</p>
+<p>如果菜单里还没有「织文拼音」，请<b>注销后重新登录一次</b>；仍然没有时，到 系统设置 › 键盘 › 输入法 › 编辑…，点「+」，
+在「简体中文」下添加。</p>
+<p>这个安装包没有开发者签名。以后打开新版本的安装包时如果 macOS 拦下它，到 <b>系统设置 › 隐私与安全性</b>，
+在页面下方点 <b>「仍要打开」</b>（或按住 Control 点安装包，选「打开」）。</p>
+<p>卸载：织文设置 › 关于 › 卸载织文输入法。</p>
+<div class="en">
+<h2>WeaveText is installed</h2>
+<p>Pick <b>织文拼音</b> (shown as “织文拼音 WeaveText” in English) from the <b>input menu at the top right of the menu
+bar</b> to start typing.</p>
+<p>If 织文拼音 is not in the menu yet, <b>log out and back in once</b>; if it is still missing, open System Settings ›
+Keyboard › Input Sources › Edit…, press “+” and add it under Simplified Chinese.</p>
+<p>This package has no developer signature. If macOS blocks a newer package later, go to <b>System Settings › Privacy
+&amp; Security</b> and click <b>Open Anyway</b> near the bottom (or Control-click the package and choose Open).</p>
+<p>Uninstall: WeaveText Settings › 关于 (About) › 卸载织文输入法.</p>
+</div>
+</body></html>

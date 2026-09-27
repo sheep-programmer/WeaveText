@@ -9,7 +9,7 @@ if args.count > 1 {
     switch args[1] {
     // 顶层代码在主线程上跑，输入源接口要求如此。 Top-level code runs on the main thread, as the input-source API requires.
     case "--register":
-        exit(MainActor.assumeIsolated { Registration.register(bundleURL: Bundle.main.bundleURL) } ? 0 : 1)
+        exit(MainActor.assumeIsolated { Registration.register(bundleURL: Bundle.main.bundleURL) }.rawValue)
     case "--disable":
         exit(MainActor.assumeIsolated { Registration.disable() } ? 0 : 1)
     case "--selftest":
@@ -45,6 +45,7 @@ if args.count > 1 {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var server: IMKServer?
+    private var terminationSignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let name = Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String
@@ -53,6 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         EngineHost.shared.startBackground()
         LinkService.shared.start()
         StatusBar.shared.start()
+        // 安装包更新前用 TERM 请旧副本退出：照常走退出流程，先写回用户词。
+        // The package asks the old copy to quit with TERM before updating: go through the normal termination so the
+        // user words are written back first.
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        terminationSignal = source
     }
 
     func applicationWillTerminate(_ notification: Notification) {

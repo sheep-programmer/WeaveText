@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-Hans"><head><meta charset="utf-8">@STYLE@</head><body>
+<h2>欢迎安装织文输入法 v@VERSION@</h2>
+<p>织文会装到 <b>/Library/Input Methods</b>（这台 Mac 的所有用户都能用），安装时需要输入一次管理员密码。</p>
+<ul>
+  <li>装好后会自动登记、启用并选中「织文拼音」，不用再去系统设置里添加。</li>
+  <li>以前装在自己「输入法」文件夹里的旧版本会被替换；用户词、专业词库与设置都会保留。</li>
+  <li>支持 macOS 13 及以上，Apple 芯片与 Intel 通用。</li>
+</ul>
+<div class="en">
+<h2>Welcome to WeaveText v@VERSION@</h2>
+<p>WeaveText is installed into <b>/Library/Input Methods</b> (for every user of this Mac); Installer asks for an
+administrator password once.</p>
+<ul>
+  <li>织文拼音 is registered, enabled and selected for you — nothing to add in System Settings.</li>
+  <li>An older copy in your own Input Methods folder is replaced; your words, domain dictionaries and settings stay.</li>
+  <li>macOS 13 or later, Apple silicon and Intel.</li>
+</ul>
+</div>
+</body></html>

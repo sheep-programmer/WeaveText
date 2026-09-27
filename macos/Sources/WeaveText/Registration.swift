@@ -16,40 +16,37 @@ enum Registration {
     /// keyboard input sources change; the input menu refreshes on it.
     nonisolated static let enabledSourcesChanged = kTISNotifyEnabledKeyboardInputSourcesChanged as String
 
-    static func register(bundleURL: URL) -> Bool {
+    /// `--register` 的退出码。 Exit codes of `--register`.
+    enum RegisterExit: Int32 {
+        case ok = 0
+        case failed = 1
+        /// 已登记，但列表里还没有（多半要注销一次）。 Registered, but not listed yet (usually needs a log-out).
+        case notListed = 2
+    }
+
+    /// `--register`：登记、启用并选中，可以反复跑；成功时不输出，经过都记在 ~/Library/Logs/WeaveText-install.log。
+    /// `--register`: register, enable and select, safe to repeat; silent on success, every run is written to
+    /// ~/Library/Logs/WeaveText-install.log.
+    static func register(bundleURL: URL, log: InstallLog = InstallLog()) -> RegisterExit {
+        log.append("--register \(bundleURL.path) (user \(NSUserName()))")
         do {
-            guard try registerAndEnable(bundleURL: bundleURL) else {
-                fputs("registered, but \(modeID) is not listed or not enabled yet\n", stderr)
-                return false
-            }
-            return true
+            let report = try RegisterFlow.run(bundleURL: bundleURL, modeID: modeID, backend: SystemTIS())
+            log.append(report.summary)
+            if report.listed { return .ok }
+            fputs("\(report.summary)\n", stderr)
+            return .notListed
         } catch {
-            fputs("TISRegisterInputSource failed: \(error)\n", stderr)
-            return false
+            let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            log.append("failed: \(text)")
+            fputs("\(text)\n", stderr)
+            return .failed
         }
     }
 
     /// 登记、启用并选中；返回拼音输入源是否已在列表里并已启用。
     /// Register, enable and select; returns whether the pinyin source is listed and enabled.
     static func registerAndEnable(bundleURL: URL) throws -> Bool {
-        onMain()
-        let status = TISRegisterInputSource(bundleURL as CFURL)
-        guard status == noErr else { throw InstallError.registerFailed(status) }
-        let all = sources()
-        guard !all.isEmpty else { return false }
-        for s in all where bool(s, kTISPropertyInputSourceIsEnableCapable) { TISEnableInputSource(s) }
-        if let mode = all.first(where: { string(s: $0, kTISPropertyInputSourceID) == modeID }),
-           bool(mode, kTISPropertyInputSourceIsSelectCapable) {
-            TISSelectInputSource(mode)
-        }
-        // 系统在启用时本就会广播；再发一次，让已经开着的输入法菜单也重新读列表。不去结束系统的菜单进程。
-        // The system broadcasts on enable already; send it once more so an input menu that is already open re-reads the
-        // list. The system's menu process is never killed.
-        DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name(enabledSourcesChanged), object: nil, userInfo: nil, deliverImmediately: true)
-        // 重新查一次：拼音输入源在不在、启用了没有。 Query again: is the pinyin source there and enabled.
-        return sources().contains { string(s: $0, kTISPropertyInputSourceID) == modeID
-            && bool($0, kTISPropertyInputSourceIsEnabled) }
+        try RegisterFlow.run(bundleURL: bundleURL, modeID: modeID, backend: SystemTIS()).listed
     }
 
     /// 卸载前停用。 Disable before uninstalling.
@@ -58,6 +55,25 @@ enum Registration {
         let all = sources()
         for s in all { TISDisableInputSource(s) }
         return !all.isEmpty
+    }
+
+    static func tisRegister(_ bundleURL: URL) -> Int32 {
+        onMain()
+        return TISRegisterInputSource(bundleURL as CFURL)
+    }
+
+    static func states() -> [InputSourceState] {
+        sources().compactMap { s in
+            guard let id = string(s: s, kTISPropertyInputSourceID) else { return nil }
+            return InputSourceState(id: id, enableCapable: bool(s, kTISPropertyInputSourceIsEnableCapable),
+                                    selectCapable: bool(s, kTISPropertyInputSourceIsSelectCapable),
+                                    enabled: bool(s, kTISPropertyInputSourceIsEnabled),
+                                    selected: bool(s, kTISPropertyInputSourceIsSelected))
+        }
+    }
+
+    static func apply(_ id: String, _ call: (TISInputSource) -> OSStatus) {
+        for s in sources() where string(s: s, kTISPropertyInputSourceID) == id { _ = call(s) }
     }
 
     private static func sources() -> [TISInputSource] {
@@ -80,6 +96,22 @@ enum Registration {
     /// traps by itself).
     private static func onMain() {
         assert(Thread.isMainThread, "TIS must be called on the main thread")
+    }
+}
+
+/// 真实的系统输入源接口。 The real system input-source API.
+@MainActor
+struct SystemTIS: InputSourceBackend {
+    func register(_ bundleURL: URL) -> Int32 { Registration.tisRegister(bundleURL) }
+    func sources() -> [InputSourceState] { Registration.states() }
+    func enable(_ id: String) { Registration.apply(id, TISEnableInputSource) }
+    func select(_ id: String) { Registration.apply(id, TISSelectInputSource) }
+    func announce() {
+        // 系统在启用时本就会广播；再发一次，让已经开着的输入法菜单也重新读列表。不去结束系统的菜单进程。
+        // The system broadcasts on enable already; send it once more so an input menu that is already open re-reads
+        // the list. The system's menu process is never killed.
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name(Registration.enabledSourcesChanged), object: nil, userInfo: nil, deliverImmediately: true)
     }
 }
 

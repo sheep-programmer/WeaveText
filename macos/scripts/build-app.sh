@@ -1,6 +1,6 @@
 #!/bin/bash
-# 构建织文输入法 macOS 版：内核通用静态库 → Swift 双架构 → 组装 .app → 自签名 → 打 zip 与磁盘映像。
-# Build WeaveText for macOS: universal engine lib → Swift for both archs → assemble .app → ad-hoc sign → zip and DMG.
+# 构建织文输入法 macOS 版：内核通用静态库 → Swift 双架构 → 组装 .app → 自签名 → 打 zip、安装包与磁盘映像。
+# Build WeaveText for macOS: universal engine lib → Swift for both archs → assemble .app → ad-hoc sign → zip, .pkg and DMG.
 #
 # 只需命令行工具（无需 Xcode）。 Needs only the command-line tools (no Xcode).
 # 用法 / Usage: macos/scripts/build-app.sh [--skip-tests]
@@ -10,7 +10,10 @@ MAC="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$MAC/.." && pwd)"
 BUILD="$MAC/build"
 APP="$BUILD/WeaveText.app"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/core/Cargo.toml" | head -1)"
+# 内核源码目录；WEAVE_CORE 可指向另一份（比如 `git archive HEAD core` 导出的已提交版本）。
+# The engine sources; WEAVE_CORE may point at another copy (e.g. the committed tree exported with `git archive HEAD core`).
+CORE="${WEAVE_CORE:-$ROOT/core}"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CORE/Cargo.toml" | head -1)"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 SKIP_TESTS=0
 [[ "${1:-}" == "--skip-tests" ]] && SKIP_TESTS=1
@@ -29,7 +32,7 @@ step "内核 / engine (weave-c) for arm64 + x86_64"
 # curve25519-dalek 4.1's SIMD backend fails to build on newer rustc for x86_64; use the serial backend.
 CARGO_OUT="$BUILD/cargo"
 export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS='--cfg curve25519_dalek_backend="serial"'
-( cd "$ROOT/core"
+( cd "$CORE"
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
     CARGO_TARGET_DIR="$CARGO_OUT" MACOSX_DEPLOYMENT_TARGET=13.0 CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=false \
       cargo build --release -p weave-c --target "$t"
@@ -74,7 +77,7 @@ cp -R "$MAC/Resources/zh-Hans.lproj" "$MAC/Resources/en.lproj" "$APP/Contents/Re
 DATA="$ROOT/data/build"
 # 内核认识的资源名取自 session.rs 的 RESOURCES，有 .wvz 的都带上；这几个必须有。
 # The resource keys the engine knows come from RESOURCES in session.rs; every one with a .wvz ships. These are required.
-KEYS=($(sed -n '/^pub const RESOURCES/,/^];/p' "$ROOT/core/weave-engine/src/session.rs" | sed -n 's/^ *("\([a-z0-9_]*\)",.*/\1/p'))
+KEYS=($(sed -n '/^pub const RESOURCES/,/^];/p' "$CORE/weave-engine/src/session.rs" | sed -n 's/^ *("\([a-z0-9_]*\)",.*/\1/p'))
 REQUIRED=(pinyin wubi86 english grammar emoji st_characters st_phrases follow)
 if [[ ${#KEYS[@]} -eq 0 ]]; then
   echo "读不到内核的资源列表 / cannot read RESOURCES from session.rs" >&2
@@ -122,10 +125,15 @@ step "打包 / zip"
 rm -f "$BUILD/WeaveText-mac.zip"
 ditto -c -k --keepParent "$APP" "$BUILD/WeaveText-mac.zip"
 
+step "安装包 / installer package"
+# 自带结构检查（未签名、装到 /Library/Input Methods、脚本可执行、包内程序签名完好）。
+# Checks its own structure (unsigned, installs into /Library/Input Methods, executable scripts, intact app signature).
+"$MAC/scripts/make-pkg.sh" "$APP"
+
 step "磁盘映像 / disk image"
-"$MAC/scripts/make-dmg.sh" "$APP"
+"$MAC/scripts/make-dmg.sh" "$APP" "$BUILD/WeaveText-$VERSION.pkg"
 
 step "完成 / done"
 lipo -info "$APP/Contents/MacOS/WeaveText"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Format|Signature" || true
-du -sh "$APP" "$BUILD/WeaveText-mac.zip" "$BUILD/WeaveText-$VERSION.dmg"
+du -sh "$APP" "$BUILD/WeaveText-mac.zip" "$BUILD/WeaveText-$VERSION.pkg" "$BUILD/WeaveText-$VERSION.dmg"

@@ -1,0 +1,6 @@
+#!/bin/bash
+# 织文输入法安装包的 postinstall（「安装器」以 root 身份运行，参数：包路径、安装位置、目标卷）。
+# The WeaveText package's postinstall (run as root by Installer; arguments: package, install location, target volume).
+set -u
+. "$(dirname "$0")/weavetext-lib.sh"
+postinstall_main "$@"
