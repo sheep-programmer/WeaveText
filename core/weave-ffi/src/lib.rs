@@ -249,6 +249,12 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeLoadHotwor
     with_engine(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as jint).unwrap_or(-1))
 }
 
+/// 宿主自己往编辑器写了字（标点、空格）。 The host wrote text itself (punctuation, a space).
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeBreakChain(_env: JNIEnv, _c: JClass, h: jlong) {
+    with_engine(h, (), |e| e.break_chain())
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetUtcOffset(_env: JNIEnv, _c: JClass, h: jlong, minutes: jint) {

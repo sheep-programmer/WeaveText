@@ -676,7 +676,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
         update { it.copy(chinese = chinese) }
     }
 
+    /** 输入法直接写的字（标点、空格、符号），不是内核上屏：之后的退格不撤销学习。 Written directly, not by the engine. */
     private fun commit(text: String) {
+        if (text.isEmpty()) return
+        engine?.breakChain()
+        write(text)
+    }
+
+    private fun write(text: String) {
         if (text.isEmpty()) return
         val ic = ic(modeled = true) ?: return
         ic.commitText(text, 1)
@@ -697,7 +704,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private fun drainCommit(): EngineSnapshot? {
         stamp++
         val snap = engine?.snapshot() ?: return null
-        if (snap.commit.isNotEmpty()) commit(snap.commit)
+        if (snap.commit.isNotEmpty()) write(snap.commit)
         return snap
     }
 

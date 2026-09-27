@@ -159,6 +159,19 @@ pub extern "C" fn weave_load_hotwords(h: *mut WeaveEngine, tsv_path: *const c_ch
     with(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as i32).unwrap_or(-1))
 }
 
+/// 宿主自己往编辑器写了字（标点、空格、符号）：之后的退格不撤销学习，也不与前面连成新词。
+/// The host wrote text itself (punctuation, a space): later backspaces don't undo learning; no chaining.
+#[no_mangle]
+pub extern "C" fn weave_break_chain(h: *mut WeaveEngine) {
+    with(h, (), |e| e.break_chain())
+}
+
+/// 已载入的扩展词库 id（JSON 数组，含热词 "cloud"）。 Ids of the loaded extra lexicons as JSON, "cloud" included.
+#[no_mangle]
+pub extern "C" fn weave_pack_ids_json(h: *mut WeaveEngine) -> *mut c_char {
+    with(h, std::ptr::null_mut(), |e| out(Value::Array(e.pack_ids().iter().map(|i| Value::String(i.clone())).collect())))
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "C" fn weave_set_utc_offset(h: *mut WeaveEngine, minutes: i32) {

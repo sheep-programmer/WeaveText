@@ -36,6 +36,8 @@ interface KeyEngine {
     fun setUtcOffset(minutes: Int) {}
     /** 计算算式（如 128*4），不是算式时返回 null。 Evaluate an expression like 128*4; null if it isn't one. */
     fun evaluate(expr: String): String? = null
+    /** 输入法自己往编辑器写了字（标点、空格）：退格不再撤销学习。 The IME wrote text itself; no learning undo after it. */
+    fun breakChain() {}
 }
 
 /**
@@ -63,6 +65,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     /** 云端热词：验签后作为扩展词库挂上，返回词数，失败 -1。 Hot words: verified and attached; word count or -1. */
     fun loadHotwords(tsvPath: String, sigPath: String): Int = nativeLoadHotwords(handle, tsvPath, sigPath)
     override fun evaluate(expr: String): String? = nativeEval(expr)
+    override fun breakChain() = nativeBreakChain(handle)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
     override fun backspace(): Boolean = nativeBackspace(handle)
@@ -159,6 +162,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeUnloadPack(h: Long, id: String): Boolean
         @JvmStatic private external fun nativeLoadHotwords(h: Long, tsv: String, sig: String): Int
         @JvmStatic private external fun nativeEval(expr: String): String?
+        @JvmStatic private external fun nativeBreakChain(h: Long)
         @JvmStatic private external fun nativeBackspace(h: Long): Boolean
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeSelectPinyin(h: Long, index: Int): Boolean

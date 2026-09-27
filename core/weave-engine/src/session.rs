@@ -661,6 +661,14 @@ impl Engine {
         }
     }
 
+    /// 宿主直接往编辑器写了别的东西（标点、空格、符号）：之后的退格不再撤销学习，也不和前面连成新词。
+    /// The host wrote something itself (punctuation, a space, a symbol): later backspaces no longer undo learning
+    /// and the next commit doesn't chain with the previous one.
+    pub fn break_chain(&mut self) {
+        self.last_learned = None;
+        self.prev_commit = None;
+    }
+
     /// 收起联想词。 Dismiss the predictions.
     pub fn drop_predictions(&mut self) {
         if self.predicting {
@@ -947,13 +955,13 @@ impl Engine {
             self.select(0);
         }
         // 接下来是标点或直接上屏的文字：之后的词不再和前面连成新词。 Punctuation follows: break the chain.
-        self.prev_commit = None;
+        self.break_chain();
     }
 
     /// 回车：原样上屏输入码。 Enter: commit the raw keys as typed.
     pub fn commit_raw(&mut self) {
         self.drop_predictions();
-        self.prev_commit = None;
+        self.break_chain();
         let sel: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         let mut text = self.out(&sel);
         match self.schema {
@@ -1866,6 +1874,13 @@ mod wubi_tests {
         assert!(e.user_word_count() >= 1);
         assert!(!e.backspace());
         assert_eq!(e.user_word_count(), 0);
+        // 输入法自己写了标点之后的退格也不算。 Nor after the IME wrote punctuation itself.
+        typing(&mut e, "shijian");
+        e.select(0);
+        let n = e.user_word_count();
+        e.break_chain();
+        assert!(!e.backspace());
+        assert_eq!(e.user_word_count(), n);
         // 上屏后又打了字，再退格就不算撤销。 After typing more, a backspace is no undo.
         typing(&mut e, "shijian");
         e.select(0);

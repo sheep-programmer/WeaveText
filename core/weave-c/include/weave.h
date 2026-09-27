@@ -47,6 +47,12 @@ bool weave_unload_pack(WeaveEngine *h, const char *id);
 /* 云端热词（hotwords.tsv + .sig，验签后作为扩展词库 cloud）；返回词数，失败 -1。卸载：weave_unload_pack(h, "cloud")。
    Cloud hot words (verified, loaded as the pack "cloud"); word count or -1. Remove with weave_unload_pack(h, "cloud"). */
 int32_t weave_load_hotwords(WeaveEngine *h, const char *tsv_path, const char *sig_path);
+/* 验签失败（-1）时已挂上的旧热词保持不变。 On failure (-1) the previously attached hot words stay as they were. */
+/* ["med","cloud",…] */
+char *weave_pack_ids_json(WeaveEngine *h);
+/* 宿主自己写了字（标点、空格、符号）：退格不再撤销学习，不与前面连成新词。
+   The host wrote text itself: backspace no longer undoes learning, no chaining with the previous commit. */
+void weave_break_chain(WeaveEngine *h);
 /* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
 char *weave_eval(const char *expr);
 
