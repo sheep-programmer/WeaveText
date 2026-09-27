@@ -253,7 +253,14 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         a11y.invalidate()
     }
 
-    private fun rowTop() = if (english || floating) 0f else metrics.dp(18f) * metrics.topScale
+    /** 候选行的上沿：只有中文且有组合串时才给组合串留一行（联想词、本地列表整行居中）。 Top of the candidate row. */
+    private fun rowTop() = if (english || floating || preedit.isEmpty()) 0f else metrics.dp(18f) * metrics.topScale
+
+    /**
+     * 首项是否突出显示：有组合串（它就是空格会上屏的那个）或英文时突出；联想词没有「默认」项，一律平等。
+     * Whether the first item stands out: with a preedit (it's what space commits) or in English; predictions have no default.
+     */
+    private val firstStandsOut get() = english || preedit.isNotEmpty()
     private fun expandW() = metrics.dp(44f)
 
     private fun remeasure(preeditChanged: Boolean = true) {
@@ -298,7 +305,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val maxItem = (width - expandW()) * 0.7f - m.dp(24f)
         while (measured < n && contentWidth <= x) {
             val i = measured
-            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
+            text.typeface = if (i == 0 && firstStandsOut) mediumTf else Typeface.DEFAULT
             val s = texts[i]
             var tw = text.measureText(s)
             val out = if (tw > maxItem) {
@@ -456,7 +463,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             val l = lead + lefts[i] - scrollX0
             if (l > right) break
             if (l + widths[i] < lead) continue
-            val pill = i == 0 && p.candidatePill
+            val pill = i == 0 && p.candidatePill && firstStandsOut
             if (i == pressedCand || pill) {
                 fill.color = if (pill && i != pressedCand) p.candidatePillColor else p.toolbarActive
                 val h = min(m.dp(30f), rowH)
@@ -467,8 +474,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 fill.color = p.divider
                 c.drawRect(l - m.dp(0.5f), top + rowH * 0.3f, l + m.dp(0.5f), top + rowH * 0.7f, fill)
             }
-            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
-            text.color = if (i == 0) p.candidateFirst else p.label
+            val first = i == 0 && firstStandsOut
+            text.typeface = if (first) mediumTf else Typeface.DEFAULT
+            text.color = if (first) p.candidateFirst else p.label
             val sh = shown[i] ?: continue
             c.drawText(sh, l + m.dp(12f), base, text)
             // 英文：首项就是正在敲的单词，带上光标，每个字母当帧可见。 English: the first item is the word being typed, with a caret.

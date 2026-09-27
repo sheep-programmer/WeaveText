@@ -113,6 +113,14 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
 
     @Test fun pinyinComposingLight() { val (_, c) = keyboard(false); c.previewState(composing()); snap("pinyin_composing_light") }
 
+    /** 上屏后的联想词：整行居中、不突出首项。 Predictions after a commit: centred, no highlighted first item. */
+    @Test fun pinyinPredictionsLight() {
+        val (_, c) = keyboard(false)
+        val words = listOf("我们", "今天", "的", "谢谢", "朋友", "是", "大家").map { com.weavetext.ime.core.Candidate(it, "", false) }
+        c.previewState(composing(preedit = "", cands = words).copy(composing = false, totalCandidates = words.size))
+        snap("pinyin_predictions_light")
+    }
+
     @Test fun pinyinComposingDark() { val (_, c) = keyboard(true); c.previewState(composing()); snap("pinyin_composing_dark") }
 
     @Test fun t9Composing() {
