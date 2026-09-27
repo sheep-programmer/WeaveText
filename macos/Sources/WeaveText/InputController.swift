@@ -17,9 +17,15 @@ final class WeaveInputController: IMKInputController {
     private var preedit = ""
     /// 敲等号后给出的算式结果（候选窗里只有它一个）。 The result offered after `=`, the only item in the panel.
     private var calcResult: String?
+    /// 候选窗里是上屏后的联想词。 The panel shows predictions after a commit.
+    private var predicting = false
+    /// 上一个动作是内核上屏（紧接着退格会撤销刚学到的词）。 The last action was an engine commit; a backspace right
+    /// after it undoes what the commit learned.
+    private var justCommitted = false
 
     override func recognizedEvents(_ sender: Any!) -> Int {
-        Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
+        // 鼠标点在文档里时收起联想词。 A click in the document dismisses the predictions.
+        Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged, .leftMouseDown]).rawValue)
     }
 
     override func activateServer(_ sender: Any!) {
@@ -30,6 +36,8 @@ final class WeaveInputController: IMKInputController {
         afterDigit = false
         preedit = ""
         calcResult = nil
+        predicting = false
+        justCommitted = false
         capsLock = NSEvent.modifierFlags.contains(.capsLock)
         host.syncClock()
     }
@@ -49,6 +57,7 @@ final class WeaveInputController: IMKInputController {
 
     /// 把正在组合的字母原样上屏并复位。 Commit the typed letters as they are and reset.
     func finishComposition(client: IMKTextInput? = nil) {
+        dismissPredictions()
         guard let engine = host.engine, engine.isComposing else { return }
         engine.commitRaw()
         refresh(client ?? self.client())
@@ -65,6 +74,10 @@ final class WeaveInputController: IMKInputController {
             return false
         case .keyDown:
             return keyDown(event, client)
+        case .leftMouseDown:
+            dismissPredictions()
+            justCommitted = false
+            return false
         default:
             return false
         }
@@ -96,6 +109,21 @@ final class WeaveInputController: IMKInputController {
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
         if calcResult != nil, handleCalcKey(key, client) { return true }
+        let wasJustCommitted = justCommitted
+        justCommitted = false
+        if predicting {
+            switch KeyMapper.predictionAction(for: key, count: pager.page.count, pageSize: prefs.pageSize) {
+            case .select(let n):
+                engine.select(pager.offset + n)
+                refresh(client)
+                return true
+            case .dismiss:
+                dismissPredictions()
+                return true
+            case .dismissAndHandle:
+                dismissPredictions()
+            }
+        }
         let composing = engine.isComposing
         let ctx = KeyContext(composing: composing, chinese: host.chinese, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
@@ -110,6 +138,16 @@ final class WeaveInputController: IMKInputController {
         switch action {
         case .pass:
             afterDigit = !ctx.composing && key.character?.isNumber == true && key.character?.isASCII == true
+            if !ctx.composing, key.keyCode == KeyCode.delete, wasJustCommitted, !key.command, !key.option {
+                // 上屏后马上退格：先让内核撤销刚学到的，再把退格交给应用删字。
+                // A backspace right after a commit: let the engine undo what it learned, then the app deletes.
+                engine.backspace()
+            } else if !ctx.composing, ctx.chinese, !key.command, !key.control, !key.option,
+                      key.character.map({ !$0.isWhitespace || $0 == " " }) == true, !isFunction(key.keyCode) {
+                // 直接上屏的字符隔开前后两次上屏，不让它们连成新词。 Text typed straight through breaks the chain
+                // of consecutive commits, so they don't join into a new word.
+                engine.commitFirst()
+            }
             return false
         case .swallow:
             return true
@@ -129,6 +167,8 @@ final class WeaveInputController: IMKInputController {
                 commitHighlighted(engine, all: true)
                 refresh(client)
             }
+            // 标点隔开前后两次上屏。 Punctuation breaks the chain of consecutive commits.
+            if !ctx.composing { engine.commitFirst() }
             guard host.scheme.isChinese else {
                 if ctx.composing { insert(String(c), client) }
                 return ctx.composing
@@ -173,6 +213,21 @@ final class WeaveInputController: IMKInputController {
         let i = pager.highlightedIndex
         if i == 0 || pager.page.isEmpty { engine.commitFirst() } else { engine.select(i) }
         if all, engine.isComposing { engine.commitFirst() }
+    }
+
+    /// 收起联想词（换输入框、点击文档、空格回车等）。 Dismiss the predictions (focus change, a click, space, return…).
+    private func dismissPredictions() {
+        guard predicting else { return }
+        predicting = false
+        host.engine?.dismissPredictions()
+        pager.reset(total: 0, pageSize: prefs.pageSize) { _, _ in [] }
+        if calcResult == nil { CandidatePanel.shared.hide() }
+    }
+
+    private func isFunction(_ code: UInt16) -> Bool {
+        [KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.tab, KeyCode.delete, KeyCode.escape, KeyCode.forwardDelete,
+         KeyCode.home, KeyCode.end, KeyCode.pageUp, KeyCode.pageDown, KeyCode.left, KeyCode.right, KeyCode.up,
+         KeyCode.down].contains(code)
     }
 
     private var fetch: Pager.Fetch {
@@ -244,6 +299,7 @@ final class WeaveInputController: IMKInputController {
     // MARK: - 上屏与显示 / Commit and display
 
     private func insert(_ text: String, _ client: IMKTextInput) {
+        justCommitted = false
         client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
@@ -251,16 +307,26 @@ final class WeaveInputController: IMKInputController {
     private func refresh(_ client: IMKTextInput?) {
         guard let engine = host.engine else { return }
         let s = engine.snapshot()
-        if !s.commit.isEmpty, let client { insert(s.commit, client) }
-        if s.composing {
+        if !s.commit.isEmpty, let client {
+            insert(s.commit, client)
+            justCommitted = true
+        }
+        predicting = !s.composing && s.predicting && !s.candidates.isEmpty
+        if s.composing || predicting {
             let first = s.candidates
             pager.reset(total: s.total, pageSize: prefs.pageSize) { [weak self] offset, limit in
                 offset + limit <= first.count
                     ? Array(first[offset..<offset + limit])
                     : self?.host.engine?.candidates(offset: offset, limit: limit) ?? []
             }
-            preedit = s.preedit
-            if let client { setMarked(s.preedit, client) }
+            if predicting {
+                // 联想词没有组合串。 Predictions have no marked text.
+                if s.commit.isEmpty, !preedit.isEmpty, let client { setMarked("", client) }
+                preedit = ""
+            } else {
+                preedit = s.preedit
+                if let client { setMarked(s.preedit, client) }
+            }
             showCandidates(client)
         } else {
             if s.commit.isEmpty, !preedit.isEmpty, let client { setMarked("", client) }
@@ -282,9 +348,11 @@ final class WeaveInputController: IMKInputController {
         guard let client else { return }
         var caret = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &caret)
-        let state = CandidateState(preedit: preedit, candidates: pager.page, highlight: pager.highlight,
-                                   hasPrevious: pager.hasPrevious, hasNext: pager.hasNext,
-                                   orientation: prefs.orientation, fontSize: CGFloat(prefs.fontSize))
+        // 联想词不高亮（空格不选它），也不翻页。 Predictions have no highlight (space doesn't pick) and no paging.
+        let state = CandidateState(preedit: preedit, candidates: pager.page, highlight: predicting ? -1 : pager.highlight,
+                                   hasPrevious: !predicting && pager.hasPrevious, hasNext: !predicting && pager.hasNext,
+                                   orientation: prefs.orientation, fontSize: CGFloat(prefs.fontSize),
+                                   hint: predicting ? "联想" : "")
         CandidatePanel.shared.show(state, caret: caret, owner: self)
     }
 

@@ -88,6 +88,11 @@ struct SchemesPage: View {
                 Footnote(pinyinFamily ? "打开后两种读音互相通用。" : "模糊音只对全拼与双拼生效。")
             }
             .disabled(!pinyinFamily)
+            Section {
+                Toggle("联想词", isOn: $prefs.prediction)
+            } footer: {
+                Footnote("上屏后推荐下一个词，越用越懂你的搭配。按数字选，空格、回车或 Esc 收起。")
+            }
             Section("输出") {
                 Toggle("繁体输出", isOn: $prefs.traditional)
                 Toggle("表情候选", isOn: $prefs.emoji)

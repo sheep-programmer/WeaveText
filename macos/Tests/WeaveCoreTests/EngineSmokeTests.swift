@@ -62,4 +62,32 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         #expect(WeaveSession.eval("你好") == nil)
         #expect(WeaveSession.eval("12") == nil)
     }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
+    func predictsAfterACommitAndUndoesOnBackspace() throws {
+        let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-p-\(getpid())")
+        try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("pinyin")
+        #expect(e.setOption("candidates.prediction", true))
+        for c in "jintian" { #expect(e.input(c)) }
+        let i = try #require(e.snapshot().candidates.firstIndex { $0.text == "今天" })
+        #expect(e.select(i))
+        let s = e.snapshot()
+        #expect(s.commit == "今天")
+        #expect(!s.composing && s.predicting)
+        #expect(s.candidates.contains { ["晚上", "早上", "下午"].contains($0.text) })
+        // 选联想词：上屏并接着联想。 Picking a prediction commits it and predicts again.
+        #expect(e.select(0))
+        #expect(!e.snapshot().commit.isEmpty)
+        e.dismissPredictions()
+        #expect(!e.snapshot().predicting)
+        // 上屏后退格：内核返回 false（由应用删字）。 A backspace after a commit returns false; the app deletes.
+        #expect(!e.backspace())
+        #expect(e.setOption("candidates.prediction", false))
+        for c in "jintian" { _ = e.input(c) }
+        e.commitFirst()
+        #expect(!e.snapshot().predicting)
+    }
 }

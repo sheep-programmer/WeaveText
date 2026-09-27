@@ -4,7 +4,8 @@ import WeaveCore
 
 /// 构建脚本用的自检与截图（不启动输入法服务）。 Self-test and snapshots for the build script (no IME server).
 enum DevTools {
-    /// 用包内词库打「nihao」，首选应为「你好」。 Type "nihao" with the bundled data; the top pick must be 你好.
+    /// 用包内词库打「nihao」，首选应为「你好」；上屏「今天」后有联想。 Type "nihao" with the bundled data; the top pick
+    /// must be 你好, and committing 今天 must offer predictions.
     static func selfTest() -> Bool {
         let data = Bundle.main.resourceURL!.appendingPathComponent("data").path
         let user = FileManager.default.temporaryDirectory.appendingPathComponent("weavetext-selftest-\(getpid())")
@@ -27,7 +28,13 @@ enum DevTools {
         "v(128+32)*4".forEach { _ = e.input($0) }
         let calc = e.snapshot().candidates.first?.text ?? "-"
         print("selftest: v(128+32)*4 → \(calc)")
-        return ok && first == "你好" && calc == "640"
+        e.clear()
+        // 联想表随包：上屏「今天」后应有联想。 The prediction table ships: committing 今天 must predict.
+        "jintian".forEach { _ = e.input($0) }
+        if let i = e.snapshot().candidates.firstIndex(where: { $0.text == "今天" }) { e.select(i) }
+        let next = e.snapshot()
+        print("selftest: 今天 → \(next.candidates.prefix(5).map(\.text).joined(separator: " "))")
+        return ok && first == "你好" && calc == "640" && next.predicting && !next.candidates.isEmpty
     }
 
     /// 把候选窗与设置页画成 PNG。 Render the candidate bar and the settings pages to PNG.

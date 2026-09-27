@@ -44,6 +44,8 @@ public final class WeaveSession {
     public func clear() { weave_clear(handle) }
     public func flush() { weave_flush(handle) }
     public var isComposing: Bool { weave_is_composing(handle) }
+    /// 收起联想词。 Dismiss the predictions.
+    public func dismissPredictions() { weave_dismiss_predictions(handle) }
     public func setLearning(_ on: Bool) { weave_set_learning(handle, on) }
 
     /// 本地时区相对 UTC 的分钟数（rq / sj / xq 候选）。 Local UTC offset in minutes (rq / sj / xq candidates).
@@ -68,6 +70,16 @@ public final class WeaveSession {
     public func candidates(offset: Int, limit: Int) -> [Candidate] {
         decode([Candidate].self, weave_candidates_json(handle, UInt32(offset), UInt32(limit))) ?? []
     }
+
+    /// 挂上一个专业词库文件（id 为小写字母、数字与 -_）。 Attach a domain dictionary file (id: lowercase, digits, -_).
+    @discardableResult
+    public func loadPack(id: String, path: String) -> Bool { weave_load_pack(handle, id, path) }
+
+    @discardableResult
+    public func unloadPack(id: String) -> Bool { weave_unload_pack(handle, id) }
+
+    /// 验签并挂上云端热词；返回词数，验签失败 -1。 Verify and attach cloud hot words; the word count, or -1.
+    public func loadHotwords(tsv: String, sig: String) -> Int { Int(weave_load_hotwords(handle, tsv, sig)) }
 
     public var userWordCount: Int { Int(weave_user_word_count(handle)) }
 

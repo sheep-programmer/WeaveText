@@ -14,6 +14,13 @@ import Testing
         #expect(s.candidates == [Candidate(text: "你好"), Candidate(text: "拟好", comment: "ni hao", user: true)])
     }
 
+    @Test func decodesPredictions() throws {
+        let json = #"{"commit":"今天","preedit":"","composing":false,"predicting":true,"total":2,"candidates":[{"text":"晚上"},{"text":"下午"}]}"#
+        let s = try #require(Snapshot.decode(json))
+        #expect(s.predicting && !s.composing && s.candidates.map(\.text) == ["晚上", "下午"])
+        #expect(Snapshot.decode(#"{"composing":true}"#)?.predicting == false)
+    }
+
     @Test func missingFieldsDefault() throws {
         let s = try #require(Snapshot.decode(#"{"commit":"你好"}"#))
         #expect(s.commit == "你好" && !s.composing && s.candidates.isEmpty)

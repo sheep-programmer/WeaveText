@@ -88,7 +88,29 @@ public enum KeyAction: Equatable, Sendable {
     case highlightNext
 }
 
+/// 联想词显示时一次按键要做的事。 What a key does while predictions show.
+public enum PredictionAction: Equatable, Sendable {
+    /// 选当前页第 n 个联想词（上屏后接着联想）。 Pick the n-th prediction (0-based); predicting continues.
+    case select(Int)
+    /// 只收起联想（Esc）。 Just dismiss the predictions (Esc).
+    case dismiss
+    /// 收起联想，再把这个键照常处理（空格、回车、方向键、标点、字母、快捷键…）。
+    /// Dismiss, then handle the key as usual (space, return, arrows, punctuation, letters, shortcuts…).
+    case dismissAndHandle
+}
+
 public enum KeyMapper {
+    /// 联想词显示时的按键（纯函数）：数字选词，Esc 收起，其余收起后照常处理。
+    /// Keys while predictions show, a pure function: digits pick, Esc dismisses, anything else dismisses and goes on.
+    public static func predictionAction(for key: KeyInput, count: Int, pageSize: Int) -> PredictionAction {
+        if key.command || key.control || key.option { return .dismissAndHandle }
+        if key.keyCode == KeyCode.escape { return .dismiss }
+        if let c = key.character, c.isASCII, let d = c.wholeNumberValue, d >= 1, d <= min(count, pageSize) {
+            return .select(d - 1)
+        }
+        return .dismissAndHandle
+    }
+
     /// 按键 → 动作（纯函数）。 Key → action, a pure function.
     public static func action(for key: KeyInput, in ctx: KeyContext) -> KeyAction {
         // 快捷键一律放行。 Shortcuts always go to the app.

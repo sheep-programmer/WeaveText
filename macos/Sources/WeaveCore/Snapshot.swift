@@ -29,29 +29,33 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var commit: String
     public var preedit: String
     public var composing: Bool
+    /// 候选栏里是上屏后的联想词（composing 为 false）。 The candidates are predictions after a commit (not composing).
+    public var predicting: Bool
     /// 候选总数；被截断时是上限，界面翻到取不到为止。 Total candidates; a cap when cut, page until empty.
     public var total: Int
     /// 开头一批候选。 The first batch of candidates.
     public var candidates: [Candidate]
     public var schema: String
 
-    public init(commit: String = "", preedit: String = "", composing: Bool = false, total: Int = 0,
-                candidates: [Candidate] = [], schema: String = "pinyin") {
+    public init(commit: String = "", preedit: String = "", composing: Bool = false, predicting: Bool = false,
+                total: Int = 0, candidates: [Candidate] = [], schema: String = "pinyin") {
         self.commit = commit
         self.preedit = preedit
         self.composing = composing
+        self.predicting = predicting
         self.total = total
         self.candidates = candidates
         self.schema = schema
     }
 
-    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, total, candidates, schema }
+    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, predicting, total, candidates, schema }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         commit = try c.decodeIfPresent(String.self, forKey: .commit) ?? ""
         preedit = try c.decodeIfPresent(String.self, forKey: .preedit) ?? ""
         composing = try c.decodeIfPresent(Bool.self, forKey: .composing) ?? false
+        predicting = try c.decodeIfPresent(Bool.self, forKey: .predicting) ?? false
         total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
         candidates = try c.decodeIfPresent([Candidate].self, forKey: .candidates) ?? []
         schema = try c.decodeIfPresent(String.self, forKey: .schema) ?? "pinyin"

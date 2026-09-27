@@ -56,6 +56,8 @@ public final class Preferences: ObservableObject {
     @Published public var showStatusItem: Bool { didSet { save(showStatusItem, "showStatusItem") } }
     @Published public var traditional: Bool { didSet { save(traditional, "traditional") } }
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
+    /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
+    @Published public var prediction: Bool { didSet { save(prediction, "prediction") } }
     @Published public var fuzzy: Set<String> { didSet { save(fuzzy.sorted(), "fuzzy") } }
     @Published public var orientation: CandidateOrientation { didSet { save(orientation.rawValue, "orientation") } }
     @Published public var fontSize: Int { didSet { save(fontSize, "fontSize") } }
@@ -75,6 +77,7 @@ public final class Preferences: ObservableObject {
         showStatusItem = defaults.object(forKey: "showStatusItem") as? Bool ?? true
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
+        prediction = defaults.object(forKey: "prediction") as? Bool ?? true
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])
         orientation = defaults.string(forKey: "orientation").flatMap(CandidateOrientation.init) ?? .horizontal
         fontSize = Self.clamp(defaults.object(forKey: "fontSize") as? Int ?? 16, Self.fontSizes)
@@ -93,7 +96,8 @@ public final class Preferences: ObservableObject {
     /// 写给内核的全部开关。 Every switch the engine should receive.
     public var engineOptions: [(String, Bool)] {
         FuzzyPair.all.map { ($0.id, fuzzy.contains($0.id)) }
-            + [("output.traditional", traditional), ("candidates.emoji", emoji)]
+            + [("output.traditional", traditional), ("candidates.emoji", emoji),
+               ("candidates.prediction", prediction)]
     }
 
     private func save(_ value: Any, _ key: String) {

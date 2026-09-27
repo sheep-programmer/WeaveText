@@ -11,6 +11,8 @@ struct CandidateState: Equatable {
     var hasNext: Bool
     var orientation: CandidateOrientation
     var fontSize: CGFloat
+    /// 没有组合串时顶行的小字提示（联想词）。 A small top-line hint when there is no preedit (predictions).
+    var hint: String = ""
 }
 
 /// 跟随光标的候选窗：无边框、不抢焦点，整个进程复用一个。
@@ -130,10 +132,10 @@ struct CandidateBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !state.preedit.isEmpty {
-                Text(state.preedit)
-                    .font(small)
-                    .foregroundStyle(Theme.secondary)
+            if !state.preedit.isEmpty || !state.hint.isEmpty {
+                Text(state.preedit.isEmpty ? state.hint : state.preedit)
+                    .font(state.preedit.isEmpty ? note : small)
+                    .foregroundStyle(state.preedit.isEmpty ? Theme.hint : Theme.secondary)
                     .padding(.horizontal, 6)
                     .lineLimit(1)
             }
