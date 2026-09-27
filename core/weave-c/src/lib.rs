@@ -230,6 +230,12 @@ pub extern "C" fn weave_flush(h: *mut WeaveEngine) {
     with(h, (), |e| e.flush())
 }
 
+/// 收起联想词（空格、回车、光标移动等不选联想的操作）。 Dismiss predictions (space, enter, cursor moves…).
+#[no_mangle]
+pub extern "C" fn weave_dismiss_predictions(h: *mut WeaveEngine) {
+    with(h, (), |e| e.drop_predictions())
+}
+
 #[no_mangle]
 pub extern "C" fn weave_is_composing(h: *mut WeaveEngine) -> bool {
     with(h, false, |e| e.is_composing())
@@ -250,7 +256,12 @@ pub extern "C" fn weave_set_context(h: *mut WeaveEngine, prev_word: *const c_cha
 /// 当前状态（JSON），读取后 commit 清空。 Current state as JSON; `commit` is drained.
 #[no_mangle]
 pub extern "C" fn weave_snapshot_json(h: *mut WeaveEngine) -> *mut c_char {
-    with(h, std::ptr::null_mut(), |e| out(snapshot_json(&e.snapshot())))
+    with(h, std::ptr::null_mut(), |e| {
+        let predicting = e.is_predicting();
+        let mut v = snapshot_json(&e.snapshot());
+        v["predicting"] = Value::Bool(predicting);
+        out(v)
+    })
 }
 
 /// 候选分页（JSON 数组）。 A page of candidates as a JSON array.

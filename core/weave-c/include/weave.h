@@ -33,6 +33,9 @@ void weave_commit_raw(WeaveEngine *h);
 void weave_clear(WeaveEngine *h);
 void weave_flush(WeaveEngine *h);
 bool weave_is_composing(WeaveEngine *h);
+/* 联想词：上屏后快照里 composing=false、predicting=true，candidates 为联想；选中用 weave_select。
+   Predictions: after a commit the snapshot has composing=false, predicting=true and the predictions as candidates. */
+void weave_dismiss_predictions(WeaveEngine *h);
 void weave_set_learning(WeaveEngine *h, bool on);
 void weave_set_context(WeaveEngine *h, const char *prev_word);
 /* 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes (date/time candidates). */
@@ -47,7 +50,7 @@ int32_t weave_load_hotwords(WeaveEngine *h, const char *tsv_path, const char *si
 /* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
 char *weave_eval(const char *expr);
 
-/* {"commit","preedit","composing","total","candidates":[{"text","comment","user"}],"pinyinOptions","schema"} */
+/* {"commit","preedit","composing","predicting","total","candidates":[{"text","comment","user"}],"pinyinOptions","schema"} */
 char *weave_snapshot_json(WeaveEngine *h);
 /* [{"text","comment","user"}] */
 char *weave_candidates_json(WeaveEngine *h, uint32_t offset, uint32_t limit);
