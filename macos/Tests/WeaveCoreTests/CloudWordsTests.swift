@@ -11,19 +11,25 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         var loads: [String] = []
         var unloads = 0
         var good: Set<String> = []
+        /// 像内核一样：验签失败时旧的 cloud 保持挂着。 As the engine: a failed verification keeps the old "cloud".
+        var attached = false
         func load(_ tsv: String, _ sig: String) -> Int {
             loads.append(URL(fileURLWithPath: tsv).lastPathComponent)
             let body = (try? String(contentsOfFile: tsv, encoding: .utf8)) ?? ""
-            return good.contains(body) ? 2 : -1
+            guard good.contains(body) else { return -1 }
+            attached = true
+            return 2
         }
     }
 
-    private func make(_ f: StubFetcher, _ e: Engine, clock: @escaping () -> Date) throws -> (CloudWords, URL, UserDefaults) {
+    private func make(_ f: StubFetcher, _ e: Engine, mirrors: Mirrors = Mirrors(),
+                      clock: @escaping () -> Date) throws -> (CloudWords, URL, UserDefaults) {
         let dir = try tempDir("cloud")
         let suite = "weave-mac-cloud-\(UUID().uuidString)"
         let d = UserDefaults(suiteName: suite)!
-        let c = CloudWords(defaults: d, dir: dir.appendingPathComponent("cloud"), fetcher: f, load: e.load,
-                           unload: { e.unloads += 1 }, now: clock)
+        let c = CloudWords(defaults: d, dir: dir.appendingPathComponent("cloud"), fetcher: f, mirrors: mirrors,
+                           load: e.load, unload: { e.unloads += 1; e.attached = false }, loaded: { e.attached },
+                           now: clock)
         return (c, dir, d)
     }
 
@@ -53,6 +59,7 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         #expect(c.status.updating && c.status.summary() == "正在更新…")
         await c.refreshNow()?.value
         #expect(c.status.words == 2 && c.status.version == "2026092701" && c.status.error == nil)
+        #expect(c.status.attached && !c.status.needsRetry)
         #expect(c.status.checkedAt == now)
         #expect(try String(contentsOf: c.tsv, encoding: .utf8) == v1)
         #expect(e.loads == ["hotwords.tsv.new"])
@@ -73,15 +80,16 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         #expect(e.loads.count == 1)
         #expect(c.status.checkedAt == now && c.status.words == 2)
 
-        // 200 但签名不对：临时文件删掉，旧版本重新挂上，词数不变。 200 with a bad signature: temp files go, the old
-        // version is attached again, the count stays.
+        // 200 但签名不对：临时文件删掉，内核里旧版本一直挂着（不再重新载入），词数不变。 200 with a bad signature:
+        // temp files go, the old version stays attached in the engine (no reload), the count stays.
         let checked = now
         now += 24 * 3600
         f.enqueue(tsvURL, HTTPResult(status: 200, body: Data("tampered".utf8), etag: "\"e2\""))
         f.enqueue(sigURL, HTTPResult(status: 200, body: Data("sig2".utf8)))
         await c.refreshNow()?.value
         #expect(c.status.error == CloudWords.failure && c.status.summary() == "更新失败，稍后会自动重试")
-        #expect(e.loads.suffix(2) == ["hotwords.tsv.new", "hotwords.tsv"])
+        #expect(e.loads.count == 2 && e.loads.last == "hotwords.tsv.new")
+        #expect(c.status.attached && c.status.needsRetry)
         #expect(try String(contentsOf: c.tsv, encoding: .utf8) == v1)
         #expect(!FileManager.default.fileExists(atPath: c.tsv.path + ".new"))
         #expect(c.status.words == 2 && c.status.checkedAt == checked)
@@ -115,5 +123,56 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         #expect(c.status.version == "7")
         c.attach()
         #expect(e.loads == ["hotwords.tsv.new", "hotwords.tsv"])
+    }
+
+    /// 文件在但内核没挂上：提示重试，重试时不带 ETag 重新下载。 Files there but not attached: ask for a retry,
+    /// which downloads again without the ETag.
+    @Test func storedFilesThatFailToLoadAskForARetry() async throws {
+        let f = StubFetcher()
+        let e = Engine()
+        let v1 = "#! version 7\n"
+        e.good = [v1]
+        let (c, dir, _) = try make(f, e, clock: Date.init)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        f.enqueue(tsvURL, HTTPResult(status: 200, body: Data(v1.utf8), etag: "\"e1\""))
+        f.enqueue(sigURL, HTTPResult(status: 200, body: Data("s".utf8)))
+        c.setEnabled(true)
+        await c.refreshNow()?.value
+        #expect(c.status.attached)
+        // 下次启动时文件坏了。 At the next start the file is corrupt.
+        e.attached = false
+        try Data("corrupt".utf8).write(to: c.tsv)
+        c.attach()
+        #expect(c.status.notLoaded && c.status.needsRetry && c.status.summary() == CloudWords.notLoaded)
+        f.enqueue(tsvURL, HTTPResult(status: 200, body: Data(v1.utf8), etag: "\"e1\""))
+        f.enqueue(sigURL, HTTPResult(status: 200, body: Data("s".utf8)))
+        await c.refreshNow()?.value
+        #expect(f.requests[f.requests.count - 2] == StubFetcher.Request(url: tsvURL, etag: nil))
+        #expect(c.status.attached && !c.status.needsRetry && c.status.error == nil)
+    }
+
+    /// 直连失败后换镜像，热词与签名走同一个镜像；镜像给了坏签名就再换下一个。 After the direct URL fails, mirrors
+    /// are tried, words and signature from the same one; a mirror with a bad signature moves on to the next.
+    @Test func fallsBackThroughTheMirrors() async throws {
+        let f = StubFetcher()
+        let e = Engine()
+        let v1 = "#! version 9\n"
+        e.good = [v1]
+        let mirrors = Mirrors(templates: ["{url}", "https://m1.invalid/{url}", "https://m2.invalid/{url}"])
+        let (c, dir, _) = try make(f, e, mirrors: mirrors, clock: Date.init)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let m1 = URL(string: "https://m1.invalid/" + tsvURL.absoluteString)!
+        let m2 = URL(string: "https://m2.invalid/" + tsvURL.absoluteString)!
+        let m2sig = URL(string: "https://m2.invalid/" + sigURL.absoluteString)!
+        f.enqueue(tsvURL, error: URLError(.timedOut))
+        f.enqueue(m1, HTTPResult(status: 200, body: Data("tampered".utf8)))
+        f.enqueue(URL(string: "https://m1.invalid/" + sigURL.absoluteString)!, HTTPResult(status: 200, body: Data("x".utf8)))
+        f.enqueue(m2, HTTPResult(status: 200, body: Data(v1.utf8)))
+        f.enqueue(m2sig, HTTPResult(status: 200, body: Data("s".utf8)))
+        c.setEnabled(true)
+        await c.refreshNow()?.value
+        #expect(f.requests.map(\.url).suffix(2) == [m2, m2sig])
+        #expect(f.requests.count == 5)
+        #expect(c.status.version == "9" && c.status.error == nil && c.status.attached)
     }
 }

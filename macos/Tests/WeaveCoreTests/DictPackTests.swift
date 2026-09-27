@@ -68,16 +68,27 @@ private let abcSHA = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f2
 }
 
 @MainActor @Suite struct DictPackStoreTests {
-    private func store(_ fetcher: StubFetcher, _ dir: URL, log: Log) -> DictPackStore {
+    private func store(_ fetcher: StubFetcher, _ dir: URL, log: Log, mirrors: Mirrors = Mirrors()) -> DictPackStore {
         let catalog = DictPackCatalog(base: "https://example.invalid/", packs: [
             DictPack(id: "abc", name: "测试", words: 3, bytes: 3, sha256: abcSHA),
         ])
-        return DictPackStore(catalog: catalog, dir: dir, fetcher: fetcher,
-                             attach: { log.events.append("attach \($0) \(URL(fileURLWithPath: $1).lastPathComponent)") },
-                             detach: { log.events.append("detach \($0)") })
+        return DictPackStore(catalog: catalog, dir: dir, fetcher: fetcher, mirrors: mirrors,
+                             attach: { id, path in
+                                 log.events.append("attach \(id) \(URL(fileURLWithPath: path).lastPathComponent)")
+                                 log.attached.insert(id)
+                             },
+                             detach: { id in
+                                 log.events.append("detach \(id)")
+                                 log.attached.remove(id)
+                             },
+                             loaded: { log.attached })
     }
 
-    final class Log { var events: [String] = [] }
+    /// 假内核：记下挂上与卸下，attached 是它实际挂着的。 A fake engine: logs attach/detach; attached is what it holds.
+    final class Log {
+        var events: [String] = []
+        var attached: Set<String> = []
+    }
 
     private func settle(_ s: DictPackStore, _ id: String) async {
         for _ in 0..<200 {
@@ -139,5 +150,81 @@ private let abcSHA = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f2
         try await Task.sleep(nanoseconds: 50_000_000)
         #expect(s.state("abc") == .notInstalled)
         #expect(log.events.isEmpty)
+    }
+}
+
+@MainActor @Suite struct DictPackLoadedStateTests {
+    private let url = URL(string: "https://example.invalid/abc.wvz")!
+
+    private func store(_ f: StubFetcher, _ dir: URL, _ attached: DictPackStoreTests.Log,
+                       mirrors: Mirrors = Mirrors()) -> DictPackStore {
+        let catalog = DictPackCatalog(base: "https://example.invalid/", packs: [
+            DictPack(id: "abc", name: "测试", words: 3, bytes: 3, sha256: abcSHA),
+        ])
+        return DictPackStore(catalog: catalog, dir: dir, fetcher: f, mirrors: mirrors,
+                             attach: { id, _ in attached.attached.insert(id) },
+                             detach: { id in attached.attached.remove(id) }, loaded: { attached.attached })
+    }
+
+    private func settle(_ s: DictPackStore) async {
+        for _ in 0..<200 {
+            if case .downloading = s.state("abc") { try? await Task.sleep(nanoseconds: 5_000_000) } else { return }
+        }
+    }
+
+    /// 文件在但内核没挂上（例如坏了）：显示「重试」，重新下载后挂上。 A file the engine didn't attach (say corrupt)
+    /// shows retry; downloading again attaches it.
+    @Test func aFileTheEngineDidNotLoadAsksForARetry() async throws {
+        let dir = try tempDir("packs-corrupt")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let f = StubFetcher()
+        let log = DictPackStoreTests.Log()
+        let s = store(f, dir, log)
+        try Data("garbage".utf8).write(to: s.file("abc"))
+        #expect(s.state("abc") == .failed(DictPackStore.notLoaded))
+        #expect(s.installed.isEmpty)
+        // 内核挂着才算装好。 Installed only when the engine has it.
+        log.attached = ["abc"]
+        #expect(s.state("abc") == .installed)
+        log.attached = []
+        f.enqueue(url, HTTPResult(status: 200, body: abc))
+        s.install("abc")
+        await settle(s)
+        #expect(s.state("abc") == .installed)
+        #expect(try Data(contentsOf: s.file("abc")) == abc)
+    }
+
+    /// 直连失败、第一个镜像校验不对，第二个镜像成功。 Direct fails, the first mirror mismatches, the second works.
+    @Test func fallsBackThroughTheMirrors() async throws {
+        let dir = try tempDir("packs-mirror")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let f = StubFetcher()
+        let log = DictPackStoreTests.Log()
+        let mirrors = Mirrors(templates: ["{url}", "https://m1.invalid/{url}", "https://m2.invalid/{url}"])
+        let s = store(f, dir, log, mirrors: mirrors)
+        let m1 = URL(string: "https://m1.invalid/https://example.invalid/abc.wvz")!
+        let m2 = URL(string: "https://m2.invalid/https://example.invalid/abc.wvz")!
+        f.enqueue(url, error: URLError(.timedOut))
+        f.enqueue(m1, HTTPResult(status: 200, body: Data("abd".utf8)))
+        f.enqueue(m2, HTTPResult(status: 200, body: abc))
+        s.install("abc")
+        await settle(s)
+        #expect(f.requests.map(\.url) == [url, m1, m2])
+        #expect(s.state("abc") == .installed)
+        #expect(log.attached == ["abc"])
+        #expect(try Data(contentsOf: s.file("abc")) == abc)
+    }
+
+    @Test func allSourcesFailingFails() async throws {
+        let dir = try tempDir("packs-mirror-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let f = StubFetcher()
+        let log = DictPackStoreTests.Log()
+        let s = store(f, dir, log, mirrors: Mirrors(templates: ["https://m1.invalid/{url}"]))
+        s.install("abc")
+        await settle(s)
+        #expect(f.requests.count == 2)
+        #expect(s.state("abc") == .failed(DictPackStore.failure))
+        #expect(log.attached.isEmpty)
     }
 }

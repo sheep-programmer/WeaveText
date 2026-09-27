@@ -30,12 +30,19 @@ final class EngineHost {
         let fetcher = URLSessionFetcher()
         let catalog = Bundle.main.url(forResource: "dictpacks", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }.flatMap(DictPackCatalog.parse) ?? DictPackCatalog(base: "", packs: [])
+        // 下载镜像与 Android 同一份（构建时从模型目录里取出）。 The same download mirrors as Android's, taken from
+        // the model catalog at build time.
+        let mirrors = Bundle.main.url(forResource: "mirrors", withExtension: "json")
+            .flatMap { try? Data(contentsOf: $0) }.map(Mirrors.parse) ?? Mirrors()
         packs = DictPackStore(catalog: catalog, dir: user.appendingPathComponent("packs", isDirectory: true),
-                              fetcher: fetcher, attach: { id, path in engine?.loadPack(id: id, path: path) },
-                              detach: { id in engine?.unloadPack(id: id) })
+                              fetcher: fetcher, mirrors: mirrors,
+                              attach: { id, path in engine?.loadPack(id: id, path: path) },
+                              detach: { id in engine?.unloadPack(id: id) },
+                              loaded: { engine?.packIDs() ?? [] })
         cloud = CloudWords(defaults: .standard, dir: user.appendingPathComponent("cloud", isDirectory: true),
-                           fetcher: fetcher, load: { engine?.loadHotwords(tsv: $0, sig: $1) ?? -1 },
-                           unload: { engine?.unloadPack(id: CloudWords.packID) })
+                           fetcher: fetcher, mirrors: mirrors, load: { engine?.loadHotwords(tsv: $0, sig: $1) ?? -1 },
+                           unload: { engine?.unloadPack(id: CloudWords.packID) },
+                           loaded: { engine?.packIDs().contains(CloudWords.packID) ?? false })
         apply()
         syncClock()
         cloud.attach()

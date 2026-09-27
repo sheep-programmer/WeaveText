@@ -96,6 +96,9 @@ done
 echo "data: ${KEYS[*]}"
 # 专业词库目录（与 Android 同一份）。 The domain-dictionary catalog, the same file as Android's.
 cp "$ROOT/android/app/src/main/assets/dictpacks.json" "$APP/Contents/Resources/dictpacks.json"
+# 下载镜像：取 Android 模型目录里的 "mirrors"（专业词库与云端热词先直连，失败再依次换镜像）。
+# Download mirrors: the "mirrors" of Android's model catalog (packs and hot words try the direct URL first).
+plutil -extract mirrors json -o "$APP/Contents/Resources/mirrors.json" "$ROOT/android/app/src/main/assets/models/catalog.json"
 
 # 图标由程序自己画出来。 The app draws its own icons.
 ICONS="$BUILD/icons"

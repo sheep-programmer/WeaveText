@@ -111,6 +111,8 @@ public enum PackState: Equatable, Sendable {
 /// dir/<id>.wvz, a directory the engine loads by itself at startup.
 public final class DictPackStore: ObservableObject {
     public static let failure = "下载失败，请检查网络后重试"
+    /// 文件在，但内核没能挂上（多半是文件坏了）。 The file is there but the engine didn't attach it (likely corrupt).
+    public static let notLoaded = "没能载入，请重新下载"
 
     public let catalog: DictPackCatalog
     public var packs: [DictPack] { catalog.packs }
@@ -118,48 +120,70 @@ public final class DictPackStore: ObservableObject {
 
     private let dir: URL
     private let fetcher: HTTPFetching
+    private let mirrors: Mirrors
     private let attach: (String, String) -> Void
     private let detach: (String) -> Void
+    private let loaded: () -> Set<String>
     private var tasks: [String: Task<Void, Never>] = [:]
 
-    /// attach(id, path) / detach(id)：挂到内核上或卸下。 Attach to or detach from the engine.
-    public init(catalog: DictPackCatalog, dir: URL, fetcher: HTTPFetching,
-                attach: @escaping (String, String) -> Void, detach: @escaping (String) -> Void) {
+    /// attach(id, path) / detach(id)：挂到内核上或卸下；loaded：内核里实际挂着的 id。
+    /// Attach to or detach from the engine; loaded: the ids the engine really has attached.
+    public init(catalog: DictPackCatalog, dir: URL, fetcher: HTTPFetching, mirrors: Mirrors = Mirrors(),
+                attach: @escaping (String, String) -> Void, detach: @escaping (String) -> Void,
+                loaded: @escaping () -> Set<String>) {
         self.catalog = catalog
         self.dir = dir
         self.fetcher = fetcher
+        self.mirrors = mirrors
         self.attach = attach
         self.detach = detach
+        self.loaded = loaded
     }
 
     public func file(_ id: String) -> URL { dir.appendingPathComponent(id + ".wvz") }
 
-    public func state(_ id: String) -> PackState {
-        if let s = states[id] { return s }
-        return FileManager.default.fileExists(atPath: file(id).path) ? .installed : .notInstalled
+    /// 以内核实际挂着的为准：文件在却没挂上时显示失败，可重新下载。
+    /// The engine's attached set decides: a file that is there but not attached shows as failed, to download again.
+    public func state(_ id: String) -> PackState { state(id, loaded: loaded()) }
+
+    public var installed: [DictPack] {
+        let ids = loaded()
+        return packs.filter { state($0.id, loaded: ids) == .installed }
     }
 
-    public var installed: [DictPack] { packs.filter { state($0.id) == .installed } }
+    private func state(_ id: String, loaded ids: Set<String>) -> PackState {
+        if let s = states[id] { return s }
+        if ids.contains(id) { return .installed }
+        return FileManager.default.fileExists(atPath: file(id).path) ? .failed(Self.notLoaded) : .notInstalled
+    }
 
     public func install(_ id: String) {
         guard let pack = packs.first(where: { $0.id == id }), let url = catalog.url(for: pack) else { return }
         if case .downloading = state(id) { return }
         states[id] = .downloading(done: nil)
         let fetcher = fetcher
+        let sources = mirrors.sources(for: url)
         tasks[id] = Task { @MainActor [weak self] in
-            do {
-                let limit = pack.bytes > 0 ? Int(pack.bytes) + 1024 : 64 << 20
-                let r = try await fetcher.get(url, etag: nil, maxBytes: limit) { n in
-                    Task { @MainActor in self?.progress(id, n) }
+            let limit = pack.bytes > 0 ? Int(pack.bytes) + 1024 : 64 << 20
+            // 先直连，不行再换镜像；每个来源都要对上大小与 SHA-256。
+            // The direct URL first, then the mirrors; each source must match the size and SHA-256.
+            for src in sources {
+                do {
+                    let r = try await fetcher.get(src, etag: nil, maxBytes: limit) { n in
+                        Task { @MainActor in self?.progress(id, n) }
+                    }
+                    try Task.checkCancellation()
+                    if r.status == 200, PackCheck.verify(r.body, sha256: pack.sha256, bytes: pack.bytes) {
+                        self?.finish(pack, r.body)
+                        return
+                    }
+                } catch {
+                    if Task.isCancelled || error is CancellationError { break }
                 }
-                try Task.checkCancellation()
-                guard r.status == 200, PackCheck.verify(r.body, sha256: pack.sha256, bytes: pack.bytes) else {
-                    throw FetchError.http(r.status)
-                }
-                self?.finish(pack, r.body)
-            } catch {
-                self?.fail(id, cancelled: Task.isCancelled || error is CancellationError)
+                if Task.isCancelled { break }
+                self?.progress(id, nil)
             }
+            self?.fail(id, cancelled: Task.isCancelled)
         }
     }
 
@@ -182,7 +206,7 @@ public final class DictPackStore: ObservableObject {
     /// 截图用：直接给出各词库的状态。 For snapshots: set the pack states directly.
     public func preview(_ states: [String: PackState]) { self.states = states }
 
-    private func progress(_ id: String, _ n: Int64) {
+    private func progress(_ id: String, _ n: Int64?) {
         guard case .downloading = states[id] else { return }
         states[id] = .downloading(done: n)
     }

@@ -10,21 +10,31 @@ public struct CloudStatus: Equatable, Sendable {
     public var checkedAt: Date?
     public var updating = false
     public var error: String?
+    /// 内核里是否挂着 cloud。 Whether the engine has "cloud" attached.
+    public var attached = false
 
     public init(enabled: Bool, words: Int = 0, version: String = "", checkedAt: Date? = nil, updating: Bool = false,
-                error: String? = nil) {
+                error: String? = nil, attached: Bool = false) {
         self.enabled = enabled
         self.words = words
         self.version = version
         self.checkedAt = checkedAt
         self.updating = updating
         self.error = error
+        self.attached = attached
     }
+
+    /// 下载过却没挂上（文件坏了或验签不过）。 Downloaded before but not attached (corrupt or failing verification).
+    public var notLoaded: Bool { enabled && checkedAt != nil && !attached }
+
+    /// 出错或没挂上时按钮叫「重试」。 The button reads 重试 after an error or when nothing is attached.
+    public var needsRetry: Bool { !updating && (error != nil || notLoaded) }
 
     /// 「1280 个词 · 9 月 21 日 22:13 检查」/ 正在更新… / 错误 / 还没有下载。 The status line under the switch.
     public func summary(timeZone: TimeZone = .current) -> String {
         if updating { return "正在更新…" }
         if let error { return error }
+        if notLoaded { return CloudWords.notLoaded }
         guard let checkedAt else { return "还没有下载" }
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
@@ -43,6 +53,7 @@ public final class CloudWords: ObservableObject {
     public static let url = URL(string: "https://raw.githubusercontent.com/sheep-programmer/weavetext-hotwords/dist/hotwords.tsv")!
     public static let packID = "cloud"
     public static let failure = "更新失败，稍后会自动重试"
+    public static let notLoaded = "热词没能载入，请重试"
     static let day: TimeInterval = 24 * 3600
     static let maxBytes = 4 << 20
 
@@ -59,8 +70,10 @@ public final class CloudWords: ObservableObject {
     private let defaults: UserDefaults
     private let dir: URL
     private let fetcher: HTTPFetching
+    private let mirrors: Mirrors
     private let load: (String, String) -> Int
     private let unload: () -> Void
+    private let loaded: () -> Bool
     private let now: () -> Date
     private var task: Task<Void, Never>?
     private var error: String?
@@ -68,15 +81,20 @@ public final class CloudWords: ObservableObject {
     public var tsv: URL { dir.appendingPathComponent("hotwords.tsv") }
     public var sig: URL { dir.appendingPathComponent("hotwords.tsv.sig") }
 
-    /// load(tsv, sig)：交给内核验签并挂上，返回词数或 -1；unload：卸下 cloud。
-    /// load(tsv, sig): verify and attach through the engine, word count or -1; unload: detach "cloud".
-    public init(defaults: UserDefaults, dir: URL, fetcher: HTTPFetching, load: @escaping (String, String) -> Int,
-                unload: @escaping () -> Void, now: @escaping () -> Date = Date.init) {
+    /// load(tsv, sig)：交给内核验签并挂上，返回词数或 -1（失败时内核保留旧的 cloud）；unload：卸下 cloud；
+    /// loaded：内核里是否挂着 cloud。
+    /// load(tsv, sig): verify and attach through the engine, word count or -1 (the engine keeps the old "cloud" on
+    /// failure); unload: detach "cloud"; loaded: whether the engine has "cloud" attached.
+    public init(defaults: UserDefaults, dir: URL, fetcher: HTTPFetching, mirrors: Mirrors = Mirrors(),
+                load: @escaping (String, String) -> Int, unload: @escaping () -> Void,
+                loaded: @escaping () -> Bool, now: @escaping () -> Date = Date.init) {
         self.defaults = defaults
         self.dir = dir
         self.fetcher = fetcher
+        self.mirrors = mirrors
         self.load = load
         self.unload = unload
+        self.loaded = loaded
         self.now = now
         status = CloudStatus(enabled: false)
         publish()
@@ -103,6 +121,7 @@ public final class CloudWords: ObservableObject {
     public func attach() {
         guard enabled, exists(tsv), exists(sig) else { return }
         if load(tsv.path, sig.path) < 0 { NSLog("WeaveText: stored hot words failed verification") }
+        publish()
     }
 
     /// 开启且超过一天没检查时更新（很便宜，可以常调）。 Update when on and stale; cheap enough to call often.
@@ -136,17 +155,38 @@ public final class CloudWords: ObservableObject {
         return t
     }
 
+    /// 先直连，不行再依次换镜像（热词与签名走同一个来源）；镜像给的内容照样要过内核验签。
+    /// The direct URL first, then each mirror (the words and signature from the same source); whatever a mirror
+    /// serves still has to pass the engine's verification.
     private func update() async throws {
-        let etag = exists(tsv) ? defaults.string(forKey: Key.etag) : nil
-        let r = try await fetcher.get(Self.url, etag: etag, maxBytes: Self.maxBytes, progress: nil)
+        let sigURL = Self.url.appendingPathExtension("sig")
+        let sources = zip(mirrors.sources(for: Self.url), mirrors.sources(for: sigURL))
+        var last: Error = FetchError.http(0)
+        for (words, signature) in sources {
+            do {
+                try await update(words, signature)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                last = error
+            }
+        }
+        throw last
+    }
+
+    private func update(_ words: URL, _ signature: URL) async throws {
+        // 没挂上时不带 ETag，重新下载完整的一份。 Not attached: no ETag, download a full copy again.
+        let etag = exists(tsv) && loaded() ? defaults.string(forKey: Key.etag) : nil
+        let r = try await fetcher.get(words, etag: etag, maxBytes: Self.maxBytes, progress: nil)
         try Task.checkCancellation()
         if r.status == 304 {
             defaults.set(now().timeIntervalSince1970, forKey: Key.checked)
             return
         }
         guard r.status == 200 else { throw FetchError.http(r.status) }
-        let s = try await fetcher.get(Self.url.appendingPathExtension("sig"), etag: nil, maxBytes: 64 << 10,
-                                      progress: nil)
+        let s = try await fetcher.get(signature, etag: nil, maxBytes: 64 << 10, progress: nil)
         try Task.checkCancellation()
         guard s.status == 200 else { throw FetchError.http(s.status) }
         try install(r.body, s.body, etag: r.etag)
@@ -154,8 +194,9 @@ public final class CloudWords: ObservableObject {
 
     enum UpdateError: Error { case badSignature }
 
-    /// 先写临时文件交给内核验签，通过才替换旧文件；不通过继续用旧版本。
-    /// Verify via the engine from temp files and replace only on success; otherwise keep using the old version.
+    /// 先写临时文件交给内核验签，通过才替换旧文件；不通过时内核继续用已挂上的旧版本。
+    /// Verify via the engine from temp files and replace only on success; on failure the engine keeps the old
+    /// version attached.
     private func install(_ body: Data, _ signature: Data, etag: String?) throws {
         // 更新途中被关掉：什么也不留。 Turned off mid-update: leave nothing behind.
         guard enabled else { throw CancellationError() }
@@ -169,7 +210,6 @@ public final class CloudWords: ObservableObject {
         if n < 0 {
             try? fm.removeItem(at: t)
             try? fm.removeItem(at: s)
-            if exists(tsv), exists(sig) { _ = load(tsv.path, sig.path) }
             throw UpdateError.badSignature
         }
         try? fm.removeItem(at: tsv)
@@ -196,6 +236,6 @@ public final class CloudWords: ObservableObject {
         status = CloudStatus(enabled: enabled, words: defaults.integer(forKey: Key.count),
                              version: defaults.string(forKey: Key.version) ?? "",
                              checkedAt: checked > 0 ? Date(timeIntervalSince1970: checked) : nil,
-                             updating: task != nil, error: error)
+                             updating: task != nil, error: error, attached: loaded())
     }
 }

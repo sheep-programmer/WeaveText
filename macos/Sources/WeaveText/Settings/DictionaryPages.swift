@@ -115,10 +115,10 @@ struct CloudWordsSection: View {
             if cloud.status.enabled {
                 HStack {
                     TitleAndNote("热词", cloud.status.summary(),
-                                 noteColor: cloud.status.error != nil && !cloud.status.updating ? .red : .secondary)
+                                 noteColor: cloud.status.needsRetry ? .red : .secondary)
                     Spacer()
                     if cloud.status.updating { ProgressView().controlSize(.small) }
-                    Button("立即更新") { cloud.refreshNow() }
+                    Button(cloud.status.needsRetry ? "重试" : "立即更新") { cloud.refreshNow() }
                         .disabled(cloud.status.updating)
                 }
             }

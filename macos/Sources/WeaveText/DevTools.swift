@@ -101,7 +101,8 @@ enum DevTools {
             states[sample[2].id] = .failed(DictPackStore.failure)
         }
         host.packs.preview(states)
-        host.cloud.preview(CloudStatus(enabled: true, words: 1280, checkedAt: Date(timeIntervalSince1970: 1_790_000_000)))
+        host.cloud.preview(CloudStatus(enabled: true, words: 1280, checkedAt: Date(timeIntervalSince1970: 1_790_000_000),
+                                       attached: true))
         nav.page = .dictionary
         try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 560),
                    dark: false, to: dir.appendingPathComponent("settings-dictionary-cloud-on.png"))

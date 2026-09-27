@@ -91,6 +91,36 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         #expect(!e.snapshot().predicting)
     }
 
+    /// 上屏后直接退格撤销学习；中间输入法自己写过字（逗号）就不撤销。 A backspace right after a commit undoes the
+    /// learning; with text the IME wrote in between (a comma) it doesn't.
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func backspaceUndoesLearningUnlessTheChainIsBroken() throws {
+        let user = try tempDir("undo")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("pinyin")
+        e.setOption("candidates.prediction", false)
+        var word = ""
+        func count() -> Int { e.userWords(query: word).first { $0.text == word }?.count ?? 0 }
+        func learn() throws -> Int {
+            for c in "shijian" { _ = e.input(c) }
+            word = try #require(e.snapshot().candidates.first?.text)
+            e.select(0)
+            #expect(e.snapshot().commit == word)
+            return count()
+        }
+        let learned = try learn()
+        #expect(learned >= 1)
+        // 上屏 + 退格：撤销。 Commit + backspace: undone.
+        #expect(!e.backspace())
+        #expect(count() == learned - 1)
+        // 上屏 + 逗号（输入法写的）+ 退格：保留。 Commit + a comma the IME wrote + backspace: kept.
+        let again = try learn()
+        e.breakChain()
+        #expect(!e.backspace())
+        #expect(count() == again)
+    }
+
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func hotWordsAndPacksThroughTheCABI() async throws {
         let fixtures = URL(fileURLWithPath: dataDir).appendingPathComponent("../../core/weave-engine/tests/fixtures").standardized
@@ -99,12 +129,18 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
         let tsv = fixtures.appendingPathComponent("hotwords.tsv").path
         let sig = fixtures.appendingPathComponent("hotwords.tsv.sig").path
+        // 数据目录旁的 packs/ 也会自动载入，所以跟起点比。 packs/ beside the data dir loads too: compare to the start.
+        let base = e.packIDs()
+        #expect(!base.contains(CloudWords.packID))
         #expect(e.loadHotwords(tsv: tsv, sig: sig) == 2)
-        // 签名对不上：-1。 A mismatching signature: -1.
+        #expect(e.packIDs() == base.union([CloudWords.packID]))
+        // 签名对不上：-1，已挂上的旧热词不动。 A mismatching signature: -1, the attached words stay.
         let bad = user.appendingPathComponent("bad.tsv")
         try (String(contentsOfFile: tsv, encoding: .utf8) + "多余\tduo yu\t1\t\n").write(to: bad, atomically: true, encoding: .utf8)
         #expect(e.loadHotwords(tsv: bad.path, sig: sig) == -1)
+        #expect(e.packIDs() == base.union([CloudWords.packID]))
         #expect(e.unloadPack(id: CloudWords.packID))
+        #expect(e.packIDs() == base)
 
         // 经 CloudWords 用真内核验签（下载换成本地夹具）。 CloudWords with the real engine verifying fixture bytes.
         let f = StubFetcher()
@@ -113,20 +149,23 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         let suite = "weave-mac-hot-\(UUID().uuidString)"
         let cloud = await MainActor.run {
             CloudWords(defaults: UserDefaults(suiteName: suite)!, dir: user.appendingPathComponent("cloud"), fetcher: f,
-                       load: { e.loadHotwords(tsv: $0, sig: $1) }, unload: { e.unloadPack(id: CloudWords.packID) })
+                       load: { e.loadHotwords(tsv: $0, sig: $1) }, unload: { e.unloadPack(id: CloudWords.packID) },
+                       loaded: { e.packIDs().contains(CloudWords.packID) })
         }
         let task = await MainActor.run { () -> Task<Void, Never>? in
             cloud.setEnabled(true)
             return cloud.refreshNow()
         }
         await task?.value
-        let words = await MainActor.run { cloud.status.words }
-        #expect(words == 2)
+        let status = await MainActor.run { cloud.status }
+        #expect(status.words == 2 && status.attached)
 
         let pack = URL(fileURLWithPath: dataDir).appendingPathComponent("packs/med.wvz").path
         if FileManager.default.fileExists(atPath: pack) {
             #expect(e.loadPack(id: "med", path: pack))
+            #expect(e.packIDs().contains("med"))
             #expect(e.unloadPack(id: "med"))
+            #expect(!e.packIDs().contains("med"))
         }
     }
 }

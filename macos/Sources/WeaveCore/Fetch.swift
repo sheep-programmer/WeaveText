@@ -64,3 +64,29 @@ public struct URLSessionFetcher: HTTPFetching {
         return HTTPResult(status: 200, body: data, etag: tag)
     }
 }
+
+/// 下载镜像（与 Android 的 models/catalog.json 里的 "mirrors" 同一份）：模板里的 {url} 换成原地址。
+/// Download mirrors, the same "mirrors" as in Android's models/catalog.json: `{url}` in a template becomes the
+/// source URL.
+public struct Mirrors: Equatable, Sendable {
+    public var templates: [String]
+
+    public init(templates: [String] = []) { self.templates = templates }
+
+    /// 接受整份目录（{"mirrors":[…]}）或只有镜像的数组；没有 {url} 的模板跳过。
+    /// Takes the whole catalog ({"mirrors":[…]}) or just the array; templates without `{url}` are skipped.
+    public static func parse(_ data: Data) -> Mirrors {
+        let json = try? JSONSerialization.jsonObject(with: data)
+        let list = (json as? [String: Any])?["mirrors"] as? [Any] ?? json as? [Any] ?? []
+        let templates = list.compactMap { ($0 as? [String: Any])?["template"] as? String }
+        return Mirrors(templates: templates.filter { $0.contains("{url}") })
+    }
+
+    /// 先直连，再依次走每个镜像；重复的地址只留一次。 The direct URL first, then each mirror; duplicates once.
+    public func sources(for url: URL) -> [URL] {
+        var seen = Set<String>()
+        return ([url.absoluteString] + templates.map { $0.replacingOccurrences(of: "{url}", with: url.absoluteString) })
+            .filter { seen.insert($0).inserted }
+            .compactMap(URL.init(string:))
+    }
+}
