@@ -166,6 +166,38 @@ class Feedback(ctx: Context) {
         handler.post(vibrateTasks[lv])
     }
 
+    /**
+     * 细小的刻度感（空格滑动移光标时每走一格）：支持时用系统的轻触原语，否则退回最轻一档；振动关闭时不动。
+     * A fine detent while sliding the cursor: the system's light tick primitive when supported, else the lightest
+     * level; nothing when vibration is off.
+     */
+    fun tick(view: View) {
+        if (vibration == 0) return
+        val v = vibrator
+        if (v == null) {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            return
+        }
+        handler.post(tickTask)
+    }
+
+    private val tickTask = Runnable {
+        val v = vibrator ?: return@Runnable
+        val e = tickEffect ?: run {
+            val built = if (Build.VERSION.SDK_INT >= 30 && v.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
+                VibrationEffect.startComposition().addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.5f).compose()
+            } else if (Build.VERSION.SDK_INT >= 29) {
+                VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+            } else {
+                VibrationEffect.createOneShot(5, VibrationEffect.DEFAULT_AMPLITUDE)
+            }
+            tickEffect = built
+            built
+        }
+        if (Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes) else v.vibrate(e)
+    }
+    @Volatile private var tickEffect: VibrationEffect? = null
+
     /** feedback 线程上振动。 Vibrate, on the feedback thread. */
     private fun vibrate(lv: Int) {
         val v = vibrator ?: return

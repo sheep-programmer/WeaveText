@@ -879,7 +879,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 while (p.cursorAnchor - x >= step) { p.cursorAnchor -= step; n-- }
                 if (n != 0) {
                     p.cursorSteps += n
-                    host?.feedback?.haptic(this)
+                    host?.feedback?.tick(this)
                     host?.onCursorSteps(n)
                 }
             }

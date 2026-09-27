@@ -34,6 +34,22 @@ class CalcTest {
         assertEquals(listOf("512"), offered)
     }
 
+    private fun text() = ic.editable.toString()
+
+    @Test fun pairsBracketsAndStepsOverTheCloser() {
+        start("")
+        controller.onText("（")
+        assertEquals("（）", text())
+        assertEquals(1, android.text.Selection.getSelectionStart(ic.editable))
+        controller.onText("好")
+        controller.onText("）")
+        assertEquals("（好）", text())
+        assertEquals(3, android.text.Selection.getSelectionStart(ic.editable))
+        controller.autoPair = false
+        controller.onText("《")
+        assertEquals("（好）《", text())
+    }
+
     @Test fun noExpressionNoOffer() {
         start("你好")
         controller.onText("=")

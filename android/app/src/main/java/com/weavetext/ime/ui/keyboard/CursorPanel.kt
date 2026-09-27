@@ -4,8 +4,9 @@ import android.view.KeyEvent
 import com.weavetext.ime.R
 
 /**
- * 光标编辑面板（02 §9）：5 列 × 3 行，列权重 1 | 1.25 | 1.25 | 1.25 | 1。
- * Cursor edit panel: 5 × 3 grid.
+ * 光标编辑面板（02 §9）：5 列 × 4 行（与键盘行数一致），列权重 1 | 1.25 | 1.25 | 1.25 | 1；
+ * 第 4 行为撤销、重做、按词左右移动与换行。
+ * Cursor edit panel: 5 × 4 grid matching the keyboard rows; the fourth row has undo, redo, word jumps and enter.
  */
 class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     override val toolIndex = 3
@@ -31,6 +32,11 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         PadKey(DOWN, icon = R.drawable.ic_chevron_down, style = KeyStyle.CHAR).apply { repeat = true },
         PadKey(CUT, "剪切", style = KeyStyle.CHAR),
         PadKey(BACK, "返回", style = KeyStyle.ACCENT),
+        PadKey(UNDO, icon = R.drawable.ic_undo),
+        PadKey(REDO, icon = R.drawable.ic_redo),
+        PadKey(WORD_LEFT, "词 ←", style = KeyStyle.CHAR).apply { repeat = true },
+        PadKey(WORD_RIGHT, "词 →", style = KeyStyle.CHAR).apply { repeat = true },
+        PadKey(ENTER, icon = R.drawable.ic_enter),
     )
 
     init {
@@ -38,7 +44,7 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         pad.layouter = { w, h ->
             val m = kb.metrics
             val spec = keys.mapIndexed { i, k -> intArrayOf(k.id, i % 5, i / 5, 1, 1) }
-            PadView.grid(keys, spec, WEIGHTS, 3, w, h, m)
+            PadView.grid(keys, spec, WEIGHTS, ROWS, w, h, m)
             for (k in keys) { k.textSize = m.label(16f); k.large = true; k.iconSize = m.icon(24f) }
         }
         pad.onTap = { onKey(it.id) }
@@ -79,14 +85,21 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             END -> c.cursorToEdge(end = true, select = selecting)
             SELECT -> { selecting = !selecting; refreshSelection(c.hasSelection()) }
             BACK -> kb.closePanel()
+            UNDO -> c.undoRedo(redo = false)
+            REDO -> c.undoRedo(redo = true)
+            WORD_LEFT -> c.cursorWord(right = false, select = selecting)
+            WORD_RIGHT -> c.cursorWord(right = true, select = selecting)
+            ENTER -> c.onEnter()
         }
         if (id != SELECT && id != BACK) refreshSelection(c.hasSelection())
     }
 
     companion object {
         private val WEIGHTS = floatArrayOf(1f, 1.25f, 1.25f, 1.25f, 1f)
+        private const val ROWS = 4
         const val TAB = 0; const val COPY = 1; const val UP = 2; const val PASTE = 3; const val BACKSPACE = 4
         const val HOME = 5; const val LEFT = 6; const val SELECT = 7; const val RIGHT = 8; const val DEL = 9
         const val END = 10; const val SELECT_ALL = 11; const val DOWN = 12; const val CUT = 13; const val BACK = 14
+        const val UNDO = 15; const val REDO = 16; const val WORD_LEFT = 17; const val WORD_RIGHT = 18; const val ENTER = 19
     }
 }

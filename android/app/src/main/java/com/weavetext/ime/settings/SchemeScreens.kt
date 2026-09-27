@@ -84,6 +84,10 @@ fun SchemesScreen() {
             SwitchRow("联想词", "上屏后推荐下一个词，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
                 p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
             }
+            RowDivider(false)
+            SwitchRow("成对符号", "输入“（《【时自动补上另一半", checked = WeavePrefs.autoPair(p)) {
+                p.edit().putBoolean(WeavePrefs.AUTO_PAIR, it).apply()
+            }
         }
         GroupTitle("五笔")
         GroupCard {

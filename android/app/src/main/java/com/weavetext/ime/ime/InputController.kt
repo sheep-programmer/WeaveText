@@ -165,9 +165,39 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         e?.commitFirst()
         refresh()
+        if (text.length == 1 && pairText(text[0])) return
         commit(text)
         markUndo(text)
         if (text == "=" || text == "＝") offerCalc()
+    }
+
+    /** 成对符号开关（设置里可关）。 Paired-punctuation switch. */
+    var autoPair = true
+
+    /**
+     * 成对符号：输入「“（《【」等左半边时补上右半边、光标停在中间；紧接着输入右半边时只把光标移过去，不重复插入。
+     * Paired punctuation: an opening mark also inserts its closing mark with the cursor between; typing the closing
+     * mark right after just steps over it.
+     */
+    private fun pairText(c: Char): Boolean {
+        if (!autoPair || keyEventsOnly || isSensitiveField) return false
+        val ic = ic() ?: return false
+        PAIRS[c]?.let { close ->
+            if (!ic.getSelectedText(0).isNullOrEmpty()) return false
+            ic.beginBatchEdit()
+            ic.commitText(c.toString(), 1)
+            ic.commitText(close.toString(), 0)
+            ic.endBatchEdit()
+            editor.invalidate()
+            markUndo(null)
+            return true
+        }
+        if (c in CLOSERS && ic.getTextAfterCursor(1, 0)?.firstOrNull() == c) {
+            sendKey(KeyEvent.KEYCODE_DPAD_RIGHT)
+            editor.invalidate()
+            return true
+        }
+        return false
     }
 
     /** 联想词还在候选栏时收起（空格、回车等不选联想的操作）。 Dismiss predictions on space, enter and similar. */
@@ -536,6 +566,27 @@ class InputController(private val icProvider: () -> InputConnection?) {
         sendKey(keyCode, if (select) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
     }
 
+    /** 按词移动（Ctrl+←/→），扩选模式下连带选中。 Move by word (Ctrl+←/→), extending the selection when selecting. */
+    fun cursorWord(right: Boolean, select: Boolean) {
+        commitRawIfComposing()
+        var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        if (select) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+        sendKey(if (right) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, meta)
+    }
+
+    /**
+     * 撤销 / 重做编辑器里的修改：先走编辑器的菜单动作，不支持时退回 Ctrl+Z / Ctrl+Shift+Z。
+     * Undo / redo in the editor: its context-menu action first, falling back to Ctrl+Z / Ctrl+Shift+Z.
+     */
+    fun undoRedo(redo: Boolean) {
+        commitRawIfComposing()
+        val ic = ic() ?: return
+        if (ic.performContextMenuAction(if (redo) android.R.id.redo else android.R.id.undo)) return
+        var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        if (redo) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+        sendKey(KeyEvent.KEYCODE_Z, meta)
+    }
+
     /**
      * 移到整段开头/末尾；扩选模式下保留锚点。优先用 ExtractedText 精确设置选区，拿不到时退回 Ctrl+Home/End。
      * Move to the very start/end of the field (keeps the anchor when selecting).
@@ -672,6 +723,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     companion object {
+        /** 自动成对的中文标点。 Chinese punctuation that pairs automatically. */
+        private val PAIRS = mapOf('“' to '”', '‘' to '’', '（' to '）', '《' to '》', '【' to '】', '「' to '」', '『' to '』', '〈' to '〉')
+        private val CLOSERS = PAIRS.values.toSet()
         /** 算式里可出现的非数字字符。 Non-digit characters allowed in an expression. */
         private const val CALC_CHARS = ".+-*/×÷%^()（）"
         private const val DOUBLE_SPACE_MS = 450L

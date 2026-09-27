@@ -344,8 +344,8 @@ arrangement differs.
 
 ## 9. 光标编辑面板 / Cursor edit panel
 
-与主流输入法一致的 5 列 × 3 行，列权重 `1 | 1.25 | 1.25 | 1.25 | 1`，每行高 = 4×rowPitch/3。
-*5 cols × 3 rows, like mainstream IMEs.*
+5 列 × 4 行（与键盘行数一致），列权重 `1 | 1.25 | 1.25 | 1.25 | 1`，每行高 = rowPitch。
+*5 cols × 4 rows, matching the keyboard rows.*
 
 ```
 ┌───────┬──────────┬──────────┬──────────┬───────┐
@@ -354,6 +354,8 @@ arrangement differs.
 │ 开头  │    ‹     │   选择   │    ›     │  Del  │
 ├───────┼──────────┼──────────┼──────────┼───────┤
 │ 末尾  │   全选   │    ⌄     │   剪切   │ 返回  │ ← A 强调键
+├───────┼──────────┼──────────┼──────────┼───────┤
+│ 撤销  │   重做   │  词 ←    │  词 →    │   ⏎   │
 └───────┴──────────┴──────────┴──────────┴───────┘
    F          字符键（白）                    F
 ```
@@ -367,6 +369,9 @@ arrangement differs.
 | Tab | 输入 `\t` |
 | ⌫ / Del | 向前删 / 向后删（`KEYCODE_FORWARD_DEL`） |
 | 返回 | 强调色；回到键盘 |
+| 撤销 / 重做 | `performContextMenuAction(android.R.id.undo/redo)`，编辑器不支持时发 Ctrl+Z / Ctrl+Shift+Z |
+| 词 ← / 词 → | Ctrl+←/→ 按词移动；长按连发；「选择」开启时扩选 |
+| ⏎ | 与键盘回车相同 |
 
 - 中文标签使用系统字体 500 字重（**不用**某些输入法的书法字体）。*System font, not calligraphic.*
 

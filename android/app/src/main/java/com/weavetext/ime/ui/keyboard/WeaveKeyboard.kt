@@ -357,7 +357,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
-            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION -> applyEngineOptions()
+            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
             WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
@@ -373,6 +373,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         // 繁体输出：内核暂未提供选项，调用无副作用。 Traditional output: no engine option yet (no-op).
         controller.setOption("output.traditional", WeavePrefs.traditional(prefs))
         controller.setOption("candidates.prediction", WeavePrefs.prediction(prefs))
+        controller.autoPair = WeavePrefs.autoPair(prefs)
     }
 
     private fun applySchemaPref() {
@@ -970,8 +971,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 剪贴板有新内容时（由剪贴板仓库回调）。 New clip copied. */
     fun onNewClip(text: String) {
         if (state.composing || state.privateField) return
-        pendingClip = text
-        topBar.clipChip = text.replace('\n', ' ')
+        // 复制的是带验证码的短信：候选栏只给出验证码本身。 A message with a one-time code: offer just the code.
+        val code = com.weavetext.ime.ime.ClipExtract.code(text)
+        pendingClip = code ?: text
+        topBar.clipChip = if (code != null) "验证码 $code" else text.replace('\n', ' ')
         topBar.removeCallbacks(clipChipTimeout)
         topBar.postDelayed(clipChipTimeout, 10_000)
     }
