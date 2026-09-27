@@ -44,10 +44,11 @@ Enable WeaveText in system settings after installing.*
 
 ## macOS 版 / macOS
 
-同一内核的 macOS 输入法（InputMethodKit + SwiftUI，macOS 13+，Apple 芯片与 Intel 通用）：构建、安装与使用见
-[macos/README.md](macos/README.md)。
+同一内核的 macOS 输入法（InputMethodKit + SwiftUI，macOS 13+，Apple 芯片与 Intel 通用），可通过织文互联与手机互传
+文字、剪贴板和文件：构建、安装与使用见 [macos/README.md](macos/README.md)。
 *A macOS input method on the same engine (InputMethodKit + SwiftUI, macOS 13+, universal for Apple silicon and
-Intel); see [macos/README.md](macos/README.md) to build, install and use it.*
+Intel) that exchanges text, clipboard and files with the phone over WeaveLink; see [macos/README.md](macos/README.md)
+to build, install and use it.*
 
 ## 目录 / Layout
 

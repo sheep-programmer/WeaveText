@@ -14,13 +14,51 @@
   (configurable); arrows move the highlight; Return commits the raw letters; Esc clears; tapping Shift toggles
   Chinese/English; Caps Lock types capitals; full-width punctuation in Chinese mode (paired quotes alternate,
   `.` `,` `:` after a digit stay half-width); ⌘ ⌃ ⌥ shortcuts go straight to the app.*
+- v 模式（全拼）：`v` 后接数字或算式，如 `v1234` → 壹仟贰佰叁拾肆元整、一千二百三十四、1,234，`v(128+32)*4` → 640，
+  候选后面以小字注明类型。此时数字与 `+ - * / ( ) . % ^` 都进组合串、不再选词；用空格上屏高亮项（默认第一个），
+  方向键移动高亮，鼠标点选，回车上屏原样的 `v…`，`=` `,` 仍可翻页。
+  *v mode (full pinyin): `v` followed by digits or an expression, e.g. `v1234` → 壹仟贰佰叁拾肆元整 / 一千二百三十四 /
+  1,234, `v(128+32)*4` → 640, with a small note after each candidate. Digits and `+ - * / ( ) . % ^` then go into the
+  composition instead of picking; Space commits the highlight (the first by default), arrows move it, click to pick,
+  Return commits the raw `v…`, and `=` `,` still page.*
+- 等号出结果：中英文模式下，光标前是算式（如 `单价 128*4`）时敲 `=`，候选窗给出结果，按 `1`、空格或点击接在等号后面，
+  按其他键收起。读不到光标前文字的应用里不出现。 `rq` `sj` `xq` 给出日期、时间、星期（跟随系统时区）。
+  *Result after `=`: in either mode, typing `=` right after an expression (such as `单价 128*4`) shows the result;
+  `1`, Space or a click appends it, any other key dismisses it. Apps that don't expose the text before the caret don't get
+  it. `rq` `sj` `xq` give the date, time and weekday (following the system time zone).*
 - 候选窗：跟随光标、到屏幕底边自动翻到上方、多屏正确；横排 / 竖排、字号、深浅色可调；可用鼠标点选。
   *Candidate window: follows the caret, flips above at the screen bottom, correct on multiple screens; horizontal or
   vertical, font size and light/dark are adjustable; click to pick.*
 - 菜单栏图标：左键打开快捷菜单（中英、输入方案、繁体、设置、关于、退出），右键直接打开设置；可在设置里隐藏。
   *Menu bar item: left click for a quick menu, right click opens Settings; can be hidden.*
-- 设置：常规、输入方案、外观、词库（用户词搜索 / 删除 / 清空）、互联（即将推出）、关于（版本与开源许可）。
-  *Settings: General, Schemes, Appearance, Dictionary (search / delete / clear user words), Link (coming soon), About.*
+- 设置：常规、输入方案、外观、词库（用户词搜索 / 删除 / 清空）、互联、关于（版本与开源许可）。
+  *Settings: General, Schemes, Appearance, Dictionary (search / delete / clear user words), Link, About.*
+
+## 织文互联 / WeaveLink
+
+与同一 Wi-Fi 下装了织文的 Android 手机配对，互传文字、剪贴板、图片与文件；端到端加密，不经过任何服务器，默认关闭。
+*Pair with an Android phone running WeaveText on the same Wi-Fi to exchange text, clipboard, images and files;
+end-to-end encrypted, no server involved, off by default.*
+
+- 开启：设置 → 互联 → 打开「织文互联」。首次开启时系统会询问是否允许访问本地网络，请允许。
+  *Enable: Settings → Link → turn on 织文互联. macOS asks for local network access the first time; allow it.*
+- 配对：点「配对手机…」，窗口里显示二维码、6 位配对码和本机地址，两分钟内有效；在手机的 织文 › 设置 › 互联 里扫码，
+  或在「附近的设备」里选这台 Mac 输入配对码，找不到时用「用地址配对」。配对成功后窗口自动关闭，以后同一网络下自动重连。
+  *Pair: click 配对手机…; the sheet shows a QR code, the 6-digit code and this Mac's addresses for two minutes. On the
+  phone, scan it under 织文 › 设置 › 互联, pick this Mac under 附近的设备 and type the code, or use 用地址配对. The sheet
+  closes itself once paired; the devices reconnect on the same network from then on.*
+- 剪贴板同步（默认开）：Mac 上复制的文字（2 万字以内）和图片（PNG/TIFF，20 MB 以内）自动出现在手机上，反之亦然；
+  密码管理器标为保密或临时的内容、访达里复制的文件不同步，刚从手机收到的内容不会再发回去。
+  *Clipboard sync (on by default): text (up to 20,000 characters) and images (PNG/TIFF, up to 20 MB) copied on the Mac
+  appear on the phone and vice versa; content marked concealed/transient by password managers and files copied in
+  Finder are skipped, and what just arrived from the phone is never sent back.*
+- 发送：菜单栏图标 → 发送到手机 → 发送剪贴板 / 发送文件…（可多选），或直接把文件拖到菜单栏图标上；菜单里显示进度，
+  如「正在发送 3/5 · 42%」。手机连着时图标右下角有个小圆点。
+  *Send: menu bar icon → 发送到手机 → 发送剪贴板 / 发送文件… (multiple allowed), or drop files on the menu bar icon;
+  the menu shows progress such as 正在发送 3/5 · 42%. A small dot on the icon means a phone is connected.*
+- 接收：手机主动发来的文字放进剪贴板并发通知；文件存进 `~/Downloads/WeaveText`，点通知在访达中显示。
+  *Receive: text sent from the phone goes to the clipboard with a notification; files land in `~/Downloads/WeaveText`,
+  and clicking the notification reveals them in Finder.*
 
 ## 构建 / Build
 
@@ -83,6 +121,8 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
 |---|---|
 | 只读词库 Read-only dictionaries | `WeaveText.app/Contents/Resources/data/*.wvz` |
 | 用户词 User words | `~/Library/Application Support/WeaveText/` |
+| 互联身份与已配对设备 WeaveLink identity and paired devices | `~/Library/Application Support/WeaveText/link/` |
+| 收到的文件 Received files | `~/Downloads/WeaveText/` |
 | 偏好 Preferences | `defaults read com.weavetext.inputmethod.WeaveText` |
 
 ## 已知限制 / Known limits
@@ -94,8 +134,13 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
   last position or appears near the mouse.*
 - 系统「用大写锁定键切换 ABC」打开时，大写锁定会被系统拿去切换输入法。
   *When the system option "Use Caps Lock to switch to and from ABC" is on, the system takes Caps Lock for switching.*
-- 九键、手写与语音只在 Android 版提供；手机互联与扩展词库包在 Mac 上尚未接入（设置里为占位页）。
-  *T9, handwriting and voice are Android only; phone pairing and extension packs are not wired up on the Mac yet
-  (placeholder pages in Settings).*
+- 九键、手写与语音只在 Android 版提供；扩展词库包在 Mac 上尚未接入（设置里为占位）。
+  *T9, handwriting and voice are Android only; extension packs are not wired up on the Mac yet (a placeholder in Settings).*
+- 互联的 Mac 端只显示本机的配对码让手机来连，不能在 Mac 上输入手机的配对码（手机端不显示配对码）。
+  *On the Mac, WeaveLink only shows its own code for the phone to dial in; it can't type a phone's code (phones don't
+  show one).*
+- 通知需要在第一次收到文件或文字时允许；拒绝后可在 系统设置 → 通知 里打开。
+  *Notifications must be allowed the first time something arrives; if declined, turn them on in System Settings →
+  Notifications.*
 - 输入法所在进程里的文本框（例如设置窗口的搜索框）不经过织文本身。
   *Text fields inside the IME's own process (such as the settings search box) do not go through WeaveText itself.*
