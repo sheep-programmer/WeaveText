@@ -42,6 +42,28 @@ class JniTest {
         }
     }
 
+    /** v 模式与算式：v1234 给出大写金额，等号后的算式能算出结果。 The v mode and the calculator. */
+    @Test
+    fun vModeAndCalculator() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            e.type("v1234")
+            val c = e.snapshot().candidates.map { it.text }
+            assertEquals("1234", c[0])
+            assertTrue("壹仟贰佰叁拾肆元整" in c)
+            assertTrue("一千二百三十四" in c)
+            e.clear()
+            e.type("v(128+32)*4")
+            assertEquals("640", e.snapshot().candidates.first().text)
+            assertEquals("640", e.evaluate("(128+32)*4"))
+            assertEquals(null, e.evaluate("1234"))
+            e.clear()
+            e.setUtcOffset(8 * 60)
+            e.type("rq")
+            assertTrue(e.snapshot().candidates.drop(1).first().text.contains("年"))
+        }
+    }
+
     /** 按在 z/x 交界、落到 x 上：带邻键信息时仍得到「中国」，没有时不纠正。 A border tap still spells 中国. */
     @Test
     fun borderTapIsCorrected() {

@@ -85,6 +85,8 @@ pub struct Options {
     /// 搭配模型权重（0 关闭）与未命中基线（nat）。 Collocation model weight (0 = off) and miss baseline.
     pub lm_weight: f32,
     pub lm_baseline: f32,
+    /// 本地时区相对 UTC 的分钟数（日期时间候选用，宿主设置）。 Local UTC offset in minutes, set by the host.
+    pub utc_offset_min: i32,
 }
 
 impl Default for Options {
@@ -98,6 +100,7 @@ impl Default for Options {
             emoji: true,
             lm_weight: 0.25,
             lm_baseline: 12.0,
+            utc_offset_min: 480,
         }
     }
 }
@@ -551,6 +554,12 @@ impl Engine {
     pub fn input_char(&mut self, c: char) -> bool {
         match self.schema {
             Schema::Pinyin => {
+                // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
+                if self.raw.starts_with('v') && self.consumed == 0 && crate::special::v_accepts(c) {
+                    self.raw.push(c);
+                    self.refresh();
+                    return true;
+                }
                 let c = c.to_ascii_lowercase();
                 if c.is_ascii_lowercase() || (c == '\'' && !self.rest_raw().is_empty()) {
                     if c == '\'' && self.raw.ends_with('\'') {
@@ -1100,7 +1109,49 @@ impl Engine {
         }
     }
 
+    /// v 模式（v 后跟数字或算式）：只给计算与数字读法候选。 The v mode: arithmetic and numeral candidates only.
+    fn refresh_v_mode(&mut self) -> bool {
+        if self.schema != Schema::Pinyin || self.consumed != 0 || !self.selected.is_empty() {
+            return false;
+        }
+        let Some(body) = self.raw.strip_prefix('v') else { return false };
+        if !body.chars().next().is_some_and(crate::special::v_accepts) {
+            return false;
+        }
+        self.preedit = self.raw.clone();
+        self.cands = crate::special::v_candidates(body)
+            .into_iter()
+            .map(|(text, comment)| Cand {
+                view: CandidateView { text: text.clone(), comment, user: false },
+                action: Action::Table { text },
+            })
+            .collect();
+        true
+    }
+
+    /// 输入恰为 rq / sj / xq 时，把日期时间插在首选之后。 Date/time after the first candidate for rq / sj / xq.
+    fn insert_dates(&mut self) {
+        if !self.selected.is_empty() || !matches!(self.rest_raw(), "rq" | "sj" | "xq") {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let at = self.cands.len().min(1);
+        for (k, (text, comment)) in crate::special::date_candidates(self.rest_raw(), now, self.options.utc_offset_min)
+            .into_iter()
+            .enumerate()
+        {
+            let c = Cand { view: CandidateView { text: text.clone(), comment, user: false }, action: Action::Table { text } };
+            self.cands.insert(at + k, c);
+        }
+    }
+
     fn refresh_pinyin(&mut self, selected: String) {
+        if self.refresh_v_mode() {
+            return;
+        }
         let (g, keys) = self.build_graph();
         if g.len == 0 {
             self.preedit = selected;
@@ -1146,6 +1197,9 @@ impl Engine {
             .collect();
         if self.schema == Schema::Pinyin {
             self.mix_english(&lat, &keys);
+        }
+        if self.schema.is_pinyin_family() && !matches!(self.schema, Schema::Keypad(_)) {
+            self.insert_dates();
         }
         if matches!(self.schema, Schema::Keypad(_)) {
             let inp = T9Input::from_units(&self.t9_units[self.consumed..], self.grouping());
@@ -1448,6 +1502,47 @@ mod wubi_tests {
             e.input_char(c);
         }
         e.snapshot().commit
+    }
+
+    fn pinyin_engine() -> Engine {
+        let mut b = Builder::new(Kind::Pinyin);
+        let k = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&k("ri qi"), "日期", 10);
+        b.insert(&k("shi jian"), "时间", 10);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.set_schema(Schema::Pinyin);
+        e.options.emoji = false;
+        e
+    }
+
+    #[test]
+    fn v_mode_numbers_and_arithmetic() {
+        let mut e = pinyin_engine();
+        typing(&mut e, "v1234");
+        let s = e.snapshot();
+        assert_eq!(s.preedit, "v1234");
+        assert_eq!(s.candidates[1].text, "壹仟贰佰叁拾肆元整");
+        e.select(1);
+        assert_eq!(e.snapshot().commit, "壹仟贰佰叁拾肆元整");
+        typing(&mut e, "v(128+32)*4");
+        assert_eq!(e.snapshot().candidates[0].text, "640");
+        e.backspace();
+        e.backspace();
+        assert_eq!(e.snapshot().preedit, "v(128+32)");
+        e.clear();
+        // 普通拼音里数字不进组合串。 Digits don't enter normal pinyin.
+        typing(&mut e, "ri");
+        assert!(!e.input_char('1'));
+    }
+
+    #[test]
+    fn date_shortcuts_follow_the_first_candidate() {
+        let mut e = pinyin_engine();
+        typing(&mut e, "rq");
+        let s = e.snapshot();
+        assert_eq!(s.candidates[0].text, "日期");
+        assert!(s.candidates[1].text.contains('年'));
+        assert_eq!(s.candidates[1].comment, "日期");
     }
 
     #[test]

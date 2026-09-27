@@ -32,6 +32,10 @@ interface KeyEngine {
      * Handwriting (schema "hand"): all strokes of the current char, each x0,y0,x1,y1…; y points down.
      */
     fun handInput(strokes: List<FloatArray>): Boolean = false
+    /** 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes, for date/time candidates. */
+    fun setUtcOffset(minutes: Int) {}
+    /** 计算算式（如 128*4），不是算式时返回 null。 Evaluate an expression like 128*4; null if it isn't one. */
+    fun evaluate(expr: String): String? = null
 }
 
 /**
@@ -51,6 +55,8 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     /** 输入一个字符；false 表示引擎不处理，调用方应直接上屏。 */
     override fun inputChar(codePoint: Int): Boolean = nativeInputChar(handle, codePoint)
     override fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean = nativeInputKey(handle, codePoint, near, closeness)
+    override fun setUtcOffset(minutes: Int) = nativeSetUtcOffset(handle, minutes)
+    override fun evaluate(expr: String): String? = nativeEval(expr)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
     override fun backspace(): Boolean = nativeBackspace(handle)
@@ -142,6 +148,8 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeSetOption(h: Long, key: String, value: String): Boolean
         @JvmStatic private external fun nativeInputChar(h: Long, codePoint: Int): Boolean
         @JvmStatic private external fun nativeInputKey(h: Long, codePoint: Int, near: Int, closeness: Float): Boolean
+        @JvmStatic private external fun nativeSetUtcOffset(h: Long, minutes: Int)
+        @JvmStatic private external fun nativeEval(expr: String): String?
         @JvmStatic private external fun nativeBackspace(h: Long): Boolean
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeSelectPinyin(h: Long, index: Int): Boolean

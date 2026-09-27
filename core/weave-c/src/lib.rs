@@ -129,6 +129,29 @@ pub extern "C" fn weave_input_char(h: *mut WeaveEngine, code_point: u32) -> bool
     with(h, false, |e| e.input_char(c))
 }
 
+/// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
+#[no_mangle]
+pub extern "C" fn weave_set_utc_offset(h: *mut WeaveEngine, minutes: i32) {
+    with(h, (), |e| e.options.utc_offset_min = minutes.clamp(-14 * 60, 14 * 60))
+}
+
+/// 计算算式；不是有效算式时返回 NULL。 Evaluate an expression; NULL when it isn't one.
+#[no_mangle]
+pub extern "C" fn weave_eval(expr: *const c_char) -> *mut c_char {
+    let Some(x) = str_arg(expr) else { return std::ptr::null_mut() };
+    catch_unwind(|| {
+        weave_engine::special::is_expression(x)
+            .then(|| weave_engine::special::eval(x))
+            .flatten()
+            .map(weave_engine::special::format_number)
+    })
+    .ok()
+    .flatten()
+    .and_then(|v| CString::new(v).ok())
+    .map(CString::into_raw)
+    .unwrap_or(std::ptr::null_mut())
+}
+
 /// 带邻键信息的按键（触屏用；实体键盘传 near = 0）。 A key with its tap neighbour (touch; pass 0 for hardware keys).
 #[no_mangle]
 pub extern "C" fn weave_input_key(h: *mut WeaveEngine, code_point: u32, near: u32, closeness: f32) -> bool {

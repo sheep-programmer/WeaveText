@@ -194,6 +194,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         prefs.registerOnSharedPreferenceChangeListener(this)
         applyAllPrefs()
         controller.addListener(stateListener)
+        // 敲等号后的计算结果：点一下接在等号后面。 A result after "=": tap to append it.
+        controller.onCalc = { showLocalCandidates(it) }
     }
 
     // ================================================================ theme & geometry
@@ -1209,6 +1211,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         Choreographer.getInstance().removeFrameCallback(frameRender)
         renderPending = false
         controller.removeListener(stateListener)
+        controller.onCalc = null
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         voiceStrip?.end(true)
         for (p in panels.values) p.onHide()

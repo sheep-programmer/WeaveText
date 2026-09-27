@@ -13,6 +13,7 @@ pub mod decoder;
 pub mod graph;
 pub mod session;
 pub mod shuangpin;
+pub mod special;
 pub mod t9;
 pub mod table;
 pub mod userdict;

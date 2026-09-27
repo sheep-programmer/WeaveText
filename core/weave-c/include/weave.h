@@ -34,6 +34,10 @@ void weave_flush(WeaveEngine *h);
 bool weave_is_composing(WeaveEngine *h);
 void weave_set_learning(WeaveEngine *h, bool on);
 void weave_set_context(WeaveEngine *h, const char *prev_word);
+/* 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes (date/time candidates). */
+void weave_set_utc_offset(WeaveEngine *h, int32_t minutes);
+/* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
+char *weave_eval(const char *expr);
 
 /* {"commit","preedit","composing","total","candidates":[{"text","comment","user"}],"pinyinOptions","schema"} */
 char *weave_snapshot_json(WeaveEngine *h);

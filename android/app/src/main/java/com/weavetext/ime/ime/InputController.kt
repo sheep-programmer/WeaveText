@@ -75,6 +75,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun attachEngine(e: KeyEngine) {
         engine = e
         e.setSchema(chineseSchema)
+        syncClock(e)
         update { it.copy(engineReady = true, schema = chineseSchema) }
     }
 
@@ -84,6 +85,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         editorInfo = info
+        engine?.let(::syncClock)
         editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
         keyEventsOnly = info == null || info.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL
         val e = engine
@@ -153,10 +155,38 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
     fun onText(text: String) {
-        engine?.commitFirst()
+        val e = engine
+        // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串。 Pinyin v mode: digits and operators keep composing.
+        if (e != null && text.length == 1 && state.chinese && state.schema == "pinyin" && e.isComposing() && e.inputChar(text[0].code)) {
+            stamp++
+            refresh()
+            markUndo(null)
+            return
+        }
+        e?.commitFirst()
         refresh()
         commit(text)
         markUndo(text)
+        if (text == "=" || text == "＝") offerCalc()
+    }
+
+    /** 敲下等号时，光标前是算式就把结果当候选给出。 After typing "=", offer the result when an expression precedes it. */
+    var onCalc: ((List<String>) -> Unit)? = null
+
+    private fun offerCalc() {
+        val e = engine ?: return
+        val cb = onCalc ?: return
+        val before = editor.textBefore(64) ?: ic()?.getTextBeforeCursor(64, 0)?.toString() ?: return
+        val body = before.dropLast(1)
+        val expr = body.takeLastWhile { it.isDigit() || it in CALC_CHARS }.trimStart { it == ')' || it == '）' }
+        if (expr.length < 3) return
+        val r = e.evaluate(expr) ?: return
+        cb(listOf(r))
+    }
+
+    /** 时区可能变化：每次开始输入时同步给内核。 Keep the engine's UTC offset current. */
+    private fun syncClock(e: KeyEngine) {
+        e.setUtcOffset(java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000)
     }
 
     private fun markUndo(text: String?) {
@@ -631,6 +661,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     companion object {
+        /** 算式里可出现的非数字字符。 Non-digit characters allowed in an expression. */
+        private const val CALC_CHARS = ".+-*/×÷%^()（）"
         private const val DOUBLE_SPACE_MS = 450L
         private const val CAPS_FLAGS = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_CAP_WORDS or
             InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS

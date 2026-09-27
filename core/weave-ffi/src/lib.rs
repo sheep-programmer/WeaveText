@@ -228,6 +228,30 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeInputChar(
     jbool(with_engine(h, false, |e| e.input_char(ch)))
 }
 
+/// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetUtcOffset(_env: JNIEnv, _c: JClass, h: jlong, minutes: jint) {
+    with_engine(h, (), |e| e.options.utc_offset_min = minutes.clamp(-14 * 60, 14 * 60))
+}
+
+/// 计算算式，返回结果文字；不是有效算式时返回 null。 Evaluate an expression; null when it isn't one.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeEval(mut env: JNIEnv, _c: JClass, expr: JString) -> jni::sys::jstring {
+    let Some(x) = get_string(&mut env, &expr) else { return std::ptr::null_mut() };
+    let r = catch_unwind(|| {
+        weave_engine::special::is_expression(&x)
+            .then(|| weave_engine::special::eval(&x))
+            .flatten()
+            .map(weave_engine::special::format_number)
+    })
+    .ok()
+    .flatten();
+    match r {
+        Some(v) => to_jstring(&mut env, &v),
+        None => std::ptr::null_mut(),
+    }
+}
+
 /// 带触点邻键的按键：`near` 为交界另一侧的字母（0 = 无），`closeness` 1 = 正压在交界上。
 /// A key with its tap neighbour: `near` is the letter across the border (0 = none), `closeness` 1 = on it.
 #[no_mangle]

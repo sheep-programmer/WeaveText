@@ -46,6 +46,10 @@ class FakeEngine : KeyEngine {
         raw.append(c)
         return true
     }
+    /** 只认 a*b 形式的假计算。 A fake calculator that only knows a*b. */
+    override fun evaluate(expr: String): String? =
+        expr.split('*').takeIf { it.size == 2 }?.let { (a, b) -> (a.toLongOrNull() ?: return null) * (b.toLongOrNull() ?: return null) }?.toString()
+
     /** 带邻键的按键：(字母, 邻键, 贴近度)。 Keys fed with a neighbour: (letter, neighbour, closeness). */
     val nearCalls = ArrayList<Triple<Char, Char, Float>>()
     override fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean {
