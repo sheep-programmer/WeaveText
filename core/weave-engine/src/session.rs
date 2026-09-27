@@ -329,7 +329,25 @@ pub struct Engine {
     recent: String,
     /// 候选栏里是联想词（没有组合中的输入）。 The candidates are predictions (nothing is composing).
     predicting: bool,
+    /// 刚才那次上屏学到的内容（上屏后马上退格就撤销）。 What the last commit learned, undone by an immediate backspace.
+    last_learned: Option<Learned>,
+    /// 上一次上屏的词（连着两次上屏可能是一个新词）。 The previous commit; two quick commits may form a new word.
+    prev_commit: Option<(Vec<SyllableId>, String, std::time::Instant)>,
+    /// 连续上屏拼出的候选新词：第二次出现才正式记住。 Phrases from consecutive commits; learned on the second time.
+    provisional: HashMap<String, u8>,
 }
+
+/// 一次上屏的学习记录。 What one commit learned.
+struct Learned {
+    words: Vec<(Vec<SyllableId>, String)>,
+    bigrams: Vec<(String, String)>,
+    at: std::time::Instant,
+}
+
+/// 上屏后多久内的退格算「选错了」。 A backspace this soon after a commit counts as "wrong pick".
+const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+/// 两次上屏间隔多短算连着打的一个词。 Commits this close together may be one word.
+const CHAIN_WINDOW: std::time::Duration = std::time::Duration::from_millis(2500);
 
 fn open_lex(p: &Option<Source>) -> Option<Lexicon> {
     p.as_ref().and_then(|p| Lexicon::open_source(p).ok())
@@ -390,6 +408,9 @@ impl Engine {
             readings: None,
             recent: String::new(),
             predicting: false,
+            last_learned: None,
+            prev_commit: None,
+            provisional: HashMap::new(),
         }
     }
 
@@ -619,7 +640,25 @@ impl Engine {
     pub fn set_context(&mut self, prev_word: Option<String>) {
         self.last_word = prev_word.filter(|w| !w.is_empty());
         self.recent = self.last_word.clone().unwrap_or_default();
+        self.prev_commit = None;
+        self.last_learned = None;
         self.drop_predictions();
+    }
+
+    /// 上屏后马上退格：多半是选错了，撤销刚学到的词和搭配，也不拿它去拼新词。
+    /// A backspace right after a commit usually means a wrong pick: undo what it learned and don't chain it.
+    fn undo_learning(&mut self) {
+        let Some(l) = self.last_learned.take() else { return };
+        self.prev_commit = None;
+        if l.at.elapsed() > UNDO_WINDOW {
+            return;
+        }
+        for (k, w) in &l.words {
+            self.user_pinyin.unlearn(k, w);
+        }
+        for (p, n) in &l.bigrams {
+            self.user_pinyin.unlearn_bigram(p, n);
+        }
     }
 
     /// 收起联想词。 Dismiss the predictions.
@@ -710,6 +749,7 @@ impl Engine {
     /// Feed a character; false means "not mine", the UI should insert it directly.
     pub fn input_char(&mut self, c: char) -> bool {
         self.drop_predictions();
+        self.last_learned = None;
         match self.schema {
             Schema::Pinyin => {
                 // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
@@ -801,6 +841,7 @@ impl Engine {
     pub fn backspace(&mut self) -> bool {
         if !self.is_composing() {
             self.drop_predictions();
+            self.undo_learning();
             return false;
         }
         // 手写：退掉最后一笔并重新识别。 Handwriting: drop the last stroke and recognise again.
@@ -905,11 +946,14 @@ impl Engine {
             }
             self.select(0);
         }
+        // 接下来是标点或直接上屏的文字：之后的词不再和前面连成新词。 Punctuation follows: break the chain.
+        self.prev_commit = None;
     }
 
     /// 回车：原样上屏输入码。 Enter: commit the raw keys as typed.
     pub fn commit_raw(&mut self) {
         self.drop_predictions();
+        self.prev_commit = None;
         let sel: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         let mut text = self.out(&sel);
         match self.schema {
@@ -1163,19 +1207,42 @@ impl Engine {
             words.extend(s.words.iter().cloned());
         }
         let mut prev = self.last_word.clone();
+        let mut learned = Learned { words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now() };
         for (k, w) in &words {
             self.user_pinyin.learn(k, w);
+            learned.words.push((k.clone(), w.clone()));
             if let Some(p) = &prev {
                 self.user_pinyin.learn_bigram(p, w);
+                learned.bigrams.push((p.clone(), w.clone()));
             }
             prev = Some(w.clone());
         }
-        if sels.len() >= 2 {
-            let key: Vec<SyllableId> = words.iter().flat_map(|(k, _)| k.iter().copied()).collect();
-            if key.len() <= 8 && text.chars().all(is_cjk) {
-                self.user_pinyin.learn(&key, &text);
-            }
+        let key: Vec<SyllableId> = words.iter().flat_map(|(k, _)| k.iter().copied()).collect();
+        if sels.len() >= 2 && key.len() <= 8 && text.chars().all(is_cjk) {
+            self.user_pinyin.learn(&key, &text);
+            learned.words.push((key.clone(), text.clone()));
         }
+        // 紧接着上一次上屏：两段合起来可能是一个新词（第二次这样打时才记住）。
+        // Right after the previous commit: the two may form a new word, learned the second time it happens.
+        if self.user_pinyin.learning && !key.is_empty() && text.chars().all(is_cjk) {
+            if let Some((pk, pt, at)) = self.prev_commit.take() {
+                let n = pt.chars().count() + text.chars().count();
+                if at.elapsed() <= CHAIN_WINDOW && (2..=6).contains(&n) && pk.len() + key.len() <= 6 {
+                    let phrase = format!("{pt}{text}");
+                    let seen = self.provisional.entry(phrase.clone()).or_insert(0);
+                    *seen += 1;
+                    if *seen >= 2 {
+                        let pkey: Vec<SyllableId> = pk.iter().chain(key.iter()).copied().collect();
+                        self.user_pinyin.learn(&pkey, &phrase);
+                        self.provisional.remove(&phrase);
+                    } else if self.provisional.len() > 500 {
+                        self.provisional.clear();
+                    }
+                }
+            }
+            self.prev_commit = Some((key, text.clone(), std::time::Instant::now()));
+        }
+        self.last_learned = Some(learned);
         self.last_word = words.last().map(|(_, w)| w.clone());
         let out = self.out(&text);
         self.commit.push_str(&out);
@@ -1788,6 +1855,39 @@ mod wubi_tests {
         typing(&mut e, "shijian");
         e.select(0);
         assert!(e.snapshot().candidates.is_empty());
+    }
+
+    #[test]
+    fn backspace_right_after_a_commit_undoes_the_learning() {
+        let mut e = pinyin_engine();
+        e.options.prediction = false;
+        typing(&mut e, "shijian");
+        e.select(0);
+        assert!(e.user_word_count() >= 1);
+        assert!(!e.backspace());
+        assert_eq!(e.user_word_count(), 0);
+        // 上屏后又打了字，再退格就不算撤销。 After typing more, a backspace is no undo.
+        typing(&mut e, "shijian");
+        e.select(0);
+        typing(&mut e, "r");
+        e.backspace();
+        e.backspace();
+        assert!(e.user_word_count() >= 1);
+    }
+
+    #[test]
+    fn two_quick_commits_become_a_word_the_second_time() {
+        let mut e = pinyin_engine();
+        e.options.prediction = false;
+        let phrase = |e: &Engine| e.user_words("", 0, 50).iter().any(|w| w.text == "日期时间");
+        for round in 0..2 {
+            typing(&mut e, "riqi");
+            e.select(0);
+            typing(&mut e, "shijian");
+            e.select(0);
+            e.commit_first();
+            assert_eq!(phrase(&e), round == 1);
+        }
     }
 
     #[test]

@@ -59,6 +59,18 @@ impl Default for UserDict {
     }
 }
 
+/// 次数的半衰期（逻辑时钟：每学一个词或一对搭配走一步，约一周的高强度输入）。
+/// Half-life of counts in logical ticks (one per learned word or pair; about a week of heavy typing).
+pub const HALF_LIFE: f64 = 20_000.0;
+/// 压缩时的容量上限。 Capacity limits applied when compacting.
+pub const MAX_WORDS: usize = 20_000;
+pub const MAX_BIGRAMS: usize = 30_000;
+
+/// 随时间减半后的次数。 A count after halving over `age` ticks.
+pub fn decayed(count: u32, age: u64) -> f64 {
+    count as f64 * (-(age as f64) / HALF_LIFE).exp2()
+}
+
 fn key_str(key: &[u16]) -> String {
     key.iter()
         .map(|s| s.to_string())
@@ -133,11 +145,14 @@ impl UserDict {
                 }
             }
             ["B", prev, next, count, tick] => {
-                if let (Ok(c), Ok(t)) = (count.parse(), tick.parse()) {
-                    self.bigrams.insert(
-                        (prev.to_string(), next.to_string()),
-                        BigramStat { count: c, last: t },
-                    );
+                if let (Ok(c), Ok(t)) = (count.parse::<u32>(), tick.parse()) {
+                    let k = (prev.to_string(), next.to_string());
+                    // 次数 0 = 撤销后删除。 A zero count means removed by an undo.
+                    if c == 0 {
+                        self.bigrams.remove(&k);
+                    } else {
+                        self.bigrams.insert(k, BigramStat { count: c, last: t });
+                    }
                     self.tick = self.tick.max(t);
                 }
             }
@@ -169,6 +184,7 @@ impl UserDict {
         {
             let mut w = BufWriter::new(File::create(&tmp)?);
             let mut lines = 0;
+            self.prune();
             let mut stack = vec![(UROOT, Vec::<u16>::new())];
             while let Some((n, key)) = stack.pop() {
                 for e in &self.nodes[n as usize].entries {
@@ -202,6 +218,32 @@ impl UserDict {
 
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+
+    /// 清掉早已衰减殆尽的记录，并按剩余次数截到容量上限（压缩时调用）。
+    /// Drop records that have decayed away and cap by remaining count (called while compacting).
+    fn prune(&mut self) {
+        let tick = self.tick;
+        let stale = |c: u32, last: u64| decayed(c, tick.saturating_sub(last)) < 0.25;
+        for n in &mut self.nodes {
+            n.entries.retain(|e| !stale(e.count, e.last));
+        }
+        self.bigrams.retain(|_, s| !stale(s.count, s.last));
+        let words = self.entry_count();
+        if words > MAX_WORDS {
+            let mut all: Vec<f64> = self.nodes.iter().flat_map(|n| n.entries.iter().map(|e| decayed(e.count, tick.saturating_sub(e.last)))).collect();
+            all.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let cut = all[MAX_WORDS - 1];
+            for n in &mut self.nodes {
+                n.entries.retain(|e| decayed(e.count, tick.saturating_sub(e.last)) >= cut);
+            }
+        }
+        if self.bigrams.len() > MAX_BIGRAMS {
+            let mut all: Vec<f64> = self.bigrams.values().map(|s| decayed(s.count, tick.saturating_sub(s.last))).collect();
+            all.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let cut = all[MAX_BIGRAMS - 1];
+            self.bigrams.retain(|_, s| decayed(s.count, tick.saturating_sub(s.last)) >= cut);
+        }
     }
 
     pub fn entry_count(&self) -> usize {
@@ -258,9 +300,10 @@ impl UserDict {
         }
         self.tick += 1;
         let tick = self.tick;
+        // 先按时间减半再加一：很久以前的次数不再全额累积。 Decay first, then add one.
         let count = self
             .get(key, text)
-            .map(|e| e.count)
+            .map(|e| decayed(e.count, tick.saturating_sub(e.last)).round() as u32)
             .unwrap_or(0)
             .saturating_add(1);
         self.set_entry(key, text, count, tick);
@@ -284,10 +327,34 @@ impl UserDict {
             .bigrams
             .entry((prev.to_string(), next.to_string()))
             .or_default();
-        s.count = s.count.saturating_add(1);
+        s.count = (decayed(s.count, tick.saturating_sub(s.last)).round() as u32).saturating_add(1);
         s.last = tick;
         let line = format!("B\t{prev}\t{next}\t{}\t{}", s.count, s.last);
         self.write_line(line);
+    }
+
+    /// 撤销一次学习（选错后马上退格）：次数减一，减到 0 就删掉。
+    /// Undo one learning step (backspace right after a wrong pick): count minus one, removed at zero.
+    pub fn unlearn(&mut self, key: &[u16], text: &str) {
+        let Some(e) = self.get(key, text).cloned() else { return };
+        if e.count <= 1 {
+            self.forget(key, text);
+        } else {
+            self.set_entry(key, text, e.count - 1, e.last);
+            self.write_line(format!("W\t{}\t{}\t{}\t{}", key_str(key), text, e.count - 1, e.last));
+        }
+    }
+
+    pub fn unlearn_bigram(&mut self, prev: &str, next: &str) {
+        let k = (prev.to_string(), next.to_string());
+        let Some(s) = self.bigrams.get(&k).copied() else { return };
+        let c = s.count.saturating_sub(1);
+        if c == 0 {
+            self.bigrams.remove(&k);
+        } else {
+            self.bigrams.insert(k, BigramStat { count: c, last: s.last });
+        }
+        self.write_line(format!("B\t{prev}\t{next}\t{c}\t{}", s.last));
     }
 
     /// 删除一个用户词。 Forget a user word.

@@ -132,24 +132,27 @@ pub mod learn_cost {
         700.0 * (-age / 400.0).exp()
     }
 
-    /// 系统词被用户用过：在本跨度的最优 cost 附近提升。
-    /// A system word the user has chosen: promote relative to the span's best.
+    fn count(tick: u64, e: &UserEntry) -> f64 {
+        crate::userdict::decayed(e.count, tick.saturating_sub(e.last))
+    }
+
+    /// 系统词被用户用过：在本跨度的最优 cost 附近提升（次数随时间减半，久不用的词慢慢回到原位）。
+    /// A system word the user has chosen: promote relative to the span's best. Counts halve over time, so words
+    /// not used for long drift back.
     pub fn promoted(sys_cost: u32, top: u32, tick: u64, e: &UserEntry) -> u32 {
-        let v = top as f64 + 350.0 - 450.0 * (1.0 + e.count as f64).ln() - recency(tick, e);
+        let v = top as f64 + 350.0 - 450.0 * (1.0 + count(tick, e)).ln() - recency(tick, e);
         (v.max(0.0) as u32).min(sys_cost)
     }
 
     /// 只存在于用户词库的词（造词结果）。 A word that only exists in the user dictionary.
     pub fn user_only(syllables: usize, tick: u64, e: &UserEntry) -> u32 {
-        let v = 5200.0 + 1200.0 * syllables as f64
-            - 450.0 * (1.0 + e.count as f64).ln()
-            - recency(tick, e);
+        let v = 5200.0 + 1200.0 * syllables as f64 - 450.0 * (1.0 + count(tick, e)).ln() - recency(tick, e);
         v.max(0.0) as u32
     }
 
-    /// 用户二元组奖励。 User bigram bonus.
-    pub fn bigram_bonus(count: u32) -> u32 {
-        (1600.0 * (1.0 + count as f64).ln()).min(4500.0) as u32
+    /// 用户二元组奖励（同样随时间衰减）。 User bigram bonus, decaying over time as well.
+    pub fn bigram_bonus(count: u32, age: u64) -> u32 {
+        (1600.0 * (1.0 + crate::userdict::decayed(count, age)).ln()).min(4500.0) as u32
     }
 }
 
@@ -659,7 +662,7 @@ impl<'a> Decoder<'a> {
                         let mut cost = prev.cost + (w.cost + WORD_COST) as i64;
                         if self.user.has_bigrams() && !prev.text.is_empty() {
                             if let Some(b) = self.user.bigram(&prev.text, &w.text) {
-                                cost -= learn_cost::bigram_bonus(b.count) as i64;
+                                cost -= learn_cost::bigram_bonus(b.count, self.user.tick().saturating_sub(b.last)) as i64;
                             }
                         }
                         let tail = match &self.lm {
