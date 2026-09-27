@@ -20,4 +20,4 @@ pub mod t9;
 pub mod table;
 pub mod userdict;
 
-pub use session::{CandidateView, Engine, Options, Paths, Schema, Snapshot, UserWord};
+pub use session::{CandidateView, Engine, MarkKind, Options, Paths, PreeditMark, Schema, Snapshot, UserWord};

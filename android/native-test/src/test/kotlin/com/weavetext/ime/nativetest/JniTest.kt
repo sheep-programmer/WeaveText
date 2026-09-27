@@ -1,6 +1,7 @@
 package com.weavetext.ime.nativetest
 
 import com.weavetext.ime.core.NativeEngine
+import com.weavetext.ime.core.PreeditMark
 import com.weavetext.ime.voice.NativePluginHost
 import com.weavetext.ime.voice.NativeSpeechCallback
 import org.json.JSONArray
@@ -138,6 +139,23 @@ class JniTest {
             e.clear()
             e.type("xhongguo")
             assertNotEquals("中国", e.snapshot().candidates.first().text)
+        }
+    }
+
+    /** 字母打颠倒：自动改正，预编辑显示改正后的拼写并带换位标记。 Swapped letters are fixed and marked in the preedit. */
+    @Test
+    fun swappedLettersAreCorrectedAndMarked() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            e.type("xainzai")
+            val s = e.snapshot()
+            assertEquals("现在", s.candidates.first().text)
+            assertEquals("xian'zai", s.preedit)
+            assertEquals(listOf(PreeditMark(1, 3, PreeditMark.Kind.SWAP)), s.marks)
+            assertTrue(e.setOption("input.autocorrect", false))
+            e.clear()
+            e.type("xainzai")
+            assertTrue(e.snapshot().marks.isEmpty())
         }
     }
 

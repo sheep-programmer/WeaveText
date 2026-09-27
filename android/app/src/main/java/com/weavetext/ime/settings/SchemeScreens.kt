@@ -81,6 +81,10 @@ fun SchemesScreen() {
             val n = WeavePrefs.fuzzy(p).size
             SettingRow("模糊音", onClick = { nav.push(Route.Fuzzy) }) { ValueChevron(if (n == 0) "未开启" else "$n 项") }
             RowDivider(false)
+            SwitchRow("自动纠错", "字母颠倒、漏打、多打时自动改正并标红", checked = WeavePrefs.autocorrect(p)) {
+                p.edit().putBoolean(WeavePrefs.AUTOCORRECT, it).apply()
+            }
+            RowDivider(false)
             SwitchRow("联想词", "上屏后推荐下一个词，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
                 p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
             }

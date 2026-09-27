@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -16,6 +17,7 @@ import android.view.View
 import android.widget.OverScroller
 import com.weavetext.ime.R
 import com.weavetext.ime.core.Candidate
+import com.weavetext.ime.core.PreeditMark
 import com.weavetext.ime.style.KeyboardStyle
 import com.weavetext.ime.style.LayoutStyle
 import com.weavetext.ime.style.ToolIds
@@ -69,6 +71,11 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     // 候选 / candidates
     private var preedit = ""
     private var preeditShown = ""
+    private var marks: List<PreeditMark> = emptyList()
+    /** [preeditShown] 每个字符的样式，见 [styledPreedit]。 Per-character style of [preeditShown], see [styledPreedit]. */
+    private var preeditStyle = ByteArray(0)
+    private val markLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val markPath = Path()
     private var english = false
     // 缓冲区复用，只增不减；只测量到可见范围再多一屏，滚动时再补。
     // Buffers are reused and only grow; only the visible range plus one screen is measured, the rest on scroll.
@@ -184,24 +191,32 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
      * 设置候选内容（内核候选）。 Set engine candidates.
      * @param english 英文模式（不显示组合串，候选行垂直居中）。
      */
-    fun setCandidates(preedit: String, items: List<Candidate>, total: Int, english: Boolean, keepScroll: Boolean) {
+    fun setCandidates(
+        preedit: String, items: List<Candidate>, total: Int, english: Boolean, keepScroll: Boolean,
+        marks: List<PreeditMark> = emptyList(),
+    ) {
+        val marksChanged = marks != this.marks
+        this.marks = marks
         var changed = preedit != this.preedit || items.size != texts.size
         if (!changed) for (i in items.indices) if (items[i].text != texts[i]) { changed = true; break }
         texts.clear(); comments.clear()
         for (i in items.indices) { texts += items[i].text; comments += items[i].comment }
-        apply(preedit, total, english, keepScroll, changed)
+        apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
     /** 设置纯文字候选（本地标点列表、预览）。 Set plain text candidates (local lists, previews). */
     fun setCandidateTexts(preedit: String, items: List<String>, total: Int, english: Boolean, keepScroll: Boolean) {
+        val marksChanged = marks.isNotEmpty()
+        marks = emptyList()
         val changed = preedit != this.preedit || items != texts
         texts.clear(); comments.clear()
         for (t in items) { texts += t; comments += "" }
-        apply(preedit, total, english, keepScroll, changed)
+        apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
-    private fun apply(preedit: String, total: Int, english: Boolean, keepScroll: Boolean, changed: Boolean) {
-        val preeditChanged = preedit != this.preedit
+    private fun apply(preedit: String, total: Int, english: Boolean, keepScroll: Boolean, changed: Boolean, marksChanged: Boolean) {
+        // 标记变了也要重排组合串。 Changed marks also re-lay the preedit out.
+        val preeditChanged = preedit != this.preedit || marksChanged
         this.preedit = preedit
         this.english = english
         this.total = total
@@ -281,11 +296,60 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         // 组合串左侧省略（只在组合串变化时算）。 Ellipsize the preedit from the left, only when it changed.
         small.textSize = m.dp(12.5f) * m.candScale
         val maxPre = width * 0.6f
-        preeditShown = if (small.measureText(preedit) > maxPre) {
+        val (disp, style) = styledPreedit(preedit, marks)
+        if (small.measureText(disp) > maxPre) {
             var start = 0
-            while (start < preedit.length && small.measureText("…" + preedit.substring(start)) > maxPre) start++
-            "…" + preedit.substring(start)
-        } else preedit
+            while (start < disp.length && small.measureText("…" + disp.substring(start)) > maxPre) start++
+            preeditShown = "…" + disp.substring(start)
+            preeditStyle = byteArrayOf(STYLE_PLAIN) + style.copyOfRange(start, style.size)
+        } else {
+            preeditShown = disp
+            preeditStyle = style
+        }
+    }
+
+    /**
+     * 画组合串，纠错处用红色：补上 / 换掉的字母下划线，换回来的两个字母上方一道弧线，去掉的多打字母
+     * 划掉。返回画完的右端。
+     * Draw the preedit with corrections in red: added / replaced letters underlined, swapped-back pairs with an arc
+     * over them, dropped extra letters struck through. Returns the right end.
+     */
+    private fun drawPreedit(c: Canvas, x: Float, base: Float): Float {
+        val p = palette
+        val m = metrics
+        val s = preeditShown
+        val st = preeditStyle
+        markLine.color = p.danger
+        markLine.strokeWidth = m.dp(1.2f)
+        val em = small.textSize
+        var cx = x
+        var i = 0
+        while (i < s.length) {
+            val k = st.getOrElse(i) { STYLE_PLAIN }
+            var j = i + 1
+            while (j < s.length && st.getOrElse(j) { STYLE_PLAIN } == k && k != STYLE_SWAP) j++
+            if (k == STYLE_SWAP) j = min(i + 2, s.length)
+            val w = small.measureText(s, i, j)
+            small.color = if (k == STYLE_PLAIN) p.labelSecondary else p.danger
+            c.drawText(s, i, j, cx, base, small)
+            when (k) {
+                STYLE_FIXED -> c.drawLine(cx + m.dp(0.5f), base + m.dp(2.5f), cx + w - m.dp(0.5f), base + m.dp(2.5f), markLine)
+                STYLE_REMOVED -> c.drawLine(cx, base - em * 0.3f, cx + w, base - em * 0.3f, markLine)
+                STYLE_SWAP -> {
+                    // 两个换回来的字母上方一道弧线，两端下弯。 An arc over the swapped pair, both ends bent down.
+                    val l = cx + m.dp(0.5f)
+                    val r = cx + w - m.dp(0.5f)
+                    val top = base - em * 0.86f
+                    markPath.reset()
+                    markPath.moveTo(l, top + m.dp(2.5f))
+                    markPath.cubicTo(l, top - m.dp(1.5f), r, top - m.dp(1.5f), r, top + m.dp(2.5f))
+                    c.drawPath(markPath, markLine)
+                }
+            }
+            cx += w
+            i = j
+        }
+        return cx
     }
 
     /** 测量候选直到内容宽度超过 [x]。 Measure candidates until the content reaches [x]. */
@@ -441,9 +505,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             small.color = p.labelSecondary
             val x = m.dp(12f) + lead
             val base = m.dp(15f) * m.topScale
-            c.drawText(preeditShown, x, base, small)
+            val end = drawPreedit(c, x, base)
             if (cursorOn) {
-                val cx = x + small.measureText(preeditShown) + m.dp(1f)
+                val cx = end + m.dp(1f)
                 fill.color = p.candidateFirst
                 c.drawRect(cx, base - m.dp(10.5f) * m.candScale, cx + m.dp(1f), base + m.dp(1.5f), fill)
             }
@@ -807,5 +871,37 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         private const val ACTION_MSG = 13
         private const val ACTION_BUTTON = 14
         private const val CAND_BASE = 100
+        internal const val STYLE_PLAIN: Byte = 0
+        internal const val STYLE_FIXED: Byte = 1
+        internal const val STYLE_SWAP: Byte = 2
+        internal const val STYLE_REMOVED: Byte = 3
     }
+}
+
+/**
+ * 组合串加上纠错标记后的显示文字与每个字符的样式：去掉的多打字母插回原处（划掉显示），补上 / 换掉的字母
+ * [TopBarView.STYLE_FIXED]，换回来的两个字母 [TopBarView.STYLE_SWAP]。
+ * The preedit with its correction marks as display text plus a style per character: dropped extra letters are put back
+ * in place (drawn struck through), added / replaced letters are [TopBarView.STYLE_FIXED], swapped pairs
+ * [TopBarView.STYLE_SWAP].
+ */
+internal fun styledPreedit(preedit: String, marks: List<PreeditMark>): Pair<String, ByteArray> {
+    if (marks.isEmpty()) return preedit to ByteArray(preedit.length)
+    val style = ByteArray(preedit.length)
+    for (mk in marks) {
+        val v = when (mk.kind) {
+            PreeditMark.Kind.SWAP -> TopBarView.STYLE_SWAP
+            PreeditMark.Kind.INSERT, PreeditMark.Kind.REPLACE -> TopBarView.STYLE_FIXED
+            PreeditMark.Kind.DELETE -> continue
+        }
+        for (i in mk.start.coerceAtLeast(0) until mk.end.coerceAtMost(preedit.length)) style[i] = v
+    }
+    val removed = marks.filter { it.kind == PreeditMark.Kind.DELETE && it.start in 0..preedit.length }.groupBy { it.start }
+    val sb = StringBuilder(preedit.length + removed.size)
+    val out = ArrayList<Byte>(preedit.length + removed.size)
+    for (i in 0..preedit.length) {
+        removed[i]?.forEach { d -> for (ch in d.removed) { sb.append(ch); out += TopBarView.STYLE_REMOVED } }
+        if (i < preedit.length) { sb.append(preedit[i]); out += style[i] }
+    }
+    return sb.toString() to out.toByteArray()
 }

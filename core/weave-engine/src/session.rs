@@ -89,6 +89,9 @@ pub struct Options {
     pub utc_offset_min: i32,
     /// 上屏后给出联想词。 Offer next-word predictions after a commit.
     pub prediction: bool,
+    /// 拼音自动纠错（换位、漏字母、多字母），预编辑里标出改动。
+    /// Pinyin auto-correction (swapped, missing or extra letters), with the changes marked in the preedit.
+    pub autocorrect: bool,
 }
 
 impl Default for Options {
@@ -104,6 +107,7 @@ impl Default for Options {
             lm_baseline: 12.0,
             utc_offset_min: 480,
             prediction: true,
+            autocorrect: true,
         }
     }
 }
@@ -132,6 +136,7 @@ impl Options {
             "output.traditional" => &mut self.traditional,
             "candidates.emoji" => &mut self.emoji,
             "candidates.prediction" => &mut self.prediction,
+            "input.autocorrect" => &mut self.autocorrect,
             _ => return false,
         };
         *slot = on;
@@ -176,6 +181,77 @@ pub struct Snapshot {
     /// 九键左侧拼音栏。 T9 pinyin column.
     pub pinyin_options: Vec<String>,
     pub schema: String,
+    /// 预编辑里被自动纠错改动的地方（界面用红色标出）。 Places in the preedit changed by auto-correction (shown in red).
+    pub marks: Vec<PreeditMark>,
+}
+
+/// 纠错改动的种类（数值用于 JNI 编码）。 Kind of an auto-correction change (values used by the JNI encoding).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MarkKind {
+    /// 相邻两字母颠倒过来了（标两个字母）。 Two adjacent letters were swapped back (covers both).
+    Swap = 0,
+    /// 补上了漏打的字母。 A missing letter was added.
+    Insert = 1,
+    /// 按错的字母换成了对的。 A wrong letter was replaced.
+    Replace = 2,
+    /// 去掉了多打的字母（start == end，位置在去掉处，`removed` 是去掉的字母）。
+    /// An extra letter was dropped (start == end at the drop point; `removed` holds it).
+    Delete = 3,
+}
+
+/// 预编辑中的一处纠错标记；位置按字符（Unicode 标量）计，左闭右开。
+/// One correction mark in the preedit; positions count characters (Unicode scalars), half-open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreeditMark {
+    pub start: usize,
+    pub end: usize,
+    pub kind: MarkKind,
+    pub removed: String,
+}
+
+impl MarkKind {
+    pub fn key(self) -> &'static str {
+        match self {
+            MarkKind::Swap => "swap",
+            MarkKind::Insert => "insert",
+            MarkKind::Replace => "replace",
+            MarkKind::Delete => "delete",
+        }
+    }
+}
+
+/// 打的拼写 typed 被纠正成 fixed 时的改动标记（位置从 at 起算）。
+/// Marks for the typed spelling corrected into `fixed`, positions offset by `at`.
+fn correction_marks(typed: &[u8], fixed: &[u8], at: usize) -> Vec<PreeditMark> {
+    let mark = |start: usize, end: usize, kind: MarkKind, removed: &[u8]| PreeditMark {
+        start: at + start,
+        end: at + end,
+        kind,
+        removed: String::from_utf8_lossy(removed).into_owned(),
+    };
+    let without = |b: &[u8], i: usize| -> Vec<u8> { b.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, &c)| c).collect() };
+    if typed.len() == fixed.len() {
+        let diff: Vec<usize> = (0..typed.len()).filter(|&i| typed[i] != fixed[i]).collect();
+        if let [a, b] = diff[..] {
+            if b == a + 1 && typed[a] == fixed[b] && typed[b] == fixed[a] {
+                return vec![mark(a, b + 1, MarkKind::Swap, b"")];
+            }
+        }
+        return diff.iter().map(|&i| mark(i, i + 1, MarkKind::Replace, b"")).collect();
+    }
+    if fixed.len() == typed.len() + 1 {
+        if let Some(i) = (0..fixed.len()).find(|&i| without(fixed, i) == typed) {
+            return vec![mark(i, i + 1, MarkKind::Insert, b"")];
+        }
+    }
+    if typed.len() == fixed.len() + 1 {
+        // 连按两次的字母标在后一个上。 A doubled letter is marked on the second one.
+        if let Some(i) = (0..typed.len()).rev().find(|&i| without(typed, i) == fixed) {
+            return vec![mark(i, i, MarkKind::Delete, &typed[i..i + 1])];
+        }
+    }
+    vec![mark(0, fixed.len(), MarkKind::Replace, b"")]
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +381,7 @@ pub struct Engine {
     selected: Vec<Selection>,
     cands: Vec<Cand>,
     preedit: String,
+    marks: Vec<PreeditMark>,
     t9_options: Vec<T9Unit>,
     commit: String,
     last_word: Option<String>,
@@ -357,6 +434,10 @@ const PAGE_INITIAL: usize = 60;
 /// 每次按键先生成的候选数；翻页超出时再补齐（每键不必把几百个候选都构造一遍）。
 /// Candidates built per keystroke; the rest are built only when paging goes past them.
 const CAND_FIRST: usize = 120;
+/// 纠错读法要比正常读法好出这么多才采用。 How much better the corrected reading must be to replace the plain one.
+const TYPO_MARGIN: u32 = 500;
+/// 只是句中有零声母音节时，纠错读法要好得多才换。 When only a mid-input zero-initial syllable hints at a typo.
+const TYPO_MARGIN_VOWEL: u32 = 5000;
 /// 手写每次给出的候选数。 Candidates per handwriting recognition.
 const HAND_CANDIDATES: usize = 12;
 
@@ -391,6 +472,7 @@ impl Engine {
             selected: Vec::new(),
             cands: Vec::new(),
             preedit: String::new(),
+            marks: Vec::new(),
             t9_options: Vec::new(),
             commit: String::new(),
             last_word: None,
@@ -540,6 +622,13 @@ impl Engine {
             }
             let p = self.preedit.clone();
             self.preedit = self.out(&p);
+            // 纠错标记都在末尾的拼音里；前面的汉字转换后长度若变了，整体平移。
+            // Marks sit in the trailing pinyin; shift them if converting the leading text changed its length.
+            let delta = self.preedit.chars().count() as isize - p.chars().count() as isize;
+            for m in &mut self.marks {
+                m.start = (m.start as isize + delta).max(0) as usize;
+                m.end = (m.end as isize + delta).max(0) as usize;
+            }
         }
     }
 
@@ -1053,6 +1142,7 @@ impl Engine {
         self.selected.clear();
         self.cands.clear();
         self.preedit.clear();
+        self.marks.clear();
         self.t9_options.clear();
     }
 
@@ -1155,6 +1245,7 @@ impl Engine {
             },
             pinyin_options: self.t9_options.iter().map(t9_option_label).collect(),
             schema: self.schema.key(),
+            marks: self.marks.clone(),
         }
     }
 
@@ -1316,11 +1407,17 @@ impl Engine {
     }
 
     fn build_graph(&self) -> (SyllableGraph, Vec<u8>) {
+        self.build_graph_with(false)
+    }
+
+    /// `typos`：同时加上颠倒、漏打、多打一个字母的纠正（只在正常读法不理想时才用）。
+    /// `typos`: also add corrections for swapped, missing and extra letters (used only when the plain reading is poor).
+    fn build_graph_with(&self, typos: bool) -> (SyllableGraph, Vec<u8>) {
         match self.schema {
             Schema::Pinyin => {
                 let l = Letters::parse(self.rest_raw());
                 let near = self.rest_near();
-                (graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near), l.keys)
+                (graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near, typos), l.keys)
             }
             Schema::Shuangpin(id) => {
                 let keys = self.rest_raw().as_bytes().to_vec();
@@ -1338,6 +1435,7 @@ impl Engine {
         self.cands.clear();
         self.cands_more = false;
         self.t9_options.clear();
+        self.marks.clear();
         let selected: String = self.selected.iter().map(|s| s.text.as_str()).collect();
         match self.schema {
             s if s.is_pinyin_family() => self.refresh_pinyin(selected),
@@ -1398,6 +1496,26 @@ impl Engine {
         true
     }
 
+    /// 最优读法像不像打错了，像的话纠错读法要好出多少才采用。根本读不出来，或用到了句中简拼（惩罚达到简拼一档）或原样按键、而输入里
+    /// 有韵母字母：多半打错了；句中出现零声母音节（字母颠倒常拼出 mina、dai'e 这样的读法）：可能打错了；否则不纠错。
+    /// Whether the best reading looks mistyped, and if so how much better a corrected reading must be. No reading at all, a mid-input
+    /// abbreviation (penalty at the abbreviation level) or raw keys while vowels were typed: probably a typo. A zero-initial
+    /// syllable mid-input (swapped letters often read as mi-na, dai-e): maybe a typo. Otherwise no correction.
+    fn typo_margin(&self, lat: &Lattice, keys: &[u8]) -> Option<u32> {
+        if !keys.iter().any(|b| b"aeiouv".contains(b)) {
+            return None;
+        }
+        let spans = || lat.best.iter().map(|(si, _)| &lat.spans[*si]);
+        if lat.best.is_empty() || spans().any(|sp| sp.raw || (sp.end < keys.len() && sp.penalty >= graph::penalty::ABBREV as u32)) {
+            return Some(TYPO_MARGIN);
+        }
+        let vowel_start = spans().any(|sp| {
+            let cuts = &sp.cuts[..sp.cuts.len().saturating_sub(1)];
+            std::iter::once(&sp.start).chain(cuts).any(|&p| p > 0 && b"aoe".contains(&keys[p]))
+        });
+        vowel_start.then_some(TYPO_MARGIN_VOWEL)
+    }
+
     /// 输入恰为 rq / sj / xq 时，把日期时间插在首选之后。 Date/time after the first candidate for rq / sj / xq.
     fn insert_dates(&mut self) {
         if !self.selected.is_empty() || !matches!(self.rest_raw(), "rq" | "sj" | "xq") {
@@ -1421,39 +1539,46 @@ impl Engine {
         if self.refresh_v_mode() {
             return;
         }
-        let (g, keys) = self.build_graph();
-        if g.len == 0 {
+        let (g1, keys1) = self.build_graph();
+        if g1.len == 0 {
             self.preedit = selected;
             return;
         }
-        let dec = Decoder {
-            lex: self.pinyin.as_ref(),
-            packs: &self.packs,
-            user: &self.user_pinyin,
-            graph: &g,
-            context: if self.selected.is_empty() {
-                self.last_word.as_deref()
-            } else {
-                self.selected
-                    .last()
-                    .and_then(|s| s.words.last())
-                    .map(|(_, w)| w.as_str())
-            },
-            lm: self
-                .gram
-                .as_ref()
-                .filter(|_| self.options.lm_weight > 0.0)
-                .map(|g| LmParams {
-                    gram: g,
-                    weight: self.options.lm_weight,
-                    baseline: self.options.lm_baseline,
-                }),
+        let context = if self.selected.is_empty() {
+            self.last_word.as_deref()
+        } else {
+            self.selected.last().and_then(|s| s.words.last()).map(|(_, w)| w.as_str())
         };
-        let lat = dec.decode();
+        let lm = self.gram.as_ref().filter(|_| self.options.lm_weight > 0.0).map(|g| LmParams {
+            gram: g,
+            weight: self.options.lm_weight,
+            baseline: self.options.lm_baseline,
+        });
+        let decode = |graph: &SyllableGraph| {
+            Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm }.decode()
+        };
+        let lat1 = decode(&g1);
+        // 加上纠错再解一次，明显更好才采用；正常读法要靠句中简拼或原样按键才读得通、而输入里又有韵母时多半是打错了，
+        // 门槛更低。 Decode again with corrections and keep it if clearly better; the bar is lower when the plain reading
+        // needs mid-input abbreviations or raw keys although vowels were typed (probably a typo, not deliberate abbreviation).
+        let mut chosen = None;
+        let margin = (self.schema == Schema::Pinyin && self.options.autocorrect).then(|| self.typo_margin(&lat1, &keys1));
+        if let Some(margin) = margin.flatten() {
+            let (g2, keys2) = self.build_graph_with(true);
+            let lat2 = decode(&g2);
+            if lat2.best_cost + margin < lat1.best_cost {
+                chosen = Some((g2, keys2, lat2));
+            }
+        }
+        let (g, keys, lat) = chosen.unwrap_or((g1, keys1, lat1));
+        let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
         let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&keys[s..e]).into_owned();
         let cands = dec.candidates(&lat, &raw_text, self.cand_cap);
         self.cands_more = cands.len() >= self.cand_cap.min(crate::decoder::MAX_CANDIDATES);
-        self.preedit = format!("{selected}{}", self.display_rest(&lat, &keys));
+        let (rest, marks) = self.display_rest(&lat, &keys);
+        let at = selected.chars().count();
+        self.marks = marks.into_iter().map(|m| PreeditMark { start: m.start + at, end: m.end + at, ..m }).collect();
+        self.preedit = format!("{selected}{rest}");
         self.cands = cands
             .into_iter()
             .map(|c| Cand {
@@ -1540,8 +1665,11 @@ impl Engine {
     }
 
     /// 组合串中未选部分的显示：按最优路径切分。 Display of the unselected part.
-    fn display_rest(&self, lat: &Lattice, keys: &[u8]) -> String {
+    fn display_rest(&self, lat: &Lattice, keys: &[u8]) -> (String, Vec<PreeditMark>) {
         let mut parts: Vec<String> = Vec::new();
+        let mut marks = Vec::new();
+        // 已排好的字符数（含音节间的分隔符）。 Characters laid out so far (separators included).
+        let mut shown = 0;
         let locks: Vec<(usize, usize, T9Unit)> = if matches!(self.schema, Schema::Keypad(_)) {
             T9Input::from_units(&self.t9_units[self.consumed..], self.grouping()).locks
         } else {
@@ -1554,11 +1682,20 @@ impl Engine {
                 let piece = match self.schema {
                     Schema::Pinyin => {
                         let typed = String::from_utf8_lossy(&keys[s..cut]).into_owned();
-                        // 按错的键被纠正（xhong → zhong）时显示纠正后的拼写；模糊音等本身合法的拼写保持原样。
-                        // Show the corrected spelling for a fixed typo (xhong → zhong); already valid
-                        // spellings (fuzzy sounds etc.) stay as typed.
+                        // 打错被纠正（xhong → zhong、xain → xian、zhog → zhong）时显示纠正后的拼写并标出改动；
+                        // 模糊音等本身合法的拼写、简拼和没打完的音节保持原样。
+                        // Show the corrected spelling for a fixed typo (xhong → zhong, xain → xian, zhog → zhong) and
+                        // mark the changes; valid spellings (fuzzy sounds etc.), abbreviations and unfinished
+                        // syllables stay as typed.
                         match span.key.get(i).map(|&id| syllable::spelling(id)) {
-                            Some(full) if full.len() == typed.len() && full != typed && syllable::id_of(&typed).is_none() => full.to_string(),
+                            Some(full)
+                                if full != typed
+                                    && syllable::id_of(&typed).is_none()
+                                    && !full.starts_with(typed.as_str()) =>
+                            {
+                                marks.extend(correction_marks(typed.as_bytes(), full.as_bytes(), shown));
+                                full.to_string()
+                            }
                             _ => typed,
                         }
                     }
@@ -1583,11 +1720,12 @@ impl Engine {
                     },
                     _ => String::new(),
                 };
+                shown += piece.chars().count() + 1;
                 parts.push(piece);
                 s = cut;
             }
         }
-        parts.join("'")
+        (parts.join("'"), marks)
     }
 
     fn wubi_code_of(&mut self, text: &str) -> String {
@@ -1972,6 +2110,96 @@ mod wubi_tests {
         assert_eq!(e.snapshot().preedit, "wq");
         e.select(0);
         assert_eq!(e.snapshot().commit, "你");
+    }
+}
+
+#[cfg(test)]
+mod typo_tests {
+    use super::*;
+    use weave_dict::lexicon::{Builder, Kind};
+
+    fn engine() -> Engine {
+        let mut b = Builder::new(Kind::Pinyin);
+        let k = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&k("xian zai"), "现在", 10);
+        b.insert(&k("zhong guo"), "中国", 10);
+        for (py, w) in [("hao", "好"), ("xian", "现"), ("zai", "在"), ("zhong", "中"), ("guo", "国"), ("xi", "西"), ("an", "安"), ("a", "啊")] {
+            b.insert(&k(py), w, 3000);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.set_schema(Schema::Pinyin);
+        e.options.emoji = false;
+        e
+    }
+
+    fn typing(e: &mut Engine, s: &str) -> Snapshot {
+        e.clear();
+        for c in s.chars() {
+            e.input_char(c);
+        }
+        e.snapshot()
+    }
+
+    fn marks(s: &Snapshot) -> Vec<(usize, usize, MarkKind, String)> {
+        s.marks.iter().map(|m| (m.start, m.end, m.kind, m.removed.clone())).collect()
+    }
+
+    #[test]
+    fn marks_describe_each_kind_of_fix() {
+        assert_eq!(correction_marks(b"xain", b"xian", 0)[0].kind, MarkKind::Swap);
+        assert_eq!((correction_marks(b"xain", b"xian", 3)[0].start, correction_marks(b"xain", b"xian", 3)[0].end), (4, 6));
+        let m = &correction_marks(b"zhog", b"zhong", 0)[0];
+        assert_eq!((m.start, m.end, m.kind), (3, 4, MarkKind::Insert));
+        let m = &correction_marks(b"zhoong", b"zhong", 0)[0];
+        assert_eq!((m.start, m.end, m.kind, m.removed.as_str()), (3, 3, MarkKind::Delete, "o"));
+        let m = &correction_marks(b"xhong", b"zhong", 0)[0];
+        assert_eq!((m.start, m.end, m.kind), (0, 1, MarkKind::Replace));
+    }
+
+    #[test]
+    fn swapped_missing_and_extra_letters_are_fixed_and_marked() {
+        let mut e = engine();
+        let s = typing(&mut e, "xainzai");
+        assert_eq!(s.candidates[0].text, "现在");
+        assert_eq!(s.preedit, "xian'zai");
+        assert_eq!(marks(&s), vec![(1, 3, MarkKind::Swap, String::new())]);
+
+        let s = typing(&mut e, "zhogguo");
+        assert_eq!(s.candidates[0].text, "中国");
+        assert_eq!(s.preedit, "zhong'guo");
+        assert_eq!(marks(&s), vec![(3, 4, MarkKind::Insert, String::new())]);
+
+        let s = typing(&mut e, "zhongguoo");
+        assert_eq!(s.candidates[0].text, "中国");
+        assert_eq!(s.preedit, "zhong'guo");
+        assert_eq!(marks(&s), vec![(9, 9, MarkKind::Delete, "o".to_string())]);
+    }
+
+    #[test]
+    fn clean_input_and_disabled_correction_have_no_marks() {
+        let mut e = engine();
+        let s = typing(&mut e, "xianzai");
+        assert_eq!(s.preedit, "xian'zai");
+        assert!(s.marks.is_empty());
+        // 没打完的音节不算打错。 An unfinished syllable is not a typo.
+        let s = typing(&mut e, "zhon");
+        assert!(s.marks.is_empty(), "{:?}", s.marks);
+        e.options.autocorrect = false;
+        let s = typing(&mut e, "xainzai");
+        assert!(s.marks.is_empty());
+        assert_ne!(s.preedit, "xian'zai");
+    }
+
+    #[test]
+    fn marks_follow_selected_text() {
+        let mut e = engine();
+        typing(&mut e, "haoxainzai");
+        let s = e.snapshot();
+        let i = s.candidates.iter().position(|c| c.text == "好").unwrap();
+        e.select(i);
+        let s = e.snapshot();
+        assert_eq!(s.preedit, "好xian'zai");
+        assert_eq!(marks(&s), vec![(2, 4, MarkKind::Swap, String::new())]);
     }
 }
 

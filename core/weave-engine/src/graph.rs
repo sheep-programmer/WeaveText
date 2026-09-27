@@ -13,10 +13,15 @@ use weave_dict::syllable::{self, SyllableId};
 
 /// 惩罚常量（cost 单位）。 Penalties in cost units.
 pub mod penalty {
-    /// 模糊音。 Fuzzy-sound substitution.
-    pub const FUZZY: u16 = 1200;
-    /// 常见错拼纠正（zhogn → zhong）。 Common misspelling correction.
+    /// 模糊音。多组同时开启时互相叠加，取得偏重：拼写正确的输入几乎不受影响（常用 7 组全开，整句评测只降 0.5 个点），
+    /// 只有模糊读法才成词时它才会排上来。
+    /// Fuzzy-sound substitution. Several pairs compound, so the cost is high: correct spelling is barely affected (all
+    /// seven common pairs on cost 0.5 points on the benchmark) and a fuzzy reading wins only when it alone makes a word.
+    pub const FUZZY: u16 = 3000;
+    /// 常见错拼纠正（zhogn → zhong）与相邻字母颠倒。 Common misspellings and swapped adjacent letters.
     pub const CORRECTION: u16 = 1800;
+    /// 漏打一个字母（zhng → zhong）或多打一个（zhoong → zhong）。 One letter missing or one too many.
+    pub const TYPO_EDIT: u16 = 2600;
     /// 句中简拼（只打声母）。 Abbreviation (initial only) inside the input.
     pub const ABBREV: u16 = 1200;
     /// 末尾简拼：用户可能还没打完。 Abbreviation at the end: user is still typing.
@@ -307,6 +312,64 @@ const CORRECTIONS: &[(&str, &str)] = &[
     ("iogn", "iong"),
 ];
 
+/// 漏打时最可能漏的字母。 Letters most likely to be left out.
+const MISSABLE: &[u8] = b"aeiouvghn";
+
+/// 打错的一个音节可能想打的音节：相邻两字母颠倒、漏一个字母、多一个字母；原拼写本身已是音节或（在末尾时）
+/// 还能接着打成音节就不猜。返回 (音节, 惩罚)。
+/// Syllables a mistyped spelling may have meant: two adjacent letters swapped, one letter missing, one extra. Nothing
+/// is guessed when the spelling is already a syllable or, at the end, can still grow into one.
+pub fn typo_variants(s: &str, at_end: bool) -> Vec<(SyllableId, u16)> {
+    let b = s.as_bytes();
+    let mut out: Vec<(SyllableId, u16)> = Vec::new();
+    if !(2..=6).contains(&b.len()) || syllable::id_of(s).is_some() || (at_end && syllable::is_prefix(s)) {
+        return out;
+    }
+    let mut add = |t: &[u8], pen: u16| {
+        if let Some(id) = std::str::from_utf8(t).ok().and_then(syllable::id_of) {
+            match out.iter_mut().find(|(i, _)| *i == id) {
+                Some(e) => e.1 = e.1.min(pen),
+                None => out.push((id, pen)),
+            }
+        }
+    };
+    let mut t = b.to_vec();
+    for p in 0..b.len() - 1 {
+        if b[p] != b[p + 1] {
+            t.swap(p, p + 1);
+            add(&t, penalty::CORRECTION);
+            t.swap(p, p + 1);
+        }
+    }
+    if b.len() >= 3 {
+        // 句中不删末尾字母：它多半是下一个音节的声母（haox 不读成 hao）；连按的字母从下一个音节开头删。
+        // Mid-input the last letter is not dropped: it is most likely the next syllable's initial (haox is not hao);
+        // a doubled letter is dropped from the start of the next syllable instead.
+        for p in 0..b.len() - (!at_end) as usize {
+            let mut d = b.to_vec();
+            d.remove(p);
+            add(&d, penalty::TYPO_EDIT);
+        }
+    }
+    for p in 1..=b.len() {
+        for &c in MISSABLE {
+            // 声母、鼻韵母的字母只在它们该在的位置补。 Initial / nasal letters only where they belong.
+            let fits = match c {
+                b'h' => p == 1 && b"zcs".contains(&b[0]),
+                b'g' => b[p - 1] == b'n',
+                b'n' => b.get(p) == Some(&b'g'),
+                _ => true,
+            };
+            if fits {
+                let mut ins = b.to_vec();
+                ins.insert(p, c);
+                add(&ins, penalty::TYPO_EDIT);
+            }
+        }
+    }
+    out
+}
+
 fn corrected(s: &str) -> Option<SyllableId> {
     for (bad, good) in CORRECTIONS {
         if let Some(stem) = s.strip_suffix(bad) {
@@ -357,17 +420,22 @@ const MAX_SPELLING: usize = 7;
 
 /// 为全拼输入建音节图。 Build the syllable graph for full pinyin.
 pub fn build_full_pinyin(letters: &Letters, fuzzy: &FuzzyOptions) -> SyllableGraph {
-    build_full_pinyin_near(letters, fuzzy, &[])
+    build_full_pinyin_near(letters, fuzzy, &[], false)
 }
 
 /// 同上，并按触点邻键补纠正边：一个音节内至多换一个键。[near] 与 `letters.keys` 一一对应（可为空）。
 /// As above, plus correction edges from the taps' neighbours: at most one key replaced per syllable.
 /// [near] parallels `letters.keys` (may be empty).
-pub fn build_full_pinyin_near(letters: &Letters, fuzzy: &FuzzyOptions, near: &[Near]) -> SyllableGraph {
+pub fn build_full_pinyin_near(letters: &Letters, fuzzy: &FuzzyOptions, near: &[Near], typos: bool) -> SyllableGraph {
     let n = letters.keys.len();
     let near = if near.len() == n { near } else { &[] };
     let mut g = SyllableGraph::new(n);
+    // 能用完整（或已纠正的）音节走到的位置；打错只在这些位置之后猜，否则每个子串都要猜一遍。
+    // Positions reachable through whole (or corrected) syllables; typos are only guessed from these, not from every substring.
+    let mut spelled = vec![false; n + 1];
+    spelled[0] = true;
     for start in 0..n {
+        spelled[start] |= letters.boundary[start];
         for end in start + 1..=(start + MAX_SPELLING).min(n) {
             if letters.crosses_boundary(start, end) {
                 break;
@@ -407,6 +475,11 @@ pub fn build_full_pinyin_near(letters: &Letters, fuzzy: &FuzzyOptions, near: &[N
                         bits: Vec::new(),
                     });
                 }
+                if typos && spelled[start] {
+                    for (id, pen) in typo_variants(s, at_end) {
+                        g.push(Edge { start, end, syls: vec![id], penalty: pen, kind: EdgeKind::Correction, bits: Vec::new() });
+                    }
+                }
             }
             if !near.is_empty() {
                 touch_edges(&mut g, letters, near, start, end, full);
@@ -444,6 +517,13 @@ pub fn build_full_pinyin_near(letters: &Letters, fuzzy: &FuzzyOptions, near: &[N
                         kind: EdgeKind::Partial,
                         bits: Vec::new(),
                     });
+                }
+            }
+        }
+        if typos {
+            for e in &g.out[start] {
+                if matches!(e.kind, EdgeKind::Full | EdgeKind::Fuzzy | EdgeKind::Correction | EdgeKind::Touch) {
+                    spelled[e.end] |= spelled[start];
                 }
             }
         }
@@ -567,7 +647,7 @@ mod tests {
         let l = Letters::parse("xhong");
         let mut near = vec![Near::NONE; 5];
         near[0] = Near::new(b'z', 0.8);
-        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near);
+        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near, false);
         let e = g.out[0].iter().find(|e| e.kind == EdgeKind::Touch && e.end == 5).unwrap();
         assert_eq!(e.syls, vec![syllable::id_of("zhong").unwrap()]);
         assert!(e.penalty < penalty::TOUCH_NEAR + penalty::TOUCH_SPREAD);
@@ -577,7 +657,7 @@ mod tests {
         // 原拼写已是音节时代价更高。 Costlier when the typed spelling is already a syllable.
         let l = Letters::parse("mi");
         let near = [Near::new(b'n', 0.8), Near::NONE];
-        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near);
+        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near, false);
         let e = g.out[0].iter().find(|e| e.kind == EdgeKind::Touch).unwrap();
         assert_eq!(e.syls, vec![syllable::id_of("ni").unwrap()]);
         assert!(e.penalty >= penalty::TOUCH_VALID + penalty::TOUCH_NEAR);

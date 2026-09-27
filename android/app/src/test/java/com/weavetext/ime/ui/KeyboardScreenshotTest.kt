@@ -121,6 +121,19 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("pinyin_predictions_light")
     }
 
+    /** 自动纠错：换回来的字母上下弧线、补上的字母下划线、去掉的多打字母划掉，都用红色。 Auto-correction marks in red. */
+    @Test fun pinyinCorrectionLight() {
+        val (_, c) = keyboard(false)
+        val marks = listOf(
+            com.weavetext.ime.core.PreeditMark(1, 3, com.weavetext.ime.core.PreeditMark.Kind.SWAP),
+            com.weavetext.ime.core.PreeditMark(13, 14, com.weavetext.ime.core.PreeditMark.Kind.INSERT),
+            com.weavetext.ime.core.PreeditMark(18, 18, com.weavetext.ime.core.PreeditMark.Kind.DELETE, "o"),
+        )
+        val cands = listOf("现在中国", "现在", "线", "现", "先").map { Candidate(it, "", false) }
+        c.previewState(composing(preedit = "xian'zai'zhong'guo", cands = cands).copy(preeditMarks = marks))
+        snap("pinyin_correction_light")
+    }
+
     @Test fun pinyinComposingDark() { val (_, c) = keyboard(true); c.previewState(composing()); snap("pinyin_composing_dark") }
 
     @Test fun t9Composing() {

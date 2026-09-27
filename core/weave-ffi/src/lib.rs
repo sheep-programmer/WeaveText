@@ -97,6 +97,14 @@ pub fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
         e.str(p);
     }
     e.str(&s.schema);
+    // 纠错标记（位置按 Unicode 标量计）。 Correction marks (positions in Unicode scalars).
+    e.i32(s.marks.len() as i32);
+    for m in &s.marks {
+        e.i32(m.start as i32);
+        e.i32(m.end as i32);
+        e.u8(m.kind as u8);
+        e.str(&m.removed);
+    }
     e.0
 }
 

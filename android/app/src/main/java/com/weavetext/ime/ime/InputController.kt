@@ -7,6 +7,7 @@ import android.view.inputmethod.InputConnection
 import com.weavetext.ime.core.Candidate
 import com.weavetext.ime.core.EngineSnapshot
 import com.weavetext.ime.core.KeyEngine
+import com.weavetext.ime.core.PreeditMark
 
 /** 回车键此刻的语义（决定回车键文字与颜色）。 What Enter does right now. */
 enum class EnterAction { NEWLINE, SEND, SEARCH, GO, NEXT, DONE, PREVIOUS }
@@ -19,6 +20,8 @@ enum class EnterAction { NEWLINE, SEND, SEARCH, GO, NEXT, DONE, PREVIOUS }
  */
 data class ImeState(
     val preedit: String = "",
+    /** 预编辑里的纠错标记。 Correction marks in the preedit. */
+    val preeditMarks: List<PreeditMark> = emptyList(),
     val candidates: List<Candidate> = emptyList(),
     val totalCandidates: Int = 0,
     val pinyinOptions: List<String> = emptyList(),
@@ -726,6 +729,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         update {
             it.copy(
                 preedit = snap.preedit,
+                preeditMarks = snap.marks,
                 candidates = snap.candidates,
                 totalCandidates = snap.totalCandidates,
                 pinyinOptions = snap.pinyinOptions,

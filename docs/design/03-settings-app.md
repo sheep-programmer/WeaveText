@@ -151,7 +151,8 @@
 │ ┌──────────────────────────────────┐ │
 │ │ 双拼方案                   小鹤 › │ │ → 单选对话框：小鹤/自然码/微软/
 │ │ 显示双拼按键提示             [●] │ │    搜狗/智能ABC/拼音加加
-│ │ 模糊音                    2 项 › │ │ → 子页
+│ │ 模糊音                    7 项 › │ │ → 子页
+│ │ 自动纠错                     [●] │ │ 颠倒/漏打/多打自动改正，拼音上标红
 │ │ 联想词                       [●] │ │ 上屏后推荐下一个词
 │ │ 成对符号                     [●] │ │ 输入“（《【时补上另一半
 │ └──────────────────────────────────┘ │
@@ -164,8 +165,8 @@
 └──────────────────────────────────────┘
 ```
 
-**模糊音子页 / Fuzzy pinyin**：一张卡片，`FilterChip` 流式排列：`z=zh` `c=ch` `s=sh` `n=l` `f=h` `r=l` `an=ang` `en=eng` `in=ing` `ian=iang` `uan=uang`，默认全关；顶部一句说明「开启后，这些读音会互相匹配」。
-*Fuzzy pinyin: one card of FilterChips, all off by default.*
+**模糊音子页 / Fuzzy pinyin**：一张卡片，`FilterChip` 流式排列：`z=zh` `c=ch` `s=sh` `n=l` `f=h` `r=l` `an=ang` `en=eng` `in=ing` `ian=iang` `uan=uang`，默认开启 `z=zh` `c=ch` `s=sh` `n=l` `an=ang` `en=eng` `in=ing`（可增删）；顶部一句说明「开启后，这些读音会互相匹配」。
+*Fuzzy pinyin: one card of FilterChips; the seven common pairs are on by default and can be toggled.*
 
 - 删除的设置（有意不做）：候选数量、候选字号、自动上屏阈值、中英标点单独开关——这些由默认值和内核自动处理。
   *Intentionally omitted: candidate count/size, commit thresholds, punctuation toggles.*
@@ -427,7 +428,7 @@ common words; sources and licences at the bottom.*
 | 1 | 输入方案 | 启用的键盘 + 顺序 | 全拼 26、英文 26 |
 | 2 | 输入方案 | 双拼方案 | 小鹤 |
 | 3 | 输入方案 | 显示双拼按键提示 | 开 |
-| 4 | 输入方案 | 模糊音 | 全关 |
+| 4 | 输入方案 | 模糊音 | 常用 7 组开（z/zh c/ch s/sh n/l an/ang en/eng in/ing） |
 | 5 | 输入方案 | 五笔字根提示 | 关 |
 | 6 | 输入方案 | 五笔拼音混输 | 开 |
 | 7 | 语音引擎 | 主引擎 / 同时使用（06 §6） | 第一个安装的 / 无 |
@@ -444,5 +445,6 @@ common words; sources and licences at the bottom.*
 | 18 | 输入方案 | 成对符号 | 开 |
 | 19 | 词库 | 专业词库（逐个下载） | 未安装 |
 | 20 | 词库 | 云端热词 | 关 |
-| 21 | 互联 | 织文互联（含本机名称） | 关 |
-| 22 | 互联 | 同步剪贴板 | 开（仅在互联开启时生效） |
+| 21 | 输入方案 | 自动纠错 | 开 |
+| 22 | 互联 | 织文互联（含本机名称） | 关 |
+| 23 | 互联 | 同步剪贴板 | 开（仅在互联开启时生效） |

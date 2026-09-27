@@ -98,6 +98,15 @@ sentence raw, 16.0 ms packed with a 12 MB cache, identical accuracy. 16 KiB bloc
    换成邻键才能组成音节时补一条纠正边（惩罚 600–1800，原拼写已是音节时再加 1200）。模拟评测中，1.2% 的按键落到邻键时，
    整句首选从 57.0% 回到 72.6%，准确点击时不变。*Border taps carry the neighbour letter; the graph gets a correction
    edge when the neighbour spells a syllable. Simulated 1.2% slips: 57.0% → 72.6% top-1, unchanged for clean taps.*
+   **自动纠错 / Auto-correction** — 全拼再解一次带纠错边的图（相邻字母颠倒、漏一个字母、多一个字母；只从用完整音节走到的
+   位置猜），纠错读法比正常读法好出一截才采用：正常读法读不出来、要靠句中简拼或原样按键时门槛 500，句中出现零声母音节时
+   5000，否则不纠错。预编辑显示纠正后的拼写，`Snapshot.marks` 标出改动（swap / insert / replace / delete），界面标红。
+   模拟评测（每句一个错）：颠倒 4.7% → 56.8%，多打 0.4% → 63.0%，漏打 5.2% → 25.9%，干净输入不变（75.6%），
+   计算量 +9%。*Full pinyin decodes a second graph with typo edges (swapped, missing, extra letter; only guessed from
+   positions reached through whole syllables) and keeps it when clearly better — margin 500 when the plain reading fails
+   or needs mid-input abbreviations / raw keys, 5000 when a zero-initial syllable appears mid-input, no correction
+   otherwise. The preedit shows the fixed spelling with `Snapshot.marks`, drawn in red. One typo per sentence: swap
+   4.7% → 56.8%, extra 0.4% → 63.0%, missing 5.2% → 25.9%; clean input unchanged; +9% instructions.*
 6. **特殊候选 / Special candidates** — `v` + 数字（大写金额、中文数字、千分位）、`v` + 算式（结果），
    `rq` / `sj` / `xq`（日期、时间、星期，插在首选之后）。*`v` numerals and arithmetic, date/time shortcuts.*
 

@@ -2,9 +2,13 @@
 //! 可选：`--gram <file.wvg>` `--lambda 1.0` `--baseline 12` `--schema pinyin|t9|xiaohe` `--show 20`
 //! 触控误差模拟：`--touch-noise 0.2`（高斯标准差，单位键宽）按 26 键几何把每个字母加噪声后判键，
 //! `--near` 再把交界处的邻键交给引擎纠正；`--seed 1`。
+//! 打错模拟：`--typo swap|drop|extra` 每句在一个随机音节里交换相邻字母 / 漏一个字母 / 多按一个字母；
+//! `--no-autocorrect` 关掉引擎纠错作对照。
 //! Sentence benchmark; prints top-1 / top-3 sentence accuracy and character accuracy.
 //! Touch simulation: `--touch-noise 0.2` (Gaussian sigma in key widths) jitters every letter on the 26-key
 //! geometry before hit-testing; `--near` also passes border neighbours to the engine; `--seed 1`.
+//! Typo simulation: `--typo swap|drop|extra` swaps two adjacent letters / drops one / doubles one inside a random
+//! syllable of every sentence; `--no-autocorrect` turns the engine's correction off for comparison.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -129,6 +133,12 @@ fn main() {
         }
     }
     let mut e = Engine::new(&paths);
+    // --fuzzy z_zh,an_ang,…：打开这些模糊音（名字同设置里的选项）。 Turn on fuzzy pairs by option name.
+    if let Some(list) = arg(&args, "--fuzzy") {
+        for k in list.split(',').filter(|k| !k.is_empty()) {
+            assert!(e.options.set_flag(&format!("fuzzy.{k}"), true), "unknown fuzzy pair {k}");
+        }
+    }
     e.set_learning(false);
     e.options.emoji = false;
     if let Some(l) = arg(&args, "--lambda").and_then(|v| v.parse().ok()) {
@@ -147,6 +157,10 @@ fn main() {
     let use_near = args.iter().any(|a| a == "--near");
     let mut rng = Rng(arg(&args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(1).max(1) * 0x9E37_79B9_7F4A_7C15);
     let (mut taps, mut slips) = (0usize, 0usize);
+    let typo = arg(&args, "--typo");
+    if args.iter().any(|a| a == "--no-autocorrect") {
+        e.options.autocorrect = false;
+    }
     let text = std::fs::read_to_string(&eval).expect("read eval set");
     let (mut n, mut top1, mut top3, mut chars, mut char_err) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -181,6 +195,28 @@ fn main() {
                 .map(|c| c as char)
                 .collect(),
             _ => ids.iter().map(|&s| syllable::spelling(s)).collect(),
+        };
+        let keys = match &typo {
+            Some(kind) => {
+                let spells: Vec<&str> = ids.iter().map(|&s| syllable::spelling(s)).collect();
+                let mut parts: Vec<String> = spells.iter().map(|s| s.to_string()).collect();
+                let long: Vec<usize> = (0..parts.len()).filter(|&i| parts[i].len() >= 3).collect();
+                if let Some(&i) = long.get((rng.next() * long.len() as f32) as usize) {
+                    let b = parts[i].as_bytes().to_vec();
+                    let at = 1 + (rng.next() * (b.len() - 1) as f32) as usize;
+                    let mut t = b.clone();
+                    match kind.as_str() {
+                        "swap" => t.swap(at - 1, at),
+                        "drop" => {
+                            t.remove(at);
+                        }
+                        _ => t.insert(at, b[at]),
+                    }
+                    parts[i] = String::from_utf8(t).unwrap();
+                }
+                parts.concat()
+            }
+            None => keys,
         };
         e.clear();
         for c in keys.chars() {

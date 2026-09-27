@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import com.weavetext.ime.R
 import com.weavetext.ime.core.Candidate
+import com.weavetext.ime.core.PreeditMark
 import com.weavetext.ime.ime.ImeState
 import kotlin.math.ceil
 import kotlin.math.max
@@ -113,7 +114,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         val s = kb.state
         cands = ArrayList(s.candidates)
         pinyin = if (showPinyin) s.pinyinOptions else emptyList()
-        header.text = s.preedit
+        header.set(s.preedit, s.preeditMarks)
         grid.rebuild()
         grid.scrollToTop()
         header.invalidate()
@@ -130,14 +131,35 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     @SuppressLint("ViewConstructor")
     private inner class Header(c: Context) : View(c) {
-        var text = ""
+        private var text = ""
+        private var style = ByteArray(0)
         private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
+
+        fun set(preedit: String, marks: List<PreeditMark>) {
+            val (t, st) = styledPreedit(preedit, marks)
+            text = t
+            style = st
+        }
+
         override fun onDraw(canvas: Canvas) {
             val pal = kb.palette
             val m = kb.metrics
             p.textSize = m.dp(12.5f) * m.candScale
-            p.color = pal.labelSecondary
-            canvas.drawText(text, m.dp(12f), height / 2f - (p.ascent() + p.descent()) / 2, p)
+            // 纠错改动的字母标红（去掉的多打字母划掉）。 Corrected letters in red (dropped extras struck through).
+            val base = height / 2f - (p.ascent() + p.descent()) / 2
+            var x = m.dp(12f)
+            var i = 0
+            while (i < text.length) {
+                val k = style.getOrElse(i) { TopBarView.STYLE_PLAIN }
+                var j = i + 1
+                while (j < text.length && style.getOrElse(j) { TopBarView.STYLE_PLAIN } == k) j++
+                val w = p.measureText(text, i, j)
+                p.color = if (k == TopBarView.STYLE_PLAIN) pal.labelSecondary else pal.danger
+                canvas.drawText(text, i, j, x, base, p)
+                if (k == TopBarView.STYLE_REMOVED) canvas.drawRect(x, base - p.textSize * 0.3f - m.dp(0.6f), x + w, base - p.textSize * 0.3f + m.dp(0.6f), p)
+                x += w
+                i = j
+            }
             val cx = width - m.dp(32f)
             kb.icons.draw(canvas, R.drawable.ic_chevron_up, pal.icon, cx, height / 2f, m.dp(22f))
             p.color = pal.divider

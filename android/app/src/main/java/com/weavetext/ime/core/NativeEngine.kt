@@ -198,6 +198,17 @@ data class UserWord(val text: String, val pinyin: String, val count: Int)
 /** 候选项。 A candidate. */
 data class Candidate(val text: String, val comment: String, val isUser: Boolean)
 
+/**
+ * 预编辑里一处自动纠错改动，[start]..[end] 是 preedit 的字符下标（UTF-16，左闭右开）。
+ * DELETE 的 start == end，[removed] 是去掉的多打字母。
+ * One auto-correction change in the preedit; [start]..[end] index the preedit (UTF-16, half-open). For DELETE
+ * start == end and [removed] holds the dropped extra letter.
+ */
+data class PreeditMark(val start: Int, val end: Int, val kind: Kind, val removed: String = "") {
+    /** 与内核的编号一致。 Same order as the engine's codes. */
+    enum class Kind { SWAP, INSERT, REPLACE, DELETE }
+}
+
 /** 一次操作后的引擎状态。 Engine state after an operation. */
 data class EngineSnapshot(
     val commit: String,
@@ -207,6 +218,7 @@ data class EngineSnapshot(
     val totalCandidates: Int,
     val pinyinOptions: List<String>,
     val schema: String,
+    val marks: List<PreeditMark> = emptyList(),
 ) {
     companion object {
         val EMPTY = EngineSnapshot("", "", false, emptyList(), 0, emptyList(), "pinyin")
@@ -235,7 +247,25 @@ data class EngineSnapshot(
             val m = b.int
             val opts = List(m) { b.str() }
             val schema = b.str()
-            return EngineSnapshot(commit, preedit, flags and 1 != 0, cands, total, opts, schema)
+            val marks = if (b.remaining() >= 4) decodeMarks(b, preedit) else emptyList()
+            return EngineSnapshot(commit, preedit, flags and 1 != 0, cands, total, opts, schema, marks)
+        }
+
+        /** 内核按 Unicode 标量计位置，这里换成 UTF-16 下标；越界的丢掉。 Scalar positions to UTF-16 indices; drops bad ones. */
+        private fun decodeMarks(b: ByteBuffer, preedit: String): List<PreeditMark> {
+            val n = b.int
+            val scalars = preedit.codePointCount(0, preedit.length)
+            val out = ArrayList<PreeditMark>(n)
+            repeat(n) {
+                val start = b.int
+                val end = b.int
+                val kind = PreeditMark.Kind.entries.getOrNull(b.get().toInt())
+                val removed = b.str()
+                if (kind != null && start in 0..end && end <= scalars) {
+                    out += PreeditMark(preedit.offsetByCodePoints(0, start), preedit.offsetByCodePoints(0, end), kind, removed)
+                }
+            }
+            return out
         }
     }
 }

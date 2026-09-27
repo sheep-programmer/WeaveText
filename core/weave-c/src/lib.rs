@@ -62,6 +62,7 @@ pub fn snapshot_json(s: &Snapshot) -> Value {
         "candidates": s.candidates.iter().map(cand_json).collect::<Vec<_>>(),
         "pinyinOptions": s.pinyin_options,
         "schema": s.schema,
+        "marks": s.marks.iter().map(|m| json!({ "start": m.start, "end": m.end, "kind": m.kind.key(), "removed": m.removed })).collect::<Vec<_>>(),
     })
 }
 

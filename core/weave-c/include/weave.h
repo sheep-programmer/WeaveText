@@ -56,7 +56,13 @@ void weave_break_chain(WeaveEngine *h);
 /* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
 char *weave_eval(const char *expr);
 
-/* {"commit","preedit","composing","predicting","total","candidates":[{"text","comment","user"}],"pinyinOptions","schema"} */
+/* {"commit","preedit","composing","predicting","total","candidates":[{"text","comment","user"}],"pinyinOptions","schema",
+    "marks":[{"start","end","kind","removed"}]}
+   marks：预编辑里被自动纠错改动的地方，位置按 Unicode 标量计、左闭右开；kind 为 swap（两字母换回来了）/ insert（补上的
+   字母）/ replace（换掉的字母）/ delete（去掉多打的字母，start==end，removed 是去掉的字母）。界面用红色标出。
+   marks: places in the preedit changed by auto-correction, half-open ranges in Unicode scalars; kind is swap (two letters
+   swapped back) / insert (added letter) / replace (replaced letter) / delete (extra letter dropped, start==end, removed
+   holds it). Shown in red by the UI. */
 char *weave_snapshot_json(WeaveEngine *h);
 /* [{"text","comment","user"}] */
 char *weave_candidates_json(WeaveEngine *h, uint32_t offset, uint32_t limit);

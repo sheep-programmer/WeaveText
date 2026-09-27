@@ -54,6 +54,8 @@ object WeavePrefs {
     const val AUTO_PAIR = "auto_pair"
     /** 上屏后推荐下一个词（默认开）。 Suggest the next word after a commit (on by default). */
     const val PREDICTION = "prediction"
+    /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
+    const val AUTOCORRECT = "autocorrect"
     /** 云端热词（默认关闭）：只下载公开热词库，不上传任何内容。 Cloud hot words, off by default; download only. */
     const val CLOUD_WORDS = "cloud_words"
 
@@ -154,13 +156,16 @@ object WeavePrefs {
     fun shuangpinHints(p: SharedPreferences) = p.getBoolean(SHUANGPIN_HINTS, true)
     fun wubiRootHints(p: SharedPreferences) = p.getBoolean(WUBI_ROOT_HINTS, false)
     fun wubiPinyinMix(p: SharedPreferences) = p.getBoolean(WUBI_PINYIN_MIX, true)
-    fun fuzzy(p: SharedPreferences): Set<String> = p.getStringSet(FUZZY, emptySet()) ?: emptySet()
+    /** 默认开启的常用模糊音（用户可增删）。 Common fuzzy pairs on by default; the user can add or remove. */
+    val FUZZY_DEFAULT = setOf("z_zh", "c_ch", "s_sh", "n_l", "an_ang", "en_eng", "in_ing")
+    fun fuzzy(p: SharedPreferences): Set<String> = p.getStringSet(FUZZY, FUZZY_DEFAULT) ?: FUZZY_DEFAULT
     fun traditional(p: SharedPreferences) = p.getBoolean(TRADITIONAL, false)
     fun oneHand(p: SharedPreferences) = p.getInt(ONE_HAND, 0)
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
     fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
+    fun autocorrect(p: SharedPreferences) = p.getBoolean(AUTOCORRECT, true)
     fun autoPair(p: SharedPreferences) = p.getBoolean(AUTO_PAIR, true)
     fun cloudWords(p: SharedPreferences) = p.getBoolean(CLOUD_WORDS, false)
     fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)
