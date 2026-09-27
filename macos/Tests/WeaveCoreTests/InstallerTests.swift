@@ -380,6 +380,97 @@ private func hasQuarantine(_ path: String) -> Bool {
     }
 }
 
+/// 假的管理员删除：记下要删的副本，可以模拟取消。 A fake admin remover: records the copies, can simulate cancelling.
+@MainActor
+private final class FakeAdmin: AdminRemover {
+    var removed: [URL] = []
+    var cancel = false
+    func remove(_ bundles: [URL]) throws {
+        if cancel { throw InstallError.cancelled }
+        for b in bundles { try FileManager.default.removeItem(at: b) }
+        removed += bundles
+    }
+}
+
+/// 两处「输入法」文件夹：用户的（可写）与整台电脑的（安装包装的，当前用户写不了）。
+/// Both Input Methods folders: the user's (writable) and the system one (from the package, not writable by the user).
+@MainActor @Suite struct UninstallBothLocationsTests {
+    private struct Setup {
+        let root: URL, user: URL, system: URL, trash: URL
+        var userCopy: URL { user.appendingPathComponent("WeaveText.app") }
+        var systemCopy: URL { system.appendingPathComponent("WeaveText.app") }
+        func lock() throws { try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: system.path) }
+        func unlock() { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: system.path) }
+    }
+
+    private func setup(userCopy: Bool = true) throws -> Setup {
+        let root = try tempDir()
+        let s = Setup(root: root, user: root.appendingPathComponent("home/Library/Input Methods"),
+                      system: root.appendingPathComponent("Library/Input Methods"), trash: root.appendingPathComponent("Trash"))
+        if userCopy { try makeBundle(at: s.userCopy, version: "0.1.0") }
+        try makeBundle(at: s.systemCopy, version: "0.2.0")
+        try FileManager.default.createDirectory(at: s.trash, withIntermediateDirectories: true)
+        try s.lock()
+        return s
+    }
+
+    @Test func theSystemCopyGoesThroughTheAdminAndTheUserCopyToTheTrash() throws {
+        let s = try setup()
+        defer { s.unlock(); try? FileManager.default.removeItem(at: s.root) }
+        let registry = FakeRegistry()
+        let admin = FakeAdmin()
+        let installer = Installer(inputMethodsDir: s.system, registry: registry, apps: FakeApps(dest: s.systemCopy))
+        let unlockingAdmin = UnlockingAdmin(inner: admin, unlock: s.unlock)
+        try installer.uninstall(bundle: s.systemCopy, alsoRemove: [s.userCopy, s.systemCopy], trash: FakeTrash(dir: s.trash),
+                                admin: unlockingAdmin, userData: nil)
+        #expect(admin.removed.map(\.path) == [s.systemCopy.path])
+        #expect(!FileManager.default.fileExists(atPath: s.systemCopy.path))
+        #expect(FileManager.default.fileExists(atPath: s.trash.appendingPathComponent("WeaveText.app").path))
+        #expect(!FileManager.default.fileExists(atPath: s.userCopy.path))
+        #expect(registry.disabled == 1 && registry.registered.isEmpty)
+    }
+
+    @Test func cancellingTheAdminPromptChangesNothing() throws {
+        let s = try setup()
+        defer { s.unlock(); try? FileManager.default.removeItem(at: s.root) }
+        let registry = FakeRegistry()
+        let admin = FakeAdmin()
+        admin.cancel = true
+        let installer = Installer(inputMethodsDir: s.system, registry: registry, apps: FakeApps(dest: s.systemCopy))
+        #expect(throws: InstallError.cancelled) {
+            try installer.uninstall(bundle: s.systemCopy, alsoRemove: [s.userCopy], trash: FakeTrash(dir: s.trash),
+                                    admin: admin, userData: nil)
+        }
+        #expect(FileManager.default.fileExists(atPath: s.systemCopy.path))
+        #expect(FileManager.default.fileExists(atPath: s.userCopy.path), "the user copy stays too")
+        // 停用过的输入源重新启用。 The disabled sources are enabled again.
+        #expect(registry.disabled == 1 && registry.registered.map(\.path) == [s.systemCopy.path])
+    }
+
+    @Test func withoutAnAdminItSaysWhatToDo() throws {
+        let s = try setup(userCopy: false)
+        defer { s.unlock(); try? FileManager.default.removeItem(at: s.root) }
+        let registry = FakeRegistry()
+        let installer = Installer(inputMethodsDir: s.system, registry: registry, apps: FakeApps(dest: s.systemCopy))
+        #expect(throws: InstallError.needsAdmin(s.systemCopy.path)) {
+            try installer.uninstall(trash: FakeTrash(dir: s.trash), userData: nil)
+        }
+        #expect(registry.disabled == 0, "nothing is touched before asking")
+        #expect(InstallError.needsAdmin("/x").errorDescription?.contains("sudo rm -rf") == true)
+    }
+}
+
+/// 删除前把目录解锁（真正的管理员本来就有权限）。 Unlocks the folder before deleting (a real admin has the rights anyway).
+@MainActor
+private struct UnlockingAdmin: AdminRemover {
+    let inner: FakeAdmin
+    let unlock: () -> Void
+    func remove(_ bundles: [URL]) throws {
+        unlock()
+        try inner.remove(bundles)
+    }
+}
+
 /// 拿真正构建出的包走一遍复制与清理（只在临时目录里，不登记），签名必须仍然完好。
 /// Run the real built bundle through copying and cleaning (in a temp directory only, never registered); the signature
 /// must stay intact.

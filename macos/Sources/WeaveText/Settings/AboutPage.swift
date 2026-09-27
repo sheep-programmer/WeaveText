@@ -9,21 +9,30 @@ final class UninstallModel: ObservableObject {
     @Published var confirming = false
     @Published var error: String?
 
+    /// 有装在整台电脑上的那份（安装包装的）。 A system-wide copy (from the package) exists.
+    static var systemWide: Bool {
+        FileManager.default.fileExists(atPath: "/Library/Input Methods/\(Installer.bundleName)")
+    }
+
     /// 停用输入源、移到废纸篓后直接退出；删除数据时不再写回用户词。
     /// Disable the sources, move to the Trash and quit at once; when the data goes too, nothing is written back.
     func uninstall() {
         let bundle = Bundle.main.bundleURL
         let installer = Installer.system(inputMethodsDir: bundle.deletingLastPathComponent())
+        // 两处「输入法」文件夹里的副本都清掉。 Clean the copies in both Input Methods folders.
+        let others = LaunchMode.systemInputMethodDirs().map { $0.appendingPathComponent(Installer.bundleName) }
         if !purge { EngineHost.shared.engine?.flush() }
-        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
         do {
-            try installer.uninstall(bundle: bundle, trash: SystemTrash(),
+            try installer.uninstall(bundle: bundle, alsoRemove: others, trash: SystemTrash(), admin: SystemAdmin(),
                                     userData: purge ? EngineHost.userDirectory() : nil,
                                     defaults: purge ? (.standard, Installer.bundleID) : nil)
+        } catch InstallError.cancelled {
+            return
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return
         }
+        if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
         let done = NSAlert()
         done.messageText = "已卸载织文输入法"
         done.informativeText = "如果键盘设置的输入法列表里还留着「织文拼音」，把它移除即可。"
@@ -31,6 +40,23 @@ final class UninstallModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         done.runModal()
         exit(0)
+    }
+}
+
+/// 以管理员身份删除：系统弹出密码框（AppleScript 的 administrator privileges）。
+/// Remove as an administrator: the system shows its password prompt (AppleScript's administrator privileges).
+struct SystemAdmin: AdminRemover {
+    func remove(_ bundles: [URL]) throws {
+        guard let source = AdminScript.remove(bundles), let script = NSAppleScript(source: source) else {
+            throw InstallError.removeFailed("不认识的位置 \(bundles.map(\.path).joined(separator: "、"))")
+        }
+        var info: NSDictionary?
+        NSApp.activate(ignoringOtherApps: true)
+        if script.executeAndReturnError(&info) == nil {
+            // -128：用户点了取消。 -128: the user cancelled.
+            if (info?[NSAppleScript.errorNumber] as? Int) == -128 { throw InstallError.cancelled }
+            throw InstallError.removeFailed(info?[NSAppleScript.errorMessage] as? String ?? "未知错误")
+        }
     }
 }
 
@@ -149,8 +175,9 @@ struct AboutPage: View {
             } header: {
                 Text("卸载")
             } footer: {
-                Footnote(removal.purge ? "织文会移到废纸篓；用户词、专业词库、热词与互联配对也一起移到废纸篓，偏好设置会被清除。"
+                Footnote((removal.purge ? "织文会移到废纸篓；用户词、专业词库、热词与互联配对也一起移到废纸篓，偏好设置会被清除。"
                          : "织文会移到废纸篓；用户词、专业词库与设置留在本机，以后重新安装还能接着用。")
+                         + (UninstallModel.systemWide ? "用安装包装在「/Library/Input Methods」的那份要输入管理员密码，并直接删除、不进废纸篓。" : ""))
             }
         }
         .formStyle(.grouped)

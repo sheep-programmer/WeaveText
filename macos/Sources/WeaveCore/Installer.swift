@@ -167,6 +167,13 @@ public protocol Trash {
     func moveToTrash(_ url: URL) throws
 }
 
+/// 以管理员身份删除（系统会弹出密码框；测试时换成假的）。用户取消时抛出 `InstallError.cancelled`。
+/// Remove as an administrator (the system asks for the password; a fake in tests). Throws `InstallError.cancelled` when
+/// the user cancels.
+public protocol AdminRemover {
+    @MainActor func remove(_ bundles: [URL]) throws
+}
+
 /// 用中文说明的安装错误。 Installer errors, explained in plain Chinese.
 public enum InstallError: Error, Equatable, LocalizedError {
     case sourceMissing
@@ -177,6 +184,8 @@ public enum InstallError: Error, Equatable, LocalizedError {
     case badSignature
     case notInstalled
     case removeFailed(String)
+    case cancelled
+    case needsAdmin(String)
 
     public var errorDescription: String? {
         switch self {
@@ -188,6 +197,8 @@ public enum InstallError: Error, Equatable, LocalizedError {
         case .badSignature: return "复制出来的程序签名不完整，没有安装。请重新下载磁盘映像再试。"
         case .notInstalled: return "没有找到已安装的织文输入法。"
         case .removeFailed(let why): return "没能移到废纸篓：\(why)"
+        case .cancelled: return "已取消，没有做任何改动。"
+        case .needsAdmin(let path): return "「\(path)」需要管理员权限才能删除。请在终端运行：sudo rm -rf \"\(path)\""
         }
     }
 }
@@ -319,16 +330,39 @@ public struct Installer {
     /// 卸载：停用输入源，把程序移到废纸篓；勾选时连同用户数据目录一起移走、清掉偏好。
     /// Uninstall: disable the sources and move the bundle to the Trash; when asked, the user data directory goes too and
     /// the preferences are cleared.
-    /// `bundle` 默认是输入法目录里的那份（从正在运行的输入法里卸载时传它自己的位置）。
-    /// `bundle` defaults to the copy in the input methods directory (the running IME passes its own location).
+    /// `bundle` 默认是输入法目录里的那份（从正在运行的输入法里卸载时传它自己的位置）；`alsoRemove` 是另一处可能还有的
+    /// 副本（~/Library 与 /Library 两处都清掉）。所在文件夹当前用户写不了的（安装包装进 /Library/Input Methods 的那份）
+    /// 交给 `admin` 以管理员身份删除，并忘掉安装包的回执；用户取消时恢复启用，什么都不动。
+    /// `bundle` defaults to the copy in the input methods directory (the running IME passes its own location);
+    /// `alsoRemove` lists other places a copy may be (both ~/Library and /Library are cleaned). Copies in a folder the
+    /// user cannot write (the package's /Library/Input Methods) go to `admin`, which removes them as an administrator and
+    /// forgets the package receipt; if the user cancels, the sources are enabled again and nothing changes.
     @MainActor
-    public func uninstall(bundle: URL? = nil, trash: Trash, userData: URL?,
-                          defaults: (suite: UserDefaults, domain: String)? = nil) throws {
-        let dest = bundle ?? destination
-        guard fileManager.fileExists(atPath: dest.path) else { throw InstallError.notInstalled }
+    public func uninstall(bundle: URL? = nil, alsoRemove: [URL] = [], trash: Trash, admin: AdminRemover? = nil,
+                          userData: URL?, defaults: (suite: UserDefaults, domain: String)? = nil) throws {
+        let primary = bundle ?? destination
+        var seen = Set<String>()
+        let targets = ([primary] + alsoRemove).filter {
+            fileManager.fileExists(atPath: $0.path) && seen.insert($0.standardizedFileURL.path).inserted
+        }
+        guard !targets.isEmpty else { throw InstallError.notInstalled }
+        let needsAdmin = targets.filter { !fileManager.isWritableFile(atPath: $0.deletingLastPathComponent().path) }
+        let own = targets.filter { t in !needsAdmin.contains(t) }
+        if let first = needsAdmin.first, admin == nil { throw InstallError.needsAdmin(first.path) }
+
         registry.disableAll()
+        if let admin, !needsAdmin.isEmpty {
+            do {
+                try admin.remove(needsAdmin)
+            } catch {
+                // 取消或失败：输入源恢复原样。 Cancelled or failed: put the sources back.
+                _ = try? registry.registerAndEnable(bundleURL: primary)
+                if let e = error as? InstallError { throw e }
+                throw InstallError.removeFailed(Self.reason(error))
+            }
+        }
         do {
-            try trash.moveToTrash(dest)
+            for t in own { try trash.moveToTrash(t) }
             if let userData, fileManager.fileExists(atPath: userData.path) { try trash.moveToTrash(userData) }
         } catch {
             throw InstallError.removeFailed(Self.reason(error))
