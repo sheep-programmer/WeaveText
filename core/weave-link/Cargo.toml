@@ -1,0 +1,19 @@
+[package]
+name = "weave-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WeaveLink: pairing and encrypted local-network transfer between WeaveText devices"
+
+[dependencies]
+# Noise 协议（握手与传输加密）。 Noise protocol framework (handshake + transport encryption).
+snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
+# 配对码的口令认证密钥交换。 Password-authenticated key exchange for the pairing code.
+spake2 = "0.4"
+# 局域网服务发现（无异步运行时）。 LAN service discovery without an async runtime.
+mdns-sd = { version = "0.13", default-features = false }
+if-addrs = "0.13"
+sha2 = "0.10"
+getrandom = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
