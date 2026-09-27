@@ -11,6 +11,21 @@
   characters, any stroke order, cursive strokes), Wubi 86, English with suggestions.*
 - **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.6%。
   *Beam search, a character collocation model and user learning: 75.6% top-1 on a 1000-sentence benchmark.*
+- **联想与学习**：上屏后推荐下一个词（你的搭配优先，其次词库长词的接续）；用户词随时间淡出，
+  选错马上退格即撤销学习，连着打的两段第二次出现时记成新词。
+  *Next-word prediction after a commit (your own pairs first, then continuations of lexicon phrases); learned words
+  fade over time, an immediate backspace undoes a wrong pick, and two pieces typed together become a word the second time.*
+- **专业词库与云端热词**：医学、法律、IT、地名等 14 个专业词库按需下载、随时删除；可选的云端热词（默认关闭）
+  每天从公开热词库下载一次、签名校验，只下载不上传。
+  *14 optional domain dictionaries (medicine, law, IT, places…) downloaded and removed individually; optional cloud
+  hot words (off by default) fetched daily from a public, signed word list — download only.*
+- **织文互联**：与同一 Wi-Fi 下的电脑（macOS 版）扫码配对，互传文字、图片、文件并同步剪贴板，端到端加密、不经服务器。
+  *WeaveLink: pair with a computer on the same Wi-Fi by QR code; exchange text, images and files and sync the clipboard,
+  end-to-end encrypted, no server.*
+- **实用候选**：`v` 加数字出大写金额与中文数字、`v` 加算式出结果，`rq` / `sj` / `xq` 出日期时间星期，
+  敲等号给出算式结果，成对符号，复制的短信里自动取出验证码。
+  *Practical candidates: uppercase amounts and Chinese numerals after `v`, arithmetic, date/time shortcuts, a result
+  after `=`, paired punctuation, one-time codes from copied messages.*
 - **零部署、体积小**：预编译词库分块压缩后直接从 APK 读取、按需解压，手机上不再多占一份；全部词库与模型约 24 MB。
   用户词写只追加日志。
   *Zero deployment and small: precompiled, block-compressed dictionaries are read straight from the APK and decoded
@@ -54,10 +69,10 @@ to build, install and use it.*
 
 | 路径 Path | 内容 Contents |
 |---|---|
-| `core/` | Rust 内核：`weave-dict` 词库格式、`weave-engine` 解码、`weave-plugin` 插件宿主、`weave-ffi` JNI |
+| `core/` | Rust 内核：`weave-dict` 词库格式、`weave-engine` 解码与联想、`weave-link` 织文互联、`weave-plugin` 插件宿主、`weave-ffi` JNI、`weave-c` C 接口 |
 | `macos/` | macOS 输入法：InputMethodKit 前端、候选窗、SwiftUI 设置、构建与安装脚本 |
 | `android/` | Android 应用：输入法服务、自绘键盘、Compose 设置、语音后端；`native-test` 桌面 JNI 测试 |
-| `data/` | 词库构建脚本 `build.sh`、整句评测集 `eval/` |
+| `data/` | 词库构建脚本 `build.sh`、专业词库 `packs.sh`、整句评测集 `eval/` |
 | `docs/` | 架构、设计规范、调研、插件开发、第三方许可（中英双语） |
 
 ## 构建 / Build
