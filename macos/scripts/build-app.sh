@@ -1,6 +1,6 @@
 #!/bin/bash
-# 构建织文输入法 macOS 版：内核通用静态库 → Swift 双架构 → 组装 .app → 自签名 → 打 zip。
-# Build WeaveText for macOS: universal engine lib → Swift for both archs → assemble .app → ad-hoc sign → zip.
+# 构建织文输入法 macOS 版：内核通用静态库 → Swift 双架构 → 组装 .app → 自签名 → 打 zip 与磁盘映像。
+# Build WeaveText for macOS: universal engine lib → Swift for both archs → assemble .app → ad-hoc sign → zip and DMG.
 #
 # 只需命令行工具（无需 Xcode）。 Needs only the command-line tools (no Xcode).
 # 用法 / Usage: macos/scripts/build-app.sh [--skip-tests]
@@ -122,7 +122,10 @@ step "打包 / zip"
 rm -f "$BUILD/WeaveText-mac.zip"
 ditto -c -k --keepParent "$APP" "$BUILD/WeaveText-mac.zip"
 
+step "磁盘映像 / disk image"
+"$MAC/scripts/make-dmg.sh" "$APP"
+
 step "完成 / done"
 lipo -info "$APP/Contents/MacOS/WeaveText"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Format|Signature" || true
-du -sh "$APP" "$BUILD/WeaveText-mac.zip"
+du -sh "$APP" "$BUILD/WeaveText-mac.zip" "$BUILD/WeaveText-$VERSION.dmg"
