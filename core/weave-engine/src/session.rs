@@ -102,6 +102,36 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    /// 按名字设置开关：`fuzzy.z_zh` … `fuzzy.uan_uang`、`wubi.auto_commit`、`wubi.pinyin_lookup`、
+    /// `wubi.completion`、`output.traditional`、`candidates.emoji`；未知名字返回 false。
+    /// Set a switch by name (see above); false for unknown names.
+    pub fn set_flag(&mut self, key: &str, on: bool) -> bool {
+        let f = &mut self.fuzzy;
+        let slot: &mut bool = match key {
+            "fuzzy.z_zh" => &mut f.z_zh,
+            "fuzzy.c_ch" => &mut f.c_ch,
+            "fuzzy.s_sh" => &mut f.s_sh,
+            "fuzzy.n_l" => &mut f.n_l,
+            "fuzzy.f_h" => &mut f.f_h,
+            "fuzzy.r_l" => &mut f.r_l,
+            "fuzzy.an_ang" => &mut f.an_ang,
+            "fuzzy.en_eng" => &mut f.en_eng,
+            "fuzzy.in_ing" => &mut f.in_ing,
+            "fuzzy.ian_iang" => &mut f.ian_iang,
+            "fuzzy.uan_uang" => &mut f.uan_uang,
+            "wubi.auto_commit" => &mut self.wubi_auto_commit,
+            "wubi.pinyin_lookup" => &mut self.wubi_pinyin_lookup,
+            "wubi.completion" => &mut self.wubi_completion,
+            "output.traditional" => &mut self.traditional,
+            "candidates.emoji" => &mut self.emoji,
+            _ => return false,
+        };
+        *slot = on;
+        true
+    }
+}
+
 /// 用户词（管理界面）。 A user word, for the management UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserWord {

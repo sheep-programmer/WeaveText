@@ -1274,6 +1274,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "weave-c"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "weave-engine",
+]
+
+[[package]]
 name = "weave-dict"
 version = "0.1.0"
 dependencies = [

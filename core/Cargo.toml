@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["weave-dict", "weave-engine", "weave-plugin", "weave-ffi"]
+members = ["weave-dict", "weave-engine", "weave-plugin", "weave-ffi", "weave-c"]
 
 [workspace.package]
 version = "0.1.0"

@@ -211,31 +211,7 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetOption(
         return JNI_FALSE;
     };
     let on = v == "true" || v == "1";
-    jbool(with_engine(h, false, |e| {
-        let o = &mut e.options;
-        let f = &mut o.fuzzy;
-        let slot: &mut bool = match k.as_str() {
-            "fuzzy.z_zh" => &mut f.z_zh,
-            "fuzzy.c_ch" => &mut f.c_ch,
-            "fuzzy.s_sh" => &mut f.s_sh,
-            "fuzzy.n_l" => &mut f.n_l,
-            "fuzzy.f_h" => &mut f.f_h,
-            "fuzzy.r_l" => &mut f.r_l,
-            "fuzzy.an_ang" => &mut f.an_ang,
-            "fuzzy.en_eng" => &mut f.en_eng,
-            "fuzzy.in_ing" => &mut f.in_ing,
-            "fuzzy.ian_iang" => &mut f.ian_iang,
-            "fuzzy.uan_uang" => &mut f.uan_uang,
-            "wubi.auto_commit" => &mut o.wubi_auto_commit,
-            "wubi.pinyin_lookup" => &mut o.wubi_pinyin_lookup,
-            "wubi.completion" => &mut o.wubi_completion,
-            "output.traditional" => &mut o.traditional,
-            "candidates.emoji" => &mut o.emoji,
-            _ => return false,
-        };
-        *slot = on;
-        true
-    }))
+    jbool(with_engine(h, false, |e| e.options.set_flag(&k, on)))
 }
 
 #[no_mangle]
