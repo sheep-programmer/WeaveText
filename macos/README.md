@@ -28,26 +28,30 @@
   it. `rq` `sj` `xq` give the date, time and weekday (following the system time zone).*
 - 联想词：上屏后候选窗给出下一个词（顶行小字「联想」，不高亮）。按 `1`–`9` 或点击选词并接着联想；空格（照常输入空格）、
   回车、Esc、方向键、标点或点击文档都会收起；直接打字母照常开始新的输入。可在「输入方案」里关闭。
-  上屏后马上退格，除了删字，也会撤销这次上屏刚学到的词。
+  上屏后马上退格，除了删字，也会撤销这次上屏刚学到的词；中间打过标点、空格、数字或挪过光标就不撤销。
   *Predictions: after a commit the panel offers the next word (a small 联想 hint, no highlight). `1`–`9` or a click picks
   and predicts again; Space (which still types a space), Return, Esc, arrows, punctuation or a click in the document
   dismiss them; typing letters starts new input as usual. Can be turned off under Schemes. A backspace right after a
-  commit also undoes what that commit just learned.*
+  commit also undoes what that commit just learned; not after punctuation, a space, a digit or a caret move.*
 - 候选窗：跟随光标、到屏幕底边自动翻到上方、多屏正确；横排 / 竖排、字号、深浅色可调；可用鼠标点选。
   *Candidate window: follows the caret, flips above at the screen bottom, correct on multiple screens; horizontal or
   vertical, font size and light/dark are adjustable; click to pick.*
 - 菜单栏图标：左键打开快捷菜单（中英、输入方案、繁体、设置、关于、退出），右键直接打开设置；可在设置里隐藏。
   *Menu bar item: left click for a quick menu, right click opens Settings; can be hidden.*
-- 专业词库：「词库 › 专业词库」里按需下载医学、法律、IT、地名等领域词表（从织文的 GitHub 发布页下载，校验大小与 SHA-256），
-  装上立即生效，删除同样即时；这些词不会排到常用词前面，选过一次后自动靠前。
+- 专业词库：「词库 › 专业词库」里按需下载医学、法律、IT、地名等领域词表（从织文的 GitHub 发布页下载，直连不通时依次换用与
+  Android 相同的下载镜像，都校验大小与 SHA-256），装上立即生效，删除同样即时；这些词不会排到常用词前面，选过一次后自动靠前。
+  文件在但没能载入（例如损坏）时显示「重试」。
   *Domain dictionaries: download medicine, law, IT, places and more under Dictionary › 专业词库 (from WeaveText's GitHub
-  release, checked for size and SHA-256); they take effect at once, removal too; they never outrank common words until
-  picked once.*
+  release, falling back to the Android app's download mirrors one by one, always checked for size and SHA-256); they take
+  effect at once, removal too; they never outrank common words until picked once. A file that is there but failed to load
+  (say, corrupt) offers 重试.*
 - 云端热词（默认关闭）：打开后每天最多检查一次公开的织文热词库（带 ETag，没变化不下载），内核验签通过才换上，
-  验签失败继续用旧版本；只下载，不上传任何输入。关闭即卸下并删除已下载的文件。
+  验签失败继续用旧版本；直连不通时同样换用镜像，镜像的内容也要验签。没能载入时显示「重试」。只下载，不上传任何输入。
+  关闭即卸下并删除已下载的文件。
   *Cloud hot words (off by default): when on, the public hot-words list is checked at most daily (with an ETag, nothing
   is downloaded when unchanged) and swapped in only after the engine verifies its signature; a bad signature keeps the
-  old version. Download only. Turning it off detaches and deletes the files.*
+  old version. Mirrors are used here too when the direct URL fails, and their content must pass the same check; 重试
+  shows when nothing is loaded. Download only. Turning it off detaches and deletes the files.*
 - 设置：常规、输入方案（含联想词开关）、外观、词库（用户词、专业词库、云端热词）、互联、关于（版本、隐私说明与开源许可）。
   *Settings: General, Schemes (with the prediction switch), Appearance, Dictionary (user words, domain dictionaries,
   cloud hot words), Link, About (version, privacy notes, licences).*
@@ -91,10 +95,12 @@ macos/scripts/build-app.sh --skip-tests
 产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）与 `macos/build/WeaveText-mac.zip`。
 
 脚本按内核的资源表（`core/weave-engine/src/session.rs` 的 `RESOURCES`）把 `data/build/` 里对应的 `.wvz` 全部放进包里，
-缺少基础词库或联想表 `follow.wvz` 时报错；专业词库目录 `dictpacks.json` 与 Android 共用一份。
+缺少基础词库或联想表 `follow.wvz` 时报错；专业词库目录 `dictpacks.json` 与 Android 共用一份，
+下载镜像取自 Android 模型目录 `models/catalog.json` 的 `mirrors`，放成 `mirrors.json`。
 *The script ships every `.wvz` in `data/build/` that the engine's resource table (`RESOURCES` in
 `core/weave-engine/src/session.rs`) knows, and fails when a base dictionary or the prediction table `follow.wvz` is
-missing; the domain-dictionary catalog `dictpacks.json` is shared with Android.*
+missing; the domain-dictionary catalog `dictpacks.json` is shared with Android, and the download mirrors are the
+`mirrors` of Android's model catalog `models/catalog.json`, shipped as `mirrors.json`.*
 
 单独跑测试 / Tests only（先跑一次构建脚本生成 `build/lib/libweave_c.a` / run the build script once first）：
 
@@ -160,10 +166,10 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
   last position or appears near the mouse.*
 - 系统「用大写锁定键切换 ABC」打开时，大写锁定会被系统拿去切换输入法。
   *When the system option "Use Caps Lock to switch to and from ABC" is on, the system takes Caps Lock for switching.*
-- 九键、手写与语音只在 Android 版提供。专业词库与热词只从 GitHub 直接下载，没有 Android 版的下载镜像；
+- 九键、手写与语音只在 Android 版提供。镜像按固定顺序逐个尝试，不像 Android 那样先测速、断点续传，也不能自选镜像；
   专业词库的发布页还没发布时会显示「下载失败，请检查网络后重试」。
-  *T9, handwriting and voice are Android only. Domain dictionaries and hot words come straight from GitHub, without the
-  Android app's download mirrors; until the packs release is published, downloads show 下载失败，请检查网络后重试.*
+  *T9, handwriting and voice are Android only. Mirrors are tried one by one in a fixed order, without Android's speed
+  probe, resume or mirror choice; until the packs release is published, downloads show 下载失败，请检查网络后重试.*
 - 互联的 Mac 端只显示本机的配对码让手机来连，不能在 Mac 上输入手机的配对码（手机端不显示配对码）。
   *On the Mac, WeaveLink only shows its own code for the phone to dial in; it can't type a phone's code (phones don't
   show one).*
