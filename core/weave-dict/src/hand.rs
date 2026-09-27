@@ -61,7 +61,10 @@ pub fn resample(s: &[(f32, f32)]) -> [(f32, f32); POINTS] {
     out
 }
 
-/// 把一组笔画按整体外框缩放到 0..=255（保持比例、居中）。 Normalise strokes to 0..=255, keeping aspect, centred.
+/// 归一化时两轴比例最多放宽到的倍数。 How far the two axes may be scaled apart when normalising.
+const ASPECT: f32 = 1.3;
+
+/// 把一组笔画按整体外框缩放到 0..=255（居中）。 Normalise strokes to 0..=255, keeping aspect, centred.
 pub fn normalise(strokes: &[[(f32, f32); POINTS]]) -> Vec<[(f32, f32); POINTS]> {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for s in strokes {
@@ -72,15 +75,22 @@ pub fn normalise(strokes: &[[(f32, f32); POINTS]]) -> Vec<[(f32, f32); POINTS]> 
             y1 = y1.max(y);
         }
     }
-    let size = (x1 - x0).max(y1 - y0).max(1e-3);
-    let (ox, oy) = ((size - (x1 - x0)) / 2.0, (size - (y1 - y0)) / 2.0);
-    let k = 255.0 / size;
+    // 每个方向各自缩放，但两轴比例最多放宽到 [`ASPECT`]：写得偏高偏扁时仍能对上，一笔一横之类的细长字不被拉坏。
+    // Scale each axis on its own, but keep the two within [`ASPECT`] of each other: tall or squat writing still
+    // matches, while thin characters (一, 丨) aren't stretched out of shape.
+    let (w, h) = ((x1 - x0).max(1e-3), (y1 - y0).max(1e-3));
+    let size = w.max(h);
+    let (mut kx, mut ky) = (255.0 / w, 255.0 / h);
+    let base = 255.0 / size;
+    kx = kx.min(base * ASPECT);
+    ky = ky.min(base * ASPECT);
+    let (ox, oy) = ((255.0 - w * kx) / 2.0, (255.0 - h * ky) / 2.0);
     strokes
         .iter()
         .map(|s| {
             let mut o = [(0f32, 0f32); POINTS];
             for (i, &(x, y)) in s.iter().enumerate() {
-                o[i] = ((x - x0 + ox) * k, (y - y0 + oy) * k);
+                o[i] = ((x - x0) * kx + ox, (y - y0) * ky + oy);
             }
             o
         })
@@ -243,6 +253,12 @@ impl Recognizer {
                 *q = (b[o] as f32, b[o + 1] as f32);
             }
             points.push(p);
+        }
+        // 模板按同样的规则重新归一化（数据里存的是保持比例的版本）。 Re-normalise templates the same way as input.
+        for t in &templates {
+            let r = t.strokes.clone();
+            let renorm = normalise(&points[r.clone()]);
+            points[r].copy_from_slice(&renorm);
         }
         let feats = points.iter().map(Feat::of).collect();
         Ok(Recognizer { templates, points, feats })
