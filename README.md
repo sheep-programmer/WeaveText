@@ -42,11 +42,19 @@ the APK size; voice uses the system recognizer or plugins, or a one-tap ~30 MB o
 streaming model) downloaded in the app — same on-device quality, no reinstall. **Offline voice** adds on-device speech recognition.
 Enable WeaveText in system settings after installing.*
 
+## macOS 版 / macOS
+
+同一内核的 macOS 输入法（InputMethodKit + SwiftUI，macOS 13+，Apple 芯片与 Intel 通用）：构建、安装与使用见
+[macos/README.md](macos/README.md)。
+*A macOS input method on the same engine (InputMethodKit + SwiftUI, macOS 13+, universal for Apple silicon and
+Intel); see [macos/README.md](macos/README.md) to build, install and use it.*
+
 ## 目录 / Layout
 
 | 路径 Path | 内容 Contents |
 |---|---|
 | `core/` | Rust 内核：`weave-dict` 词库格式、`weave-engine` 解码、`weave-plugin` 插件宿主、`weave-ffi` JNI |
+| `macos/` | macOS 输入法：InputMethodKit 前端、候选窗、SwiftUI 设置、构建与安装脚本 |
 | `android/` | Android 应用：输入法服务、自绘键盘、Compose 设置、语音后端；`native-test` 桌面 JNI 测试 |
 | `data/` | 词库构建脚本 `build.sh`、整句评测集 `eval/` |
 | `docs/` | 架构、设计规范、调研、插件开发、第三方许可（中英双语） |
