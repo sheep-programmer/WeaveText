@@ -86,6 +86,7 @@ class WeaveImeService : InputMethodService() {
         ui?.onShown()
         // 开启了互联时，键盘出现就把服务拉起来（进程被系统回收过也能恢复）。 Revive WeaveLink when the keyboard shows.
         com.weavetext.ime.link.LinkManager.get(this).ensureRunning()
+        com.weavetext.ime.core.CloudWords.get(this).refreshIfStale()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {

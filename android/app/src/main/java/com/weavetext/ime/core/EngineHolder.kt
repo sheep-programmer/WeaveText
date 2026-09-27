@@ -51,6 +51,7 @@ object EngineHolder {
             val spec = DataInstaller.sourceSpec(ctx)
             engine = NativeEngine.createFromSpec(spec, DataInstaller.userDir(ctx).absolutePath, DataInstaller.cacheKb(ctx))
             if (engine == null) Log.e(TAG, "engine create failed")
+            engine?.let { CloudWords.get(ctx).attach(it) }
         } catch (t: Throwable) {
             Log.e(TAG, "engine load failed", t)
         } finally {

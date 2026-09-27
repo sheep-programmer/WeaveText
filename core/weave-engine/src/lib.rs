@@ -8,6 +8,7 @@
 //! - [`table`]：五笔与英文码表查询 / wubi & English table lookup
 //! - [`session`]：给界面用的状态机 / UI-facing state machine
 
+pub mod cloud;
 pub mod convert;
 pub mod decoder;
 pub mod graph;

@@ -34,6 +34,7 @@ class SettingsDeps(
     val status: () -> ImeStatus = { detectStatus(ctx) },
     val link: () -> com.weavetext.ime.link.LinkController = { com.weavetext.ime.link.LinkManager.get(ctx) },
     val packs: () -> com.weavetext.ime.core.DictPackRepository = { com.weavetext.ime.core.DictPacks.get(ctx) },
+    val cloud: () -> com.weavetext.ime.core.CloudWordsRepository = { com.weavetext.ime.core.CloudWords.get(ctx) },
     val versionName: String = com.weavetext.ime.BuildConfig.VERSION_NAME,
     val versionCode: Int = com.weavetext.ime.BuildConfig.VERSION_CODE,
 ) {

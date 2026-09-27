@@ -41,6 +41,9 @@ void weave_set_utc_offset(WeaveEngine *h, int32_t minutes);
    Domain dictionaries; files in <user dir>/packs/<id>.wvz load automatically at startup. */
 bool weave_load_pack(WeaveEngine *h, const char *id, const char *path);
 bool weave_unload_pack(WeaveEngine *h, const char *id);
+/* 云端热词（hotwords.tsv + .sig，验签后作为扩展词库 cloud）；返回词数，失败 -1。卸载：weave_unload_pack(h, "cloud")。
+   Cloud hot words (verified, loaded as the pack "cloud"); word count or -1. Remove with weave_unload_pack(h, "cloud"). */
+int32_t weave_load_hotwords(WeaveEngine *h, const char *tsv_path, const char *sig_path);
 /* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
 char *weave_eval(const char *expr);
 

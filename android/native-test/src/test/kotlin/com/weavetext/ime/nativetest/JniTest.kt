@@ -61,6 +61,22 @@ class JniTest {
         }
     }
 
+    /** 云端热词：签名样例能载入，篡改后拒绝。 Hot words: the signed sample loads, a tampered copy is refused. */
+    @Test
+    fun hotwordsVerifyAndLoad() {
+        val fx = File(System.getProperty("user.dir"), "../../core/weave-engine/tests/fixtures")
+        assumeTrue(File(fx, "hotwords.tsv").isFile)
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            assertEquals(2, e.loadHotwords(File(fx, "hotwords.tsv").path, File(fx, "hotwords.tsv.sig").path))
+            e.type("zhiwenhulian")
+            assertTrue(e.candidates(0, 20).any { it.text == "织文互联" })
+            val bad = File.createTempFile("hot", ".tsv").apply { writeText(File(fx, "hotwords.tsv").readText() + "坏\tbad\t1\t\n"); deleteOnExit() }
+            assertEquals(-1, e.loadHotwords(bad.path, File(fx, "hotwords.tsv.sig").path))
+            assertTrue(e.unloadPack("cloud"))
+        }
+    }
+
     /** v 模式与算式：v1234 给出大写金额，等号后的算式能算出结果。 The v mode and the calculator. */
     @Test
     fun vModeAndCalculator() {

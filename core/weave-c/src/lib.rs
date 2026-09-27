@@ -151,6 +151,14 @@ pub extern "C" fn weave_unload_pack(h: *mut WeaveEngine, id: *const c_char) -> b
     with(h, false, |e| e.unload_pack(id))
 }
 
+/// 载入云端热词（文件路径）；返回词数，签名不对或读不到返回 -1。 Load hot words from files; word count or -1.
+#[no_mangle]
+pub extern "C" fn weave_load_hotwords(h: *mut WeaveEngine, tsv_path: *const c_char, sig_path: *const c_char) -> i32 {
+    let (Some(t), Some(s)) = (str_arg(tsv_path), str_arg(sig_path)) else { return -1 };
+    let (Ok(t), Ok(s)) = (std::fs::read(t), std::fs::read_to_string(s)) else { return -1 };
+    with(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as i32).unwrap_or(-1))
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "C" fn weave_set_utc_offset(h: *mut WeaveEngine, minutes: i32) {

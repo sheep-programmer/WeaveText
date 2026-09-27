@@ -7,3 +7,5 @@ description = "WeaveText IME engine: pinyin / shuangpin / T9 / wubi / English de
 
 [dependencies]
 weave-dict = { path = "../weave-dict" }
+# 云端热词文件的签名校验（与织文互联共用 curve25519-dalek）。 Signature check of the hot-words file.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }

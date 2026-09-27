@@ -241,6 +241,14 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeUnloadPack
     jbool(with_engine(h, false, |e| e.unload_pack(&id)))
 }
 
+/// 载入云端热词（文件路径）；返回词数，签名不对或读不到返回 -1。 Load hot words from files; word count or -1.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeLoadHotwords(mut env: JNIEnv, _c: JClass, h: jlong, tsv: JString, sig: JString) -> jint {
+    let (Some(tsv), Some(sig)) = (get_string(&mut env, &tsv), get_string(&mut env, &sig)) else { return -1 };
+    let (Ok(t), Ok(s)) = (std::fs::read(&tsv), std::fs::read_to_string(&sig)) else { return -1 };
+    with_engine(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as jint).unwrap_or(-1))
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetUtcOffset(_env: JNIEnv, _c: JClass, h: jlong, minutes: jint) {

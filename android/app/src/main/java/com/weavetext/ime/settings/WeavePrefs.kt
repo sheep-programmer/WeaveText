@@ -50,6 +50,9 @@ object WeavePrefs {
     /** 设置里「清空剪贴板历史」写入时间戳，键盘收到后清空内存中的历史。 Clear-history signal. */
     const val CLIPBOARD_CLEARED = "clipboard_cleared"
 
+    /** 云端热词（默认关闭）：只下载公开热词库，不上传任何内容。 Cloud hot words, off by default; download only. */
+    const val CLOUD_WORDS = "cloud_words"
+
     // 织文互联 / WeaveLink
     /** 默认关闭：用户在「互联」里打开后才启动局域网服务。 Off by default; the LAN service starts only after opting in. */
     const val LINK_ENABLED = "link_enabled"
@@ -153,6 +156,7 @@ object WeavePrefs {
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
+    fun cloudWords(p: SharedPreferences) = p.getBoolean(CLOUD_WORDS, false)
     fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)
     fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)
     fun linkName(p: SharedPreferences) = p.getString(LINK_NAME, null)?.takeIf { it.isNotBlank() } ?: com.weavetext.ime.link.LinkManager.defaultName()

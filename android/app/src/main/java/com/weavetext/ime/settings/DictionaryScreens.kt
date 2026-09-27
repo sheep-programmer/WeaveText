@@ -104,6 +104,8 @@ fun DictionaryScreen() {
             ) { ValueChevron(if (installed.isEmpty()) "" else "${installed.size} 个") }
         }
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
+        CloudWordsCard()
+        androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard {
             SettingRow("导入用户词", icon = R.drawable.ic_import, onClick = { importer.launch(arrayOf("text/plain", "*/*")) })
             RowDivider()
@@ -286,5 +288,37 @@ fun DictPacksScreen() {
             confirmButton = { TextButton(onClick = { repo.remove(p.id); removing = null; tick++ }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } },
         )
+    }
+}
+
+/** 云端热词开关与状态。 Cloud hot-words switch and status. */
+@Composable
+private fun CloudWordsCard() {
+    val deps = LocalDeps.current
+    val cloud = remember { deps.cloud() }
+    var tick by remember { mutableIntStateOf(0) }
+    androidx.compose.runtime.DisposableEffect(cloud) {
+        val l: () -> Unit = { tick++ }
+        cloud.addListener(l)
+        onDispose { cloud.removeListener(l) }
+    }
+    val st = remember(tick) { cloud.status() }
+    GroupCard {
+        SwitchRow(
+            "云端热词", "每天从公开的织文热词库下载一次新词、热词。只下载，不上传：你打的字不会离开手机",
+            checked = st.enabled, subtitleMaxLines = 3,
+        ) { cloud.setEnabled(it); tick++ }
+        if (st.enabled) {
+            RowDivider(false)
+            val sub = when {
+                st.updating -> "正在更新…"
+                st.error != null -> st.error
+                st.checkedAt == 0L -> "还没有下载"
+                else -> "${st.words} 个词 · " + SimpleDateFormat("M 月 d 日 HH:mm", Locale.CHINA).format(Date(st.checkedAt)) + " 检查"
+            }
+            SettingRow("热词", sub) {
+                TextButton(enabled = !st.updating, onClick = { cloud.refreshNow() }) { Text("立即更新") }
+            }
+        }
     }
 }

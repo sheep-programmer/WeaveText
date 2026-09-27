@@ -60,6 +60,8 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     /** 载入（或替换）专业词库文件。 Load (or replace) a domain dictionary file. */
     fun loadPack(id: String, path: String): Boolean = nativeLoadPack(handle, id, path)
     fun unloadPack(id: String): Boolean = nativeUnloadPack(handle, id)
+    /** 云端热词：验签后作为扩展词库挂上，返回词数，失败 -1。 Hot words: verified and attached; word count or -1. */
+    fun loadHotwords(tsvPath: String, sigPath: String): Int = nativeLoadHotwords(handle, tsvPath, sigPath)
     override fun evaluate(expr: String): String? = nativeEval(expr)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
@@ -155,6 +157,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeSetUtcOffset(h: Long, minutes: Int)
         @JvmStatic private external fun nativeLoadPack(h: Long, id: String, path: String): Boolean
         @JvmStatic private external fun nativeUnloadPack(h: Long, id: String): Boolean
+        @JvmStatic private external fun nativeLoadHotwords(h: Long, tsv: String, sig: String): Int
         @JvmStatic private external fun nativeEval(expr: String): String?
         @JvmStatic private external fun nativeBackspace(h: Long): Boolean
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean

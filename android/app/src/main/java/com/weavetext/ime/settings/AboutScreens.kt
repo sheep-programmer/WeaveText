@@ -96,6 +96,9 @@ fun PrivacyScreen() = SubPage("隐私说明") {
             "语音输入" to "语音由你选择并导入的插件识别。音频会发送到该插件对应的服务，插件只能访问其清单中声明的域名。",
             "剪贴板" to "剪贴板历史只保存在本机私有目录；来自密码框或标记为敏感的内容不会记录，未固定的记录 24 小时后自动删除。可在「外观与手感」中关闭记录。",
             "密码框" to "在密码框中输入时不学习用户词，也不记录剪贴板。",
+            "云端热词" to "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开手机。",
+            "专业词库" to "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。",
+            "织文互联" to "默认关闭。开启后只在同一局域网内与你配对过的设备直接通信，全程端到端加密，不经过任何服务器。",
         ),
     )
 }
@@ -118,6 +121,7 @@ fun LicensesScreen() = SubPage("开源许可") {
         listOf(
             Triple("Lua 5.4（mlua / lua-src）", "MIT", "插件运行时"),
             Triple("rustls、ring、webpki-roots", "Apache-2.0 / ISC / CDLA-Permissive-2.0", "插件网络 TLS"),
+            Triple("snow、spake2、mdns-sd、ed25519-dalek 等", "MIT OR Apache-2.0 / BSD-3-Clause", "织文互联的加密、配对与发现；云端热词签名校验"),
             Triple("memmap2、jni、serde_json、zip、tungstenite、ureq 等", "MIT OR Apache-2.0", "见仓库 docs/THIRD_PARTY.md"),
         ),
     )

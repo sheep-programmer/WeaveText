@@ -58,7 +58,7 @@ class SettingsScreenshotTest {
         WeavePrefs.of(app).edit().putString(WeavePrefs.THEME, if (dark) "dark" else "system").commit()
         val deps = SettingsDeps(
             app, engines = { engines }, models = { models }, dictionary = FakeUserDictionary(), status = { status },
-            packs = { packs }, versionName = "0.1.0", versionCode = 1,
+            packs = { packs }, cloud = { cloud }, versionName = "0.1.0", versionCode = 1,
         )
         compose.setContent { SettingsApp(deps, Navigator(routes.toList())) }
         compose.waitForIdle()
@@ -66,6 +66,13 @@ class SettingsScreenshotTest {
     }
 
     private val packs = com.weavetext.ime.testing.FakeDictPacks()
+    private val cloud = com.weavetext.ime.testing.FakeCloudWords()
+
+    /** 云端热词开启后的词库页。 The dictionary page with cloud hot words on. */
+    @Test fun dictionaryCloudOn() {
+        cloud.st = com.weavetext.ime.core.CloudStatus(enabled = true, words = 1280, version = "2026092704", checkedAt = 1_790_000_000_000)
+        show("dictionary_cloud_on", Route.Home, Route.Dictionary)
+    }
 
     @Test fun dictionaryPacks() = show("dictionary_packs", Route.Home, Route.Dictionary, Route.DictPacks)
     @Test fun dictionaryPacksDark() = show("dictionary_packs_dark", Route.Home, Route.Dictionary, Route.DictPacks, dark = true)

@@ -524,6 +524,26 @@ impl Engine {
         true
     }
 
+    /// 载入云端热词（验签、去掉过期词后作为扩展词库 `cloud`），返回词数；签名不对或文件无效返回 Err。
+    /// Load cloud hot words (verified, expired rows dropped) as the extra lexicon `cloud`; returns the word count.
+    pub fn load_hotwords(&mut self, tsv: &[u8], sig_hex: &str) -> Result<usize, String> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let today = (now + self.options.utc_offset_min as i64 * 60).div_euclid(86_400);
+        let c = crate::cloud::compile(tsv, sig_hex, &crate::cloud::HOTWORDS_KEY, today)?;
+        let lex = Lexicon::from_bytes(c.lexicon).map_err(|e| format!("{e:?}"))?;
+        let id = "cloud";
+        if let Some(i) = self.pack_ids.iter().position(|p| p == id) {
+            self.packs[i] = lex;
+        } else if self.packs.len() + 1 < crate::decoder::MAX_LEX {
+            self.packs.push(lex);
+            self.pack_ids.push(id.to_string());
+        } else {
+            return Err("too many packs".into());
+        }
+        self.refresh_if_composing();
+        Ok(c.words)
+    }
+
     /// 卸下一个扩展词库。 Unload an extra lexicon.
     pub fn unload_pack(&mut self, id: &str) -> bool {
         let Some(i) = self.pack_ids.iter().position(|p| p == id) else { return false };
