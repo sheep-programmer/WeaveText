@@ -79,7 +79,7 @@ struct SettingsRoot: View {
                 case .schemes: SchemesPage(prefs: prefs)
                 case .appearance: AppearancePage(prefs: prefs)
                 case .dictionary: DictionaryPage()
-                case .link: LinkPage()
+                case .link: LinkPage(prefs: prefs, link: .shared)
                 case .about: AboutPage()
                 }
             }

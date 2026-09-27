@@ -2,3 +2,4 @@
 "CFBundleDisplayName" = "WeaveText";
 "com.weavetext.inputmethod.WeaveText" = "WeaveText";
 "com.weavetext.inputmethod.WeaveText.pinyin" = "WeaveText Pinyin";
+"NSLocalNetworkUsageDescription" = "WeaveLink needs the local network to find phones on the same Wi-Fi and exchange text, images and files with them.";

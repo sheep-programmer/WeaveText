@@ -28,14 +28,17 @@ struct AboutPage: View {
                url: "https://github.com/dropbox/rust-brotli-decompressor"),
         Notice(name: "serde_json", use: "内核接口数据", license: "MIT OR Apache-2.0",
                url: "https://github.com/serde-rs/json"),
-        Notice(name: "RustCrypto（aes-gcm、chacha20poly1305、sha2、blake2、hkdf、hmac、spake2 等）",
-               use: "互联配对与加密", license: "MIT OR Apache-2.0", url: "https://github.com/RustCrypto"),
-        Notice(name: "curve25519-dalek、subtle", use: "互联密钥交换", license: "BSD-3-Clause",
+        Notice(name: "snow（含 chacha20poly1305、blake2、aes-gcm 等 RustCrypto 组件）", use: "织文互联的 Noise 加密通道",
+               license: "Apache-2.0 OR MIT", url: "https://github.com/mcginty/snow"),
+        Notice(name: "curve25519-dalek、subtle", use: "织文互联的密钥交换", license: "BSD-3-Clause",
                url: "https://github.com/dalek-cryptography/curve25519-dalek"),
-        Notice(name: "snow", use: "互联 Noise 握手", license: "Apache-2.0 OR MIT", url: "https://github.com/mcginty/snow"),
-        Notice(name: "mdns-sd、if-addrs、socket2、flume", use: "互联局域网发现", license: "MIT OR Apache-2.0 / BSD-3-Clause",
+        Notice(name: "spake2（含 hkdf、hmac、sha2）", use: "织文互联配对码的口令认证密钥交换", license: "MIT OR Apache-2.0",
+               url: "https://github.com/RustCrypto/PAKEs"),
+        Notice(name: "mdns-sd（含 flume、socket2、if-addrs）", use: "织文互联局域网发现", license: "Apache-2.0 OR MIT",
                url: "https://github.com/keepsimple1/mdns-sd"),
-        Notice(name: "mio、spin、zmij", use: "互联网络与运行时", license: "MIT", url: "https://github.com/tokio-rs/mio"),
+        Notice(name: "serde", use: "织文互联的设备列表", license: "MIT OR Apache-2.0", url: "https://github.com/serde-rs/serde"),
+        Notice(name: "mio、spin、zmij、getrandom 等", use: "网络、并发与随机数等基础组件", license: "MIT / MIT OR Apache-2.0",
+               url: "https://github.com/tokio-rs/mio"),
     ]
 
     private var version: String {

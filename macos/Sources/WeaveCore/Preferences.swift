@@ -60,6 +60,11 @@ public final class Preferences: ObservableObject {
     @Published public var orientation: CandidateOrientation { didSet { save(orientation.rawValue, "orientation") } }
     @Published public var fontSize: Int { didSet { save(fontSize, "fontSize") } }
     @Published public var appearance: AppearanceMode { didSet { save(appearance.rawValue, "appearance") } }
+    /// 织文互联，默认关闭。 WeaveLink, off by default.
+    @Published public var linkEnabled: Bool { didSet { save(linkEnabled, "linkEnabled") } }
+    @Published public var linkClipSync: Bool { didSet { save(linkClipSync, "linkClipSync") } }
+    /// 手机上看到的本机名称；空为系统的电脑名称。 This Mac's name as phones see it; empty = the system computer name.
+    @Published public var linkName: String { didSet { save(linkName, "linkName") } }
 
     public init(defaults: UserDefaults) {
         d = defaults
@@ -74,6 +79,9 @@ public final class Preferences: ObservableObject {
         orientation = defaults.string(forKey: "orientation").flatMap(CandidateOrientation.init) ?? .horizontal
         fontSize = Self.clamp(defaults.object(forKey: "fontSize") as? Int ?? 16, Self.fontSizes)
         appearance = defaults.string(forKey: "appearance").flatMap(AppearanceMode.init) ?? .system
+        linkEnabled = defaults.bool(forKey: "linkEnabled")
+        linkClipSync = defaults.object(forKey: "linkClipSync") as? Bool ?? true
+        linkName = defaults.string(forKey: "linkName") ?? ""
     }
 
     public func isFuzzy(_ key: String) -> Bool { fuzzy.contains(key) }

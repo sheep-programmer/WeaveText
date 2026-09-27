@@ -2,3 +2,4 @@
 "CFBundleDisplayName" = "织文输入法";
 "com.weavetext.inputmethod.WeaveText" = "织文输入法";
 "com.weavetext.inputmethod.WeaveText.pinyin" = "织文拼音";
+"NSLocalNetworkUsageDescription" = "织文互联需要访问本地网络，才能发现同一 Wi-Fi 下的手机并与它互传文字、图片和文件。";

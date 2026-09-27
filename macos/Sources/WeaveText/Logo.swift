@@ -7,8 +7,9 @@ enum Logo {
     static let zigzag: [CGPoint] = [(7.5, 9.5), (9.75, 15), (12, 10.5), (14.25, 15), (16.5, 9.5)]
         .map { CGPoint(x: $0.0, y: 24 - $0.1) }
 
-    /// 菜单栏模板图（黑色描边，系统自动适配深浅色）。 Menu bar template image; the system tints it.
-    static func statusImage(size: CGFloat = 18) -> NSImage {
+    /// 菜单栏模板图（黑色描边，系统自动适配深浅色）；badge 时右下角加一个实心圆点（手机已连接）。
+    /// Menu bar template image, tinted by the system; `badge` adds a solid dot at the bottom right (a phone is connected).
+    static func statusImage(size: CGFloat = 18, badge: Bool = false) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let s = rect.width / 24
             NSColor.black.setStroke()
@@ -18,6 +19,15 @@ enum Logo {
             let w = polyline(zigzag.map { CGPoint(x: $0.x * s, y: $0.y * s) })
             w.lineWidth = 1.75 * s
             w.stroke()
+            if badge {
+                // 先挖出一圈空隙，再画圆点。 Cut a gap around the dot first, then draw it.
+                let dot = NSRect(x: 16.5 * s, y: 1 * s, width: 6.5 * s, height: 6.5 * s)
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: dot.insetBy(dx: -1.4 * s, dy: -1.4 * s)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: dot).fill()
+            }
             return true
         }
         image.isTemplate = true

@@ -70,7 +70,10 @@ struct SchemesPage: View {
         Form {
             Section("输入方案") {
                 Picker("方案", selection: $prefs.schema) {
-                    ForEach(InputScheme.all) { Text($0.name).tag($0.id) }
+                    ForEach(InputScheme.all) { scheme in
+                        let missing = EngineHost.shared.engine?.hasSchema(scheme.id) == false
+                        Text(missing ? scheme.name + "（缺少词库）" : scheme.name).tag(scheme.id).disabled(missing)
+                    }
                 }
                 .pickerStyle(.radioGroup)
             }
@@ -227,42 +230,5 @@ struct DictionaryPage: View {
         } message: {
             Text("学到的 \(model.count) 个词会全部删除，无法恢复。")
         }
-    }
-}
-
-struct LinkPage: View {
-    var body: some View {
-        Form {
-            Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "iphone.and.arrow.forward")
-                            .font(.system(size: 28))
-                            .foregroundStyle(Theme.accent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text("手机与 Mac 互联").font(.headline)
-                                Text("即将推出")
-                                    .font(.caption)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Theme.accentSoft, in: Capsule())
-                                    .foregroundStyle(Theme.candidate)
-                            }
-                            Text("在同一局域网内，用手机扫码与 Mac 配对，端对端加密，不经过任何服务器。")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text("配对后可以同步剪贴板、互传文字与图片，并同步用户词。")
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Spacer()
-                        Button("配对手机") {}.disabled(true)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
-        .formStyle(.grouped)
     }
 }

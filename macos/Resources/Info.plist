@@ -30,6 +30,12 @@
 	<string>public.app-category.utilities</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>织文互联需要访问本地网络，才能发现同一 Wi-Fi 下的手机并与它互传文字、图片和文件。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_weavelink._tcp</string>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>Apache-2.0</string>
 	<key>InputMethodConnectionName</key>

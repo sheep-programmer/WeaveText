@@ -41,11 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "com.weavetext.inputmethod.WeaveText_Connection"
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
         _ = EngineHost.shared
+        LinkService.shared.start()
         StatusBar.shared.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         EngineHost.shared.engine?.flush()
+        LinkService.shared.shutdown()
     }
 }
 
