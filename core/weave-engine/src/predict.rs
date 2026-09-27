@@ -47,27 +47,33 @@ pub struct Prediction {
 }
 
 /// 单字 → 读音（由词库的单字条目建立，首次联想时构建）。 Char → readings, built from the lexicon's single chars.
+/// 每个字最多记 4 个读音（定长数组，省内存）。 Up to four readings per char, in a fixed array to save memory.
 #[derive(Default)]
 pub struct Readings {
-    map: HashMap<char, Vec<SyllableId>>,
+    map: HashMap<char, [SyllableId; 4]>,
 }
+
+const NO_READING: SyllableId = SyllableId::MAX;
 
 impl Readings {
     pub fn build(lex: &Lexicon) -> Readings {
-        let mut map: HashMap<char, Vec<SyllableId>> = HashMap::new();
+        let mut map: HashMap<char, [SyllableId; 4]> = HashMap::new();
         for node in lex.children(ROOT) {
             let syl = lex.sym(node);
             for e in lex.entries(node) {
                 let t = lex.text(e.text_id, &[syl]);
                 let mut it = t.chars();
                 if let (Some(c), None) = (it.next(), it.next()) {
-                    let v = map.entry(c).or_default();
-                    if !v.contains(&syl) && v.len() < 4 {
-                        v.push(syl);
+                    let v = map.entry(c).or_insert([NO_READING; 4]);
+                    if !v.contains(&syl) {
+                        if let Some(slot) = v.iter_mut().find(|r| **r == NO_READING) {
+                            *slot = syl;
+                        }
                     }
                 }
             }
         }
+        map.shrink_to_fit();
         Readings { map }
     }
 
@@ -101,7 +107,7 @@ impl Readings {
             return;
         }
         let Some(rs) = self.map.get(&chars[i]) else { return };
-        for &r in rs {
+        for &r in rs.iter().filter(|&&r| r != NO_READING) {
             if let Some(n) = lex.child(node, r) {
                 key.push(r);
                 self.walk(lex, chars, word, key, n, best);

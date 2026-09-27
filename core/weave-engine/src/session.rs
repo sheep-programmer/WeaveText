@@ -436,6 +436,17 @@ impl Engine {
         self.last_word = None;
         self.schema = schema;
         self.user_pinyin.learning = learning;
+        // 联想用的字音索引也在这里建好，第一次上屏时不卡。 Build the prediction readings here, not on the first commit.
+        if self.readings.is_none() {
+            if let Some(lex) = self.pinyin.as_ref() {
+                self.readings = Some(crate::predict::Readings::build(lex));
+            }
+        }
+        // 预热接续表的首块。 Touch the follow table once.
+        if let Some(f) = self.follow.as_ref() {
+            let mut v = Vec::new();
+            f.after("今天", &mut v);
+        }
     }
 
     /// 清空所有分块压缩数据的解压缓存。 Drop every packed file's decode cache.
