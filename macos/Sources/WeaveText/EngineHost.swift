@@ -20,8 +20,12 @@ final class EngineHost {
         engine = WeaveSession(dataDir: data, userDir: user.path)
         if engine == nil { NSLog("WeaveText: engine failed to load data from %@", data) }
         apply()
+        syncClock()
         NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { [weak self] _ in
             self?.apply()
+        }
+        NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { [weak self] _ in
+            self?.syncClock()
         }
     }
 
@@ -43,14 +47,22 @@ final class EngineHost {
     private func apply() {
         guard let engine else { return }
         if appliedSchema != prefs.schema {
-            activeController?.finishComposition()
-            if engine.setSchema(prefs.schema) {
+            if engine.hasSchema(prefs.schema) {
+                activeController?.finishComposition()
+                engine.setSchema(prefs.schema)
                 appliedSchema = prefs.schema
             } else {
                 NSLog("WeaveText: scheme %@ has no dictionary, keeping %@", prefs.schema, appliedSchema ?? "-")
             }
         }
         for (key, on) in prefs.engineOptions { engine.setOption(key, on) }
+    }
+
+    /// 本地时区给内核（rq / sj / xq）；夏令时切换也会变，所以每次激活时也同步。
+    /// Hand the local UTC offset to the engine (rq / sj / xq); DST changes it too, so it is also synced on activation.
+    func syncClock() {
+        NSTimeZone.resetSystemTimeZone()
+        engine?.setUTCOffset(minutes: TimeZone.current.secondsFromGMT() / 60)
     }
 
     var scheme: InputScheme { InputScheme.named(appliedSchema ?? prefs.schema) }

@@ -17,6 +17,9 @@ public final class WeaveSession {
     @discardableResult
     public func setSchema(_ key: String) -> Bool { weave_set_schema(handle, key) }
 
+    /// 该方案的词库是否可用（不切换）。 Whether the scheme's dictionary is available, without switching.
+    public func hasSchema(_ key: String) -> Bool { weave_has_schema(handle, key) }
+
     @discardableResult
     public func setOption(_ key: String, _ on: Bool) -> Bool { weave_set_option(handle, key, on) }
 
@@ -42,6 +45,16 @@ public final class WeaveSession {
     public func flush() { weave_flush(handle) }
     public var isComposing: Bool { weave_is_composing(handle) }
     public func setLearning(_ on: Bool) { weave_set_learning(handle, on) }
+
+    /// 本地时区相对 UTC 的分钟数（rq / sj / xq 候选）。 Local UTC offset in minutes (rq / sj / xq candidates).
+    public func setUTCOffset(minutes: Int) { weave_set_utc_offset(handle, Int32(clamping: minutes)) }
+
+    /// 算式结果；不是算式时 nil。 The result of an expression; nil when it isn't one.
+    public static func eval(_ expr: String) -> String? {
+        guard let p = weave_eval(expr) else { return nil }
+        defer { weave_string_free(p) }
+        return String(cString: p)
+    }
 
     public func setContext(_ previousWord: String?) {
         if let w = previousWord { weave_set_context(handle, w) } else { weave_set_context(handle, nil) }

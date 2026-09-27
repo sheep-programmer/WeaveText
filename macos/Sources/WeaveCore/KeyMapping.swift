@@ -49,9 +49,14 @@ public struct KeyContext: Equatable, Sendable {
     public var chinese: Bool
     public var pageSize: Int
     public var pageKeys: PageKeys
+    /// 拼音 v 模式（v1234、v(1+2)*3）：数字与运算符进组合串，不选词。
+    /// Pinyin v mode: digits and operators go into the composition instead of picking candidates.
+    public var vMode: Bool
 
-    public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both) {
+    public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both,
+                vMode: Bool = false) {
         self.composing = composing
+        self.vMode = vMode
         self.chinese = chinese
         self.pageSize = pageSize
         self.pageKeys = pageKeys
@@ -64,7 +69,7 @@ public enum KeyAction: Equatable, Sendable {
     case pass
     /// 吞掉，什么也不做。 Swallow it, do nothing.
     case swallow
-    /// 送给内核的字母。 A letter for the engine.
+    /// 送给内核的字母（v 模式里也包括数字与运算符）。 A letter for the engine (in v mode also digits and operators).
     case letter(Character)
     /// 标点：组合中先试着送内核（' ;），不收再上屏首选并输出标点。
     /// Punctuation: while composing try the engine first (' ;), else commit and emit the mark.
@@ -116,6 +121,7 @@ public enum KeyMapper {
         }
         guard let c = key.character else { return .swallow }
         if c.isASCII, c.isLetter { return .letter(c) }
+        if ctx.vMode, Calc.vAccepts(c) { return .letter(c) }
         if let d = c.wholeNumberValue, c.isASCII {
             return d >= 1 && d <= ctx.pageSize ? .select(d - 1) : .swallow
         }

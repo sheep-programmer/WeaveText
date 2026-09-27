@@ -15,6 +15,8 @@ final class WeaveInputController: IMKInputController {
     /// 上一个直通的键是数字（3.14 里的句点保持半角）。 The last passed-through key was a digit.
     private var afterDigit = false
     private var preedit = ""
+    /// 敲等号后给出的算式结果（候选窗里只有它一个）。 The result offered after `=`, the only item in the panel.
+    private var calcResult: String?
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged]).rawValue)
@@ -27,11 +29,14 @@ final class WeaveInputController: IMKInputController {
         punctuation.reset()
         afterDigit = false
         preedit = ""
+        calcResult = nil
         capsLock = NSEvent.modifierFlags.contains(.capsLock)
+        host.syncClock()
     }
 
     override func deactivateServer(_ sender: Any!) {
         finishComposition(client: sender as? IMKTextInput)
+        calcResult = nil
         CandidatePanel.shared.hide()
         host.engine?.flush()
         if host.activeController === self { host.activeController = nil }
@@ -90,9 +95,15 @@ final class WeaveInputController: IMKInputController {
                            shift: flags.contains(.shift), control: flags.contains(.control),
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
-        let ctx = KeyContext(composing: engine.isComposing, chinese: host.chinese, pageSize: prefs.pageSize,
-                             pageKeys: prefs.pageKeys)
+        if calcResult != nil, handleCalcKey(key, client) { return true }
+        let composing = engine.isComposing
+        let ctx = KeyContext(composing: composing, chinese: host.chinese, pageSize: prefs.pageSize,
+                             pageKeys: prefs.pageKeys,
+                             vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id))
         let action = KeyMapper.action(for: key, in: ctx)
+        if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
+            return true
+        }
         let wasAfterDigit = afterDigit
         afterDigit = false
 
@@ -168,8 +179,63 @@ final class WeaveInputController: IMKInputController {
         { [weak self] offset, limit in self?.host.engine?.candidates(offset: offset, limit: limit) ?? [] }
     }
 
+    // MARK: - 等号算式 / The result after `=`
+
+    /// 光标前是算式：自己输出等号，并把结果放进只有一项的候选窗。 An expression before the caret: type the `=`
+    /// ourselves and put the result in a one-item panel.
+    private func offerCalc(_ client: IMKTextInput) -> Bool {
+        guard let before = textBeforeCaret(client), let expr = Calc.expression(before: before),
+              let result = WeaveSession.eval(expr) else { return false }
+        insert("=", client)
+        calcResult = result
+        showCalc(client)
+        return true
+    }
+
+    /// 结果显示中：1 或空格接上结果，其他键收起它再照常处理。 While the result shows: 1 or Space appends it,
+    /// any other key dismisses it and is handled as usual.
+    private func handleCalcKey(_ key: KeyInput, _ client: IMKTextInput) -> Bool {
+        let plain = !key.command && !key.control && !key.option
+        if plain, key.keyCode == KeyCode.space || key.characters == "1" {
+            acceptCalc(client)
+            return true
+        }
+        calcResult = nil
+        CandidatePanel.shared.hide()
+        return false
+    }
+
+    private func acceptCalc(_ client: IMKTextInput) {
+        guard let r = calcResult else { return }
+        calcResult = nil
+        CandidatePanel.shared.hide()
+        insert(r, client)
+    }
+
+    private func showCalc(_ client: IMKTextInput) {
+        guard let r = calcResult else { return }
+        var caret = NSRect.zero
+        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &caret)
+        let state = CandidateState(preedit: "", candidates: [Candidate(text: r, comment: "计算结果")], highlight: 0,
+                                   hasPrevious: false, hasNext: false, orientation: prefs.orientation,
+                                   fontSize: CGFloat(prefs.fontSize))
+        CandidatePanel.shared.show(state, caret: caret, owner: self)
+    }
+
+    /// 光标前最多 64 个字符；应用不支持时 nil。 Up to 64 characters before the caret; nil when the app can't tell.
+    private func textBeforeCaret(_ client: IMKTextInput, limit: Int = 64) -> String? {
+        let sel = client.selectedRange()
+        guard sel.location != NSNotFound, sel.location > 0 else { return nil }
+        let start = max(0, sel.location - limit)
+        return client.attributedSubstring(from: NSRange(location: start, length: sel.location - start))?.string
+    }
+
     /// 选中候选窗里的第 n 个（鼠标点选）。 Pick the n-th visible candidate (mouse click).
     func pick(pageIndex n: Int) {
+        if calcResult != nil, let client = client() {
+            acceptCalc(client)
+            return
+        }
         guard let engine = host.engine, n < pager.page.count, let client = client() else { return }
         engine.select(pager.offset + n)
         refresh(client)
@@ -233,6 +299,7 @@ final class WeaveInputController: IMKInputController {
             item.tag = i
             item.target = self
             item.state = s.id == prefs.schema ? .on : .off
+            if host.engine?.hasSchema(s.id) == false { item.action = nil }
             menu.addItem(item)
         }
         menu.addItem(.separator())

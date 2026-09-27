@@ -125,6 +125,8 @@ struct CandidateBar: View {
 
     private var font: Font { .system(size: state.fontSize) }
     private var small: Font { .system(size: max(10, state.fontSize * 0.72)) }
+    /// 候选注释（大写金额、日期……）：比序号再小一点。 Candidate notes (大写金额, 日期…): a bit smaller than the numbers.
+    private var note: Font { .system(size: max(9, state.fontSize * 0.66)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -167,8 +169,9 @@ struct CandidateBar: View {
                     .foregroundStyle(on ? Theme.candidate : Theme.label)
                 if !c.comment.isEmpty {
                     Text(c.comment)
-                        .font(small)
+                        .font(note)
                         .foregroundStyle(Theme.hint)
+                        .padding(.leading, 1)
                 }
             }
             .lineLimit(1)
