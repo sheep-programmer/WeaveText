@@ -56,19 +56,25 @@ class EditorCache {
         version++
     }
 
-    /** 编辑器回报的新选区。 The selection reported by the editor. */
-    fun onUpdate(start: Int, end: Int, candStart: Int, candEnd: Int) {
+    /**
+     * 编辑器回报的新选区；返回 true 表示这是我们没做过的改动（光标被挪走等）。
+     * The selection reported by the editor; true when it's a change we didn't make (the cursor moved away…).
+     */
+    fun onUpdate(start: Int, end: Int, candStart: Int, candEnd: Int): Boolean {
         composingRegion = candStart >= 0 && candEnd > candStart
         if (start == end) {
             // 我们自己改动的回声：保留（可能更新的）预测。 An echo of our own edit: keep the newer prediction.
             for (i in 0 until expectedCount) if (expected[i] == start) {
                 System.arraycopy(expected, i + 1, expected, 0, expectedCount - i - 1)
                 expectedCount -= i + 1
-                return
+                return false
             }
         }
-        if (expectedCount == 0 && start == selStart && end == selEnd) return
+        if (expectedCount == 0 && start == selStart && end == selEnd) return false
+        // 之前不知道选区（刚开始输入、镜像失效）时的第一次回报不算「被挪走」。 The first report after an unknown selection isn't a move.
+        val known = selStart >= 0
         reset(start, end)
+        return known
     }
 
     /** 从编辑器读到的光标前文字（请求了 [requested] 个字符）。 Text before the cursor read from the editor. */

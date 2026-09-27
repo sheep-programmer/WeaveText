@@ -117,7 +117,16 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 编辑器回报的选区变化。 Selection update from the editor. */
     fun onSelectionUpdate(selStart: Int, selEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
-        editor.onUpdate(selStart, selEnd, candidatesStart, candidatesEnd)
+        // 光标被挪到别处（点了别的位置、粘贴…）：联想词对应的上文已经不对了，收起并断开连续造词。
+        // The cursor moved elsewhere (a tap, a paste…): the predictions no longer fit, dismiss them and break the chain.
+        if (editor.onUpdate(selStart, selEnd, candidatesStart, candidatesEnd)) {
+            val e = engine ?: return
+            e.breakChain()
+            if (!state.composing && state.candidates.isNotEmpty()) {
+                e.clear()
+                refresh()
+            }
+        }
     }
 
     fun onFinishInput() {
@@ -261,6 +270,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
+        // 内核这时收起了联想词：界面同步收起，旧候选不能留着（点了也不会上屏）。
+        // The engine just dropped its predictions: drop them in the UI too, stale ones would do nothing when tapped.
+        if (e != null && !state.composing && state.candidates.isNotEmpty()) refresh()
         val ic = ic(modeled = true) ?: return
         if (!keyEventsOnly && editor.selectionKnown) {
             // 已知选区：一次 IPC 删掉选区或光标前一个字形。 Known selection: one IPC per delete.
@@ -493,6 +505,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return
         }
+        if (e != null && !state.composing && state.candidates.isNotEmpty()) refresh()
         val ic = ic(modeled = true) ?: return
         val before = editor.textBefore(64) ?: ic.getTextBeforeCursor(64, 0)?.toString().orEmpty().also { editor.fill(it, 64) }
         if (before.isEmpty()) { sendKey(KeyEvent.KEYCODE_DEL); return }

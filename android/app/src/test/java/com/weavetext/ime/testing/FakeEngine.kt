@@ -24,6 +24,10 @@ class FakeEngine : KeyEngine {
     val handCalls = mutableListOf<List<FloatArray>>()
     val hand = ArrayList<FloatArray>()
     private val handing get() = schema == "hand" && hand.isNotEmpty()
+    /** 打开后像真内核一样在上屏后给出联想词（P1、P2、P3）。 When on, offers predictions after a commit like the real engine. */
+    var predicts = false
+    var predictions: List<String> = emptyList()
+    private fun predict() { predictions = if (predicts) listOf("P1", "P2", "P3") else emptyList() }
 
     private fun composes(c: Char) = c in 'a'..'z' || (schema == "english" && c in 'A'..'Z') ||
         (schema == "t14" && (c in 'A'..'N' || c == '\'' || c == '1'))
@@ -42,6 +46,7 @@ class FakeEngine : KeyEngine {
     override fun inputChar(codePoint: Int): Boolean {
         val c = codePoint.toChar()
         if (!composes(c)) return false
+        predictions = emptyList()
         inputs++
         raw.append(c)
         return true
@@ -59,22 +64,28 @@ class FakeEngine : KeyEngine {
     }
     override fun backspace(): Boolean {
         if (handing) { hand.removeAt(hand.size - 1); return true }
-        if (raw.isEmpty()) return false
+        if (raw.isEmpty()) { predictions = emptyList(); return false }
         raw.setLength(raw.length - 1)
         return true
     }
     override fun select(index: Int): Boolean {
-        if (raw.isEmpty() && !handing) return false
+        if (raw.isEmpty() && !handing) {
+            val p = predictions.getOrNull(index) ?: return false
+            pending.append(p)
+            predict()
+            return true
+        }
         pending.append(cand(index).text)
         raw.clear()
         hand.clear()
+        predict()
         return true
     }
     override fun selectPinyin(index: Int) = false
     override fun forget(index: Int) = false
-    override fun commitFirst() { if (raw.isNotEmpty() || handing) select(0) }
-    override fun commitRaw() { pending.append(raw); raw.clear(); hand.clear() }
-    override fun clear() { raw.clear(); hand.clear() }
+    override fun commitFirst() { if (raw.isNotEmpty() || handing) select(0); predictions = emptyList() }
+    override fun commitRaw() { pending.append(raw); raw.clear(); hand.clear(); predictions = emptyList() }
+    override fun clear() { raw.clear(); hand.clear(); predictions = emptyList() }
     override fun flush() {}
     override fun isComposing() = raw.isNotEmpty() || handing
     override fun setLearning(on: Boolean) {}
@@ -85,10 +96,14 @@ class FakeEngine : KeyEngine {
         pending = StringBuilder()
         val composing = isComposing()
         if (handing) return EngineSnapshot(commit, "", true, List(12) { cand(it) }, 12, emptyList(), schema)
+        if (!composing && predictions.isNotEmpty()) {
+            return EngineSnapshot(commit, "", false, predictions.map { Candidate(it, "", false) }, predictions.size, emptyList(), schema)
+        }
         return EngineSnapshot(commit, raw.toString(), composing, if (composing) List(60) { cand(it) } else emptyList(), if (composing) 800 else 0, emptyList(), schema)
     }
     override fun candidates(offset: Int, limit: Int): List<Candidate> =
-        if (handing) (offset until minOf(12, offset + limit)).map { cand(it) }
+        if (!isComposing() && predictions.isNotEmpty()) predictions.drop(offset).take(limit).map { Candidate(it, "", false) }
+        else if (handing) (offset until minOf(12, offset + limit)).map { cand(it) }
         else if (raw.isEmpty()) emptyList() else (offset until minOf(800, offset + limit)).map { cand(it) }
 }
 
