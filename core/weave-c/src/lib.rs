@@ -8,6 +8,9 @@
 //!   Functions returning `char*` hand over ownership; free with [weave_string_free].
 //! - 所有入口都拦截 panic，出错时返回默认值。 Every entry point catches panics and returns a default.
 
+// C 入口按约定接收裸指针（有效性由调用方保证，见上）。 C entry points take raw pointers by contract (see above).
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -236,6 +239,81 @@ pub extern "C" fn weave_clear_user_words(h: *mut WeaveEngine) -> bool {
     with(h, false, |e| e.clear_user_words())
 }
 
+// ------------------------------------------------------------------ 织文互联 / WeaveLink
+
+/// 互联句柄。 WeaveLink handle.
+pub struct WeaveLink(weave_link::Link);
+
+/// 启动互联：配置 JSON `{name, platform, stateDir, inboxDir, port?, mdns?}`；失败返回 NULL。
+/// Start WeaveLink from a JSON config; NULL on failure.
+#[no_mangle]
+pub extern "C" fn weave_link_start(config_json: *const c_char) -> *mut WeaveLink {
+    let Some(cfg) = str_arg(config_json)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| weave_link::Config::from_json(&v))
+    else {
+        return std::ptr::null_mut();
+    };
+    catch_unwind(|| match weave_link::Link::start(cfg) {
+        Ok(l) => Box::into_raw(Box::new(WeaveLink(l))),
+        Err(_) => std::ptr::null_mut(),
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// 等待下一个事件（JSON），最多 timeout_ms；没有事件时返回 `{"type":"idle"}`，停止后返回 NULL。
+/// Wait up to timeout_ms for the next event (JSON); `{"type":"idle"}` on timeout, NULL once stopped.
+#[no_mangle]
+pub extern "C" fn weave_link_poll(h: *mut WeaveLink, timeout_ms: u32) -> *mut c_char {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: h 来自 weave_link_start，在 weave_link_destroy 之前有效。 Valid until weave_link_destroy.
+    let l = unsafe { &*h };
+    catch_unwind(AssertUnwindSafe(|| l.0.poll(std::time::Duration::from_millis(timeout_ms as u64))))
+        .ok()
+        .flatten()
+        .map(out)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// 执行命令（JSON，见 weave-link 文档），返回结果 JSON。 Run a JSON command; returns the JSON result.
+#[no_mangle]
+pub extern "C" fn weave_link_call(h: *mut WeaveLink, command_json: *const c_char) -> *mut c_char {
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: 同上。 As above.
+    let l = unsafe { &*h };
+    let cmd = str_arg(command_json).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null);
+    catch_unwind(AssertUnwindSafe(|| out(l.0.call(&cmd)))).unwrap_or(std::ptr::null_mut())
+}
+
+/// 停止并释放；此后 poll 返回 NULL。先让轮询线程退出再调用。 Stop and free; stop the polling thread first.
+#[no_mangle]
+pub extern "C" fn weave_link_destroy(h: *mut WeaveLink) {
+    if h.is_null() {
+        return;
+    }
+    // SAFETY: 由 weave_link_start 分配，只释放一次。 Allocated by weave_link_start, freed once.
+    let b = unsafe { Box::from_raw(h) };
+    let _ = catch_unwind(AssertUnwindSafe(move || {
+        b.0.stop();
+        drop(b);
+    }));
+}
+
+/// 只停止（不释放）：让另一线程里阻塞的 poll 尽快返回 NULL。 Stop without freeing, so a blocked poll returns NULL.
+#[no_mangle]
+pub extern "C" fn weave_link_stop(h: *mut WeaveLink) {
+    if h.is_null() {
+        return;
+    }
+    // SAFETY: 同上。 As above.
+    let l = unsafe { &*h };
+    let _ = catch_unwind(AssertUnwindSafe(|| l.0.stop()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +328,24 @@ mod tests {
         let v = serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_str().unwrap()).unwrap();
         weave_string_free(p);
         v
+    }
+
+    #[test]
+    fn link_starts_answers_and_stops() {
+        let dir = std::env::temp_dir().join(format!("weave-c-link-{}", std::process::id()));
+        let cfg = json!({"name": "测试", "platform": "mac", "stateDir": dir.join("s"), "inboxDir": dir.join("i"), "mdns": false});
+        let h = weave_link_start(cstr(&cfg.to_string()).as_ptr());
+        assert!(!h.is_null());
+        let info = take(weave_link_call(h, cstr(r#"{"op":"info"}"#).as_ptr()));
+        assert_eq!(info["name"], "测试");
+        let p = take(weave_link_call(h, cstr(r#"{"op":"openPairing"}"#).as_ptr()));
+        assert_eq!(p["code"].as_str().unwrap().len(), 6);
+        assert_eq!(take(weave_link_poll(h, 10))["type"], "idle");
+        weave_link_stop(h);
+        assert!(weave_link_poll(h, 10).is_null());
+        weave_link_destroy(h);
+        assert!(weave_link_start(cstr("{}").as_ptr()).is_null());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

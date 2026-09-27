@@ -1536,6 +1536,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "weave-engine",
+ "weave-link",
 ]
 
 [[package]]
@@ -1565,6 +1566,7 @@ dependencies = [
  "tar",
  "weave-dict",
  "weave-engine",
+ "weave-link",
  "weave-plugin",
 ]
 

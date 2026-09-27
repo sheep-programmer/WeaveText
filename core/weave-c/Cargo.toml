@@ -11,4 +11,5 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 weave-engine = { path = "../weave-engine" }
+weave-link = { path = "../weave-link" }
 serde_json = "1"

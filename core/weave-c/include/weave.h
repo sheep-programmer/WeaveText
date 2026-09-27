@@ -46,6 +46,16 @@ char *weave_user_words_json(WeaveEngine *h, const char *query, uint32_t offset, 
 bool weave_delete_user_word(WeaveEngine *h, const char *pinyin, const char *text);
 bool weave_clear_user_words(WeaveEngine *h);
 
+/* ---- 织文互联 / WeaveLink（命令与事件见 core/weave-link/src/lib.rs） ---- */
+typedef struct WeaveLink WeaveLink;
+/* {"name","platform","stateDir","inboxDir","port"?,"mdns"?} */
+WeaveLink *weave_link_start(const char *config_json);
+/* 事件 JSON；超时 {"type":"idle"}；停止后 NULL。 Event JSON; {"type":"idle"} on timeout; NULL once stopped. */
+char *weave_link_poll(WeaveLink *h, uint32_t timeout_ms);
+char *weave_link_call(WeaveLink *h, const char *command_json);
+void weave_link_stop(WeaveLink *h);
+void weave_link_destroy(WeaveLink *h);
+
 #ifdef __cplusplus
 }
 #endif
