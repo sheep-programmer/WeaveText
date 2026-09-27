@@ -153,14 +153,57 @@ struct Template {
 pub struct Recognizer {
     templates: Vec<Template>,
     points: Vec<[(f32, f32); POINTS]>,
+    /// 与 points 一一对应的笔画特征（载入时算好）。 Per-stroke features, parallel to `points`, computed at load.
+    feats: Vec<Feat>,
 }
 
-/// 各项代价的权重。 Cost weights.
+/// 笔画特征：重心，以及各段走向（量化成 0..=255 的角度，[`NO_DIR`] 表示该段太短）。
+/// Stroke features: centroid and segment headings quantised to 0..=255 ([`NO_DIR`] for a degenerate segment).
+#[derive(Clone, Copy)]
+struct Feat {
+    c: (f32, f32),
+    ang: [u16; POINTS - 1],
+}
+
+const NO_DIR: u16 = u16::MAX;
+
+impl Feat {
+    fn of(s: &[(f32, f32); POINTS]) -> Feat {
+        let (x, y) = s.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+        let mut ang = [NO_DIR; POINTS - 1];
+        for (k, a) in ang.iter_mut().enumerate() {
+            let (dx, dy) = (s[k + 1].0 - s[k].0, s[k + 1].1 - s[k].1);
+            if dx * dx + dy * dy > 0.25 {
+                let t = dy.atan2(dx).rem_euclid(std::f32::consts::TAU);
+                *a = ((t / std::f32::consts::TAU * 256.0).round() as u16) & 255;
+            }
+        }
+        Feat { c: (x / POINTS as f32, y / POINTS as f32), ang }
+    }
+}
+
+/// (1 − cos Δ) / 2，Δ 为量化角度差。 (1 − cos Δ) / 2 for a quantised angle difference.
+fn dir_cost_table() -> &'static [f32; 256] {
+    static T: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut t = [0f32; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = (1.0 - (i as f32 / 256.0 * std::f32::consts::TAU).cos()) / 2.0;
+        }
+        t
+    })
+}
+
+/// 各项代价的权重（`examples/handbench.rs` 的合成变形评测上调出）。 Cost weights, tuned on the synthetic benchmark.
 const REVERSE: f32 = 1.35;
-const MISSING: f32 = 0.20;
-const EXTRA: f32 = 0.30;
-const INVERSION: f32 = 0.06;
-const PRIOR: f32 = 0.025;
+const MISSING: f32 = 0.30;
+const EXTRA: f32 = 0.15;
+const INVERSION: f32 = 0.10;
+const PRIOR: f32 = 0.04;
+/// 笔画距离三部分的权重：位置、形状、方向。 Weights of the three parts of the stroke distance.
+const W_POS: f32 = 0.5;
+const W_SHAPE: f32 = 0.8;
+const W_DIR: f32 = 0.6;
 
 impl Recognizer {
     pub fn open(src: &Source) -> io::Result<Recognizer> {
@@ -201,7 +244,8 @@ impl Recognizer {
             }
             points.push(p);
         }
-        Ok(Recognizer { templates, points })
+        let feats = points.iter().map(Feat::of).collect();
+        Ok(Recognizer { templates, points, feats })
     }
 
     pub fn len(&self) -> usize {
@@ -217,17 +261,43 @@ impl Recognizer {
         self.templates.is_empty()
     }
 
-    /// 识别一个字，返回代价最小的 `top` 个候选（代价越小越像）。 Recognise one char; the `top` lowest-cost candidates.
+    /// 识别一个字，返回代价最小的 `top` 个候选（代价越小越像）。模板分成几段在多个线程上并行比对。
+    /// Recognise one char; the `top` lowest-cost candidates. Templates are scanned in parallel chunks.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
         let input: Vec<_> = strokes.iter().filter(|s| !s.is_empty()).map(|s| resample(s)).collect();
-        if input.is_empty() {
+        if input.is_empty() || top == 0 {
             return Vec::new();
         }
         let input = normalise(&input);
+        let input_feats: Vec<Feat> = input.iter().map(Feat::of).collect();
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+        let chunk = self.templates.len().div_ceil(threads);
+        let mut all: Vec<(char, f32)> = if threads == 1 {
+            self.scan(&self.templates, &input, &input_feats, top)
+        } else {
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = self
+                    .templates
+                    .chunks(chunk.max(1))
+                    .map(|part| {
+                        let (input, feats) = (&input, &input_feats);
+                        sc.spawn(move || self.scan(part, input, feats, top))
+                    })
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            })
+        };
+        all.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        all.truncate(top);
+        all
+    }
+
+    /// 在一段模板里找最好的 `top` 个。 The best `top` within a slice of templates.
+    fn scan(&self, templates: &[Template], input: &[[(f32, f32); POINTS]], input_feats: &[Feat], top: usize) -> Vec<(char, f32)> {
         let n = input.len();
         let mut best: Vec<(char, f32)> = Vec::with_capacity(top + 1);
         let mut cost = vec![0f32; n * 64];
-        for t in &self.templates {
+        for t in templates {
             let m = t.strokes.len();
             // 连笔会让笔数变少，漏写、多写也常见：笔数相差太多的直接跳过。
             // Joined strokes reduce the count; skip templates whose stroke count is far off.
@@ -235,17 +305,19 @@ impl Recognizer {
                 continue;
             }
             let tmpl = &self.points[t.strokes.clone()];
+            let tf = &self.feats[t.strokes.clone()];
             if cost.len() < n * m {
                 cost.resize(n * m, 0.0);
             }
             for (i, u) in input.iter().enumerate() {
                 for (j, v) in tmpl.iter().enumerate() {
-                    cost[i * m + j] = stroke_distance(u, v);
+                    cost[i * m + j] = stroke_distance(u, &input_feats[i], v, &tf[j]);
                 }
             }
             let unmatched_tmpl = m.saturating_sub(n) as f32;
             let unmatched_input = n.saturating_sub(m) as f32;
-            let fixed = MISSING * unmatched_tmpl / m as f32 + EXTRA * unmatched_input / n as f32 - PRIOR * t.prior;
+            let penalty = MISSING * unmatched_tmpl / m as f32 + EXTRA * unmatched_input / n as f32;
+            let fixed = penalty - PRIOR * t.prior;
             // 剪枝：每行（或每列）各取最小值之和是指派代价的下界；下界已比当前第 top 名差就不必精算。
             // Pruning: the sum of per-row (or per-column) minima bounds the assignment from below.
             if best.len() == top {
@@ -255,12 +327,26 @@ impl Recognizer {
                 } else {
                     (0..m).map(|j| (0..n).map(|i| cost[i * m + j]).fold(f32::MAX, f32::min)).sum::<f32>()
                 };
-                if lower / k.max(1) as f32 + fixed >= best[top - 1].1 {
+                // 连笔 / 断笔修正最多能把笔数差异的惩罚全部抵掉。 The join/split pass can remove at most the whole count penalty.
+                if lower / k.max(1) as f32 + fixed - penalty >= best[top - 1].1 {
                     continue;
                 }
             }
-            let (assigned, pairs) = assignment(&cost[..n * m], n, m);
-            let inv = inversions(&pairs);
+            let (mut assigned, pairs) = assignment(&cost[..n * m], n, m);
+            let mut fixed = fixed;
+            if n != m {
+                let (gain, freed) = if n < m {
+                    joins(&cost, &pairs, n, m, input, input_feats, tmpl, false)
+                } else {
+                    joins(&cost, &pairs, n, m, input, input_feats, tmpl, true)
+                };
+                assigned -= gain;
+                fixed -= freed as f32 * if n < m { MISSING / m as f32 } else { EXTRA / n as f32 };
+            }
+            // 笔数少时一次错位就占很大比例（先竖后横写「十」很常见）：按配对数打折。
+            // With few strokes one swap is a large fraction (writing 十 vertical-first is common): scale it down.
+            let k = pairs.len() as f32;
+            let inv = inversions(&pairs) * (k - 1.0).max(0.0) / (k + 1.0);
             let score = assigned / n.min(m).max(1) as f32 + INVERSION * inv + fixed;
             if best.len() < top || score < best.last().map_or(f32::MAX, |b| b.1) {
                 let pos = best.partition_point(|b| b.1 <= score);
@@ -272,15 +358,123 @@ impl Recognizer {
     }
 }
 
-/// 两笔之间的距离（0..≈1）：逐点平均距离；反向书写乘以 [`REVERSE`]。 Mean point distance, reversed × REVERSE.
-fn stroke_distance(u: &[(f32, f32); POINTS], v: &[(f32, f32); POINTS]) -> f32 {
-    let (mut fwd, mut rev) = (0f32, 0f32);
+/// 两笔之间的距离（0..≈1），分三部分：位置（两笔重心之差）、形状（去掉位置后的逐点差）、方向（各段走向之差）。
+/// 部件整体错位只影响位置项，笔画略长略短、略弯时方向项仍然稳定。反向书写乘以 [`REVERSE`]。
+/// Distance between two strokes (0..≈1) in three parts: position (centroid offset), shape (point offsets with the
+/// position removed) and direction (segment headings). A shifted component only costs position; a slightly longer,
+/// shorter or bowed stroke keeps its direction. Reversed writing is multiplied by [`REVERSE`].
+fn stroke_distance(u: &[(f32, f32); POINTS], fu: &Feat, v: &[(f32, f32); POINTS], fv: &Feat) -> f32 {
+    let (wp, ws, wd) = (W_POS, W_SHAPE, W_DIR);
+    let (cu, cv) = (fu.c, fv.c);
+    let pos = oct((cu.0 - cv.0).abs(), (cu.1 - cv.1).abs()) / 255.0;
+    let (mut sf, mut sr) = (0f32, 0f32);
     for k in 0..POINTS {
-        let (a, b, c) = (u[k], v[k], v[POINTS - 1 - k]);
-        fwd += ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
-        rev += ((a.0 - c.0).powi(2) + (a.1 - c.1).powi(2)).sqrt();
+        let (ax, ay) = (u[k].0 - cu.0, u[k].1 - cu.1);
+        let (b, c) = (v[k], v[POINTS - 1 - k]);
+        // 八边形近似欧氏距离（max + 0.41·min），省掉开方。 Octagonal approximation of the Euclidean norm, no sqrt.
+        sf += oct((ax - (b.0 - cv.0)).abs(), (ay - (b.1 - cv.1)).abs());
+        sr += oct((ax - (c.0 - cv.0)).abs(), (ay - (c.1 - cv.1)).abs());
     }
-    (fwd.min(rev * REVERSE)) / (POINTS as f32 * 255.0)
+    let t = dir_cost_table();
+    let (mut df, mut dr, mut nf, mut nr) = (0f32, 0f32, 0f32, 0f32);
+    for k in 0..POINTS - 1 {
+        let a = fu.ang[k];
+        if a == NO_DIR {
+            continue;
+        }
+        let b = fv.ang[k];
+        if b != NO_DIR {
+            df += t[((a + 256 - b) & 255) as usize];
+            nf += 1.0;
+        }
+        // 反向：模板倒着走，每段走向转 180°。 Reversed: walk the template backwards, each heading turned 180°.
+        let c = fv.ang[POINTS - 2 - k];
+        if c != NO_DIR {
+            dr += t[((a + 256 - ((c + 128) & 255)) & 255) as usize];
+            nr += 1.0;
+        }
+    }
+    let norm = POINTS as f32 * 255.0;
+    let fwd = ws * sf / norm + wd * if nf > 0.0 { df / nf } else { 0.0 };
+    let rev = ws * sr / norm + wd * if nr > 0.0 { dr / nr } else { 0.0 };
+    wp * pos + fwd.min(rev * REVERSE)
+}
+
+#[inline]
+fn oct(a: f32, b: f32) -> f32 {
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    hi + 0.41 * lo
+}
+
+/// 把两笔按书写顺序接成一笔并重采样。 Join two strokes in order and resample.
+fn join(a: &[(f32, f32); POINTS], b: &[(f32, f32); POINTS]) -> [(f32, f32); POINTS] {
+    let mut all = Vec::with_capacity(2 * POINTS);
+    all.extend_from_slice(a);
+    all.extend_from_slice(b);
+    resample(&all)
+}
+
+/// 连笔 / 断笔修正：指派之后，看没配上的笔能否与相邻、已配上的笔合成一笔来配。
+/// `split = false`：写的笔少（连笔），没配上的是模板笔，与它相邻的模板笔接起来和写的那笔比；
+/// `split = true`：写的笔多（断笔），没配上的是写的笔，与相邻的写的笔接起来和模板那笔比。
+/// 返回 (指派代价减少量, 因此不再算缺失 / 多余的笔数)。
+/// Join / split pass after the assignment: an unmatched stroke may merge with an adjacent matched one. With fewer
+/// written strokes (joined writing) the unmatched ones are template strokes; with more (a broken stroke) they are
+/// written strokes. Returns (reduction of the assignment cost, strokes no longer counted as missing / extra).
+#[allow(clippy::too_many_arguments)]
+fn joins(
+    cost: &[f32],
+    pairs: &[(usize, usize)],
+    n: usize,
+    m: usize,
+    input: &[[(f32, f32); POINTS]],
+    input_feats: &[Feat],
+    tmpl: &[[(f32, f32); POINTS]],
+    split: bool,
+) -> (f32, usize) {
+    let (total, share) = if split { (n, EXTRA / n as f32) } else { (m, MISSING / m as f32) };
+    let mut used = vec![false; total];
+    for &(i, j) in pairs {
+        used[if split { i } else { j }] = true;
+    }
+    let (mut gain, mut freed) = (0f32, 0usize);
+    let k = n.min(m).max(1) as f32;
+    for &(i, j) in pairs {
+        let own = if split { i } else { j };
+        let mut best: Option<(f32, usize)> = None;
+        for q in [own.wrapping_sub(1), own + 1] {
+            if q >= total || used[q] {
+                continue;
+            }
+            let (lo, hi) = (own.min(q), own.max(q));
+            let d = if split {
+                let joined = join(&input[lo], &input[hi]);
+                stroke_distance(&joined, &Feat::of(&joined), &tmpl[j], &Feat::of(&tmpl[j]))
+            } else {
+                let joined = join(&tmpl[lo], &tmpl[hi]);
+                stroke_distance(&input[i], &input_feats[i], &joined, &Feat::of(&joined))
+            };
+            // 值得换：指派代价的变化（按配对数平均）加上省下的缺失 / 多余惩罚。 Worth it when it beats the penalty.
+            let delta = (cost[i * m + j] - d) / k + share;
+            if delta > 0.0 && best.is_none_or(|b| delta > b.0) {
+                best = Some((delta, q));
+            }
+        }
+        if let Some((_, q)) = best {
+            let (lo, hi) = (own.min(q), own.max(q));
+            let d = if split {
+                let joined = join(&input[lo], &input[hi]);
+                stroke_distance(&joined, &Feat::of(&joined), &tmpl[j], &Feat::of(&tmpl[j]))
+            } else {
+                let joined = join(&tmpl[lo], &tmpl[hi]);
+                stroke_distance(&input[i], &input_feats[i], &joined, &Feat::of(&joined))
+            };
+            used[q] = true;
+            gain += cost[i * m + j] - d;
+            freed += 1;
+        }
+    }
+    (gain, freed)
 }
 
 /// 最小代价指派（行 n、列 m，配对 min(n, m) 对），返回总代价与 (行, 列) 对。
@@ -398,6 +592,18 @@ mod tests {
         let got = r.recognize(&[line(0.0, 12.0, 100.0, 8.0), line(51.0, 11.0, 48.0, 99.0)], 3);
         assert_eq!(got[0].0, '丁', "{got:?}");
         assert!(r.recognize(&[], 3).is_empty());
+    }
+
+    #[test]
+    fn tolerates_shifted_parts_and_joined_strokes() {
+        let r = tiny();
+        // 十：横写得偏上、偏短，竖偏右——位置不准但走向对。 十 with the bar high and short, the post off-centre.
+        let got = r.recognize(&[line(15.0, 25.0, 80.0, 28.0), line(62.0, 0.0, 60.0, 100.0)], 3);
+        assert_eq!(got[0].0, '十', "{got:?}");
+        // 二：两横一笔连写（中间带一段回笔）。 二 written in one stroke, the two bars joined by a return.
+        let joined: Stroke = vec![(20.0, 20.0), (50.0, 20.0), (80.0, 20.0), (40.0, 50.0), (0.0, 80.0), (50.0, 80.0), (100.0, 80.0)];
+        let got = r.recognize(&[joined], 3);
+        assert_eq!(got[0].0, '二', "{got:?}");
     }
 
     #[test]

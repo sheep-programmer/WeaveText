@@ -3,7 +3,7 @@
 //! Synthetic handwriting benchmark: perturb reference strokes (affine, jitter, swapped order, reversed and
 //! joined strokes) and check the original comes back. Not real handwriting; for comparing changes only.
 //!
-//! 用法 / Usage: `handbench <graphics.txt> <hand.wvh> [n] [difficulty 0..3]`
+//! 用法 / Usage: `handbench <graphics.txt> <hand.wvh> [n] [difficulty 0..4] [skip]`
 
 use std::time::Instant;
 
@@ -84,6 +84,80 @@ fn perturb(src: &[Stroke], r: &mut Rng, level: u32) -> Vec<Stroke> {
         let next = out.remove(i + 1);
         out[i].extend(next);
     }
+    if level >= 3 {
+        out = realistic(out, r, level);
+    }
+    out
+}
+
+/// 更像真人手写的局部变形：部件整体错位与比例失调、每笔微移、笔画长短不一、弯曲、带钩、偶尔断笔。
+/// Local deformation closer to real handwriting: whole components shifted and resized, per-stroke drift,
+/// strokes longer or shorter, bowed, hooked, occasionally broken.
+fn realistic(strokes: Vec<Stroke>, r: &mut Rng, level: u32) -> Vec<Stroke> {
+    let k = if level >= 4 { 1.6 } else { 1.0 };
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for s in &strokes {
+        for &(x, y) in s {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    let size = (x1 - x0).max(y1 - y0).max(1.0);
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    // 部件：按左右或上下把笔画分成两组，各自平移与缩放。 Components: split left/right or top/bottom, move and scale each.
+    let vertical = r.next() < 0.5;
+    let mut groups = [(0f32, 0f32, 1f32), (0f32, 0f32, 1f32)];
+    for g in &mut groups {
+        *g = (r.range(-0.08, 0.08) * k * size, r.range(-0.08, 0.08) * k * size, 1.0 + r.range(-0.18, 0.18) * k);
+    }
+    let mut out: Vec<Stroke> = Vec::new();
+    for s in strokes {
+        let (mx, my) = s.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+        let (mx, my) = (mx / s.len() as f32, my / s.len() as f32);
+        let side = if vertical { (my > cy) as usize } else { (mx > cx) as usize };
+        let (gx, gy, gs) = groups[side];
+        let (sx, sy) = (r.range(-0.03, 0.03) * k * size, r.range(-0.03, 0.03) * k * size);
+        let len_scale = 1.0 + r.range(-0.15, 0.15) * k;
+        let bow = r.range(-0.05, 0.05) * k * size;
+        let n = s.len().max(2);
+        let (ax, ay) = (s[0].0, s[0].1);
+        let (bx, by) = (s[n - 1].0, s[n - 1].1);
+        let (dx, dy) = (bx - ax, by - ay);
+        let dl = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (nx, ny) = (-dy / dl, dx / dl);
+        let mut t: Stroke = s
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y))| {
+                let f = i as f32 / (n - 1) as f32;
+                // 以起点为基准伸缩长度，并向一侧弯曲。 Stretch from the start and bow sideways.
+                let (x, y) = (ax + (x - ax) * len_scale, ay + (y - ay) * len_scale);
+                let b = bow * (std::f32::consts::PI * f).sin();
+                let (x, y) = (x + nx * b, y + ny * b);
+                // 部件缩放与平移。 Component scale and shift.
+                let (x, y) = (cx + (x - cx) * gs + gx + sx, cy + (y - cy) * gs + gy + sy);
+                (x, y)
+            })
+            .collect();
+        if r.next() < 0.25 * k {
+            // 收笔带钩。 A hook at the end.
+            let &(ex, ey) = t.last().unwrap();
+            let a = r.range(0.0, std::f32::consts::TAU);
+            let hl = 0.05 * size;
+            t.push((ex + a.cos() * hl, ey + a.sin() * hl));
+        }
+        if t.len() >= 8 && r.next() < 0.12 * k {
+            // 断笔：一笔写成两笔。 A broken stroke.
+            let cut = t.len() / 2;
+            let tail = t.split_off(cut);
+            out.push(t);
+            out.push(tail);
+        } else {
+            out.push(t);
+        }
+    }
     out
 }
 
@@ -91,6 +165,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let n: usize = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1000);
     let level: u32 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
+    // 可选：跳过最常用的前 k 个字，评测不那么常用的字（字频先验帮不上忙时）。 Optionally skip the k most frequent chars.
+    let skip: usize = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
     let bytes = std::fs::read(&args[1]).unwrap();
     let rec = Recognizer::from_bytes(&bytes).unwrap();
     let text = std::fs::read_to_string(&args[0]).unwrap();
@@ -102,7 +178,7 @@ fn main() {
     let mut rng = Rng(0x9E3779B97F4A7C15);
     let (mut top1, mut top5, mut total) = (0, 0, 0);
     let t = Instant::now();
-    for (c, s) in chars.iter().take(n) {
+    for (c, s) in chars.iter().skip(skip).take(n) {
         let input = perturb(s, &mut rng, level);
         let got = rec.recognize(&input, 5);
         total += 1;
