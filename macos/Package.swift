@@ -28,6 +28,9 @@ let package = Package(
             ]
         ),
         .testTarget(name: "WeaveCoreTests", dependencies: ["WeaveCore"], linkerSettings: engineLib),
+        // 程序本身的测试（安装窗口、Info.plist 与本地化）；不碰系统输入源。
+        // Tests of the app itself (installer window, Info.plist and localizations); never touch the system input sources.
+        .testTarget(name: "WeaveTextTests", dependencies: ["WeaveText"], linkerSettings: engineLib),
     ],
     swiftLanguageModes: [.v5]
 )

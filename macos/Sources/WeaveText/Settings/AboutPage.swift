@@ -3,6 +3,7 @@ import SwiftUI
 import WeaveCore
 
 /// 卸载的临时状态（@State 不可用，见 Pages.swift）。 Transient uninstall state (@State is unavailable, see Pages.swift).
+@MainActor
 final class UninstallModel: ObservableObject {
     @Published var purge = false
     @Published var confirming = false
@@ -12,8 +13,7 @@ final class UninstallModel: ObservableObject {
     /// Disable the sources, move to the Trash and quit at once; when the data goes too, nothing is written back.
     func uninstall() {
         let bundle = Bundle.main.bundleURL
-        let installer = Installer(inputMethodsDir: bundle.deletingLastPathComponent(), registry: SystemInputSources(),
-                                  apps: SystemApps())
+        let installer = Installer.system(inputMethodsDir: bundle.deletingLastPathComponent())
         if !purge { EngineHost.shared.engine?.flush() }
         if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
         do {

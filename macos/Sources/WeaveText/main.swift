@@ -7,10 +7,11 @@ import WeaveCore
 let args = CommandLine.arguments
 if args.count > 1 {
     switch args[1] {
+    // 顶层代码在主线程上跑，输入源接口要求如此。 Top-level code runs on the main thread, as the input-source API requires.
     case "--register":
-        exit(Registration.register(bundleURL: Bundle.main.bundleURL) ? 0 : 1)
+        exit(MainActor.assumeIsolated { Registration.register(bundleURL: Bundle.main.bundleURL) } ? 0 : 1)
     case "--disable":
-        exit(Registration.disable() ? 0 : 1)
+        exit(MainActor.assumeIsolated { Registration.disable() } ? 0 : 1)
     case "--selftest":
         exit(DevTools.selfTest() ? 0 : 1)
     case "--snapshot" where args.count > 2:
@@ -72,7 +73,7 @@ case .inputMethod:
     app.setActivationPolicy(.accessory)
     app.run()
 case .installer:
-    let delegate = InstallerAppDelegate()
+    let delegate = MainActor.assumeIsolated { InstallerAppDelegate() }
     app.delegate = delegate
     app.setActivationPolicy(.regular)
     app.run()

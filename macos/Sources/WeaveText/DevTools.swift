@@ -126,15 +126,15 @@ enum DevTools {
         nav.page = .about
         try render(SettingsRoot(prefs: prefs, navigation: nav).tint(Theme.accent), size: NSSize(width: 720, height: 1500),
                    dark: false, to: dir.appendingPathComponent("settings-about-full.png"))
-        try snapshotInstaller(into: dir)
+        // 截图工具由顶层代码在主线程上调用。 The snapshot tool is called from top-level code on the main thread.
+        try MainActor.assumeIsolated { try snapshotInstaller(into: dir) }
     }
 
     /// 安装窗口的各个状态（指向一个不存在的目录，只画不装）。 The installer window's states, pointed at a directory that
     /// does not exist; drawn only, never installed.
-    private static func snapshotInstaller(into dir: URL) throws {
+    @MainActor private static func snapshotInstaller(into dir: URL) throws {
         let nowhere = FileManager.default.temporaryDirectory.appendingPathComponent("weavetext-snapshot-\(getpid())")
-        let model = InstallerModel(installer: Installer(inputMethodsDir: nowhere, registry: SystemInputSources(),
-                                                        apps: SystemApps()))
+        let model = InstallerModel(installer: .system(inputMethodsDir: nowhere))
         let v = model.version
         let states: [(String, InstallerModel.Phase, InstallPlan)] = [
             ("fresh", .ready, .fresh),

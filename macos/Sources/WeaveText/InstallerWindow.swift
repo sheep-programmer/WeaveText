@@ -5,6 +5,7 @@ import WeaveCore
 /// 从磁盘映像或别处双击打开时的安装窗口：安装、更新或重新安装到 ~/Library/Input Methods。
 /// The installer window shown when the app is double-clicked from the disk image or anywhere else: install, update or
 /// reinstall into ~/Library/Input Methods.
+@MainActor
 final class InstallerModel: ObservableObject {
     enum Phase: Equatable {
         case ready
@@ -20,17 +21,13 @@ final class InstallerModel: ObservableObject {
     private let source: URL
     private let installer: Installer
 
-    init(source: URL = Bundle.main.bundleURL, installer: Installer = InstallerModel.systemInstaller()) {
+    init(source: URL = Bundle.main.bundleURL, installer: Installer = .system()) {
         self.source = source
         self.installer = installer
         let info = Bundle.main.infoDictionary
         version = AppVersion(info?["CFBundleShortVersionString"] as? String ?? "0.1.0",
                              build: info?["CFBundleVersion"] as? String)
         plan = InstallPlan.decide(this: version, installed: installer.installedVersion)
-    }
-
-    static func systemInstaller() -> Installer {
-        Installer(inputMethodsDir: LaunchMode.systemInputMethodDirs()[0], registry: SystemInputSources(), apps: SystemApps())
     }
 
     var title: String {
@@ -65,22 +62,26 @@ final class InstallerModel: ObservableObject {
 
     var working: Bool { if case .working = phase { return true } else { return false } }
 
+    /// 在主线程上发起：复制在后台，登记与退出旧副本回到主线程，主线程始终不等待。
+    /// Started on the main thread: copying runs in the background, registering and quitting old copies come back to the
+    /// main thread, and the main thread never waits.
     func install() {
         guard !working else { return }
         phase = .working(.copying)
         let installer = installer, source = source
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result {
-                try installer.install(from: source) { step in DispatchQueue.main.async { self?.phase = .working(step) } }
+        Task { @MainActor [weak self] in
+            let result: Result<InstallOutcome, Error>
+            do {
+                result = .success(try await installer.install(from: source) { step in self?.phase = .working(step) })
+            } catch {
+                result = .failure(error)
             }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                switch result {
-                case .success(let outcome): self.phase = .done(listed: outcome.listed)
-                case .failure(let error):
-                    self.phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-                    self.plan = InstallPlan.decide(this: self.version, installed: installer.installedVersion)
-                }
+            guard let self else { return }
+            switch result {
+            case .success(let outcome): self.phase = .done(listed: outcome.listed)
+            case .failure(let error):
+                self.phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                self.plan = InstallPlan.decide(this: self.version, installed: installer.installedVersion)
             }
         }
     }
@@ -98,6 +99,10 @@ final class InstallerModel: ObservableObject {
 }
 
 struct InstallerView: View {
+    static let doneText = "已安装。在菜单栏右上角的输入法菜单里选择「织文拼音」"
+    static let reloginText = "如果输入法菜单里还没有「织文拼音」，请注销后重新登录一次。"
+    static let width: CGFloat = 440
+
     @ObservedObject var model: InstallerModel
     var close: () -> Void = {}
 
@@ -117,7 +122,7 @@ struct InstallerView: View {
         .padding(.horizontal, 32)
         .padding(.top, 36)
         .padding(.bottom, 24)
-        .frame(width: 440)
+        .frame(width: Self.width)
         .tint(Theme.accent)
     }
 
@@ -135,11 +140,10 @@ struct InstallerView: View {
             }
         case .done(let listed):
             VStack(spacing: 6) {
-                Label("已安装。在菜单栏的输入法里选择「织文拼音」即可使用", systemImage: "checkmark.circle.fill")
+                Label(Self.doneText, systemImage: "checkmark.circle.fill")
                     .labelStyle(CenteredLabel(color: .green))
                 if !listed {
-                    Text("如果输入法菜单里还没有「织文拼音」，请注销并重新登录一次。")
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text(Self.reloginText).font(.callout).foregroundStyle(.secondary)
                 }
             }
             .multilineTextAlignment(.center)
@@ -201,23 +205,42 @@ enum KeyboardSettings {
 }
 
 /// 安装模式下的应用：一个普通窗口，关掉即退出。 The app in installer mode: one ordinary window; closing it quits.
+@MainActor
 final class InstallerAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let model = InstallerModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.menu()
-        let view = InstallerView(model: model) { NSApp.terminate(nil) }
-        let w = NSWindow(contentViewController: NSHostingController(rootView: view))
-        w.styleMask = [.titled, .closable, .fullSizeContentView]
+        // Info.plist 里是 LSUIElement（输入法不占程序坞），安装窗口要当普通程序出现在前面。
+        // Info.plist says LSUIElement (the IME stays out of the Dock); the installer must come up as an ordinary app.
+        NSApp.setActivationPolicy(.regular)
+        let w = Self.window(model: model) { NSApp.terminate(nil) }
+        window = w
+        w.makeKeyAndOrderFront(nil)
+        w.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 安装窗口：内容给定宽度，高度取视图的理想高度，窗口随内容变化，不会缩成零高。
+    /// The installer window: a fixed content width with the view's ideal height; the window follows the content and
+    /// can never collapse to zero height.
+    static func window(model: InstallerModel, close: @escaping () -> Void) -> NSWindow {
+        let host = NSHostingController(rootView: InstallerView(model: model, close: close))
+        host.sizingOptions = [.preferredContentSize, .minSize]
+        let fitting = host.view.fittingSize
+        let size = NSSize(width: max(fitting.width, InstallerView.width), height: max(fitting.height, 320))
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                         styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        w.contentViewController = host
+        w.setContentSize(size)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.title = model.title
         w.isMovableByWindowBackground = true
+        w.isReleasedWhenClosed = false
         w.center()
-        window = w
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        return w
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
