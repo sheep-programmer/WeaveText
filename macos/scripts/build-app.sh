@@ -72,13 +72,30 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp -R "$MAC/Resources/zh-Hans.lproj" "$MAC/Resources/en.lproj" "$APP/Contents/Resources/"
 
 DATA="$ROOT/data/build"
-for f in pinyin wubi86 english grammar emoji st_characters st_phrases; do
+# 内核认识的资源名取自 session.rs 的 RESOURCES，有 .wvz 的都带上；这几个必须有。
+# The resource keys the engine knows come from RESOURCES in session.rs; every one with a .wvz ships. These are required.
+KEYS=($(sed -n '/^pub const RESOURCES/,/^];/p' "$ROOT/core/weave-engine/src/session.rs" | sed -n 's/^ *("\([a-z0-9_]*\)",.*/\1/p'))
+REQUIRED=(pinyin wubi86 english grammar emoji st_characters st_phrases follow)
+if [[ ${#KEYS[@]} -eq 0 ]]; then
+  echo "读不到内核的资源列表 / cannot read RESOURCES from session.rs" >&2
+  exit 1
+fi
+for f in "${REQUIRED[@]}"; do
   if [[ ! -f "$DATA/$f.wvz" ]]; then
     echo "缺少词库 / missing $DATA/$f.wvz — run data/build.sh first" >&2
     exit 1
   fi
-  cp "$DATA/$f.wvz" "$APP/Contents/Resources/data/"
 done
+for f in "${KEYS[@]}"; do
+  if [[ -f "$DATA/$f.wvz" ]]; then
+    cp "$DATA/$f.wvz" "$APP/Contents/Resources/data/"
+  else
+    echo "注意 / note: no $f.wvz, skipped"
+  fi
+done
+echo "data: ${KEYS[*]}"
+# 专业词库目录（与 Android 同一份）。 The domain-dictionary catalog, the same file as Android's.
+cp "$ROOT/android/app/src/main/assets/dictpacks.json" "$APP/Contents/Resources/dictpacks.json"
 
 # 图标由程序自己画出来。 The app draws its own icons.
 ICONS="$BUILD/icons"
