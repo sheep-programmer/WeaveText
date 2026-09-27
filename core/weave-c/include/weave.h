@@ -40,8 +40,8 @@ void weave_set_learning(WeaveEngine *h, bool on);
 void weave_set_context(WeaveEngine *h, const char *prev_word);
 /* 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes (date/time candidates). */
 void weave_set_utc_offset(WeaveEngine *h, int32_t minutes);
-/* 专业词库（~/Library/Application Support/WeaveText/packs/<id>.wvz 启动时自动载入）。
-   Domain dictionaries; files in <user dir>/packs/<id>.wvz load automatically at startup. */
+/* 专业词库：数据目录与用户目录下的 packs/<id>.wvz 在 weave_create 时自动载入（同名时用户目录优先）。
+   Domain dictionaries: packs/<id>.wvz under the data dir and the user dir load at weave_create (the user dir wins). */
 bool weave_load_pack(WeaveEngine *h, const char *id, const char *path);
 bool weave_unload_pack(WeaveEngine *h, const char *id);
 /* 云端热词（hotwords.tsv + .sig，验签后作为扩展词库 cloud）；返回词数，失败 -1。卸载：weave_unload_pack(h, "cloud")。
