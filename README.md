@@ -47,7 +47,9 @@
 在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64），两个版本签名相同、可互相覆盖安装：
 
 - **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入使用系统识别或插件，也可在应用内一键下载约 30 MB 的离线语音包（识别运行库 + 实时模型），无需重装即可在手机上识别，效果与离线语音版相同。
-- **离线语音版**（约 64 MB）：内置识别运行库与实时识别模型，装好即可离线说话；轻量版也能在「语音包」里安装同样的识别。
+- **离线语音版**（约 67 MB）：内置识别运行库与实时识别模型，装好即可离线说话；轻量版也能在「语音包」里安装同样的识别。
+- **macOS 版**（`.dmg`，macOS 13+，Apple 芯片与 Intel 通用）：打开磁盘映像，双击「织文输入法」即可安装；
+  尚未经 Apple 公证，首次打开若提示无法验证开发者，请右键 › 打开。
 
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 
@@ -55,7 +57,8 @@
 (recommended) has every input feature and reads its dictionaries straight from the APK, so the footprint is about
 the APK size; voice uses the system recognizer or plugins, or a one-tap ~30 MB offline voice pack (speech runtime +
 streaming model) downloaded in the app — same on-device quality, no reinstall. **Offline voice** adds on-device speech recognition.
-Enable WeaveText in system settings after installing.*
+**macOS** (`.dmg`, macOS 13+, universal): open it and double-click 织文输入法 to install; it isn't notarized yet, so
+right-click › Open the first time. Enable WeaveText in system settings after installing.*
 
 ## macOS 版 / macOS
 
