@@ -485,7 +485,7 @@ arrangement differs.
 | 模式切换 | 底部分段控件「点按说话 │ 按住说话」，12dp，选中项 `kb.label` 500，另一项 `kb.labelHint`；记住上次选择 |
 
 **状态机 / State machine**：`Idle → Connecting(≤1.5s，主按钮转圈) → Listening → Finalizing → Idle`；任意状态出错 → `Error`。
-静音 2.5s 自动结束（点按模式）。*Auto-stop after 2.5s silence in tap mode.*
+说完后静音 2.5s 自动结束（点按模式；还没开口时等 6s，说话的判断随底噪自适应）。*Auto-stop after 2.5s silence in tap mode (6s before the first word; speech detection adapts to the noise floor).*
 
 ### 12.2 按住说话 / Hold-to-talk
 

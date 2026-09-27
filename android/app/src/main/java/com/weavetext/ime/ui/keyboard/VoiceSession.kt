@@ -43,7 +43,7 @@ class VoiceSession(
     /** 平滑后的音量 0..1。 Smoothed input level. */
     var level = 0f
         private set
-    /** 点按模式下静音 2.5s 自动结束。 Auto-stop after silence (tap mode). */
+    /** 点按模式下说完后静音 2.5s（一直没说话则 6s）自动结束。 Auto-stop after silence (tap mode). */
     var autoStop = true
     /** 多引擎会话的结果；单引擎为 null。 Multi-engine results; null for single-engine sessions. */
     var results: MultiEngineResults? = null
@@ -58,6 +58,10 @@ class VoiceSession(
     private val listeners = ArrayList<() -> Unit>()
     private var rec: VoiceRecognizer? = null
     private var lastLoud = 0L
+    /** 本次是否已听到说话（响度或识别出字）。 Whether speech was heard in this session. */
+    private var spoke = false
+    /** 底噪（自适应）。 Adaptive noise floor. */
+    private var floor = -1f
     private var token = 0
 
     /**
@@ -90,7 +94,9 @@ class VoiceSession(
     private val silenceCheck = object : Runnable {
         override fun run() {
             if (state != State.LISTENING) return
-            if (autoStop && SystemClock.uptimeMillis() - lastLoud > SILENCE_MS) { stop(); return }
+            // 还没开口时多等一会儿（模型可能还在加载、人也要想一想）。 Wait longer before the first word.
+            val limit = if (spoke) SILENCE_MS else NO_SPEECH_MS
+            if (autoStop && SystemClock.uptimeMillis() - lastLoud > limit) { stop(); return }
             main.postDelayed(this, 250)
         }
     }
@@ -112,6 +118,8 @@ class VoiceSession(
         results = null; detached = false
         state = State.CONNECTING
         lastLoud = SystemClock.uptimeMillis()
+        spoke = false
+        floor = -1f
         val my = ++token
         val ok = r.start(object : MultiVoiceListener {
             fun live() = my == token
@@ -125,7 +133,7 @@ class VoiceSession(
                 res.partial(id, text)
                 if (id == res.primaryId) {
                     enterListening()
-                    if (text.isNotEmpty()) lastLoud = SystemClock.uptimeMillis()
+                    if (text.isNotEmpty()) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
                 }
                 multiChanged()
             }
@@ -151,7 +159,7 @@ class VoiceSession(
                 if (!live()) return
                 enterListening()
                 partial = text
-                if (text.isNotEmpty()) lastLoud = SystemClock.uptimeMillis()
+                if (text.isNotEmpty()) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
                 controller.voicePartial(text)
                 changed()
             }
@@ -197,7 +205,7 @@ class VoiceSession(
                 if (!live()) return
                 enterListening()
                 this@VoiceSession.level = this@VoiceSession.level * 0.65f + level.coerceIn(0f, 1f) * 0.35f
-                if (level > LOUD) lastLoud = SystemClock.uptimeMillis()
+                if (isLoud(level)) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
             }
         })
         if (!ok) {
@@ -208,6 +216,21 @@ class VoiceSession(
         main.postDelayed(connectTimeout, 1500)
         changed()
         return true
+    }
+
+    /**
+     * 是否算在说话：高于底噪约 2.5 倍且不低于一个很小的下限。有的机型语音音源不做增益、说话声很小，固定门槛会
+     * 把正在说的话当成静音而提前结束。
+     * Whether this level counts as speech: about 2.5× the adaptive noise floor and above a small minimum. Some
+     * phones apply no gain to the voice source, so a fixed threshold would cut people off mid-sentence.
+     */
+    private fun isLoud(level: Float): Boolean {
+        floor = when {
+            floor < 0f -> level
+            level < floor -> floor * 0.8f + level * 0.2f
+            else -> floor + (level - floor) * 0.01f
+        }
+        return level > maxOf(LOUD_MIN, floor * 2.5f)
     }
 
     private fun enterListening() {
@@ -336,6 +359,7 @@ class VoiceSession(
 
     companion object {
         private const val SILENCE_MS = 2500L
-        private const val LOUD = 0.08f
+        private const val NO_SPEECH_MS = 6000L
+        private const val LOUD_MIN = 0.02f
     }
 }

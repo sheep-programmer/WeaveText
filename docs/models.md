@@ -4,6 +4,8 @@
 
 中文：织文的离线语音识别运行在 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0，含 onnxruntime）之上，采用**两遍识别**：
 流式模型边说边出字，检测到句尾后由非流式模型对这一句重新识别作为终稿，再可选地补全标点。
+只装了终稿模型（没有实时模型）时按音量断句，说话中每 1.5 秒重新识别一次作为实时文字。新装好的识别模型自动设为使用中；「语音包」里已装的模型可点「使用」随时切换。
+*With only a final model, endpoints come from the audio level and the sentence is re-decoded every 1.5 s as live text. A newly installed model is put to use automatically; installed models can be switched with 「使用」.*
 离线语音版随 APK 内置运行时与「实时识别 · 小」，开箱即可离线语音输入，终稿、标点等在「语音包」列表里逐项安装；轻量版可在应用内安装识别运行库与模型（见 §4.1）。
 更准或多语种的模型可在「设置 → 语音引擎 → 离线模型」中按需下载。
 
@@ -64,7 +66,7 @@ verifies SHA-256 and extracts only the needed files into uncompressed assets.*
 | 离线语音版（内置运行时与实时识别小模型，原生库压缩存放） / offline voice | `./gradlew :app:assembleRelease` | ≈ 64 MB |
 | 轻量版（不含端侧语音识别） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 30 MB |
 
-轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与实时模型（§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
+轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与识别模型（实时模型，或只装终稿模型时整句识别；§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
 两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
 *Lite drops the sherpa-onnx runtime (~27 MB) and models; until the runtime and a streaming model are installed from the
 voice-pack list (§4.1) the on-device engine is hidden and voice uses the system recognizer, another voice IME on the phone

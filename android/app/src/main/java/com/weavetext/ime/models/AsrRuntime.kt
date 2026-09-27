@@ -22,9 +22,15 @@ object AsrRuntime {
     fun ready(repo: ModelRepository, bundled: Boolean = this.bundled): Boolean =
         bundled || repo.state(ID) == ModelState.Installed
 
-    /** 本地识别引擎可用：运行库 + 至少一个实时模型。 Local engine usable: runtime plus a streaming model. */
+    /**
+     * 本地识别引擎可用：运行库 + 至少一个识别模型（实时或终稿；只有终稿模型时整句识别）。
+     * Local engine usable: runtime plus a recognition model (streaming or final; a final model alone recognises
+     * whole sentences).
+     */
     fun engineReady(repo: ModelRepository, bundled: Boolean = this.bundled): Boolean =
-        ready(repo, bundled) && repo.catalog.models.any { it.kind == ModelKind.ASR_STREAMING && repo.state(it.id).isReady }
+        ready(repo, bundled) && repo.catalog.models.any {
+            (it.kind == ModelKind.ASR_STREAMING || it.kind == ModelKind.ASR_OFFLINE) && repo.state(it.id).isReady
+        }
 
     /**
      * 运行库文件设为只读：Android 14 起动态载入的代码必须不可写。

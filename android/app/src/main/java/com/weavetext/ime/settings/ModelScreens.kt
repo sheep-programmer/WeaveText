@@ -123,6 +123,9 @@ fun ModelsScreen() {
         if (repo.wifiOnly && repo.isMetered()) confirmMetered = m else VoicePack.install(repo, m.id, allowMetered = !repo.wifiOnly)
     }
     val lite = !AsrRuntime.bundled
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val choice = remember(repo) { com.weavetext.ime.voice.local.LocalAsrChoice(ctx, repo) }
+    var useTick by remember { mutableIntStateOf(0) }
 
     SubPage("语音包") {
         // 轻量版：顶部是推荐组合一键安装（装齐后隐藏）。 Lite: the one-tap recommended set on top.
@@ -135,8 +138,11 @@ fun ModelsScreen() {
                 models.forEachIndexed { i, m ->
                     if (i > 0) RowDivider(false)
                     val state = remember(tick) { repo.state(m.id) }
+                    val asr = m.kind == ModelKind.ASR_STREAMING || m.kind == ModelKind.ASR_OFFLINE
+                    val inUse = remember(tick, useTick) { if (asr && state.isReady) choice.inUse(m) else null }
                     ModelItem(
-                        m, state,
+                        m, state, inUse,
+                        onUse = { choice.use(m); useTick++ },
                         onDownload = { startDownload(m) },
                         onCancel = { repo.cancel(m.id) },
                         onDelete = { confirmDelete = m },
@@ -232,12 +238,16 @@ private fun InfoNote(text: String) {
 // ------------------------------------------------------------------ one model
 
 @Composable
-private fun ModelItem(m: ModelSpec, state: ModelState, onDownload: () -> Unit, onCancel: () -> Unit, onDelete: () -> Unit) {
+private fun ModelItem(
+    m: ModelSpec, state: ModelState, inUse: Boolean?, onUse: () -> Unit,
+    onDownload: () -> Unit, onCancel: () -> Unit, onDelete: () -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(m.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
             if (m.builtin) Tag("内置")
+            if (inUse == true) Tag("使用中")
         }
         if (m.description.isNotBlank()) Text(m.description, style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
         val size = if (m.builtin) "大小 ${formatSize(m.installedSize)}" else "下载 ${formatSize(m.archiveSize)} · 安装后 ${formatSize(m.installedSize)}"
@@ -251,6 +261,8 @@ private fun ModelItem(m: ModelSpec, state: ModelState, onDownload: () -> Unit, o
         }
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             ModelActions(m, state, onDownload, onCancel, onDelete)
+            // 已装好的识别模型一键切换过去。 Switch to an installed recognition model in one tap.
+            if (inUse == false) FilledTonalButton(onClick = onUse, Modifier.padding(start = 8.dp)) { Text("使用") }
         }
     }
 }

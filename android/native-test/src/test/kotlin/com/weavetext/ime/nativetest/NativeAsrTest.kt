@@ -74,6 +74,16 @@ class NativeAsrTest {
             val t = TwoPassRecognizer.clean(it.decode(audio))
             println("native offline: $t")
             assertTrue(t, t.startsWith("对我做了介绍"))
+            // 只有终稿模型：按音量断句、整句识别（前后各 1 秒静音）。 Final model alone: level endpoints, whole sentence.
+            val alone = mutableListOf<String>()
+            val one = TwoPassRecognizer(null, it, null, object : TwoPassListener {
+                override fun onPartial(text: String) {}
+                override fun onFinal(text: String) { alone += text }
+            })
+            (FloatArray(16000) + audio + FloatArray(16000)).toList().chunked(640).forEach { c -> one.feed(c.toFloatArray()) }
+            one.finish()
+            println("native offline-only: $alone")
+            assertTrue(alone.toString(), alone.joinToString("").startsWith("对我做了介绍"))
             it.release()
         }
         // 错误的模型路径：返回可读的错误而不是崩溃。 Bad model path: readable error, no crash.

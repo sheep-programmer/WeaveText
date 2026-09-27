@@ -96,12 +96,15 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
             0L
         }
         refresh()
-        // 语音包下载完（或模型被删）时本地引擎会出现/消失；下载进度也会触发回调，所以只在可用性变化时刷新。
-        // The local engine appears/disappears as the voice pack is installed or models deleted; progress
-        // ticks also call back, so refresh only when availability actually changes.
+        // 装好或删掉模型时重建列表：本地引擎可能出现/消失，设置表单里的模型选项也要跟着变（新下载的模型
+        // 要能选上）。下载进度也会回调，所以只在已装模型变化时刷新。
+        // Rebuild when a model is installed or removed: the local engine may appear or vanish and the form's model
+        // options must follow (so a new download can be picked). Progress ticks also call back, so refresh only
+        // when the installed set changes.
+        var seen = runCatching { local.modelSignature() }.getOrDefault("")
         com.weavetext.ime.models.ModelManager.get(ctx).addListener {
-            val now = runCatching { local.isAvailable }.getOrDefault(false)
-            if (now != cache.any { it.id == LOCAL_ENGINE_ID }) refresh()
+            val now = runCatching { local.modelSignature() }.getOrDefault("")
+            if (now != seen) { seen = now; refresh() }
         }
     }
 
@@ -450,40 +453,84 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             val rate = 16000
             val chunk = rate / 25 * 2 // 40ms × 16bit
             val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val rec = try {
-                AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, chunk * 4))
-            } catch (t: Throwable) {
-                post(gen) { it.onError("无法打开麦克风") }
+            // 先用语音识别音源（系统做降噪）；打不开、或录到的全是数字静音（有的机型对它静音）时换普通麦克风。
+            // Prefer the voice-recognition source (system noise suppression); fall back to the plain mic when it
+            // can't open or only delivers digital silence (some phones mute it for third-party apps).
+            val sources = intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC)
+            var si = 0
+            var rec: AudioRecord? = null
+            while (rec == null && si < sources.size) {
+                rec = openRecorder(sources[si], rate, maxOf(minBuf, chunk * 4))
+                if (rec == null) si++
+            }
+            if (rec == null) {
+                post(gen) { it.onError("无法打开麦克风，可能被其他应用占用") }
                 onFail()
                 return@execute
             }
-            if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                rec.release()
-                post(gen) { it.onError("无法打开麦克风") }
-                onFail()
-                return@execute
-            }
+            var r: AudioRecord = rec
             val buf = ByteArray(chunk)
+            var silentChunks = 0
+            var error: String? = null
             try {
-                rec.startRecording()
-                while (recording && gen == generation) {
+                r.startRecording()
+                if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) error = "麦克风被其他应用占用"
+                while (error == null && recording && gen == generation) {
                     var off = 0
                     while (off < chunk && recording) {
-                        val n = rec.read(buf, off, chunk - off)
-                        if (n <= 0) break
+                        val n = r.read(buf, off, chunk - off)
+                        if (n < 0) { error = "录音出错（$n），请重试"; break }
+                        if (n == 0) break
                         off += n
                     }
-                    if (off <= 0) break
+                    if (error != null || off <= 0) break
+                    // 开头 1 秒全是 0：这个音源被静音了，换下一个继续录。 First second all zeros: source muted; switch.
+                    if (silentChunks >= 0 && si + 1 < sources.size) {
+                        silentChunks = if (allZero(buf, off)) silentChunks + 1 else -1
+                        if (silentChunks >= 25) {
+                            // 先放掉当前录音：很多机型同时只允许一路录音。 Release first: many phones allow one capture.
+                            Log.w(TAG, "source ${sources[si]} is silent, switching to ${sources[si + 1]}")
+                            runCatching { r.stop() }
+                            r.release()
+                            si++
+                            r = openRecorder(sources[si], rate, maxOf(minBuf, chunk * 4))
+                                ?: openRecorder(sources[si - 1], rate, maxOf(minBuf, chunk * 4))
+                                ?: throw IllegalStateException("no recorder")
+                            r.startRecording()
+                            silentChunks = -1
+                        }
+                    }
+                    if (!recording) break
                     sink(buf, off)
                     val level = rms(buf, off)
                     post(gen) { it.onLevel(level) }
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "recording failed", t)
+                error = "录音出错，请重试"
             } finally {
-                runCatching { rec.stop() }
-                rec.release()
+                runCatching { r.stop() }
+                r.release()
             }
+            // 录音意外中断：告诉用户，并结束本次会话（不再停在「正在聆听」）。
+            // The recording broke off: tell the user and end the session instead of hanging in "listening".
+            error?.let { msg -> if (gen == generation) { post(gen) { it.onError(msg) }; onFail() } }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openRecorder(source: Int, rate: Int, bufferBytes: Int): AudioRecord? {
+        val rec = runCatching {
+            AudioRecord(source, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferBytes)
+        }.getOrNull() ?: return null
+        if (rec.state == AudioRecord.STATE_INITIALIZED) return rec
+        rec.release()
+        return null
+    }
+
+    private fun allZero(b: ByteArray, len: Int): Boolean {
+        for (i in 0 until len) if (b[i].toInt() != 0) return false
+        return true
     }
 
     private fun rms(b: ByteArray, len: Int): Float {
@@ -522,6 +569,8 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         }
         systemRecognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
+            /** 本次是否已识别出文字。 Whether any text came back in this session. */
+            var heard = false
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) = post(gen) { it.onLevel(((rmsdB + 2) / 12f).coerceIn(0f, 1f)) }
@@ -542,7 +591,8 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
                     }
                     return
                 }
-                if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                // 没听清 / 没听到声音也要说一声，否则看起来像没反应。 Say so on no match / no speech too.
+                if (!heard || (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
                     post(gen) { it.onError(systemErrorMessage(error)) }
                 }
                 finishSystem(gen)
@@ -554,7 +604,7 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             }
             override fun onPartialResults(partialResults: Bundle?) {
                 val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                if (text.isNotEmpty()) post(gen) { it.onPartial(text) }
+                if (text.isNotEmpty()) { heard = true; post(gen) { it.onPartial(text) } }
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
@@ -608,6 +658,8 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "系统语音服务缺少麦克风权限"
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY, ERROR_TOO_MANY_REQUESTS -> "系统语音服务正忙"
         ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE -> "系统语音服务不支持中文"
+        SpeechRecognizer.ERROR_NO_MATCH -> "没听清，请再说一次"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有听到声音，请靠近麦克风再说"
         else -> SYSTEM_UNAVAILABLE
     }
 

@@ -59,7 +59,10 @@ class VoicePackTest {
         assertTrue(AsrRuntime.engineReady(repo, bundled = false))
         repo.emit(stream, ModelState.NotInstalled)
         assertTrue(AsrRuntime.ready(repo, bundled = false))
-        assertFalse("运行库在、没有实时模型 / runtime without a streaming model", AsrRuntime.engineReady(repo, bundled = false))
+        assertFalse("运行库在、没有识别模型 / runtime without any model", AsrRuntime.engineReady(repo, bundled = false))
+        // 只有终稿模型也能用（整句识别）。 A final model alone works too (whole sentences).
+        repo.emit("asr-sensevoice", ModelState.Installed)
+        assertTrue(AsrRuntime.engineReady(repo, bundled = false))
     }
 
     @Test fun bundledRuntimeIsAlwaysReady() {
