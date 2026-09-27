@@ -1,6 +1,10 @@
 //! 整句评测：`cargo run --release --example eval -- --data ../../data/build --eval ../../data/eval/sentences.tsv`
 //! 可选：`--gram <file.wvg>` `--lambda 1.0` `--baseline 12` `--schema pinyin|t9|xiaohe` `--show 20`
+//! 触控误差模拟：`--touch-noise 0.2`（高斯标准差，单位键宽）按 26 键几何把每个字母加噪声后判键，
+//! `--near` 再把交界处的邻键交给引擎纠正；`--seed 1`。
 //! Sentence benchmark; prints top-1 / top-3 sentence accuracy and character accuracy.
+//! Touch simulation: `--touch-noise 0.2` (Gaussian sigma in key widths) jitters every letter on the 26-key
+//! geometry before hit-testing; `--near` also passes border neighbours to the engine; `--seed 1`.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -29,6 +33,60 @@ fn levenshtein(a: &[char], b: &[char]) -> usize {
         prev = cur;
     }
     prev[b.len()]
+}
+
+/// 26 键几何（单位：键宽；行距按行高 / 键宽 ≈ 1.56 换算）。 26-key geometry in key widths.
+const ROWS: [(&str, f32); 3] = [("qwertyuiop", 0.0), ("asdfghjkl", 0.5), ("zxcvbnm", 1.5)];
+const PITCH_Y: f32 = 1.56;
+/// 与键盘界面一致的交界带宽度（归一化中心距之差）。 Border band, same as the keyboard UI.
+const NEAR_BAND: f32 = 0.45;
+
+fn key_center(c: u8) -> (f32, f32) {
+    for (r, (row, off)) in ROWS.iter().enumerate() {
+        if let Some(i) = row.bytes().position(|b| b == c) {
+            return (off + i as f32 + 0.5, r as f32 + 0.5);
+        }
+    }
+    (5.0, 1.5)
+}
+
+/// 触点 (x, 行坐标) → (所按字母, 邻键, 贴近度)；行外的触点归到最近的字母行。
+/// Touch (x, row units) → (letter hit, neighbour, closeness); taps beyond the letter rows clamp to them.
+fn hit(x: f32, y: f32) -> (u8, Option<(u8, f32)>) {
+    let r = (y.floor().max(0.0) as usize).min(2);
+    let (row, off) = ROWS[r];
+    let i = ((x - off).floor().max(0.0) as usize).min(row.len() - 1);
+    let primary = row.as_bytes()[i];
+    let d = |c: u8| {
+        let (cx, cy) = key_center(c);
+        ((x - cx).powi(2) + (y - cy).powi(2)).sqrt()
+    };
+    let dp = d(primary);
+    let (mut best, mut bd) = (0u8, f32::MAX);
+    for (row, _) in ROWS {
+        for c in row.bytes() {
+            if c != primary && d(c) < bd {
+                bd = d(c);
+                best = c;
+            }
+        }
+    }
+    let margin = bd - dp;
+    (primary, (margin < NEAR_BAND).then(|| (best, 1.0 - margin.max(0.0) / NEAR_BAND)))
+}
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        ((self.0 >> 40) as f32 + 0.5) / (1u64 << 24) as f32
+    }
+    fn gauss(&mut self) -> f32 {
+        let (a, b) = (self.next(), self.next());
+        (-2.0 * a.ln()).sqrt() * (std::f32::consts::TAU * b).cos()
+    }
 }
 
 fn main() {
@@ -74,6 +132,10 @@ fn main() {
         "xiaohe" => Schema::Shuangpin(SchemeId::Xiaohe),
         _ => Schema::Pinyin,
     });
+    let noise: f32 = arg(&args, "--touch-noise").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let use_near = args.iter().any(|a| a == "--near");
+    let mut rng = Rng(arg(&args, "--seed").and_then(|v| v.parse().ok()).unwrap_or(1).max(1) * 0x9E37_79B9_7F4A_7C15);
+    let (mut taps, mut slips) = (0usize, 0usize);
     let text = std::fs::read_to_string(&eval).expect("read eval set");
     let (mut n, mut top1, mut top3, mut chars, mut char_err) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -111,7 +173,18 @@ fn main() {
         };
         e.clear();
         for c in keys.chars() {
-            e.input_char(c);
+            if noise > 0.0 && c.is_ascii_lowercase() {
+                let (cx, cy) = key_center(c as u8);
+                let (k, nb) = hit(cx + noise * rng.gauss(), cy + noise / PITCH_Y * rng.gauss());
+                taps += 1;
+                slips += (k != c as u8) as usize;
+                match nb.filter(|_| use_near) {
+                    Some((a, cl)) => e.input_key(k as char, Some(a as char), cl),
+                    None => e.input_char(k as char),
+                };
+            } else {
+                e.input_char(c);
+            }
         }
         let snap = e.snapshot();
         let got = snap
@@ -143,6 +216,9 @@ fn main() {
         eprintln!("cache {name}: {hits} hits, {misses} misses");
     }
     let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
+    if noise > 0.0 {
+        println!("touch noise σ={noise} near={use_near}: {slips}/{taps} taps hit a neighbour ({:.2}%)", pct(slips, taps));
+    }
     println!(
         "schema={schema} n={n} top1={:.1}% top3={:.1}% char_acc={:.2}% | len≤4 {:.1}% 5-8 {:.1}% 9-14 {:.1}% 15+ {:.1}% | {:.1} ms/sentence",
         pct(top1, n),

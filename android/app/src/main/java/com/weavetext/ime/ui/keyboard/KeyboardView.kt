@@ -14,6 +14,7 @@ import com.weavetext.ime.style.KeyboardStyle
 import com.weavetext.ime.style.LayoutStyle
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sqrt
 
 /** 键区回调（由键盘根视图实现）。 Callbacks from the key area. */
 interface KeyboardHost {
@@ -83,9 +84,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     // 画笔 / paints
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.RIGHT }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
+    private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.RIGHT }
     private val tmp = RectF()
     private val tmp2 = RectF()
     private val mediumTf = Typeface.create(Typeface.DEFAULT, Typeface.BOLD).let {
@@ -420,7 +421,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             if (hintMode == "none" && corner == null) false
             else if (hintMode == "topRight" && corner == null) tmp.width() > m.dp(26f)
             else if (corner != null) tmp.top + m.dp(3f) + m.hint(9f) + m.dp(1f) <= tmp.top + h * 0.47f - cap * cornerLabel
-            else tmp.top + m.dp(4f) + 0.75f * m.hint(10.5f) + m.dp(2f) <= tmp.top + h * 0.58f - cap * k.labelSize
+            else tmp.top + m.dp(3f) + 0.75f * m.hint(10.5f) + m.dp(2f) <= tmp.top + h * LETTER_Y - cap * k.labelSize
         }
         if (corner != null) {
             hintPaint.textSize = m.hint(9f)
@@ -433,8 +434,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         } else if (hint != null && k.code in 'a'.code..'z'.code && hintMode == "top") {
             hintPaint.textSize = m.hint(layoutStyle.qwerty.hintSize)
             hintPaint.color = p.labelHint
-            c.drawText(hint, tmp.centerX(), tmp.top + m.dp(4f) - hintPaint.ascent() * 0.8f, hintPaint)
-            drawText(c, k.label, tmp.centerX(), tmp.top + h * 0.58f, k.labelSize, color, medium)
+            c.drawText(hint, tmp.centerX(), tmp.top + m.dp(3f) - hintPaint.ascent() * 0.8f, hintPaint)
+            drawText(c, k.label, tmp.centerX(), tmp.top + h * LETTER_Y, k.labelSize, color, medium)
         } else if (hint != null && k.code in 'a'.code..'z'.code && hintMode == "topRight") {
             cornerPaint.textSize = m.hint(layoutStyle.qwerty.hintSize)
             cornerPaint.color = p.labelHint
@@ -732,8 +733,53 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         // 字符键按下即输出；上滑、长按改写时替换这一个字。 Char keys emit on DOWN; swipe/long-press replace it.
         if (k.isChar) {
             p.emitted = true
+            measureNear(k, x, y)
             host?.onKey(k)
+            nearCode = 0
         }
+    }
+
+    /**
+     * 本次按下的字母键若靠近交界：交界另一侧的字母（否则 0）与贴近度（1 = 正压在交界上），仅在 [KeyboardHost.onKey]
+     * 回调期间有效。内核据此纠正按到邻键的误触。
+     * For the letter being pressed near a border: the letter across it (else 0) and the closeness (1 = right on
+     * the border); valid only during [KeyboardHost.onKey]. The engine uses it to fix taps on the neighbouring key.
+     */
+    var nearCode = 0
+        private set
+    var nearCloseness = 0f
+        private set
+
+    /** 与各字母键中心的归一化距离（按键距、行距）比较，次近者差距在交界带内即为邻键。 Normalised centre distances. */
+    private fun measureNear(k: Key, x: Float, y: Float) {
+        nearCode = 0
+        nearCloseness = 0f
+        if (k.code !in 'a'.code..'z'.code) return
+        val m = metrics
+        val sx = k.rect.width() + 2 * m.insetH
+        val sy = k.rect.height() + 2 * m.insetV
+        if (sx <= 0f || sy <= 0f) return
+        val own = centreDistance(k, x, y, sx, sy)
+        var best: Key? = null
+        var bd = Float.MAX_VALUE
+        val list = keys
+        for (i in list.indices) {
+            val o = list[i]
+            if (o === k || o.code !in 'a'.code..'z'.code) continue
+            val d = centreDistance(o, x, y, sx, sy)
+            if (d < bd) { bd = d; best = o }
+        }
+        val margin = bd - own
+        if (best != null && margin < NEAR_BAND) {
+            nearCode = best.code
+            nearCloseness = 1f - margin.coerceAtLeast(0f) / NEAR_BAND
+        }
+    }
+
+    private fun centreDistance(k: Key, x: Float, y: Float, sx: Float, sy: Float): Float {
+        val dx = (x - k.rect.centerX()) / sx
+        val dy = (y - k.rect.centerY()) / sy
+        return sqrt(dx * dx + dy * dy)
     }
 
     /**
@@ -978,6 +1024,19 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private const val M_INK = 11
         private const val MAX_POINTERS = 4
         const val LONG_PRESS_MS = 450L
+        /**
+         * 带副标签时字母的垂直中心（键高比例）：贴近键中心，手指瞄准字形时不会偏向下一行。
+         * Vertical centre of letters under a hint (fraction of key height): close to the key centre, so aiming at
+         * the glyph doesn't pull taps toward the row below.
+         */
+        private const val LETTER_Y = 0.52f
+        /**
+         * 交界带：到次近字母键与到所按键的归一化中心距之差小于此值时，把另一侧的字母交给内核纠错
+         * （与 core/weave-engine/examples/eval.rs 的模拟一致）。
+         * Border band: when the normalised centre distance to the runner-up letter is within this of the pressed
+         * key's, the runner-up goes to the engine for correction (matches the simulation in the engine's eval).
+         */
+        const val NEAR_BAND = 0.45f
         /** 上滑的最小距离：max(28 dp, 0.55 × 键高)，且 |dy| > 1.5 |dx|。 Swipe-up minimum and verticality. */
         const val SWIPE_MIN_DP = 28f
         const val SWIPE_MIN_KEY = 0.55f

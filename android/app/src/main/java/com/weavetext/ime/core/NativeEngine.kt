@@ -9,6 +9,11 @@ interface KeyEngine {
     fun setSchema(key: String): Boolean
     fun setOption(key: String, value: Boolean): Boolean
     fun inputChar(codePoint: Int): Boolean
+    /**
+     * 带触点信息输入一个字母：[near] 为交界另一侧的字母，[closeness] 1 = 正压在交界上。全拼用来纠正误触。
+     * A letter with touch info: [near] is the letter across the nearby border, [closeness] 1 = right on it.
+     */
+    fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean = inputChar(codePoint)
     fun backspace(): Boolean
     fun select(index: Int): Boolean
     fun selectPinyin(index: Int): Boolean
@@ -45,6 +50,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
 
     /** 输入一个字符；false 表示引擎不处理，调用方应直接上屏。 */
     override fun inputChar(codePoint: Int): Boolean = nativeInputChar(handle, codePoint)
+    override fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean = nativeInputKey(handle, codePoint, near, closeness)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
     override fun backspace(): Boolean = nativeBackspace(handle)
@@ -135,6 +141,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeSetSchema(h: Long, key: String): Boolean
         @JvmStatic private external fun nativeSetOption(h: Long, key: String, value: String): Boolean
         @JvmStatic private external fun nativeInputChar(h: Long, codePoint: Int): Boolean
+        @JvmStatic private external fun nativeInputKey(h: Long, codePoint: Int, near: Int, closeness: Float): Boolean
         @JvmStatic private external fun nativeBackspace(h: Long): Boolean
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeSelectPinyin(h: Long, index: Int): Boolean

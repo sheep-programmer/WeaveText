@@ -122,6 +122,28 @@ class TypingFeelTest {
 
     // ------------------------------------------------------------ multi-touch rollover
 
+    @Test fun borderTapsCarryTheNeighbourToTheEngine() {
+        val z = key('z')
+        val x = key('x')
+        val border = (z.rect.right + x.rect.left) / 2f
+        // 正中：没有邻键。 Dead centre: no neighbour.
+        tap('g')
+        assertTrue(engine.nearCalls.isEmpty())
+        // 贴着 z/x 交界、落在 x 一侧。 Just on x's side of the z/x border.
+        press(9, x, dx = border + dp(1f) - x.rect.centerX())
+        release(9)
+        val (c, n, closeness) = engine.nearCalls.single()
+        assertEquals('x', c)
+        assertEquals('z', n)
+        assertTrue(closeness > 0.8f)
+        // 靠上沿：邻键是上一行的字母。 Near the top edge: the neighbour is in the row above.
+        val g = key('g')
+        press(9, g, dy = -(g.rect.height() / 2f + dp(3f)))
+        release(9)
+        assertTrue(engine.nearCalls.last().second in "ty")
+        assertEquals("gxg", engine.raw.toString())
+    }
+
     @Test fun rolloverKeepsPressOrder() {
         press(0, key('n'))
         press(1, key('i'))

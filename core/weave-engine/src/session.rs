@@ -13,7 +13,7 @@ use weave_dict::syllable::{self, SyllableId};
 
 use crate::convert::{Emoji, Traditional};
 use crate::decoder::{CandKind, Candidate, Decoder, Lattice, LmParams};
-use crate::graph::{self, FuzzyOptions, Letters, SyllableGraph};
+use crate::graph::{self, FuzzyOptions, Letters, Near, SyllableGraph};
 use crate::shuangpin::{self, SchemeId};
 use crate::t9::{self, Grouping, T9Input, T9Unit};
 use crate::table;
@@ -245,6 +245,9 @@ pub struct Engine {
     pub options: Options,
 
     raw: String,
+    /// 与 raw 逐字节对应的触点邻键（仅全拼使用；长度不符时忽略）。
+    /// Tap neighbours, one per raw byte (full pinyin only; ignored when the lengths disagree).
+    near: Vec<Near>,
     t9_units: Vec<T9Unit>,
     consumed: usize,
     selected: Vec<Selection>,
@@ -295,6 +298,7 @@ impl Engine {
             schema: Schema::Pinyin,
             options: Options::default(),
             raw: String::new(),
+            near: Vec::new(),
             t9_units: Vec::new(),
             consumed: 0,
             selected: Vec::new(),
@@ -487,6 +491,31 @@ impl Engine {
 
     // ------------------------------------------------------------ keys
 
+    /// 带触点信息输入一个键：[alt] 为交界另一侧的字母，[closeness] 1 = 正压在交界上、0 = 刚进交界带。
+    /// 全拼时用来纠正按到邻键的误触；其它方案等同 [input_char]。
+    /// Feed a key with touch info: [alt] is the letter across the nearby border, [closeness] 1 = right on it,
+    /// 0 = at the band's edge. Full pinyin uses it to fix taps on the neighbouring key; otherwise like [input_char].
+    pub fn input_key(&mut self, c: char, alt: Option<char>, closeness: f32) -> bool {
+        let before = self.raw.len();
+        let nb = match alt {
+            Some(a) if self.schema == Schema::Pinyin && c.is_ascii_alphabetic() && a.is_ascii_alphabetic() => {
+                Near::new(a.to_ascii_lowercase() as u8, closeness)
+            }
+            _ => Near::NONE,
+        };
+        if nb == Near::NONE {
+            return self.input_char(c);
+        }
+        // 先记下邻键再输入，刷新时即可用上。 Record the neighbour first so the refresh already uses it.
+        self.near.resize(before, Near::NONE);
+        self.near.push(nb);
+        let ok = self.input_char(c);
+        if self.raw.len() != before + 1 {
+            self.near.truncate(self.raw.len().min(before));
+        }
+        ok
+    }
+
     /// 输入一个字符；返回 false 表示引擎不处理（界面应直接上屏）。
     /// Feed a character; false means "not mine", the UI should insert it directly.
     pub fn input_char(&mut self, c: char) -> bool {
@@ -597,6 +626,7 @@ impl Engine {
             }
         } else {
             self.raw.pop();
+            self.near.truncate(self.raw.len());
         }
         if self.raw.len() <= self.consumed
             && self.t9_units.len() <= self.consumed
@@ -733,6 +763,7 @@ impl Engine {
     pub fn clear(&mut self) {
         self.hand_strokes.clear();
         self.raw.clear();
+        self.near.clear();
         self.t9_units.clear();
         self.consumed = 0;
         self.selected.clear();
@@ -864,6 +895,24 @@ impl Engine {
         &self.raw[self.consumed.min(self.raw.len())..]
     }
 
+    /// 未上屏部分的邻键，与 [Letters::parse] 的字母一一对应（分隔符跳过）；没有或不同步时为空。
+    /// Neighbours of the uncommitted part, aligned with the letters of [Letters::parse] (separators skipped);
+    /// empty when absent or out of sync.
+    fn rest_near(&self) -> Vec<Near> {
+        let start = self.consumed.min(self.raw.len());
+        // 普通 input_char 输入的键没有邻键记录，这里按长度补齐。 Keys fed via input_char have none; pad by length.
+        if self.near.len() > self.raw.len() || self.near.iter().all(|n| n.alt == 0) {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(self.raw.len() - start);
+        for (i, b) in self.raw.bytes().enumerate().skip(start) {
+            if b.is_ascii_lowercase() {
+                out.push(self.near.get(i).copied().unwrap_or(Near::NONE));
+            }
+        }
+        out
+    }
+
     fn skip_separators(&mut self) {
         match self.schema {
             Schema::Keypad(_) => {
@@ -962,7 +1011,8 @@ impl Engine {
         match self.schema {
             Schema::Pinyin => {
                 let l = Letters::parse(self.rest_raw());
-                (graph::build_full_pinyin(&l, &self.options.fuzzy), l.keys)
+                let near = self.rest_near();
+                (graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near), l.keys)
             }
             Schema::Shuangpin(id) => {
                 let keys = self.rest_raw().as_bytes().to_vec();
@@ -1148,7 +1198,16 @@ impl Engine {
             let mut s = span.start;
             for (i, &cut) in span.cuts.iter().enumerate() {
                 let piece = match self.schema {
-                    Schema::Pinyin => String::from_utf8_lossy(&keys[s..cut]).into_owned(),
+                    Schema::Pinyin => {
+                        let typed = String::from_utf8_lossy(&keys[s..cut]).into_owned();
+                        // 按错的键被纠正（xhong → zhong）时显示纠正后的拼写；模糊音等本身合法的拼写保持原样。
+                        // Show the corrected spelling for a fixed typo (xhong → zhong); already valid
+                        // spellings (fuzzy sounds etc.) stay as typed.
+                        match span.key.get(i).map(|&id| syllable::spelling(id)) {
+                            Some(full) if full.len() == typed.len() && full != typed && syllable::id_of(&typed).is_none() => full.to_string(),
+                            _ => typed,
+                        }
+                    }
                     Schema::Shuangpin(_) | Schema::Keypad(_) => match span.key.get(i) {
                         Some(&id) => {
                             let full = syllable::spelling(id);

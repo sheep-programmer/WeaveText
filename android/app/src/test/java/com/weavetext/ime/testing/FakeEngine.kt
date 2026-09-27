@@ -46,6 +46,13 @@ class FakeEngine : KeyEngine {
         raw.append(c)
         return true
     }
+    /** 带邻键的按键：(字母, 邻键, 贴近度)。 Keys fed with a neighbour: (letter, neighbour, closeness). */
+    val nearCalls = ArrayList<Triple<Char, Char, Float>>()
+    override fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean {
+        if (!inputChar(codePoint)) return false
+        nearCalls += Triple(codePoint.toChar(), near.toChar(), closeness)
+        return true
+    }
     override fun backspace(): Boolean {
         if (handing) { hand.removeAt(hand.size - 1); return true }
         if (raw.isEmpty()) return false

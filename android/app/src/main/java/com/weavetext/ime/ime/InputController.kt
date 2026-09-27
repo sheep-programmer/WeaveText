@@ -125,13 +125,19 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     // ---------------------------------------------------------------- keys
 
-    /** 字符键。 A character key. */
-    fun onChar(codePoint: Int) {
+    /**
+     * 字符键；[near] / [closeness] 为触点靠近交界时另一侧的字母与贴近度（0 = 无），内核用来纠正误触。
+     * A character key; [near] / [closeness] are the letter across a nearby key border and how close the tap was
+     * (0 = none), used by the engine to fix taps on the neighbouring key.
+     */
+    fun onChar(codePoint: Int, near: Int = 0, closeness: Float = 0f) {
         val e = engine
         val ch = codePoint.toChar()
         lastSpaceAt = 0L
         // 中文方案，或普通文本框里的英文联想，都交给内核组合。 Chinese, or English with suggestions.
-        if (e != null && (state.chinese || englishSuggest) && e.inputChar(codePoint)) {
+        if (e != null && (state.chinese || englishSuggest) &&
+            (if (near != 0 && state.chinese) e.inputKey(codePoint, near, closeness) else e.inputChar(codePoint))
+        ) {
             stamp++
             refresh()
             markUndo(null)

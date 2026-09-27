@@ -27,6 +27,39 @@ pub mod penalty {
     pub const EXTEND_END: u16 = 4000;
     /// 无法识别的按键原样保留。 Keys that cannot form any syllable.
     pub const RAW: u16 = 20000;
+    /// 按在两键交界处、换成邻键才成音节：最低惩罚（正压在交界线上）与随远离交界增加的部分。
+    /// A tap near a key border read as the neighbour: the cost right on the border, plus the part that grows
+    /// as the tap moves away from it.
+    pub const TOUCH_NEAR: u16 = 600;
+    pub const TOUCH_SPREAD: u16 = 1200;
+    /// 原拼写本身就是完整音节时，换邻键的额外惩罚（打对的字不轻易被改）。
+    /// Extra cost when the typed spelling is already a full syllable, so correct typing is rarely overridden.
+    pub const TOUCH_VALID: u16 = 1200;
+}
+
+/// 一次按键的邻键：触点靠近两键交界时，另一侧的字母与换成它的惩罚；`alt == 0` 表示没有。
+/// The neighbour of one tap: when it lands near a key border, the letter on the other side and the cost
+/// of reading it instead; `alt == 0` means none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Near {
+    pub alt: u8,
+    pub cost: u16,
+}
+
+impl Near {
+    pub const NONE: Near = Near { alt: 0, cost: 0 };
+
+    /// `closeness`：1 = 正压在交界线上，0 = 刚进入交界带。 1 = right on the border, 0 = at the band's edge.
+    pub fn new(alt: u8, closeness: f32) -> Near {
+        if !alt.is_ascii_lowercase() {
+            return Near::NONE;
+        }
+        let c = closeness.clamp(0.0, 1.0);
+        Near {
+            alt,
+            cost: penalty::TOUCH_NEAR + ((1.0 - c) * penalty::TOUCH_SPREAD as f32) as u16,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +67,8 @@ pub enum EdgeKind {
     Full,
     Fuzzy,
     Correction,
+    /// 按到邻键的纠正。 A tap read as the neighbouring key.
+    Touch,
     Abbrev,
     Partial,
     /// 不能组成音节的按键，原样输出。 Raw keys, emitted literally.
@@ -322,7 +357,15 @@ const MAX_SPELLING: usize = 7;
 
 /// 为全拼输入建音节图。 Build the syllable graph for full pinyin.
 pub fn build_full_pinyin(letters: &Letters, fuzzy: &FuzzyOptions) -> SyllableGraph {
+    build_full_pinyin_near(letters, fuzzy, &[])
+}
+
+/// 同上，并按触点邻键补纠正边：一个音节内至多换一个键。[near] 与 `letters.keys` 一一对应（可为空）。
+/// As above, plus correction edges from the taps' neighbours: at most one key replaced per syllable.
+/// [near] parallels `letters.keys` (may be empty).
+pub fn build_full_pinyin_near(letters: &Letters, fuzzy: &FuzzyOptions, near: &[Near]) -> SyllableGraph {
     let n = letters.keys.len();
+    let near = if near.len() == n { near } else { &[] };
     let mut g = SyllableGraph::new(n);
     for start in 0..n {
         for end in start + 1..=(start + MAX_SPELLING).min(n) {
@@ -365,6 +408,9 @@ pub fn build_full_pinyin(letters: &Letters, fuzzy: &FuzzyOptions) -> SyllableGra
                     });
                 }
             }
+            if !near.is_empty() {
+                touch_edges(&mut g, letters, near, start, end, full);
+            }
             if syllable::is_initial(s) && full.is_none() {
                 let syls: Vec<_> = syllable::with_prefix(s).collect();
                 let penalty = if at_end {
@@ -405,6 +451,50 @@ pub fn build_full_pinyin(letters: &Letters, fuzzy: &FuzzyOptions) -> SyllableGra
     g.drop_dangling_abbrev();
     g.ensure_connected();
     g
+}
+
+/// 把 keys[start..end] 中某一个有邻键的位置换成邻键，能成完整音节（或末尾的音节前缀）就加一条纠正边。
+/// Replace one key of keys[start..end] that has a neighbour; add a correction edge when that spells a full
+/// syllable (or, at the end of the input, a syllable prefix).
+fn touch_edges(g: &mut SyllableGraph, letters: &Letters, near: &[Near], start: usize, end: usize, full: Option<SyllableId>) {
+    let at_end = end == letters.keys.len();
+    let mut buf = [0u8; MAX_SPELLING];
+    for p in start..end {
+        let nb = near[p];
+        if nb.alt == 0 {
+            continue;
+        }
+        let len = end - start;
+        buf[..len].copy_from_slice(&letters.keys[start..end]);
+        buf[p - start] = nb.alt;
+        let s = std::str::from_utf8(&buf[..len]).unwrap();
+        let extra = if full.is_some() { penalty::TOUCH_VALID } else { 0 };
+        if let Some(id) = syllable::id_of(s) {
+            if Some(id) != full {
+                g.push(Edge {
+                    start,
+                    end,
+                    syls: vec![id],
+                    penalty: nb.cost + extra,
+                    kind: EdgeKind::Touch,
+                    bits: Vec::new(),
+                });
+            }
+        } else if at_end && full.is_none() && len > 1 && syllable::is_prefix(s) && !syllable::is_initial(s) {
+            // 正在打的最后一个音节：邻键能接上前缀时照常给出补全。 The syllable being typed: complete via the neighbour.
+            let syls: Vec<_> = syllable::with_prefix(s).collect();
+            if !syls.is_empty() {
+                g.push(Edge {
+                    start,
+                    end,
+                    syls,
+                    penalty: nb.cost + penalty::PARTIAL_END,
+                    kind: EdgeKind::Touch,
+                    bits: Vec::new(),
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +559,28 @@ mod tests {
         assert!(spell(&g, 0)
             .iter()
             .any(|x| x.1 == "zhong" && x.2 == EdgeKind::Correction));
+    }
+
+    #[test]
+    fn touch_neighbour_fixes_a_border_tap() {
+        // xhong：x 按在 z 的交界处。 x landed on the border with z.
+        let l = Letters::parse("xhong");
+        let mut near = vec![Near::NONE; 5];
+        near[0] = Near::new(b'z', 0.8);
+        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near);
+        let e = g.out[0].iter().find(|e| e.kind == EdgeKind::Touch && e.end == 5).unwrap();
+        assert_eq!(e.syls, vec![syllable::id_of("zhong").unwrap()]);
+        assert!(e.penalty < penalty::TOUCH_NEAR + penalty::TOUCH_SPREAD);
+        // 没有邻键信息时不纠正。 Without neighbour info nothing changes.
+        let g = build_full_pinyin(&l, &FuzzyOptions::default());
+        assert!(!g.out[0].iter().any(|e| e.kind == EdgeKind::Touch));
+        // 原拼写已是音节时代价更高。 Costlier when the typed spelling is already a syllable.
+        let l = Letters::parse("mi");
+        let near = [Near::new(b'n', 0.8), Near::NONE];
+        let g = build_full_pinyin_near(&l, &FuzzyOptions::default(), &near);
+        let e = g.out[0].iter().find(|e| e.kind == EdgeKind::Touch).unwrap();
+        assert_eq!(e.syls, vec![syllable::id_of("ni").unwrap()]);
+        assert!(e.penalty >= penalty::TOUCH_VALID + penalty::TOUCH_NEAR);
     }
 
     #[test]

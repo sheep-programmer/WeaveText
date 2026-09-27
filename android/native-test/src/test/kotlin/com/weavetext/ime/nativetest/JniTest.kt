@@ -42,6 +42,25 @@ class JniTest {
         }
     }
 
+    /** 按在 z/x 交界、落到 x 上：带邻键信息时仍得到「中国」，没有时不纠正。 A border tap still spells 中国. */
+    @Test
+    fun borderTapIsCorrected() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            assertTrue(e.inputKey('x'.code, 'z'.code, 0.9f))
+            e.type("hongguo")
+            assertEquals("中国", e.snapshot().candidates.first().text)
+            assertEquals("zhong'guo", e.snapshot().preedit)
+            // 退格后邻键记录同步退掉。 Backspace drops the neighbour record too.
+            repeat(7) { e.backspace() }
+            e.type("i")
+            assertNotEquals("zi", e.snapshot().preedit)
+            e.clear()
+            e.type("xhongguo")
+            assertNotEquals("中国", e.snapshot().candidates.first().text)
+        }
+    }
+
     /**
      * 与安卓端相同的加载方式：分块压缩文件拼进一个「APK」里，按偏移读取；结果须与原始文件完全一致。
      * The Android path: packed files concatenated into one "APK" and read by offset; results must

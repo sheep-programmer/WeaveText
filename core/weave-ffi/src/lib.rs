@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jlong, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
 use weave_engine::session::{paths_in, CandidateView, Engine, Paths, Schema, Snapshot};
@@ -249,6 +249,24 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeInputChar(
         return JNI_FALSE;
     };
     jbool(with_engine(h, false, |e| e.input_char(ch)))
+}
+
+/// 带触点邻键的按键：`near` 为交界另一侧的字母（0 = 无），`closeness` 1 = 正压在交界上。
+/// A key with its tap neighbour: `near` is the letter across the border (0 = none), `closeness` 1 = on it.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeInputKey(
+    _env: JNIEnv,
+    _c: JClass,
+    h: jlong,
+    code_point: jint,
+    near: jint,
+    closeness: jfloat,
+) -> jboolean {
+    let Some(ch) = char::from_u32(code_point as u32) else {
+        return JNI_FALSE;
+    };
+    let alt = char::from_u32(near as u32).filter(|_| near != 0);
+    jbool(with_engine(h, false, |e| e.input_key(ch, alt, closeness)))
 }
 
 macro_rules! bool_op {

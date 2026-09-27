@@ -660,7 +660,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 return
             }
         }
-        controller.onChar(code)
+        val near = keyboardView.nearCode
+        if (near != 0 && code in 'a'.code..'z'.code) controller.onChar(code, near, keyboardView.nearCloseness)
+        else controller.onChar(code)
     }
 
     private fun afterKey() {
