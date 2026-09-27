@@ -1,0 +1,6 @@
+module CWeave [system] {
+    header "../../../core/weave-c/include/weave.h"
+    link "weave_c"
+    link "iconv"
+    export *
+}
