@@ -56,6 +56,10 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     override fun inputChar(codePoint: Int): Boolean = nativeInputChar(handle, codePoint)
     override fun inputKey(codePoint: Int, near: Int, closeness: Float): Boolean = nativeInputKey(handle, codePoint, near, closeness)
     override fun setUtcOffset(minutes: Int) = nativeSetUtcOffset(handle, minutes)
+
+    /** 载入（或替换）专业词库文件。 Load (or replace) a domain dictionary file. */
+    fun loadPack(id: String, path: String): Boolean = nativeLoadPack(handle, id, path)
+    fun unloadPack(id: String): Boolean = nativeUnloadPack(handle, id)
     override fun evaluate(expr: String): String? = nativeEval(expr)
 
     /** 退格；false 表示没有组合内容，调用方应删除编辑器里的字符。 */
@@ -149,6 +153,8 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeInputChar(h: Long, codePoint: Int): Boolean
         @JvmStatic private external fun nativeInputKey(h: Long, codePoint: Int, near: Int, closeness: Float): Boolean
         @JvmStatic private external fun nativeSetUtcOffset(h: Long, minutes: Int)
+        @JvmStatic private external fun nativeLoadPack(h: Long, id: String, path: String): Boolean
+        @JvmStatic private external fun nativeUnloadPack(h: Long, id: String): Boolean
         @JvmStatic private external fun nativeEval(expr: String): String?
         @JvmStatic private external fun nativeBackspace(h: Long): Boolean
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean

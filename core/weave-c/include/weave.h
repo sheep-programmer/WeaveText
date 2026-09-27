@@ -37,6 +37,10 @@ void weave_set_learning(WeaveEngine *h, bool on);
 void weave_set_context(WeaveEngine *h, const char *prev_word);
 /* 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes (date/time candidates). */
 void weave_set_utc_offset(WeaveEngine *h, int32_t minutes);
+/* 专业词库（~/Library/Application Support/WeaveText/packs/<id>.wvz 启动时自动载入）。
+   Domain dictionaries; files in <user dir>/packs/<id>.wvz load automatically at startup. */
+bool weave_load_pack(WeaveEngine *h, const char *id, const char *path);
+bool weave_unload_pack(WeaveEngine *h, const char *id);
 /* 算式结果；非算式返回 NULL。 Result of an arithmetic expression; NULL if it isn't one. */
 char *weave_eval(const char *expr);
 

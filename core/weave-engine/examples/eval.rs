@@ -117,6 +117,17 @@ fn main() {
         gram_model: arg(&args, "--gram").map(|g| Source::file(PathBuf::from(g))),
         ..Default::default()
     };
+    let mut paths = paths;
+    // --packs <dir>：载入目录里全部扩展词库（检查专业词库不拖累日常输入）。 Load every pack in a directory.
+    if let Some(dir) = arg(&args, "--packs") {
+        for f in std::fs::read_dir(&dir).expect("read packs dir").flatten() {
+            let p = f.path();
+            if p.extension().is_some_and(|e| e == "wvz") {
+                let id = p.file_stem().unwrap().to_string_lossy().into_owned();
+                paths.set(&format!("pack.{id}"), Source::file(p));
+            }
+        }
+    }
     let mut e = Engine::new(&paths);
     e.set_learning(false);
     e.options.emoji = false;

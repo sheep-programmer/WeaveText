@@ -228,6 +228,19 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeInputChar(
     jbool(with_engine(h, false, |e| e.input_char(ch)))
 }
 
+/// 载入（或替换）一个专业词库文件。 Load (or replace) a domain dictionary file.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeLoadPack(mut env: JNIEnv, _c: JClass, h: jlong, id: JString, path: JString) -> jboolean {
+    let (Some(id), Some(path)) = (get_string(&mut env, &id), get_string(&mut env, &path)) else { return JNI_FALSE };
+    jbool(with_engine(h, false, |e| e.load_pack(&id, &weave_dict::blob::Source::file(path))))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeUnloadPack(mut env: JNIEnv, _c: JClass, h: jlong, id: JString) -> jboolean {
+    let Some(id) = get_string(&mut env, &id) else { return JNI_FALSE };
+    jbool(with_engine(h, false, |e| e.unload_pack(&id)))
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetUtcOffset(_env: JNIEnv, _c: JClass, h: jlong, minutes: jint) {

@@ -35,6 +35,34 @@ const SPAN_LIST_LIMIT: usize = 600;
 const ALT_SENTENCE_MARGIN: u32 = 3500;
 /// 候选总数上限。 Hard cap on listed candidates.
 pub const MAX_CANDIDATES: usize = 800;
+/// 系统词库 + 至多 15 个扩展词库（专业词库、热词）。 The system lexicon plus up to fifteen extra packs.
+pub const MAX_LEX: usize = 16;
+
+/// 每个词库在前缀树上的位置（下标 0 = 系统词库，其后为扩展词库）；紧凑存放，按值传递很便宜。
+/// Position in each lexicon's trie (index 0 = system lexicon, then the extra packs); compact and cheap to copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nodes([NodeId; MAX_LEX]);
+
+impl Nodes {
+    const NONE: NodeId = NodeId::MAX;
+    pub const EMPTY: Nodes = Nodes([Self::NONE; MAX_LEX]);
+
+    #[inline]
+    pub fn get(&self, i: usize) -> Option<NodeId> {
+        let v = self.0[i];
+        (v != Self::NONE).then_some(v)
+    }
+
+    #[inline]
+    pub fn set(&mut self, i: usize, n: Option<NodeId>) {
+        self.0[i] = n.unwrap_or(Self::NONE);
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|&v| v == Self::NONE)
+    }
+}
 
 /// 词图中的一条跨度。 One span of the word lattice.
 #[derive(Clone, Debug)]
@@ -46,7 +74,7 @@ pub struct Span {
     /// 每个音节在按键上的结束位置。 Key position where each syllable ends.
     pub cuts: Vec<usize>,
     pub penalty: u32,
-    pub sys: Option<NodeId>,
+    pub sys: Nodes,
     pub usr: Option<UNodeId>,
     /// 原样输出的按键。 Raw keys (no syllable).
     pub raw: bool,
@@ -128,6 +156,9 @@ pub mod learn_cost {
 /// 解码上下文。 Decoding context.
 pub struct Decoder<'a> {
     pub lex: Option<&'a Lexicon>,
+    /// 扩展词库（专业词库、热词）；与系统词库同步深搜，词按文字合并取最低 cost。
+    /// Extra lexicons (domain packs, hot words), walked in lockstep with the system one; merged by text, lowest cost.
+    pub packs: &'a [Lexicon],
     pub user: &'a UserDict,
     pub graph: &'a SyllableGraph,
     /// 光标前的上一个词（用于二元组）。 Previous word before the cursor.
@@ -259,6 +290,28 @@ pub struct Lattice {
 }
 
 impl<'a> Decoder<'a> {
+    /// 第 i 个词库（0 = 系统词库）。 The i-th lexicon (0 = system).
+    fn lexicon(&self, i: usize) -> Option<&'a Lexicon> {
+        if i == 0 {
+            self.lex
+        } else {
+            self.packs.get(i - 1)
+        }
+    }
+
+    fn lex_count(&self) -> usize {
+        (1 + self.packs.len()).min(MAX_LEX)
+    }
+
+    /// 各词库的根。 Roots of all lexicons.
+    fn roots(&self) -> Nodes {
+        let mut n = Nodes::EMPTY;
+        for i in 0..self.lex_count() {
+            n.set(i, self.lexicon(i).map(|_| ROOT));
+        }
+        n
+    }
+
     /// 建词图并求最优整句。 Build the lattice and the best sentence.
     pub fn decode(&self) -> Lattice {
         let n = self.graph.len;
@@ -268,7 +321,7 @@ impl<'a> Decoder<'a> {
             let mut budget = DFS_BUDGET;
             let mut key = Vec::new();
             let mut cuts = Vec::new();
-            let sys = self.lex.map(|_| ROOT);
+            let sys = self.roots();
             self.dfs(
                 start,
                 start,
@@ -302,7 +355,7 @@ impl<'a> Decoder<'a> {
         &self,
         start: usize,
         pos: usize,
-        sys: Option<NodeId>,
+        sys: Nodes,
         usr: Option<UNodeId>,
         key: &mut Vec<SyllableId>,
         cuts: &mut Vec<usize>,
@@ -323,7 +376,7 @@ impl<'a> Decoder<'a> {
                             key: Vec::new(),
                             cuts: vec![edge.end],
                             penalty: edge.penalty as u32,
-                            sys: None,
+                            sys: Nodes::EMPTY,
                             usr: None,
                             raw: true,
                             cut_short: false,
@@ -341,21 +394,33 @@ impl<'a> Decoder<'a> {
             }
             // 大集合（简拼）按子节点扫描位图，小集合逐个二分查找。
             // Large sets (abbreviations) scan the node's children against a bitset.
-            let mut via_children: Vec<(SyllableId, Option<NodeId>)> = Vec::new();
+            let nlex = self.lex_count();
+            let mut via_children: Vec<(SyllableId, Nodes)> = Vec::new();
             let scan = !edge.bits.is_empty();
             if scan {
-                if let (Some(lex), Some(n)) = (self.lex, sys) {
+                for i in 0..nlex {
+                    let (Some(lex), Some(n)) = (self.lexicon(i), sys.get(i)) else { continue };
                     for c in lex.children(n) {
                         let sym = lex.sym(c);
                         if edge.contains(sym) {
-                            via_children.push((sym, Some(c)));
+                            // 系统词库先扫，子节点音节互不重复，直接追加；扩展词库才需要合并。
+                            // The system lexicon goes first and its children are unique: push directly; only packs merge.
+                            let found = if i == 0 { None } else { via_children.iter_mut().find(|(s, _)| *s == sym) };
+                            match found {
+                                Some((_, nodes)) => nodes.set(i, Some(c)),
+                                None => {
+                                    let mut nodes = Nodes::EMPTY;
+                                    nodes.set(i, Some(c));
+                                    via_children.push((sym, nodes));
+                                }
+                            }
                         }
                     }
                 }
                 if let Some(un) = usr {
                     for &(sym, _) in self.user.children(un) {
                         if edge.contains(sym) && !via_children.iter().any(|(s, _)| *s == sym) {
-                            via_children.push((sym, None));
+                            via_children.push((sym, Nodes::EMPTY));
                         }
                     }
                 }
@@ -363,28 +428,40 @@ impl<'a> Decoder<'a> {
             let direct: &[SyllableId] = if scan { &[] } else { &edge.syls };
             let items = via_children
                 .iter()
-                .copied()
+                .map(|&(s, n)| (s, Some(n)))
                 .chain(direct.iter().map(|&s| (s, None)));
             for (syl, known) in items {
                 if *budget == 0 {
                     return;
                 }
                 *budget -= 1;
-                let ns = match known {
-                    Some(c) => Some(c),
-                    None => match (self.lex, sys) {
-                        (Some(lex), Some(n)) if !scan => lex.child(n, syl),
-                        _ => None,
-                    },
+                let ns: Nodes = match known {
+                    Some(n) => n,
+                    None => {
+                        let mut n = Nodes::EMPTY;
+                        for i in 0..nlex {
+                            if let (Some(lex), Some(at)) = (self.lexicon(i), sys.get(i)) {
+                                n.set(i, lex.child(at, syl));
+                            }
+                        }
+                        n
+                    }
                 };
                 let nu = usr.and_then(|n| self.user.child(n, syl));
-                if ns.is_none() && nu.is_none() {
+                if ns.is_empty() && nu.is_none() {
                     continue;
                 }
                 key.push(syl);
                 cuts.push(edge.end);
-                let has_sys =
-                    matches!((self.lex, ns), (Some(l), Some(n)) if l.entry_count_of(n) > 0);
+                let mut with_entries = Nodes::EMPTY;
+                for i in 0..nlex {
+                    if let (Some(l), Some(n)) = (self.lexicon(i), ns.get(i)) {
+                        if l.entry_count_of(n) > 0 {
+                            with_entries.set(i, Some(n));
+                        }
+                    }
+                }
+                let has_sys = !with_entries.is_empty();
                 let has_usr = nu.is_some_and(|n| !self.user.entries(n).is_empty());
                 if has_sys || has_usr {
                     let cut_short = edge.kind == EdgeKind::Abbrev
@@ -407,7 +484,7 @@ impl<'a> Decoder<'a> {
                                 key: key.clone(),
                                 cuts: cuts.clone(),
                                 penalty: p,
-                                sys: ns.filter(|_| has_sys),
+                                sys: with_entries,
                                 usr: nu.filter(|_| has_usr),
                                 raw: false,
                                 cut_short,
@@ -415,8 +492,9 @@ impl<'a> Decoder<'a> {
                         }
                     }
                 }
-                let more_sys =
-                    matches!((self.lex, ns), (Some(l), Some(n)) if !l.children(n).is_empty());
+                let more_sys = (0..nlex).any(|i| {
+                    matches!((self.lexicon(i), ns.get(i)), (Some(l), Some(n)) if !l.children(n).is_empty())
+                });
                 let more_usr = nu.is_some_and(|n| !self.user.children(n).is_empty());
                 if (more_sys || more_usr) && edge.end < self.graph.len {
                     self.dfs(start, edge.end, ns, nu, key, cuts, p, budget, spans, index);
@@ -444,22 +522,36 @@ impl<'a> Decoder<'a> {
         let tick = self.user.tick();
         let user_entries: &[UserEntry] = span.usr.map(|n| self.user.entries(n)).unwrap_or(&[]);
         let mut out: Vec<Scored> = Vec::new();
-        let mut top: Option<u32> = None;
-        if let (Some(lex), Some(n)) = (self.lex, span.sys) {
-            for e in lex.entries(n).take(limit) {
-                let text = lex.text(e.text_id, &span.key);
-                let t = *top.get_or_insert(e.cost as u32);
-                let mut cost = e.cost as u32;
-                let mut origin = Origin::System;
-                if let Some(ue) = user_entries.iter().find(|u| u.text == text) {
-                    cost = learn_cost::promoted(cost, t, tick, ue);
-                    origin = Origin::User;
+        // 本跨度的最优 cost：取所有词库首条的最小值（学习提升以它为基准）。
+        // The span's best cost across all lexicons; learning promotions are relative to it.
+        let top: Option<u32> = (0..self.lex_count())
+            .filter_map(|i| {
+                let (lex, n) = (self.lexicon(i)?, span.sys.get(i)?);
+                lex.entries(n).next().map(|e| e.cost as u32)
+            })
+            .min();
+        if let Some(t) = top {
+            for i in 0..self.lex_count() {
+                let (Some(lex), Some(n)) = (self.lexicon(i), span.sys.get(i)) else { continue };
+                for e in lex.entries(n).take(limit) {
+                    let text = lex.text(e.text_id, &span.key);
+                    let cost = e.cost as u32;
+                    // 同一个词出现在多个词库：取最低 cost（系统词库内部不重复，不必查）。
+                    // A word in several lexicons keeps its lowest cost (system entries are unique, no lookup).
+                    if let Some(s) = if i == 0 { None } else { out.iter_mut().find(|s| s.text == text) } {
+                        if s.origin == Origin::System && cost < s.cost {
+                            s.cost = cost;
+                        }
+                        continue;
+                    }
+                    let (cost, origin) = match user_entries.iter().find(|u| u.text == text) {
+                        Some(ue) => (learn_cost::promoted(cost, t, tick, ue), Origin::User),
+                        None => (cost, Origin::System),
+                    };
+                    out.push(Scored { text, cost, origin });
                 }
-                out.push(Scored { text, cost, origin });
-            }
-            // 用户用过、但排在 limit 之外的系统词：按存储字节直接查，不解码整个节点。
-            // System words the user has used that rank beyond `limit`: looked up by bytes, no full decode.
-            if let Some(t) = top {
+                // 用户用过、但排在 limit 之外的词：按存储字节直接查，不解码整个节点。
+                // Words the user has used that rank beyond `limit`: looked up by bytes, no full decode.
                 for ue in user_entries {
                     if out.iter().any(|s| s.text == ue.text) {
                         continue;
@@ -785,6 +877,7 @@ mod debug_tests {
         }
         let d = Decoder {
             lex: Some(&lex),
+            packs: &[],
             user: &user,
             graph: &g,
             context: None,

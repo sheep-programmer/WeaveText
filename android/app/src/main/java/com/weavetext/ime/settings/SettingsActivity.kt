@@ -63,6 +63,7 @@ sealed class Route {
     data object Privacy : Route()
     data object Licenses : Route()
     data object Link : Route()
+    data object DictPacks : Route()
 
     companion object {
         /**
@@ -81,7 +82,7 @@ sealed class Route {
                 "models" -> if (runtimeReady) listOf(Voice, Models) else listOf(Voice, VoiceUpgrade)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
-                "dictionary" -> listOf(Dictionary)
+                "dictionary" -> listOf(Dictionary) + if (parts.getOrNull(1) == "packs") listOf(DictPacks) else emptyList()
                 "link" -> listOf(Link)
                 "about" -> listOf(About) + when (parts.getOrNull(1)) { "help" -> listOf(Help); "privacy" -> listOf(Privacy); else -> emptyList() }
                 else -> emptyList()
@@ -132,6 +133,7 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Privacy -> PrivacyScreen()
                     Route.Licenses -> LicensesScreen()
                     Route.Link -> LinkScreen()
+                    Route.DictPacks -> DictPacksScreen()
                 }
             }
         }

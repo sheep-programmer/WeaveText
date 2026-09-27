@@ -138,6 +138,19 @@ pub extern "C" fn weave_input_char(h: *mut WeaveEngine, code_point: u32) -> bool
     with(h, false, |e| e.input_char(c))
 }
 
+/// 载入（或替换）一个专业词库文件（.wvz / .wvl）。 Load (or replace) a domain dictionary file.
+#[no_mangle]
+pub extern "C" fn weave_load_pack(h: *mut WeaveEngine, id: *const c_char, path: *const c_char) -> bool {
+    let (Some(id), Some(p)) = (str_arg(id), str_arg(path)) else { return false };
+    with(h, false, |e| e.load_pack(id, &weave_dict::blob::Source::file(p)))
+}
+
+#[no_mangle]
+pub extern "C" fn weave_unload_pack(h: *mut WeaveEngine, id: *const c_char) -> bool {
+    let Some(id) = str_arg(id) else { return false };
+    with(h, false, |e| e.unload_pack(id))
+}
+
 /// 本地时区相对 UTC 的分钟数（日期时间候选）。 Local UTC offset in minutes, for date/time candidates.
 #[no_mangle]
 pub extern "C" fn weave_set_utc_offset(h: *mut WeaveEngine, minutes: i32) {

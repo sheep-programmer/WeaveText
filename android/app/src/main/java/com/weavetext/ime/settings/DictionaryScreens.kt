@@ -95,6 +95,13 @@ fun DictionaryScreen() {
             SettingRow("系统词库", null) {
                 Text("随应用内置", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            RowDivider(false)
+            val repo = remember { deps.packs() }
+            val installed = repo.packs.filter { repo.state(it.id) == com.weavetext.ime.core.PackState.Installed }
+            SettingRow(
+                "专业词库", if (installed.isEmpty()) "医学、法律、IT、地名等，按需下载" else installed.joinToString("、") { it.name },
+                onClick = { nav.push(Route.DictPacks) },
+            ) { ValueChevron(if (installed.isEmpty()) "" else "${installed.size} 个") }
         }
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard {
@@ -222,4 +229,62 @@ private fun AddWordDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit
         confirmButton = { TextButton(onClick = { onAdd(text.trim(), py.trim()) }, enabled = text.isNotBlank() && py.isNotBlank()) { Text("添加") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+private fun packSize(n: Long) = if (n >= 1 shl 20) "%.1f MB".format(n / (1 shl 20).toDouble()) else "${(n + 1023) / 1024} KB"
+
+private fun wordCount(n: Int) = if (n >= 10_000) "%.1f 万词".format(n / 10_000.0) else "$n 词"
+
+/** 专业词库：逐个下载或删除，立即生效。 Domain dictionaries: download or remove each, effective at once. */
+@Composable
+fun DictPacksScreen() {
+    val deps = LocalDeps.current
+    val repo = remember { deps.packs() }
+    var tick by remember { mutableIntStateOf(0) }
+    androidx.compose.runtime.DisposableEffect(repo) {
+        val l: () -> Unit = { tick++ }
+        repo.addListener(l)
+        onDispose { repo.removeListener(l) }
+    }
+    var removing by remember { mutableStateOf<com.weavetext.ime.core.DictPack?>(null) }
+    SubPage("专业词库") {
+        Text(
+            "装上后，这些领域的词会出现在候选里，但不会排到常用词前面；选过一次后会自动靠前。",
+            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        GroupCard(Modifier.padding(top = 8.dp)) {
+            tick.let { }
+            repo.packs.forEachIndexed { i, p ->
+                if (i > 0) RowDivider(false)
+                val st = repo.state(p.id)
+                val sub = when (st) {
+                    is com.weavetext.ime.core.PackState.Downloading -> st.progress?.let { "下载中 · ${packSize(it.downloaded)} / ${packSize(p.bytes)}" } ?: "准备下载…"
+                    is com.weavetext.ime.core.PackState.Failed -> st.message
+                    else -> "${p.description} · ${wordCount(p.words)} · ${packSize(p.bytes)}"
+                }
+                SettingRow(p.name, sub, subtitleMaxLines = 2) {
+                    when (st) {
+                        com.weavetext.ime.core.PackState.Installed -> TextButton(onClick = { removing = p }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                        is com.weavetext.ime.core.PackState.Downloading -> TextButton(onClick = { repo.cancel(p.id) }) { Text("取消") }
+                        else -> TextButton(onClick = { repo.install(p.id) }) { Text(if (st is com.weavetext.ime.core.PackState.Failed) "重试" else "下载") }
+                    }
+                }
+            }
+        }
+        Text(
+            "词表来自万象拼音（CC BY 4.0）与 THUOCL 清华开放中文词库（MIT），详见「关于 › 开源许可」。",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+        )
+    }
+    removing?.let { p ->
+        AlertDialog(
+            onDismissRequest = { removing = null },
+            title = { Text("删除「${p.name}」？") },
+            text = { Text("删除后这些词不再出现在候选里；你选过的词仍保留在用户词里。") },
+            confirmButton = { TextButton(onClick = { repo.remove(p.id); removing = null; tick++ }) { Text("删除", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } },
+        )
+    }
 }

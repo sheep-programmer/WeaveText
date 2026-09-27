@@ -46,9 +46,11 @@ object DataInstaller {
             "$key=$loc"
         }
         cleanUp(ctx, usedFallback)
+        // 已下载的专业词库。 Downloaded domain dictionaries.
+        val packs = DictPacks.installedFiles(ctx).joinToString("") { (id, f) -> ";pack.$id=${f.absolutePath}" }
         // 已经装上离线语音版时，顺手删掉下载留下的安装包。 Drop a leftover upgrade package once installed.
         com.weavetext.ime.voice.VoiceUpgrade.cleanUp(ctx)
-        return spec
+        return spec + packs
     }
 
     /** 每个分块压缩文件的解压缓存预算（KB）：低内存设备减半。 Per-file cache budget in KB; halved on low-RAM devices. */

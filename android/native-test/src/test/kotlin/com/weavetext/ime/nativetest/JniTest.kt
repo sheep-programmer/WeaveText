@@ -42,6 +42,25 @@ class JniTest {
         }
     }
 
+    /** 专业词库：数据目录 packs/ 下的词库自动载入，可以卸下再装上。 Domain packs load from packs/ and can be swapped. */
+    @Test
+    fun domainPackLoadsAndUnloads() {
+        val med = File(data, "packs/med.wvz")
+        assumeTrue("run data/packs.sh first", med.isFile)
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            fun has() = run { e.clear(); e.type("shuluanguanxia"); e.candidates(0, 50).any { it.text == "输卵管峡" } }
+            assertTrue(has())
+            assertTrue(e.unloadPack("med"))
+            assertTrue(!has())
+            assertTrue(e.loadPack("med", med.absolutePath))
+            assertTrue(has())
+            e.clear()
+            e.type("woshizhongguoren")
+            assertEquals("我是中国人", e.snapshot().candidates.first().text)
+        }
+    }
+
     /** v 模式与算式：v1234 给出大写金额，等号后的算式能算出结果。 The v mode and the calculator. */
     @Test
     fun vModeAndCalculator() {
@@ -101,8 +120,11 @@ class JniTest {
                 "$k=${apk.absolutePath}@$off+${bytes.size}".also { off += bytes.size }
             }
         }
+        // 与数据目录里自动载入的专业词库保持一致（安卓端同样经 spec 传入）。 Same domain packs, passed via the spec as on Android.
+        val packs = File(data, "packs").listFiles { f -> f.name.endsWith(".wvz") }.orEmpty().sortedBy { it.name }
+            .joinToString("") { ";pack.${it.nameWithoutExtension}=${it.absolutePath}" }
         val user = Files.createTempDirectory("weave-user").toFile()
-        val packed = NativeEngine.createFromSpec(spec, user.absolutePath, 4 * 1024) ?: error("create failed")
+        val packed = NativeEngine.createFromSpec(spec + packs, user.absolutePath, 4 * 1024) ?: error("create failed")
         packed.use { p ->
             engine().use { raw ->
                 for ((schema, keysTyped) in listOf("pinyin" to "woshizhongguoren", "pinyin" to "jintiantianqibucuo", "t9" to "94664486736", "wubi86" to "wqvb", "english" to "hel", "pinyin" to "kaixin")) {

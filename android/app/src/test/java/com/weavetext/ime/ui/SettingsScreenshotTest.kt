@@ -58,12 +58,17 @@ class SettingsScreenshotTest {
         WeavePrefs.of(app).edit().putString(WeavePrefs.THEME, if (dark) "dark" else "system").commit()
         val deps = SettingsDeps(
             app, engines = { engines }, models = { models }, dictionary = FakeUserDictionary(), status = { status },
-            versionName = "0.1.0", versionCode = 1,
+            packs = { packs }, versionName = "0.1.0", versionCode = 1,
         )
         compose.setContent { SettingsApp(deps, Navigator(routes.toList())) }
         compose.waitForIdle()
         compose.onRoot().captureRoboImage(File(dir, "settings_$name.png").path)
     }
+
+    private val packs = com.weavetext.ime.testing.FakeDictPacks()
+
+    @Test fun dictionaryPacks() = show("dictionary_packs", Route.Home, Route.Dictionary, Route.DictPacks)
+    @Test fun dictionaryPacksDark() = show("dictionary_packs_dark", Route.Home, Route.Dictionary, Route.DictPacks, dark = true)
 
     @Test fun onboarding() = show("onboarding", Route.Onboarding, status = ImeStatus(enabled = true, isDefault = false, micGranted = false))
     @Test fun onboardingDark() = show("onboarding_dark", Route.Onboarding, dark = true, status = ImeStatus(enabled = false, isDefault = false, micGranted = false))

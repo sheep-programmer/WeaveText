@@ -211,6 +211,8 @@ pub struct Paths {
     pub gram_model: Option<Source>,
     /// 用户数据目录。 User data directory.
     pub user_dir: Option<PathBuf>,
+    /// 扩展拼音词库（专业词库、热词）：(id, 来源)。 Extra pinyin lexicons (domain packs, hot words): (id, source).
+    pub packs: Vec<(String, Source)>,
 }
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
@@ -229,6 +231,12 @@ pub const RESOURCES: [(&str, &str); 8] = [
 impl Paths {
     /// 按资源名设置来源；未知名字返回 false。 Set a source by resource key; false for unknown keys.
     pub fn set(&mut self, key: &str, src: Source) -> bool {
+        // 扩展词库：`pack.<id>`。 Extra lexicons use `pack.<id>`.
+        if let Some(id) = key.strip_prefix("pack.").filter(|id| valid_pack_id(id)) {
+            self.packs.retain(|(p, _)| p != id);
+            self.packs.push((id.to_string(), src));
+            return true;
+        }
         let slot = match key {
             "pinyin" => &mut self.pinyin_lexicon,
             "wubi86" => &mut self.wubi_lexicon,
@@ -271,6 +279,9 @@ impl Paths {
 /// 输入法引擎。 The IME engine.
 pub struct Engine {
     pinyin: Option<Lexicon>,
+    /// 扩展拼音词库与其 id（顺序一致）。 Extra pinyin lexicons and their ids, in the same order.
+    packs: Vec<Lexicon>,
+    pack_ids: Vec<String>,
     wubi: Option<Lexicon>,
     english: Option<Lexicon>,
     user_pinyin: UserDict,
@@ -323,8 +334,18 @@ impl Engine {
             .as_ref()
             .and_then(|d| UserDict::open(&d.join("pinyin.userdb")).ok())
             .unwrap_or_default();
+        let mut packs = Vec::new();
+        let mut pack_ids = Vec::new();
+        for (id, src) in paths.packs.iter().take(crate::decoder::MAX_LEX - 1) {
+            if let Ok(l) = Lexicon::open_source(src) {
+                packs.push(l);
+                pack_ids.push(id.clone());
+            }
+        }
         Engine {
             pinyin: open_lex(&paths.pinyin_lexicon),
+            packs,
+            pack_ids,
             wubi: open_lex(&paths.wubi_lexicon),
             english: open_lex(&paths.english_lexicon),
             user_pinyin,
@@ -482,6 +503,45 @@ impl Engine {
         e.wubi = wubi;
         e.english = english;
         e
+    }
+
+    /// 载入或替换一个扩展词库；失败（文件无效、超过上限）返回 false。
+    /// Load or replace an extra lexicon; false when the file is invalid or the limit is reached.
+    pub fn load_pack(&mut self, id: &str, src: &Source) -> bool {
+        if !valid_pack_id(id) {
+            return false;
+        }
+        let Ok(l) = Lexicon::open_source(src) else { return false };
+        if let Some(i) = self.pack_ids.iter().position(|p| p == id) {
+            self.packs[i] = l;
+        } else if self.packs.len() + 1 < crate::decoder::MAX_LEX {
+            self.packs.push(l);
+            self.pack_ids.push(id.to_string());
+        } else {
+            return false;
+        }
+        self.refresh_if_composing();
+        true
+    }
+
+    /// 卸下一个扩展词库。 Unload an extra lexicon.
+    pub fn unload_pack(&mut self, id: &str) -> bool {
+        let Some(i) = self.pack_ids.iter().position(|p| p == id) else { return false };
+        self.packs.remove(i);
+        self.pack_ids.remove(i);
+        self.refresh_if_composing();
+        true
+    }
+
+    /// 已载入的扩展词库 id。 Ids of the loaded extra lexicons.
+    pub fn pack_ids(&self) -> &[String] {
+        &self.pack_ids
+    }
+
+    fn refresh_if_composing(&mut self) {
+        if self.is_composing() {
+            self.refresh();
+        }
     }
 
     pub fn has_lexicon(&self, schema: Schema) -> bool {
@@ -1159,6 +1219,7 @@ impl Engine {
         }
         let dec = Decoder {
             lex: self.pinyin.as_ref(),
+            packs: &self.packs,
             user: &self.user_pinyin,
             graph: &g,
             context: if self.selected.is_empty() {
@@ -1344,6 +1405,7 @@ impl Engine {
             let empty = UserDict::in_memory();
             let dec = Decoder {
                 lex: self.pinyin.as_ref(),
+                packs: &self.packs,
                 user: &empty,
                 graph: &g,
                 context: None,
@@ -1477,7 +1539,25 @@ pub fn paths_in(data_dir: &Path, user_dir: &Path) -> Paths {
             paths.set(key, Source::file(packed));
         }
     }
+    // 扩展词库：数据目录与用户目录下的 packs/<id>.wvz（用户目录的同名包优先）。
+    // Extra lexicons: packs/<id>.wvz under the data dir and the user dir (the user dir wins on a clash).
+    for dir in [data_dir.join("packs"), user_dir.join("packs")] {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for f in files {
+            let is_pack = matches!(f.extension().and_then(|e| e.to_str()), Some("wvz" | "wvl"));
+            if let (true, Some(id)) = (is_pack, f.file_stem().and_then(|s| s.to_str()).map(str::to_string)) {
+                paths.set(&format!("pack.{id}"), Source::file(f));
+            }
+        }
+    }
     paths
+}
+
+/// 扩展词库 id：小写字母、数字与 `-_`，不超过 40 个字符。 Pack ids: lowercase letters, digits, `-_`, ≤ 40 chars.
+pub fn valid_pack_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]
@@ -1513,6 +1593,40 @@ mod wubi_tests {
         e.set_schema(Schema::Pinyin);
         e.options.emoji = false;
         e
+    }
+
+    #[test]
+    fn domain_pack_adds_words_without_pushing_common_ones_down() {
+        let mut e = pinyin_engine();
+        let k = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        let mut b = Builder::new(Kind::Pinyin);
+        b.insert(&k("shi jian"), "实践", 30_000);
+        b.insert(&k("shi xing"), "室性", 21_000);
+        let dir = std::env::temp_dir().join(format!("weave-pack-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("med.wvl");
+        std::fs::write(&f, b.build()).unwrap();
+        assert!(e.load_pack("med", &Source::file(f.clone())));
+        assert_eq!(e.pack_ids(), ["med".to_string()]);
+        typing(&mut e, "shixing");
+        assert!(e.snapshot().candidates.iter().any(|c| c.text == "室性"));
+        e.clear();
+        typing(&mut e, "shijian");
+        let c: Vec<String> = e.snapshot().candidates.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(c[0], "时间");
+        assert!(c.contains(&"实践".to_string()));
+        e.clear();
+        assert!(e.unload_pack("med"));
+        typing(&mut e, "shixing");
+        assert!(!e.snapshot().candidates.iter().any(|c| c.text == "室性"));
+        assert!(!e.load_pack("Bad Id", &Source::file(f)));
+        // 目录里的 packs/<id>.wvl 自动载入。 packs/<id>.wvl in the data dir are picked up.
+        std::fs::create_dir_all(dir.join("data/packs")).unwrap();
+        std::fs::rename(dir.join("med.wvl"), dir.join("data/packs/med.wvl")).unwrap();
+        let p = paths_in(&dir.join("data"), &dir.join("user"));
+        assert_eq!(p.packs.len(), 1);
+        assert_eq!(p.packs[0].0, "med");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
