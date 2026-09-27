@@ -82,17 +82,63 @@ end-to-end encrypted, no server involved, off by default.*
   *Receive: text sent from the phone goes to the clipboard with a notification; files land in `~/Downloads/WeaveText`,
   and clicking the notification reveals them in Finder.*
 
+## 安装 / Install
+
+1. 打开 `WeaveText-<版本>.dmg`，双击里面的 **织文输入法**，在弹出的「安装织文输入法」窗口里点 **安装**。
+   织文会复制到 `~/Library/Input Methods/`（只对当前用户，不要管理员密码），去掉下载带来的隔离属性，向系统登记、
+   启用并选中「织文拼音」，然后启动，菜单栏出现织文的图标。
+   *Open `WeaveText-<version>.dmg`, double-click **织文输入法** inside and click **安装** (Install) in the window. WeaveText
+   is copied into `~/Library/Input Methods/` (current user only, no admin password), the download quarantine is removed,
+   织文拼音 is registered, enabled and selected, and the app starts with its menu bar icon.*
+2. 完成后在菜单栏的输入法菜单里选择 **织文拼音**；窗口里的「打开键盘设置」直达 系统设置 → 键盘。列表里没有时，
+   在 **系统设置 → 键盘 → 输入法 → 编辑…** 里点「+」，在「简体中文」下添加；仍然没有就注销并重新登录一次。
+   *Then pick **织文拼音** from the input menu; 打开键盘设置 opens System Settings → Keyboard. If it is missing, add it
+   under **System Settings → Keyboard → Input Sources → Edit…** (Simplified Chinese); if it still isn't there, log out and
+   back in once.*
+
+第一次打开时，macOS 可能提示无法验证开发者（织文只做了自签名、没有公证）：按住 Control 点「织文输入法」选「打开」，
+或到 **系统设置 → 隐私与安全性** 点「仍要打开」。磁盘映像里的 `使用说明.txt` 写着同样的步骤。
+*On first launch macOS may say it can't verify the developer (WeaveText is ad-hoc signed, not notarized): Control-click
+织文输入法 and choose Open, or click Open Anyway under **System Settings → Privacy & Security**. `使用说明.txt` in the disk
+image has the same steps.*
+
+更新：打开新版本的磁盘映像再双击，窗口会认出已装的版本，按钮变成「更新到 vX」（同版本为「重新安装」）；
+先让正在运行的旧版本退出，再整体替换，用户词与设置保留。
+*Update: open the new disk image and double-click again; the window recognises the installed version and offers
+更新到 vX (重新安装 for the same version). The running old copy is quit first and then replaced as a whole; your words
+and settings stay.*
+
+## 卸载 / Uninstall
+
+**设置 → 关于 → 卸载织文输入法…**：停用输入源，把织文移到废纸篓后退出。默认保留用户词、专业词库与设置；
+勾选「同时删除词库与设置」时，`~/Library/Application Support/WeaveText` 也移到废纸篓，偏好一并清除。
+之后如果 系统设置 → 键盘 → 输入法 里还留着条目，移除即可。
+*Settings → 关于 (About) → 卸载织文输入法…: disables the input source, moves WeaveText to the Trash and quits. User
+words, domain dictionaries and settings are kept unless 同时删除词库与设置 is ticked, in which case
+`~/Library/Application Support/WeaveText` goes to the Trash too and the preferences are cleared. Remove any leftover entry
+in System Settings → Keyboard → Input Sources afterwards.*
+
 ## 构建 / Build
 
 需要 / Requires: macOS 13+、Swift 6 命令行工具（无需 Xcode / no Xcode needed）、Rust stable 及两个目标
 （`rustup target add aarch64-apple-darwin x86_64-apple-darwin`）、已编好的词库 `data/build/*.wvz`（`./data/build.sh`）。
 
 ```bash
-macos/scripts/build-app.sh            # 内核 + 测试 + 通用 .app + 自签名 + zip / engine, tests, universal .app, ad-hoc sign, zip
+macos/scripts/build-app.sh            # 内核 + 测试 + 通用 .app + 自签名 + zip + dmg / engine, tests, universal .app, ad-hoc sign, zip, DMG
 macos/scripts/build-app.sh --skip-tests
+macos/scripts/make-dmg.sh [WeaveText.app]   # 只重新打磁盘映像 / rebuild just the disk image
 ```
 
-产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）与 `macos/build/WeaveText-mac.zip`。
+产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）、`macos/build/WeaveText-mac.zip` 与
+`macos/build/WeaveText-<版本>.dmg`。
+
+磁盘映像只用 `hdiutil` 生成：里面是 `织文输入法.app` 与 `使用说明.txt`，卷名「织文输入法」，背景图由程序
+（`--render-dmg-background`）自己画；Finder 可用时用 AppleScript 摆好图标位置（第一次会请求自动化授权，
+拿不到就跳过，映像照常可用），最后压成只读的 UDZO，并用 `hdiutil verify` 与只读挂载后的 `codesign` 检查。
+*The disk image is made with `hdiutil` only: `织文输入法.app` plus `使用说明.txt`, volume 织文输入法, a background the app
+draws itself (`--render-dmg-background`); when Finder is available an AppleScript places the icons (it asks for
+automation consent the first time and is skipped without it, the image still works), then it is compressed to read-only
+UDZO and checked with `hdiutil verify` and `codesign` on a read-only mount.*
 
 脚本按内核的资源表（`core/weave-engine/src/session.rs` 的 `RESOURCES`）把 `data/build/` 里对应的 `.wvz` 全部放进包里，
 缺少基础词库或联想表 `follow.wvz` 时报错；专业词库目录 `dictpacks.json` 与 Android 共用一份，
@@ -119,31 +165,21 @@ plugin has to be passed explicitly.*
 | `WeaveText --selftest` | 用包内词库打 `nihao`（首选「你好」）、算 `v(128+32)*4`、上屏「今天」后应有联想 / types `nihao`, evaluates `v(128+32)*4` and checks predictions after 今天 with the bundled data |
 | `WeaveText --snapshot <目录>` | 把候选窗和各设置页画成 PNG / renders the candidate bar and settings pages to PNG |
 | `WeaveText --register` / `--disable` | 向系统登记并启用 / 停用输入源（安装、卸载脚本使用） / register + enable or disable the input source |
+| `WeaveText --ime` | 不在「输入法」文件夹里也按输入法运行（调试用） / run as the input method even outside Input Methods (debugging) |
+| `WeaveText --render-dmg-background <目录>` | 画磁盘映像的背景图 / draws the disk image background |
 
-## 安装 / Install
+直接双击运行时，程序看自己在哪里：在 `~/Library/Input Methods` 或 `/Library/Input Methods` 里就是输入法，
+在别处（磁盘映像、下载文件夹、应用程序文件夹）就打开安装窗口。
+*Launched normally, the app checks where it is: inside `~/Library/Input Methods` or `/Library/Input Methods` it is the
+input method; anywhere else (the disk image, Downloads, Applications) it opens the installer window.*
+
+### 开发者用的脚本 / Developer scripts
 
 ```bash
 macos/scripts/install.sh              # 复制到 ~/Library/Input Methods 并登记、启用 / copy, register, enable
-```
-
-然后在 **系统设置 → 键盘 → 输入法 → 编辑…** 里点「+」，在「简体中文」下添加 **织文拼音**（脚本通常已自动启用），
-用菜单栏的输入法菜单或 ⌃ 空格切换过去。首次安装若列表里没有，注销并重新登录一次。
-*Then open **System Settings → Keyboard → Input Sources → Edit…**, press "+", and add **织文拼音 / WeaveText
-Pinyin** under Simplified Chinese (the script usually enables it already); switch to it from the input menu or
-with ⌃Space. If it does not show up after the first install, log out and back in once.*
-
-从 zip 安装 / From the zip：解压后把 `WeaveText.app` 放进 `~/Library/Input Methods/`，执行
-`xattr -dr com.apple.quarantine ~/Library/Input\ Methods/WeaveText.app`（本地构建未公证 / local builds are not
-notarized），再注销重新登录，并按上面的步骤添加。
-
-## 卸载 / Uninstall
-
-```bash
 macos/scripts/uninstall.sh            # 停用并删除，保留用户词 / disable and remove, keep user words
 macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/WeaveText 与偏好一起删除 / also user data and preferences
 ```
-
-之后在 系统设置 → 键盘 → 输入法 里把残留的条目移除。 *Then remove any leftover entry in System Settings → Keyboard → Input Sources.*
 
 ## 数据位置 / Where things live
 
@@ -159,8 +195,12 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
 
 ## 已知限制 / Known limits
 
-- 只做了自签名（ad-hoc），未用开发者证书签名与公证；从网络下载的包需要去掉隔离属性。
-  *Ad-hoc signed only, not Developer ID signed or notarized; downloaded copies need the quarantine flag removed.*
+- 只做了自签名（ad-hoc），未用开发者证书签名与公证：第一次打开磁盘映像里的程序要按上面的方法放行一次；安装时会自动去掉
+  隔离属性。
+  *Ad-hoc signed only, not Developer ID signed or notarized: the app in the disk image has to be allowed once as described
+  above; the installer removes the quarantine flag itself.*
+- 深色模式下磁盘映像窗口里的文件名是浅色字，压在浅色背景上不太清楚。
+  *In dark mode Finder draws the file names in the disk image window in a light colour over the light background.*
 - 少数应用（部分终端、Electron / 跨平台框架）报不出光标位置，候选窗会沿用上一次的位置或出现在鼠标附近。
   *A few apps (some terminals, Electron / cross-platform toolkits) do not report the caret; the panel then reuses its
   last position or appears near the mouse.*

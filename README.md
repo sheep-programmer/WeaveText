@@ -60,17 +60,19 @@ Enable WeaveText in system settings after installing.*
 ## macOS 版 / macOS
 
 同一内核的 macOS 输入法（InputMethodKit + SwiftUI，macOS 13+，Apple 芯片与 Intel 通用），可通过织文互联与手机互传
-文字、剪贴板和文件：构建、安装与使用见 [macos/README.md](macos/README.md)。
+文字、剪贴板和文件。下载 `WeaveText-<版本>.dmg`，打开后双击「织文输入法」、点「安装」即可，不用终端；
+构建与使用见 [macos/README.md](macos/README.md)。
 *A macOS input method on the same engine (InputMethodKit + SwiftUI, macOS 13+, universal for Apple silicon and
-Intel) that exchanges text, clipboard and files with the phone over WeaveLink; see [macos/README.md](macos/README.md)
-to build, install and use it.*
+Intel) that exchanges text, clipboard and files with the phone over WeaveLink. Download `WeaveText-<version>.dmg`, open
+it, double-click 织文输入法 and click 安装 (Install) — no terminal needed; see [macos/README.md](macos/README.md) to
+build and use it.*
 
 ## 目录 / Layout
 
 | 路径 Path | 内容 Contents |
 |---|---|
 | `core/` | Rust 内核：`weave-dict` 词库格式、`weave-engine` 解码与联想、`weave-link` 织文互联、`weave-plugin` 插件宿主、`weave-ffi` JNI、`weave-c` C 接口 |
-| `macos/` | macOS 输入法：InputMethodKit 前端、候选窗、SwiftUI 设置、构建与安装脚本 |
+| `macos/` | macOS 输入法：InputMethodKit 前端、候选窗、SwiftUI 设置、自带安装窗口、构建与磁盘映像脚本 |
 | `android/` | Android 应用：输入法服务、自绘键盘、Compose 设置、语音后端；`native-test` 桌面 JNI 测试 |
 | `data/` | 词库构建脚本 `build.sh`、专业词库 `packs.sh`、整句评测集 `eval/` |
 | `docs/` | 架构、设计规范、调研、插件开发、第三方许可（中英双语） |
