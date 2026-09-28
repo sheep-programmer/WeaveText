@@ -1566,7 +1566,7 @@ impl Engine {
         if let Some(margin) = margin.flatten() {
             let (g2, keys2) = self.build_graph_with(true);
             let lat2 = decode(&g2);
-            if lat2.best_cost + margin < lat1.best_cost {
+            if lat2.best_cost.saturating_add(margin) < lat1.best_cost {
                 chosen = Some((g2, keys2, lat2));
             }
         }
