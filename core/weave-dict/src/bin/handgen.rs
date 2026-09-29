@@ -23,7 +23,7 @@ fn parse_line(line: &str) -> Option<(char, Vec<Stroke>)> {
     };
     let key = "\"medians\":";
     let j = line.find(key)? + key.len();
-    let bytes = line[j..].as_bytes();
+    let bytes = &line.as_bytes()[j..];
     // 三层数组：[[[x,y],[x,y]],[[x,y],…]]。 Three nested levels.
     let mut depth = 0;
     let mut strokes: Vec<Stroke> = Vec::new();

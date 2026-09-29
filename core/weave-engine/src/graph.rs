@@ -147,9 +147,7 @@ impl SyllableGraph {
         for list in &self.out {
             for e in list {
                 if e.kind == EdgeKind::Full {
-                    for p in e.start + 1..e.end {
-                        inside[p] = true;
-                    }
+                    inside[e.start + 1..e.end].fill(true);
                     if e.end > e.start + 1 {
                         longer_full[e.start] = true;
                     }

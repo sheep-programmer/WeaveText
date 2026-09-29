@@ -449,7 +449,7 @@ impl UserDict {
                 stack.push((c, k));
             }
         }
-        out.sort_by(|a, b| b.1.last.cmp(&a.1.last));
+        out.sort_by_key(|x| std::cmp::Reverse(x.1.last));
         out
     }
 }

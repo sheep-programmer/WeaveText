@@ -135,7 +135,8 @@ pub fn predict(
         for (next, st) in user.bigrams_after(w) {
             let bonus = (2200.0 * (1.0 + st.count as f64).ln()).min(6500.0) as i64;
             let base = readings.word_cost(lex, &next).map(|c| (c as f32 * LEX_WEIGHT) as i64).unwrap_or(4000);
-            scored.insert(next, (TIER * 0 + base - bonus, true));
+            // 第 0 档：用户自己的搭配排在所有词库/模型猜测前面。 Tier 0: the user's own pairs rank before every guess.
+            scored.insert(next, (base - bonus, true));
         }
     }
     // 2. 接续表：词库长词里接在上文后面的部分（上文越长越可靠）。

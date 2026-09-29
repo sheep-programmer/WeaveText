@@ -242,6 +242,7 @@ impl Scheme {
     /// - jqxy 后的 u（实为 ü）也可用 ü 所在的键；
     /// - 零声母：小鹤/自然码主编码为「单韵母双击、双字母原样、三字母首字母+韵母键」，另收「首字母+韵母键」；
     ///   微软/搜狗主编码为「o + 韵母键」，另收 a/e 开头的「首字母+韵母键」与 ou 原样。
+    ///
     /// All accepted key pairs, primary first: ü keys after jqxy; zero-initial alternates per scheme.
     fn encodings(&self, s: &str) -> Vec<[u8; 2]> {
         let (ini, fin) = syllable::split(s);
@@ -275,7 +276,7 @@ impl Scheme {
                         }
                     }
                     if fin == "ou" {
-                        push([b'o', b'u']);
+                        push(*b"ou");
                     }
                 }
             }
