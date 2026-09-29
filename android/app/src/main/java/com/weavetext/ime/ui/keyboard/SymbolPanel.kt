@@ -351,7 +351,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                     c.drawRoundRect(m.padH, cy - m.dp(8f), m.padH + m.dp(3f), cy + m.dp(8f), m.dp(1.5f), m.dp(1.5f), p)
                 }
                 p.typeface = if (sel) medium else Typeface.DEFAULT
-                p.textSize = m.dp(14f)
+                p.textSize = m.panel(14f)
                 p.color = if (sel) pal.label else pal.labelSecondary
                 val name = cats[i].name
                 val maxW = r.width() - m.dp(6f)
@@ -402,7 +402,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             del.set(width - m.padH - unit * 1.3f, 0f, width - m.padH, height.toFloat())
             lock.set(del.left - unit, 0f, del.left, height.toFloat())
             tabs.set(back.right, 0f, lock.left, height.toFloat())
-            text.textSize = m.dp(14f)
+            text.textSize = m.panel(14f)
             tabX = FloatArray(cats.size); tabW = FloatArray(cats.size)
             var x = 0f
             for (i in cats.indices) {
@@ -457,7 +457,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 val l = tabs.left + tabX[i] - tabScroll
                 val cx = l + tabW[i] / 2
                 text.typeface = if (i == tab) medium else Typeface.DEFAULT
-                text.textSize = m.dp(14f)
+                text.textSize = m.panel(14f)
                 text.color = if (i == tab) pal.label else pal.labelSecondary
                 if (i == tab && pill) {
                     // 胶囊指示：选中分类垫一层浅强调色。 Pill indicator behind the selected category.

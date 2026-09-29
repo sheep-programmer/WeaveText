@@ -282,6 +282,11 @@ object StyleParser {
         fun c(name: String, def: () -> Int) = color(o, name, field) ?: def()
         val keyFunc = c("keyFunc") { mix(bg, label, 0.1f) }
         val candidate = c("candidate") { accent }
+        // 红底上的文字单独一色：`onAccent` 是按强调色算的，深色主题下强调色偏亮，套到「松手清空」的红键上
+        // 只有 2.9:1。这里按 danger 现算，浅红用深字、深红用白字。
+        // Text on a danger plate gets its own colour: `onAccent` is tuned for the accent, and in dark themes that
+        // accent is bright, giving only 2.9:1 on the red key. Compute it against `danger` instead.
+        val dangerColor = c("danger") { if (dark) 0xFFFF6166.toInt() else 0xFFE5484D.toInt() }
         return KbPalette(
             dark = dark,
             background = bg,
@@ -292,7 +297,7 @@ object StyleParser {
             keyShadow = c("keyShadow") { mix(bg, 0xFF000000.toInt(), if (dark) 0.6f else 0.2f) },
             keyAccent = accent,
             keyAccentPressed = c("accentPressed") { mix(accent, 0xFF000000.toInt(), 0.15f) },
-            onAccent = c("onAccent") { if (Contrast.ratio(0xFFFFFFFF.toInt(), accent) >= 3.5) 0xFFFFFFFF.toInt() else 0xFF111111.toInt() },
+            onAccent = c("onAccent") { Contrast.onColor(accent) },
             label = label,
             labelHint = c("labelHint") { mix(label, key, 0.45f) },
             labelSecondary = c("labelSecondary") { mix(label, key, 0.35f) },
@@ -306,7 +311,8 @@ object StyleParser {
             popupSelected = c("popupSelected") { accent },
             popupShadow = c("popupShadow") { if (dark) 0x66000000 else 0x2E1E283C },
             card = c("card") { if (dark) mix(bg, label, 0.06f) else key },
-            danger = c("danger") { if (dark) 0xFFFF6166.toInt() else 0xFFE5484D.toInt() },
+            danger = dangerColor,
+            onDanger = c("onDanger") { Contrast.onColor(dangerColor) },
             voiceWave = c("voiceWave") { candidate },
             scrim = c("scrim") { if (dark) 0x7A000000 else 0x3D000000 },
             shadow = when (enum(o, "shadow", "bar", "bar", "soft", "none")) { "soft" -> KeyShadow.SOFT; "none" -> KeyShadow.NONE; else -> KeyShadow.BAR },

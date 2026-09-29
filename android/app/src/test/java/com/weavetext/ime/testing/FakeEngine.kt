@@ -29,7 +29,11 @@ class FakeEngine : KeyEngine {
     var predictions: List<String> = emptyList()
     private fun predict() { predictions = if (predicts) listOf("P1", "P2", "P3") else emptyList() }
 
+    /** 最近一次 setLearning。 The last setLearning value. */
+    var learningValue = true
     private fun composes(c: Char) = c in 'a'..'z' || (schema == "english" && c in 'A'..'Z') ||
+        // 与真内核一样：v 之后的数字进入 v 模式。 Like the real engine: digits after "v" stay in the v mode.
+        (schema == "pinyin" && c.isDigit() && raw.startsWith("v") && raw.drop(1).all { it.isDigit() }) ||
         (schema == "t14" && (c in 'A'..'N' || c == '\'' || c == '1'))
     /** 英文方案与真实内核一样把原样输入放在首位。 English puts the typed word first, like the real engine. */
     private fun cand(i: Int) = if (handing) Candidate("${hand.size}笔$i", "", false) else Candidate(if (i == 0) (if (schema == "english") "$raw" else "【$raw】") else "$raw$i", "", false)
@@ -88,7 +92,7 @@ class FakeEngine : KeyEngine {
     override fun clear() { raw.clear(); hand.clear(); predictions = emptyList() }
     override fun flush() {}
     override fun isComposing() = raw.isNotEmpty() || handing
-    override fun setLearning(on: Boolean) {}
+    override fun setLearning(on: Boolean) { learningValue = on }
     override fun setContext(prevWord: String?) {}
     override fun snapshot(): EngineSnapshot {
         snapshots++
@@ -108,19 +112,36 @@ class FakeEngine : KeyEngine {
 }
 
 /**
- * 记录上屏结果的编辑器连接（方向键移动光标、删除键删字）。
- * An editor connection that keeps the committed text (arrows move the cursor, DEL deletes).
+ * 记录上屏结果的编辑器连接（方向键移动光标、删除键像文本框一样删掉一个字形簇或选区）。
+ * An editor connection that keeps the committed text (arrows move the cursor; DEL deletes the selection or one
+ * grapheme cluster, like a text view).
  */
 open class FakeInputConnection(view: View) : BaseInputConnection(view, true) {
     val text: String get() = editable!!.toString()
+    /** 方向键移动的步数（左负右正）。 Arrow-key steps (left negative). */
     var cursorMoves = 0
+    /** setSelection 调用次数。 Number of setSelection calls. */
+    var selectionSets = 0
+    /** 收到的按键（按下）。 Key events received (downs). */
+    val keyDowns = mutableListOf<KeyEvent>()
+
+    override fun setSelection(start: Int, end: Int): Boolean { selectionSets++; return super.setSelection(start, end) }
 
     override fun sendKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) return true
+        keyDowns += event
         val e = editable!!
         val sel = android.text.Selection.getSelectionEnd(e).coerceAtLeast(0)
+        val selStart = android.text.Selection.getSelectionStart(e).coerceAtLeast(0)
         when (event.keyCode) {
-            KeyEvent.KEYCODE_DEL -> if (sel > 0) e.delete(sel - 1, sel)
+            KeyEvent.KEYCODE_DEL -> when {
+                selStart != sel -> e.delete(minOf(selStart, sel), maxOf(selStart, sel))
+                sel > 0 -> {
+                    val it = android.icu.text.BreakIterator.getCharacterInstance()
+                    it.setText(e.toString())
+                    e.delete(it.preceding(sel).coerceAtLeast(0), sel)
+                }
+            }
             KeyEvent.KEYCODE_DPAD_LEFT -> { cursorMoves--; android.text.Selection.setSelection(e, (sel - 1).coerceAtLeast(0)) }
             KeyEvent.KEYCODE_DPAD_RIGHT -> { cursorMoves++; android.text.Selection.setSelection(e, (sel + 1).coerceAtMost(e.length)) }
             KeyEvent.KEYCODE_ENTER -> commitText("\n", 1)

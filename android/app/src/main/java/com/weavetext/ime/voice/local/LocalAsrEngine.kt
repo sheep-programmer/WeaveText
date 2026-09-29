@@ -25,7 +25,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     private var loaded: Loaded? = null
     private var idleRelease: ScheduledFuture<*>? = null
     /** 正在进行的会话数（>0 时不因内存压力释放）。 Active sessions; no pressure release while > 0. */
-    @Volatile private var activeSessions = 0
+    private val activeSessions = java.util.concurrent.atomic.AtomicInteger()
 
     init {
         // 模型被删除/替换前先释放。 Release before a model is deleted or replaced.
@@ -41,14 +41,14 @@ internal class LocalAsrEngine(private val ctx: Context) {
         // 系统内存紧张且没在说话时立即释放。 Release right away under memory pressure when idle.
         ctx.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
-                if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && activeSessions == 0) {
-                    worker.execute { if (activeSessions == 0) { loaded?.release(); loaded = null } }
+                if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && activeSessions.get() == 0) {
+                    worker.execute { if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }
                 }
             }
             override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
             @Deprecated("Deprecated in Java")
             override fun onLowMemory() {
-                worker.execute { if (activeSessions == 0) { loaded?.release(); loaded = null } }
+                worker.execute { if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }
             }
         })
     }
@@ -129,13 +129,32 @@ internal class LocalAsrEngine(private val ctx: Context) {
     inner class Session(private val listener: TwoPassListener, private val onEnd: () -> Unit, private val onError: (String) -> Unit) {
         @Volatile private var cancelled = false
         private var recognizer: TwoPassRecognizer? = null
+        /**
+         * 会话计数只减一次：先停止再取消（按住说话时上滑取消、多引擎超时）会两条路都走到，减两次会让别的会话
+         * 在用的模型被内存回收释放掉。
+         * The session count drops exactly once: stop followed by cancel (swipe-up cancel while finalizing, a
+         * multi-engine timeout) reaches both paths, and a double drop would let a memory trim release models
+         * another session is using.
+         */
+        private val counted = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        private fun uncount() {
+            if (counted.compareAndSet(true, false)) activeSessions.updateAndGet { maxOf(0, it - 1) }
+        }
+
+        /** 停止后到的录音丢掉（录音线程可能还在交最后一块）。 Audio arriving after stop is dropped. */
+        @Volatile private var stopped = false
 
         init {
-            activeSessions++
+            activeSessions.incrementAndGet()
             worker.execute {
                 idleRelease?.cancel(false)
                 recognizer = runCatching { ensureLoaded() }
-                    .onFailure { Log.e(TAG, "load failed", it); if (!cancelled) onError("离线模型加载失败：${it.message}") }
+                    .onFailure {
+                        Log.e(TAG, "load failed", it)
+                        // 加载失败即结束本会话（调用方据此停止录音）。 A load failure ends the session; the caller stops recording.
+                        if (!cancelled) { onError("离线模型加载失败：${it.message}"); stopped = true; uncount(); onEnd() }
+                    }
                     .getOrNull()
                     ?.let { l ->
                         l.streaming?.reset()
@@ -146,9 +165,6 @@ internal class LocalAsrEngine(private val ctx: Context) {
                     }
             }
         }
-
-        /** 停止后到的录音丢掉（录音线程可能还在交最后一块）。 Audio arriving after stop is dropped. */
-        @Volatile private var stopped = false
 
         fun feed(pcm: ByteArray, size: Int) {
             if (stopped || cancelled) return
@@ -162,7 +178,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
             stopped = true
             worker.execute {
                 if (!cancelled) runCatching { recognizer?.finish() }.onFailure { Log.w(TAG, "finish", it) }
-                activeSessions = (activeSessions - 1).coerceAtLeast(0)
+                if (!counted.get()) return@execute
+                uncount()
                 scheduleIdleRelease()
                 onEnd()
             }
@@ -172,7 +189,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
             if (cancelled) return
             cancelled = true
             worker.execute {
-                activeSessions = (activeSessions - 1).coerceAtLeast(0)
+                if (!counted.get()) return@execute
+                uncount()
                 scheduleIdleRelease()
             }
         }
@@ -197,7 +215,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
         if (need() * 6 / 5 > budget && punct) punct = false
         if (need() * 6 / 5 > budget && fid != null && sid != null) fid = null
         if (fid != finalId() || punct != punctuationOn()) Log.w(TAG, "low memory ($budget bytes): final=$fid punct=$punct")
-        val key = "$sid|$fid|$punct"
+        // 键里放模型 id（含标点模型），删除某个模型时据此找到要释放的识别器。 Model ids, so a delete finds its user.
+        val key = "$sid|$fid|${if (punct) PUNCT_ID else null}"
         loaded?.let { if (it.key == key) return it; it.release(); loaded = null }
         val t0 = System.nanoTime()
         var streaming: StreamingAsr? = null
@@ -231,6 +250,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
     /** 预热：打开语音面板时调用，缩短第一次说话的等待。 Warm up when the voice panel opens. */
     fun preload() {
         worker.execute {
+            // 有会话在用时不换模型（换会释放它正用着的）。 Don't swap models under a running session.
+            if (activeSessions.get() > 0) return@execute
             idleRelease?.cancel(false)
             runCatching { ensureLoaded() }.onFailure { Log.w(TAG, "preload failed", it) }
             scheduleIdleRelease()
@@ -239,7 +260,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
     private fun scheduleIdleRelease() {
         idleRelease?.cancel(false)
-        idleRelease = worker.schedule({ loaded?.release(); loaded = null }, IDLE_RELEASE_MINUTES, TimeUnit.MINUTES)
+        idleRelease = worker.schedule({ if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }, IDLE_RELEASE_MINUTES, TimeUnit.MINUTES)
     }
 
     companion object {

@@ -240,7 +240,11 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeInputChar(
 #[no_mangle]
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeLoadPack(mut env: JNIEnv, _c: JClass, h: jlong, id: JString, path: JString) -> jboolean {
     let (Some(id), Some(path)) = (get_string(&mut env, &id), get_string(&mut env, &path)) else { return JNI_FALSE };
-    jbool(with_engine(h, false, |e| e.load_pack(&id, &weave_dict::blob::Source::file(path))))
+    // 在引擎锁外打开词库文件，按键路径不必等。 Open the file outside the engine lock so the key path doesn't wait.
+    let Some(lex) = catch_unwind(|| weave_engine::session::open_pack(&id, &weave_dict::blob::Source::file(path))).ok().flatten() else {
+        return JNI_FALSE;
+    };
+    jbool(with_engine(h, false, |e| e.attach_pack(&id, lex)))
 }
 
 #[no_mangle]
@@ -254,7 +258,16 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeUnloadPack
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeLoadHotwords(mut env: JNIEnv, _c: JClass, h: jlong, tsv: JString, sig: JString) -> jint {
     let (Some(tsv), Some(sig)) = (get_string(&mut env, &tsv), get_string(&mut env, &sig)) else { return -1 };
     let (Ok(t), Ok(s)) = (std::fs::read(&tsv), std::fs::read_to_string(&sig)) else { return -1 };
-    with_engine(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as jint).unwrap_or(-1))
+    // 验签与建表在锁外做（较慢），锁内只换词库。 Verify and build outside the lock (slow); only the swap holds it.
+    let offset = with_engine(h, 480, |e| e.options.utc_offset_min);
+    let Some((lex, words)) = catch_unwind(|| weave_engine::session::compile_hotwords(&t, &s, offset).ok()).ok().flatten() else {
+        return -1;
+    };
+    if with_engine(h, false, |e| e.attach_pack(weave_engine::session::HOTWORDS_PACK, lex)) {
+        words as jint
+    } else {
+        -1
+    }
 }
 
 /// 宿主自己往编辑器写了字（标点、空格）。 The host wrote text itself (punctuation, a space).
@@ -333,21 +346,13 @@ bool_op!(
 );
 /// 手写：`xy` 为所有点的 x、y 交替排列，`lens` 为每笔的点数；返回是否有候选。
 /// Handwriting: `xy` holds interleaved x, y of all points, `lens` the point count of each stroke.
-#[no_mangle]
-pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandInput(
-    env: JNIEnv,
-    _c: JClass,
-    h: jlong,
-    xy: jni::objects::JFloatArray,
-    lens: jni::objects::JIntArray,
-) -> jboolean {
-    let (Ok(n_xy), Ok(n_lens)) = (env.get_array_length(&xy), env.get_array_length(&lens)) else {
-        return JNI_FALSE;
-    };
+/// 读出 Kotlin 传来的笔画：所有点连成的 x,y 数组与每笔点数。 Read strokes passed as one x,y array plus per-stroke counts.
+fn read_strokes(env: &JNIEnv, xy: &jni::objects::JFloatArray, lens: &jni::objects::JIntArray) -> Option<Vec<weave_dict::hand::Stroke>> {
+    let (Ok(n_xy), Ok(n_lens)) = (env.get_array_length(xy), env.get_array_length(lens)) else { return None };
     let mut pts = vec![0f32; n_xy.max(0) as usize];
     let mut ls = vec![0i32; n_lens.max(0) as usize];
-    if env.get_float_array_region(&xy, 0, &mut pts).is_err() || env.get_int_array_region(&lens, 0, &mut ls).is_err() {
-        return JNI_FALSE;
+    if env.get_float_array_region(xy, 0, &mut pts).is_err() || env.get_int_array_region(lens, 0, &mut ls).is_err() {
+        return None;
     }
     let mut strokes = Vec::with_capacity(ls.len());
     let mut at = 0usize;
@@ -359,7 +364,77 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandInput(
         strokes.push(pts[at..at + l * 2].chunks_exact(2).map(|p| (p[0], p[1])).collect::<Vec<_>>());
         at += l * 2;
     }
-    if with_engine(h, false, |e| e.hand_input(strokes)) { JNI_TRUE } else { JNI_FALSE }
+    Some(strokes)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandInput(
+    env: JNIEnv,
+    _c: JClass,
+    h: jlong,
+    xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray,
+) -> jboolean {
+    let Some(strokes) = read_strokes(&env, &xy, &lens) else { return JNI_FALSE };
+    jbool(with_engine(h, false, |e| e.hand_input(strokes)))
+}
+
+/// 手写模型的独立引用（载入一次，进程内一直有效）：识别时不碰引擎，可以在任何线程上用；0 表示没有模型。
+/// An independent reference to the handwriting models (loaded once, valid for the process): recognition doesn't
+/// touch the engine, so any thread may use it. 0 when there are no models.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandModels(_env: JNIEnv, _c: JClass, h: jlong) -> jlong {
+    match with_engine(h, None, |e| e.hand_models()) {
+        Some(m) => Box::into_raw(Box::new(m)) as jlong,
+        None => 0,
+    }
+}
+
+/// 用 [nativeHandModels] 的引用识别一个字，返回候选字的码位（不持有引擎锁）。
+/// Recognise one char with a [nativeHandModels] reference; returns candidate code points (no engine lock held).
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandRecognize<'a>(
+    env: JNIEnv<'a>,
+    _c: JClass,
+    m: jlong,
+    xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray,
+) -> jni::sys::jintArray {
+    if m == 0 {
+        return std::ptr::null_mut();
+    }
+    let Some(strokes) = read_strokes(&env, &xy, &lens) else { return std::ptr::null_mut() };
+    // SAFETY: m 来自 nativeHandModels，从不释放。 m comes from nativeHandModels and is never freed.
+    let models = unsafe { &*(m as *const std::sync::Arc<weave_dict::handnet::HandModels>) };
+    let Ok(cands) = catch_unwind(AssertUnwindSafe(|| models.recognize(&strokes, weave_engine::session::HAND_CANDIDATES))) else {
+        return std::ptr::null_mut();
+    };
+    let cps: Vec<jint> = cands.into_iter().map(|c| c as jint).collect();
+    let Ok(arr) = env.new_int_array(cps.len() as i32) else { return std::ptr::null_mut() };
+    if env.set_int_array_region(&arr, 0, &cps).is_err() {
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
+}
+
+/// 交回在后台识别好的结果（笔画与候选码位）。 Hand back a result recognised in the background.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandApply(
+    env: JNIEnv,
+    _c: JClass,
+    h: jlong,
+    xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray,
+    cps: jni::objects::JIntArray,
+) -> jboolean {
+    let Some(strokes) = read_strokes(&env, &xy, &lens) else { return JNI_FALSE };
+    let Ok(n) = env.get_array_length(&cps) else { return JNI_FALSE };
+    let mut raw = vec![0i32; n.max(0) as usize];
+    if env.get_int_array_region(&cps, 0, &mut raw).is_err() {
+        return JNI_FALSE;
+    }
+    let cands: Vec<char> = raw.into_iter().filter_map(|c| char::from_u32(c as u32)).collect();
+    jbool(with_engine(h, false, |e| e.hand_apply(strokes, cands)))
 }
 
 bool_op!(

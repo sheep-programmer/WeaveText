@@ -32,6 +32,14 @@ interface KeyEngine {
      * Handwriting (schema "hand"): all strokes of the current char, each x0,y0,x1,y1…; y points down.
      */
     fun handInput(strokes: List<FloatArray>): Boolean = false
+    /**
+     * 只识别、不改引擎状态，可在任何线程上调用；返回候选字的码位，不支持时为 null（调用方改用 [handInput]）。
+     * Recognise only, without touching the engine state; safe on any thread. Returns candidate code points, or
+     * null when unsupported (the caller then uses [handInput]).
+     */
+    fun handRecognize(strokes: List<FloatArray>): IntArray? = null
+    /** 交回 [handRecognize] 的结果（主线程）。 Hand back a [handRecognize] result, on the main thread. */
+    fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean = handInput(strokes)
     /** 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes, for date/time candidates. */
     fun setUtcOffset(minutes: Int) {}
     /** 计算算式（如 128*4），不是算式时返回 null。 Evaluate an expression like 128*4; null if it isn't one. */
@@ -75,6 +83,32 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     override fun commitFirst() { nativeCommitFirst(handle) }
 
     override fun handInput(strokes: List<FloatArray>): Boolean {
+        val (xy, lens) = pack(strokes)
+        return nativeHandInput(handle, xy, lens)
+    }
+
+    /** 手写模型的独立引用（首次用时向引擎要一次）；0 = 没有模型。 Models reference, fetched once; 0 = none. */
+    @Volatile private var handModels = -1L
+
+    override fun handRecognize(strokes: List<FloatArray>): IntArray? {
+        var m = handModels
+        if (m == -1L) {
+            // 首次在主线程之外取也安全：引擎调用自带锁。 Safe off the main thread: engine calls take the lock.
+            m = nativeHandModels(handle)
+            handModels = m
+        }
+        if (m == 0L) return null
+        val (xy, lens) = pack(strokes)
+        return nativeHandRecognize(m, xy, lens)
+    }
+
+    override fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean {
+        val (xy, lens) = pack(strokes)
+        return nativeHandApply(handle, xy, lens, cands)
+    }
+
+    /** 笔画打包为一个 x,y 数组与每笔点数。 Strokes packed into one x,y array plus per-stroke counts. */
+    private fun pack(strokes: List<FloatArray>): Pair<FloatArray, IntArray> {
         val lens = IntArray(strokes.size) { strokes[it].size / 2 }
         val xy = FloatArray(lens.sum() * 2)
         var at = 0
@@ -83,7 +117,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
             s.copyInto(xy, at, 0, n)
             at += n
         }
-        return nativeHandInput(handle, xy, lens)
+        return xy to lens
     }
     override fun commitRaw() { nativeCommitRaw(handle) }
     override fun clear() { nativeClear(handle) }
@@ -169,6 +203,9 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeForget(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeCommitFirst(h: Long): Boolean
         @JvmStatic private external fun nativeHandInput(h: Long, xy: FloatArray, lens: IntArray): Boolean
+        @JvmStatic private external fun nativeHandModels(h: Long): Long
+        @JvmStatic private external fun nativeHandRecognize(m: Long, xy: FloatArray, lens: IntArray): IntArray?
+        @JvmStatic private external fun nativeHandApply(h: Long, xy: FloatArray, lens: IntArray, cands: IntArray): Boolean
         @JvmStatic private external fun nativeCommitRaw(h: Long): Boolean
         @JvmStatic private external fun nativeClear(h: Long): Boolean
         @JvmStatic private external fun nativeFlush(h: Long): Boolean

@@ -54,6 +54,18 @@ interface VoiceListener {
     fun onEnd()
     /** 输入音量 0..1，用于波形动画。 Input level for the waveform. */
     fun onLevel(level: Float) {}
+    /**
+     * 引擎已开始收音。[selfEnd] 为 true 时引擎自己判断话说完了，界面不必按音量自动结束。
+     * The engine is listening. With [selfEnd] the engine detects the end of speech itself, so the UI should not
+     * auto-stop on silence.
+     */
+    fun onReady(selfEnd: Boolean) {}
+    /**
+     * 给用户的一行提示，不算错误（如系统识别用不了、已自动改用本地识别）。会话继续进行。
+     * A one-line note for the user, not an error (e.g. the system engine failed and local recognition took
+     * over). The session goes on.
+     */
+    fun onNotice(message: String) {}
 }
 
 /**
@@ -109,6 +121,13 @@ interface VoiceEngines {
 
     /** 手机上有系统语音识别服务（不论是否停用）。 A platform recognition service exists, disabled or not. */
     fun systemPresent(): Boolean = false
+
+    /**
+     * 重新检查系统语音服务：用户可能刚装好或启用了它。变了才重建列表，开销很小。
+     * Re-check the platform service, which may have just been installed or enabled; rebuilds the list only on a
+     * change, so it is cheap.
+     */
+    fun recheck() {}
 
     /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
     fun inspect(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException())

@@ -8,11 +8,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import org.json.JSONArray
@@ -35,15 +32,45 @@ internal object VoiceBackend {
 
 private const val TAG = "WeaveVoice"
 private const val KEY_SYSTEM_DISABLED = "system_disabled"
+private const val KEY_SYSTEM_FAILURES = "system_failures"
+private const val KEY_SYSTEM_SERVICE = "system_service"
 
-// SpeechRecognizer 在 API 31 起新增的错误码（minSdk 26，自行定义）。 Error codes added in API 31.
-private const val ERROR_TOO_MANY_REQUESTS = 10
-private const val ERROR_SERVER_DISCONNECTED = 11
-private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
-private const val ERROR_LANGUAGE_UNAVAILABLE = 13
+/**
+ * 系统识别连续失败这么多次（期间没成功过）后，有本地识别时不再默认用它。
+ * After this many failures in a row (no success in between), the system engine stops being the default when
+ * local recognition is available.
+ */
+internal const val SYSTEM_FAILURE_LIMIT = 2
 
-/** 系统语音服务不可用时的说明。 Shown when the system speech service cannot be used. */
-internal const val SYSTEM_UNAVAILABLE = "系统语音服务连接失败"
+/**
+ * 主引擎：保存的选择（仍在列表里）或列表第一个；系统识别连续失败 [SYSTEM_FAILURE_LIMIT] 次且有本地识别时改用本地。
+ * The primary engine: the saved choice if still listed, else the first entry; the local engine instead of the
+ * system one after [SYSTEM_FAILURE_LIMIT] failures in a row.
+ */
+internal fun pickActive(saved: String?, ids: List<String>, systemFailures: Int): String? {
+    val id = saved?.takeIf { it in ids } ?: ids.firstOrNull()
+    return if (id == SYSTEM_ENGINE_ID && systemFailures >= SYSTEM_FAILURE_LIMIT && LOCAL_ENGINE_ID in ids) LOCAL_ENGINE_ID else id
+}
+
+/**
+ * 系统设置里选定的默认识别服务：已选定且装着时返回它；没选定或已失效返回空串；读不到这项设置返回 null。
+ * The default recognition service from system settings: its component when set and installed, "" when unset or
+ * stale, null when the setting can't be read.
+ */
+private fun defaultRecognizer(ctx: Context): String? = try {
+    val cn = android.content.ComponentName.unflattenFromString(
+        android.provider.Settings.Secure.getString(ctx.contentResolver, "voice_recognition_service").orEmpty(),
+    )
+    val intent = Intent(android.speech.RecognitionService.SERVICE_INTERFACE)
+    if (cn != null && ctx.packageManager.queryIntentServices(intent.setComponent(cn), 0).isNotEmpty()) cn.flattenToShortString() else ""
+} catch (_: Exception) {
+    null
+}
+
+private const val ON_DEVICE_KEY = "on-device"
+private const val FALLBACK_ONCE = "系统语音识别用不了，已改用本地识别"
+private const val FALLBACK_DEFAULT = "系统语音识别多次失败，已改为默认用本地识别"
+private const val FALLBACK_DELAY_MS = 300L
 private const val RELEASE_DELAY_MS = 15_000L
 private const val MAX_LOG_CHARS = 512
 
@@ -79,9 +106,16 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
     /** 宿主句柄，0 表示不可用。 Host handle; 0 means unavailable. */
     val host: Long
     @Volatile private var cache: List<VoicePlugin> = emptyList()
-    /** 每次刷新都重新检查：用户可能刚装好或启用了系统语音服务。 Re-checked on refresh: a service may have just been installed. */
+    /**
+     * 系统识别能用：系统设置里的默认识别服务装着（读不到设置时看有没有识别服务），或有端侧识别（Android 13 起）。
+     * 没选定默认服务时一般调不起来，就不列出，免得默认用上一个用不了的引擎。刷新与 [recheck] 时重新检查。
+     * The platform engine is usable when the default service from settings is installed (any service when the
+     * setting can't be read) or on-device recognition exists (Android 13+). Without a default service it usually
+     * can't be used, so it isn't listed rather than becoming a broken default. Re-checked on refresh and [recheck].
+     */
     private val systemAvailable: Boolean get() = runCatching {
-        SpeechRecognizer.isRecognitionAvailable(ctx) ||
+        val default = defaultRecognizer(ctx)
+        (if (default == null) SpeechRecognizer.isRecognitionAvailable(ctx) else default.isNotEmpty()) ||
             (android.os.Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx))
     }.getOrDefault(false)
 
@@ -132,6 +166,33 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
         }
 
     override fun systemPresent(): Boolean = systemAvailable
+
+    override fun recheck() {
+        val listed = cache.any { it.id == SYSTEM_ENGINE_ID }
+        if (listed != (systemAvailable && !systemDisabled)) refresh()
+    }
+
+    /** 系统识别连续失败次数（成功或用户重新选它时清零）。 System-engine failures in a row. */
+    val systemFailures: Int get() = prefs.getInt(KEY_SYSTEM_FAILURES, 0)
+
+    /** 上次成功的识别服务，下次先试它。 The service that worked last; tried first next time. */
+    val lastSystemService: String? get() = prefs.getString(KEY_SYSTEM_SERVICE, null)
+
+    fun systemWorked(service: String?) {
+        val e = prefs.edit().putInt(KEY_SYSTEM_FAILURES, 0)
+        if (service != null) e.putString(KEY_SYSTEM_SERVICE, service)
+        e.apply()
+    }
+
+    /** 记一次失败，返回连续失败次数。 Record a failure; returns the count in a row. */
+    fun systemFailed(): Int {
+        val n = systemFailures + 1
+        prefs.edit().putInt(KEY_SYSTEM_FAILURES, n).apply()
+        return n
+    }
+
+    /** 本地识别可用。 The local engine is listed. */
+    val localListed: Boolean get() = cache.any { it.id == LOCAL_ENGINE_ID }
 
     fun refresh() {
         val list = mutableListOf<VoicePlugin>()
@@ -198,8 +259,13 @@ private class PluginEngines(private val ctx: Context) : VoiceEngines {
     override fun list(): List<VoicePlugin> = cache
 
     override var activeId: String?
-        get() = prefs.getString("active", null)?.takeIf { id -> cache.any { it.id == id } } ?: cache.firstOrNull()?.id
-        set(value) { prefs.edit().putString("active", value).apply() }
+        get() = pickActive(prefs.getString("active", null), cache.map { it.id }, systemFailures)
+        set(value) {
+            val e = prefs.edit().putString("active", value)
+            // 用户重新选了系统识别：再给它机会。 The user picked the system engine again: give it another chance.
+            if (value == SYSTEM_ENGINE_ID) e.putInt(KEY_SYSTEM_FAILURES, 0)
+            e.apply()
+        }
 
     override var extraIds: Set<String>
         get() = prefs.getStringSet("also", null)?.toSet().orEmpty()
@@ -249,7 +315,7 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
     private val audioThread = Executors.newSingleThreadExecutor { r -> Thread(r, "weave-audio") }
     @Volatile private var recording = false
     private var listener: VoiceListener? = null
-    private var systemRecognizer: SpeechRecognizer? = null
+    private val system = SystemSpeech(main, ::systemServices, ctx.packageName)
     /** 每次会话递增；旧会话的迟到回调据此丢弃。 Bumped per session to drop late callbacks. */
     @Volatile private var generation = 0
     /** 本次会话中共用录音的引擎。 Engines sharing the recording in this session. */
@@ -258,8 +324,13 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
     override val isRunning: Boolean get() = listener != null
 
     // ------------------------------------------------------------ audio focus
-    // 收音时申请短暂音频焦点：其它 App 暂停/压低播放；焦点被抢（来电等）时结束会话并上屏已识别内容。
-    // Hold transient focus while listening; on loss (calls etc.) stop and keep what was recognized.
+    // 只在自己录音时申请短暂音频焦点，让其它应用暂停播放。系统识别由识别服务自己管焦点：我们再抢一次，
+    // 服务一拿焦点我们就会收到「失去焦点」并把它停掉。永久失去焦点或来电时结束会话并上屏已识别的内容；
+    // 短暂失去（导航播报、提示音）不打断说话。
+    // Request transient focus only while we record ourselves, so other apps pause. The system recognizer's service
+    // manages focus itself: holding our own would make us stop it as soon as the service takes focus. On a
+    // permanent loss or a phone call, stop and keep what was recognized; a transient loss (navigation prompt,
+    // notification sound) doesn't cut the user off.
     private val audioManager = ctx.getSystemService(android.media.AudioManager::class.java)
     private var focusRequest: android.media.AudioFocusRequest? = null
 
@@ -274,7 +345,7 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             )
             .setOnAudioFocusChangeListener { change ->
                 if (change == android.media.AudioManager.AUDIOFOCUS_LOSS ||
-                    change == android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                    (change == android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && inCall())
                 ) {
                     main.post { if (isRunning) stop() }
                 }
@@ -282,6 +353,13 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             .build()
         focusRequest = req
         runCatching { audioManager?.requestAudioFocus(req) }
+    }
+
+    private fun inCall(): Boolean = when (audioManager?.mode) {
+        android.media.AudioManager.MODE_IN_CALL,
+        android.media.AudioManager.MODE_IN_COMMUNICATION,
+        android.media.AudioManager.MODE_RINGTONE -> true
+        else -> false
     }
 
     private fun abandonFocus() {
@@ -305,15 +383,16 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         }
         this.listener = listener
         val gen = ++generation
-        requestFocus()
         val primary = selection.first()
-        val ok = if (primary.id == SYSTEM_ENGINE_ID) startSystem(gen) else {
-            // 多引擎只在界面支持时启用；否则只用主引擎。 Multi-engine only when the UI supports it.
-            val multi = listener as? MultiVoiceListener
-            val ids = if (multi != null && selection.size > 1) selection.map { it.id } else listOf(primary.id)
-            if (ids.size > 1) multi!!.onEngines(selection)
-            startShared(ids, gen, multi = ids.size > 1)
-        }
+        // 系统识别的失败经监听者异步报告（含改用本地识别），所以总是返回 true。
+        // System-engine failures (and a switch to local) are reported through the listener, so this returns true.
+        if (primary.id == SYSTEM_ENGINE_ID) { startSystem(gen); return true }
+        requestFocus()
+        // 多引擎只在界面支持时启用；否则只用主引擎。 Multi-engine only when the UI supports it.
+        val multi = listener as? MultiVoiceListener
+        val ids = if (multi != null && selection.size > 1) selection.map { it.id } else listOf(primary.id)
+        if (ids.size > 1) multi!!.onEngines(selection)
+        val ok = startShared(ids, gen, multi = ids.size > 1)
         if (!ok) { abandonFocus(); this.listener = null }
         return ok
     }
@@ -332,7 +411,17 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
 
         fun partial(text: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEnginePartial(id, text) else l.onPartial(text) }
         fun final(text: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEngineFinal(id, text) else l.onFinal(text) }
-        fun error(message: String) = post(gen) { l -> if (multi) (l as MultiVoiceListener).onEngineError(id, message) else l.onError(message) }
+        fun error(message: String) = post(gen) { l ->
+            if (multi) { (l as MultiVoiceListener).onEngineError(id, message); return@post }
+            l.onError(message)
+            // 单引擎出错即结束：停止录音、放掉音频焦点，否则麦克风会一直开着。
+            // A single engine's error ends the session: stop recording and release focus, or the mic stays on.
+            if (!ended) {
+                ended = true
+                cancel()
+                if (runs.all { it.ended }) finishShared()
+            }
+        }
         fun replace(old: String, new: String) {
             // 替换可能在会话结束后才到，转发给最后一个监听者。 May arrive after onEnd.
             main.post {
@@ -471,16 +560,23 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
             var r: AudioRecord = rec
             val buf = ByteArray(chunk)
             var silentChunks = 0
+            /** 连续读到 0 字节的次数：一直这样说明录音断了。 Zero-byte reads in a row; many means the capture broke. */
+            var zeroReads = 0
             var error: String? = null
             try {
                 r.startRecording()
-                if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) error = "麦克风被其他应用占用"
+                if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) error = MIC_BUSY
                 while (error == null && recording && gen == generation) {
                     var off = 0
                     while (off < chunk && recording) {
                         val n = r.read(buf, off, chunk - off)
                         if (n < 0) { error = "录音出错（$n），请重试"; break }
-                        if (n == 0) break
+                        if (n == 0) {
+                            if (++zeroReads >= 50) { error = "录音中断，请重试"; break }
+                            Thread.sleep(10)
+                            continue
+                        }
+                        zeroReads = 0
                         off += n
                     }
                     if (error != null || off <= 0) break
@@ -497,6 +593,7 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
                                 ?: openRecorder(sources[si - 1], rate, maxOf(minBuf, chunk * 4))
                                 ?: throw IllegalStateException("no recorder")
                             r.startRecording()
+                            if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) { error = MIC_BUSY; continue }
                             silentChunks = -1
                         }
                     }
@@ -554,125 +651,93 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
 
     // ------------------------------------------------------------ system engine
 
-    /**
-     * @param attempt 第几次尝试：服务刚被唤起时第一次连接常会失败，自动重连一次。
-     * @param withLanguage 是否指定中文；服务不支持中文参数时改用它的默认语言再试。
-     * @param attempt retry count — the first bind to a freshly started service often fails, so reconnect once.
-     * @param withLanguage whether to ask for zh-CN; retried with the service default when unsupported.
-     */
-    private fun startSystem(gen: Int, attempt: Int = 0, withLanguage: Boolean = true): Boolean {
-        val sr = runCatching { createRecognizer(attempt) }.getOrNull()
-        if (sr == null) {
-            post(gen) { it.onError(SYSTEM_UNAVAILABLE) }
-            finishSystem(gen)
-            return false
-        }
-        systemRecognizer = sr
-        sr.setRecognitionListener(object : RecognitionListener {
-            /** 本次是否已识别出文字。 Whether any text came back in this session. */
-            var heard = false
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) = post(gen) { it.onLevel(((rmsdB + 2) / 12f).coerceIn(0f, 1f)) }
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onError(error: Int) {
-                // 连接失败：换下一个候选服务；不支持中文：同一服务改用它的默认语言。
-                // Bind failure → next candidate service; language unsupported → same service, default language.
-                val retryBind = attempt + 1 < recognizerCandidates().size &&
-                    (error == SpeechRecognizer.ERROR_CLIENT || error == ERROR_SERVER_DISCONNECTED)
-                val retryLanguage = withLanguage && (error == ERROR_LANGUAGE_NOT_SUPPORTED || error == ERROR_LANGUAGE_UNAVAILABLE)
-                if (retryBind || retryLanguage) {
-                    main.post {
-                        if (gen != generation) return@post
-                        sr.destroy()
-                        if (systemRecognizer === sr) systemRecognizer = null
-                        startSystem(gen, if (retryLanguage) attempt else attempt + 1, withLanguage && !retryLanguage)
-                    }
-                    return
-                }
-                // 没听清 / 没听到声音也要说一声，否则看起来像没反应。 Say so on no match / no speech too.
-                if (!heard || (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
-                    post(gen) { it.onError(systemErrorMessage(error)) }
-                }
-                finishSystem(gen)
-            }
-            override fun onResults(results: Bundle?) {
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                if (text.isNotEmpty()) post(gen) { it.onFinal(text) }
-                finishSystem(gen)
-            }
-            override fun onPartialResults(partialResults: Bundle?) {
-                val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                if (text.isNotEmpty()) { heard = true; post(gen) { it.onPartial(text) } }
-            }
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
-        if (withLanguage) intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-        return runCatching { sr.startListening(intent) }.fold(
-            onSuccess = { true },
-            onFailure = {
-                Log.w(TAG, "system recognizer start failed", it)
-                post(gen) { l -> l.onError(SYSTEM_UNAVAILABLE) }
-                finishSystem(gen)
-                false
-            },
-        )
+    private fun startSystem(gen: Int) {
+        system.start(object : SystemSpeech.Sink {
+            fun l(): VoiceListener? = if (gen == generation) listener else null
+            override fun ready() { l()?.onReady(selfEnd = true) }
+            override fun level(level: Float) { l()?.onLevel(level) }
+            override fun partial(text: String) { l()?.onPartial(text) }
+            override fun final(text: String) { l()?.onFinal(text) }
+            override fun notice(message: String) { l()?.onNotice(message) }
+            override fun end(outcome: SystemSpeech.Outcome) = systemEnded(gen, outcome)
+        }, canFallback = engines.localListed)
     }
 
     /**
-     * 依次尝试的识别服务：系统默认服务 → 手机上找到的每个识别服务（默认设置为空或失效时仍能用）→
-     * Android 13 起的端侧识别。
-     * Recognizers tried in order: the default service, each installed recognition service (works when the
-     * default setting is empty or stale), then on-device recognition on Android 13+.
+     * 系统识别结束：记下它能不能用；用户还在等着说话而本地识别在时，当场改用本地识别并说一声。
+     * The system session ended: record whether it works; if the user is still waiting to speak and local
+     * recognition exists, switch to it right away and say so.
      */
-    private fun recognizerCandidates(): List<() -> SpeechRecognizer> {
-        val list = mutableListOf<() -> SpeechRecognizer>({ SpeechRecognizer.createSpeechRecognizer(ctx) })
+    private fun systemEnded(gen: Int, outcome: SystemSpeech.Outcome) {
+        if (gen != generation) return
+        val failures = when (outcome.kind) {
+            SystemSpeech.Kind.OK -> { engines.systemWorked(outcome.service); 0 }
+            SystemSpeech.Kind.FAILED -> engines.systemFailed()
+            SystemSpeech.Kind.USER -> 0
+        }
+        val l = listener ?: return
+        if (outcome.kind == SystemSpeech.Kind.FAILED && outcome.retryable && engines.localListed) {
+            Log.w(TAG, "system engine failed (${outcome.message}), using local")
+            l.onNotice(if (failures >= SYSTEM_FAILURE_LIMIT) FALLBACK_DEFAULT else FALLBACK_ONCE)
+            // 稍等片刻再录音：识别服务放开麦克风是异步的。 Wait a moment: the service frees the mic asynchronously.
+            val go = Runnable {
+                fallback = null
+                if (gen != generation) return@Runnable
+                requestFocus()
+                if (!startShared(listOf(LOCAL_ENGINE_ID), gen, multi = false)) { abandonFocus(); endSession() }
+            }
+            fallback = go
+            main.postDelayed(go, FALLBACK_DELAY_MS)
+            return
+        }
+        outcome.message?.let { l.onError(it) }
+        endSession()
+    }
+
+    /** 等着改用本地识别（见 [systemEnded]）。 Pending switch to local recognition. */
+    private var fallback: Runnable? = null
+
+    private fun endSession() {
+        val l = listener
+        listener = null
+        l?.onEnd()
+    }
+
+    /**
+     * 依次尝试的识别服务：上次成功的 → 系统设置里的默认服务 → 手机上找到的其它识别服务 → Android 13 起的端侧识别。
+     * 按组件去重；默认服务没选定时不试（一定连不上）。
+     * Services tried in order: the one that worked last, the default from settings, other installed recognition
+     * services, then on-device recognition on Android 13+. De-duplicated by component; an unset default is skipped
+     * (it can't connect).
+     */
+    private fun systemServices(): List<SpeechService> {
+        val list = ArrayList<SpeechService>()
+        val seen = HashSet<String>()
+        val default = defaultRecognizer(ctx)
+        if (default != "") {
+            val key = default ?: "default"
+            seen += key
+            list += SpeechService(key, onDevice = false) { PlatformSpeech(SpeechRecognizer.createSpeechRecognizer(ctx)) }
+        }
         val services = runCatching {
             ctx.packageManager.queryIntentServices(Intent(android.speech.RecognitionService.SERVICE_INTERFACE), 0)
         }.getOrDefault(emptyList())
         for (info in services) {
             val si = info.serviceInfo ?: continue
             val cn = android.content.ComponentName(si.packageName, si.name)
-            list += { SpeechRecognizer.createSpeechRecognizer(ctx, cn) }
+            if (seen.add(cn.flattenToShortString())) {
+                list += SpeechService(cn.flattenToShortString(), onDevice = false) {
+                    PlatformSpeech(SpeechRecognizer.createSpeechRecognizer(ctx, cn))
+                }
+            }
         }
-        if (android.os.Build.VERSION.SDK_INT >= 33 && runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx) }.getOrDefault(false)) {
-            list += { SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx) }
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx) }.getOrDefault(false)
+        ) {
+            list += SpeechService(ON_DEVICE_KEY, onDevice = true) { PlatformSpeech(SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)) }
         }
-        return list
-    }
-
-    private fun createRecognizer(attempt: Int): SpeechRecognizer {
-        val list = recognizerCandidates()
-        return list[attempt.coerceIn(0, list.size - 1)]()
-    }
-
-    /** 系统识别错误码 → 用户看得懂的说明与处理办法。 System error code → a message the user can act on. */
-    private fun systemErrorMessage(error: Int): String = when (error) {
-        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "系统识别需要联网"
-        SpeechRecognizer.ERROR_AUDIO -> "麦克风被其他应用占用"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "系统语音服务缺少麦克风权限"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY, ERROR_TOO_MANY_REQUESTS -> "系统语音服务正忙"
-        ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE -> "系统语音服务不支持中文"
-        SpeechRecognizer.ERROR_NO_MATCH -> "没听清，请再说一次"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有听到声音，请靠近麦克风再说"
-        else -> SYSTEM_UNAVAILABLE
-    }
-
-    private fun finishSystem(gen: Int) {
-        main.post {
-            if (gen != generation) return@post
-            systemRecognizer?.destroy()
-            systemRecognizer = null
-            abandonFocus()
-            val l = listener
-            listener = null
-            l?.onEnd()
-        }
+        val last = engines.lastSystemService
+        return list.sortedBy { if (it.key == last) 0 else 1 }
     }
 
     // ------------------------------------------------------------ control
@@ -680,7 +745,9 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
     override fun stop() {
         recording = false
         for (r in runs) r.stop()
-        systemRecognizer?.stopListening()
+        system.stop()
+        // 还没开始本地录音就停了：直接结束。 Stopped before the local recording began: just end.
+        fallback?.let { main.removeCallbacks(it); fallback = null; endSession() }
     }
 
     override fun cancel() {
@@ -691,8 +758,9 @@ private class Recognizer(private val ctx: Context, private val engines: PluginEn
         val old = runs
         runs = emptyList()
         for (r in old) r.cancel()
-        systemRecognizer?.let { it.cancel(); it.destroy() }
-        systemRecognizer = null
+        system.cancel()
+        fallback?.let { main.removeCallbacks(it) }
+        fallback = null
         abandonFocus()
         l?.onEnd()
     }

@@ -96,7 +96,8 @@ fun missingRequired(e: VoiceEngines, p: VoicePlugin): List<ConfigField> =
 fun VoiceListScreen() {
     val deps = LocalDeps.current
     val nav = LocalNav.current
-    val engines = remember { deps.engines() }
+    // 系统语音服务可能刚装好或启用，打开列表时重新检查。 Re-check the system service: it may have just been set up.
+    val engines = remember { deps.engines().also { runCatching { it.recheck() } } }
     var tick by remember { mutableIntStateOf(0) }
     val models = remember { deps.models() }
     // 语音包装好后本地引擎会出现，模型状态变化时也重读列表。 Re-read when models change: the pack adds the local engine.

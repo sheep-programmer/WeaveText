@@ -25,7 +25,11 @@ class EditorCache {
     private var complete = false
     /** 我们自己改动后预期的光标位置（编辑器的回报会晚到）。 Cursor positions we expect the editor to echo. */
     private val expected = IntArray(MAX_EXPECTED)
+    /** 对应的预期是否来自上屏（上屏可能被编辑器拒收，删除几乎不会）。 Whether each expectation came from a commit. */
+    private val expectedCommit = BooleanArray(MAX_EXPECTED)
     private var expectedCount = 0
+    /** 本次输入以来编辑器回报过选区。 The editor has reported a selection since the input started. */
+    private var reported = false
 
     /** 每次编辑器（可能）变化时递增。 Bumped whenever the editor (may have) changed. */
     var version = 0
@@ -34,10 +38,22 @@ class EditorCache {
     val selectionKnown get() = selStart >= 0 && selEnd >= 0 && !composingRegion
     val selectionEmpty get() = selectionKnown && selStart == selEnd
 
+    /**
+     * 还有我们的上屏没等到编辑器回报：它可能被拒收了（字数上限、输入过滤），镜像里的文字不能用来决定删什么。
+     * One of our commits hasn't been echoed yet: the editor may have rejected it (max length, input filter), so
+     * the mirrored text must not decide what to delete.
+     */
+    val commitPending: Boolean get() {
+        for (i in 0 until expectedCount) if (expectedCommit[i]) return true
+        return false
+    }
+
+    /** 新的输入框：选区来自 EditorInfo，编辑器还没回报过。 A new field: the selection comes from EditorInfo. */
     fun reset(start: Int, end: Int) {
         selStart = minOf(start, end)
         selEnd = maxOf(start, end)
         composingRegion = false
+        reported = false
         dropText()
     }
 
@@ -61,11 +77,14 @@ class EditorCache {
      * The selection reported by the editor; true when it's a change we didn't make (the cursor moved away…).
      */
     fun onUpdate(start: Int, end: Int, candStart: Int, candEnd: Int): Boolean {
-        composingRegion = candStart >= 0 && candEnd > candStart
+        val composing = candStart >= 0 && candEnd > candStart
+        composingRegion = composing
+        reported = true
         if (start == end) {
             // 我们自己改动的回声：保留（可能更新的）预测。 An echo of our own edit: keep the newer prediction.
             for (i in 0 until expectedCount) if (expected[i] == start) {
                 System.arraycopy(expected, i + 1, expected, 0, expectedCount - i - 1)
+                System.arraycopy(expectedCommit, i + 1, expectedCommit, 0, expectedCount - i - 1)
                 expectedCount -= i + 1
                 return false
             }
@@ -74,6 +93,9 @@ class EditorCache {
         // 之前不知道选区（刚开始输入、镜像失效）时的第一次回报不算「被挪走」。 The first report after an unknown selection isn't a move.
         val known = selStart >= 0
         reset(start, end)
+        // reset 会清掉 composing 标记，这里放回去（语音中间结果还在编辑器里）。 reset clears the flag; restore it.
+        composingRegion = composing
+        reported = true
         return known
     }
 
@@ -100,16 +122,23 @@ class EditorCache {
         return TextUtils.getCapsMode(before, before.length, reqModes)
     }
 
+    /**
+     * 镜像里的文字不够判断最后一个字形簇（没读过，或只剩一小段且不到开头）：删除前先重新读一次。
+     * The mirror can't tell the last grapheme cluster (never read, or only a short tail that doesn't reach the
+     * start): read again before deleting.
+     */
+    fun needsFill(): Boolean = !beforeValid || (!complete && before.length < CLUSTER_LOOKBEHIND)
+
     /** 光标前最后一个字形簇（表情、组合字符）的长度；没有或未知时为 0。 Length of the last grapheme cluster. */
     fun lastClusterLength(): Int {
         if (!selectionEmpty || !beforeValid || before.isEmpty()) return 0
-        val it = android.icu.text.BreakIterator.getCharacterInstance()
         // 只看末尾一小段即可。 Only the tail matters.
-        val from = (before.length - 32).coerceAtLeast(0)
-        it.setText(before.substring(from))
-        val end = it.last()
-        val start = it.previous()
-        return if (start == android.icu.text.BreakIterator.DONE) 0 else end - start
+        val from = (before.length - CLUSTER_LOOKBEHIND).coerceAtLeast(0)
+        val tail = before.substring(from)
+        val start = clusterStart(tail, tail.length)
+        // 簇一直延伸到镜像开头、镜像又不完整：可能还没看全，按未知处理。 Reaches the start of a partial mirror: unknown.
+        if (start == 0 && from == 0 && !complete) return 0
+        return tail.length - start
     }
 
     /** 我们上屏了 [text]（替换选区）。 We committed [text], replacing the selection. */
@@ -119,7 +148,34 @@ class EditorCache {
         if (beforeValid) { before.append(text); trim() }
         selStart += text.length
         selEnd = selStart
+        expect(selStart, commit = true)
+    }
+
+    /**
+     * 我们把光标移动了 [delta] 个字符（选区为空）；[passed] 是右移时越过的文字（左移时为 null）。
+     * We moved the empty cursor by [delta] chars; [passed] is the text stepped over when moving right.
+     */
+    fun onCursorMove(delta: Int, passed: String?) {
+        if (!selectionEmpty) { invalidate(); return }
+        version++
+        if (beforeValid) {
+            if (delta >= 0) {
+                if (passed != null && passed.length == delta) { before.append(passed); trim() } else dropBefore()
+            } else if (-delta > before.length && !complete) {
+                dropBefore()
+            } else {
+                before.setLength((before.length + delta).coerceAtLeast(0))
+            }
+        }
+        selStart = (selStart + delta).coerceAtLeast(0)
+        selEnd = selStart
         expect(selStart)
+    }
+
+    private fun dropBefore() {
+        before.setLength(0)
+        beforeValid = false
+        complete = false
     }
 
     /** 我们删除了光标前 [n] 个字符。 We deleted [n] chars before an empty selection. */
@@ -127,7 +183,7 @@ class EditorCache {
         if (!selectionEmpty) { invalidate(); return }
         version++
         if (beforeValid) {
-            if (n > before.length && !complete) { before.setLength(0); beforeValid = false }
+            if (n > before.length && !complete) dropBefore()
             else before.setLength((before.length - n).coerceAtLeast(0))
         }
         selStart = (selStart - n).coerceAtLeast(0)
@@ -135,12 +191,19 @@ class EditorCache {
         expect(selStart)
     }
 
-    private fun expect(pos: Int) {
+    private fun expect(pos: Int, commit: Boolean = false) {
         if (expectedCount == MAX_EXPECTED) {
+            // 这么多次改动都没有回报：编辑器不回报选区，镜像会过时（用户点到别处我们也不知道），不再使用。
+            // This many edits and not one report: the editor doesn't report the selection, so the mirror would go
+            // stale (we'd never see the user tap elsewhere); stop using it.
+            if (!reported) { invalidate(); return }
             System.arraycopy(expected, 1, expected, 0, MAX_EXPECTED - 1)
+            System.arraycopy(expectedCommit, 1, expectedCommit, 0, MAX_EXPECTED - 1)
             expectedCount--
         }
-        expected[expectedCount++] = pos
+        expected[expectedCount] = pos
+        expectedCommit[expectedCount] = commit
+        expectedCount++
     }
 
     private fun trim() {
@@ -157,5 +220,19 @@ class EditorCache {
         private const val MAX_EXPECTED = 16
         /** 判断句首大写需要回看的字符数（跳过空白与引号括号）。 Look-behind for sentence caps. */
         private const val CAPS_LOOKBEHIND = 16
+        /** 找最后一个字形簇时回看的字符数（最长的表情序列也在其内）。 Look-behind for the last grapheme cluster. */
+        const val CLUSTER_LOOKBEHIND = 32
+
+        /**
+         * [text] 中位置 [end] 之前那个字形簇的起点（表情、国旗、组合字符不拆开）；[end] 为 0 时返回 0。
+         * Start of the grapheme cluster that ends at [end] in [text] (emoji, flags and combining marks stay whole).
+         */
+        fun clusterStart(text: CharSequence, end: Int): Int {
+            if (end <= 0) return 0
+            val it = android.icu.text.BreakIterator.getCharacterInstance()
+            it.setText(text.toString())
+            val start = it.preceding(end)
+            return if (start == android.icu.text.BreakIterator.DONE) 0 else start
+        }
     }
 }

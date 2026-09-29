@@ -37,6 +37,8 @@ data class KbPalette(
     val popupShadow: Int,
     val card: Int,
     val danger: Int,
+    /** 红底（危险键、出错提示条）上的文字色；与 [danger] 对比度 ≥ 4.5:1。 Text on [danger] plates. */
+    val onDanger: Int,
     val voiceWave: Int,
     /** 底部弹层遮罩（01 §5 E4）。 Sheet scrim. */
     val scrim: Int,
@@ -105,6 +107,12 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
     val hintScale: Float
     /** 候选栏字号缩放 f（完整跟随系统字号）。 Candidate scale, follows the system font scale fully. */
     val candScale: Float
+    /**
+     * 面板文字（工具箱、剪贴板、符号分类、键盘选择）缩放：系统字号最多计 1.3，版面固定的地方另按宽度收。
+     * Panel text scale (toolbox, clipboard, symbol categories, keyboard picker): font scale counted up to 1.3;
+     * fixed layouts additionally shrink to fit.
+     */
+    val panelScale: Float
     /** 顶栏高度与组合串行随 f 放大的比例。 Top-bar growth with font scale. */
     val topScale: Float
     /** 键区（4 行）高度。 Main area height. */
@@ -149,6 +157,7 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
         iconScale = s
         hintScale = s * f.coerceAtMost(1.15f) * geo.textScale
         candScale = f
+        panelScale = f.coerceAtMost(1.3f)
         mainHeight = 4 * rowPitch
         kbHeight = topBar + padTop + mainHeight + padBottom
         bubbleSpace = 72f * density
@@ -163,6 +172,8 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
     fun icon(dpSize: Float): Float = dpSize * density * iconScale
     /** 键内文字 px。 Key label size in px. */
     fun label(dpSize: Float): Float = dpSize * density * labelScale
+    /** 面板文字 px。 Panel text size in px. */
+    fun panel(dpSize: Float): Float = dpSize * density * panelScale
     /** 字母键主字：不超过键高的 0.62，保证不裁切。 Letter size, capped at 0.62 × key height. */
     fun letter(dpSize: Float): Float = minOf(label(dpSize) * (if (small) 0.92f else 1f), keyHeight * 0.62f)
 

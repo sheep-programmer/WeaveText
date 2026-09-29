@@ -52,6 +52,11 @@ object EngineHolder {
             engine = NativeEngine.createFromSpec(spec, DataInstaller.userDir(ctx).absolutePath, DataInstaller.cacheKb(ctx))
             if (engine == null) Log.e(TAG, "engine create failed")
             engine?.let { CloudWords.get(ctx).attach(it) }
+            // 启用了手写键盘：在加载线程上先载入手写模型，第一笔不用等（没启用就不占这份内存）。
+            // Handwriting keyboard enabled: load its models on the loader thread so the first stroke doesn't wait
+            // (skipped otherwise, saving the memory).
+            val prefs = ctx.getSharedPreferences(com.weavetext.ime.settings.WeavePrefs.FILE, Context.MODE_PRIVATE)
+            if ("hand" in com.weavetext.ime.settings.WeavePrefs.keyboards(prefs)) engine?.handRecognize(emptyList())
         } catch (t: Throwable) {
             Log.e(TAG, "engine load failed", t)
         } finally {

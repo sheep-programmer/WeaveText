@@ -37,6 +37,9 @@ import androidx.compose.ui.zIndex
 import com.weavetext.ime.R
 import kotlin.math.roundToInt
 
+/** 手写停笔判字的三档名称，与 [WeavePrefs.HAND_PAUSE_MS] 对应。 Names of the three pause levels. */
+private val HAND_PAUSE_NAMES = listOf("快", "中", "慢")
+
 private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "hand", "wubi86", "english")
 
 /** 输入方案（03 §5）。 Input schemes page. */
@@ -46,6 +49,7 @@ fun SchemesScreen() {
     val nav = LocalNav.current
     val p by rememberLivePrefs(deps.prefs)
     var showScheme by remember { mutableStateOf(false) }
+    var showHand by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
     // 已启用的在前（按用户顺序），其余在后。 Enabled first (user order), then the rest.
     val order = enabled + ALL_KEYBOARDS.filter { it !in enabled }
@@ -93,6 +97,12 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.AUTO_PAIR, it).apply()
             }
         }
+        GroupTitle("手写")
+        GroupCard {
+            SettingRow("停笔判字", "停笔多久算写完一个字；写得慢选「慢」", onClick = { showHand = true }) {
+                ValueChevron(HAND_PAUSE_NAMES[WeavePrefs.handPause(p)])
+            }
+        }
         GroupTitle("五笔")
         GroupCard {
             SwitchRow("显示字根提示", checked = WeavePrefs.wubiRootHints(p)) { p.edit().putBoolean(WeavePrefs.WUBI_ROOT_HINTS, it).apply() }
@@ -101,6 +111,31 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.WUBI_PINYIN_MIX, it).apply()
             }
         }
+    }
+
+    if (showHand) {
+        AlertDialog(
+            onDismissRequest = { showHand = false },
+            title = { Text("停笔判字") },
+            text = {
+                Column {
+                    for (i in HAND_PAUSE_NAMES.indices) {
+                        val sel = i == WeavePrefs.handPause(p)
+                        Row(
+                            Modifier.fillMaxWidth().height(48.dp).selectable(sel) {
+                                p.edit().putInt(WeavePrefs.HAND_PAUSE, i).apply(); showHand = false
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = sel, onClick = null)
+                            Text("${HAND_PAUSE_NAMES[i]}（${"%.1f".format(java.util.Locale.ROOT, WeavePrefs.HAND_PAUSE_MS[i] / 1000f)} 秒）",
+                                Modifier.padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showHand = false }) { Text("取消") } },
+        )
     }
 
     if (showScheme) {

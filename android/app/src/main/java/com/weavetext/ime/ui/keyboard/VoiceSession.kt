@@ -40,6 +40,12 @@ class VoiceSession(
         private set
     var error: String? = null
         private set
+    /**
+     * 一行提示（如系统识别用不了、已改用本地识别），不算错误；下次开始时清掉。
+     * A one-line note (e.g. the system engine failed and local took over), not an error; cleared on the next start.
+     */
+    var notice: String? = null
+        private set
     /** 平滑后的音量 0..1。 Smoothed input level. */
     var level = 0f
         private set
@@ -63,6 +69,12 @@ class VoiceSession(
     /** 底噪（自适应）。 Adaptive noise floor. */
     private var floor = -1f
     private var token = 0
+    /** 引擎自己判断说完（系统识别）：不按音量自动结束。 The engine detects the end of speech itself. */
+    private var selfEnd = false
+    /** 识别器最近一次回调的时间：长时间没有回调说明它卡住了。 Last callback; a long silence means it is stuck. */
+    private var lastActivity = 0L
+    /** 进入「识别中」的时间。 When FINALIZING began. */
+    private var finalizingSince = 0L
 
     /**
      * 没有任何可用引擎时调用（不报错）：默认打开设置里的引导页，语音面板在时改为在面板里给出办法。
@@ -90,15 +102,26 @@ class VoiceSession(
     fun hasPermission(): Boolean =
         ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private val connectTimeout = Runnable { if (state == State.CONNECTING) { state = State.LISTENING; changed() } }
+    // 兜底时限：识别器一直连不上、或说完后迟迟不给结果时结束会话（已显示的文字照常上屏），不会卡住。
+    // Last-resort limits: end the session (keeping the text shown) when the recognizer never connects or never
+    // delivers after the stop, so the session can't hang.
+    private val connectGuard = Runnable { if (state == State.CONNECTING) settle(NO_RESPONSE) }
+    private val finalizeGuard = Runnable { if (state == State.FINALIZING) settle() }
     private val silenceCheck = object : Runnable {
         override fun run() {
             if (state != State.LISTENING) return
             // 还没开口时多等一会儿（模型可能还在加载、人也要想一想）。 Wait longer before the first word.
-            val limit = if (spoke) SILENCE_MS else NO_SPEECH_MS
+            // 引擎自己判断说完时只在很久没声音后兜底。 An engine with its own endpointing gets a long backstop only.
+            val limit = if (selfEnd) SELF_END_MS else if (spoke) SILENCE_MS else NO_SPEECH_MS
             if (autoStop && SystemClock.uptimeMillis() - lastLoud > limit) { stop(); return }
             main.postDelayed(this, 250)
         }
+    }
+
+    private fun clearTimers() {
+        main.removeCallbacks(silenceCheck)
+        main.removeCallbacks(connectGuard)
+        main.removeCallbacks(finalizeGuard)
     }
 
     /** 面板打开时预热识别器（如提前加载本地模型），失败不影响后续使用。 Warm up when the panel opens. */
@@ -108,21 +131,31 @@ class VoiceSession(
 
     /** 开始；缺少权限返回 false。 Start; false without mic permission. */
     fun start(): Boolean {
-        if (active) return true
+        if (active) {
+            // 正常进行中：不重复开始。旧会话卡住（识别中已等了一会儿，或很久没有任何回调）：结束它，重新开始。
+            // Running normally: nothing to do. A stuck session (finalizing for a while, or no callback for long):
+            // end it and start over.
+            val now = clock()
+            val stuck = (state == State.FINALIZING && now - finalizingSince > TAKEOVER_MS) || now - lastActivity > STALE_MS
+            if (!stuck) return true
+            settle()
+        }
         if (state == State.CHOOSING) discard()
         if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
         if (!hasEngine()) { error = null; state = State.IDLE; changed(); onNoEngine(); return false }
         val r = recognizerProvider()
         rec = r
-        committed.clear(); partial = ""; error = null; level = 0f
+        committed.clear(); partial = ""; error = null; notice = null; level = 0f
         results = null; detached = false
         state = State.CONNECTING
         lastLoud = SystemClock.uptimeMillis()
+        lastActivity = clock()
         spoke = false
+        selfEnd = false
         floor = -1f
         val my = ++token
         val ok = r.start(object : MultiVoiceListener {
-            fun live() = my == token
+            fun live() = (my == token).also { if (it) lastActivity = clock() }
             override fun onEngines(engines: List<VoicePlugin>) {
                 if (!live() || engines.size < 2) return
                 results = MultiEngineResults(engines.map { it.id to it.name }, engines.first().id, timeoutMs)
@@ -179,17 +212,38 @@ class VoiceSession(
             }
             override fun onError(message: String) {
                 if (!live()) return
+                // 先上屏已显示的文字：出错前识别出的内容不丢。 Keep the text already shown.
+                if (partial.isNotEmpty() && results == null) { controller.voiceFinal(partial); committed.append(partial) }
                 controller.voiceFinal("")
                 partial = ""
                 error = message
                 state = State.ERROR
+                clearTimers()
+                changed()
+                // 出错即结束：识别器若还在录音就停掉（放开麦克风与音频焦点）。
+                // An error ends the session: stop a recognizer that is still recording (frees the mic and focus).
+                main.post { if (my == token && state == State.ERROR && rec?.isRunning == true) { token++; rec?.cancel() } }
+            }
+            override fun onReady(selfEnd: Boolean) {
+                if (!live()) return
+                this@VoiceSession.selfEnd = selfEnd
+                enterListening()
+                changed()
+            }
+            override fun onNotice(message: String) {
+                if (!live()) return
+                // 换了引擎重新收音：按新引擎的方式判断说完。 Another engine took over: reset the end-of-speech state.
+                notice = message
+                selfEnd = false
+                spoke = false
+                lastLoud = SystemClock.uptimeMillis()
                 changed()
             }
             override fun onEnd() {
                 if (!live()) return
                 if (results != null) {
                     // 引擎们自己结束了（未等用户停止）：直接进入结果列表。 Engines ended on their own.
-                    main.removeCallbacks(silenceCheck); main.removeCallbacks(connectTimeout)
+                    clearTimers()
                     level = 0f
                     if (active) enterChoosing() else multiChanged()
                     return
@@ -198,7 +252,7 @@ class VoiceSession(
                 controller.voiceFinal("")
                 if (state != State.ERROR) state = State.IDLE
                 level = 0f
-                main.removeCallbacks(silenceCheck)
+                clearTimers()
                 changed()
             }
             override fun onLevel(level: Float) {
@@ -213,7 +267,7 @@ class VoiceSession(
             changed()
             return false
         }
-        main.postDelayed(connectTimeout, 1500)
+        if (state == State.CONNECTING) main.postDelayed(connectGuard, CONNECT_LIMIT_MS)
         changed()
         return true
     }
@@ -236,7 +290,8 @@ class VoiceSession(
     private fun enterListening() {
         if (state == State.CONNECTING) {
             state = State.LISTENING
-            main.removeCallbacks(connectTimeout)
+            main.removeCallbacks(connectGuard)
+            main.removeCallbacks(silenceCheck)
             main.postDelayed(silenceCheck, 250)
         }
     }
@@ -245,14 +300,46 @@ class VoiceSession(
     fun stop() {
         if (!active || state == State.FINALIZING) return
         main.removeCallbacks(silenceCheck)
+        main.removeCallbacks(connectGuard)
         if (results != null) {
             rec?.stop()
             enterChoosing()
             return
         }
         state = State.FINALIZING
+        finalizingSince = clock()
+        main.postDelayed(finalizeGuard, FINALIZE_LIMIT_MS)
         changed()
         rec?.stop()
+    }
+
+    /**
+     * 马上结束：已显示的文字上屏，不再等（也不要）识别器后面的结果。面板上的回车、逗号、删除键先调它，
+     * 否则晚到的结果会落进已经发出去的输入框，或排到逗号后面。[message] 非空时以错误结束。
+     * End right now: commit the text on screen and drop whatever the recognizer would still deliver. The panel's
+     * Enter, comma and delete keys call this first, or a late result would land in an already-sent box or after
+     * the comma. A non-null [message] ends in the error state.
+     */
+    fun settle(message: String? = null) {
+        if (!active && state != State.CHOOSING) return
+        val res = results
+        val shown = if (res != null) res.primaryText() else partial
+        token++
+        rec?.cancel()
+        clearTimers()
+        main.removeCallbacks(timeoutCheck)
+        if (res != null && state == State.CHOOSING) {
+            // 结果列表：上屏默认行。 Result list: commit the default row.
+            res.rows().getOrNull(res.defaultIndex())?.takeIf { it.selectable }?.let { controller.voiceFinal(it.text) }
+        } else if (shown.isNotEmpty()) {
+            controller.voiceFinal(shown)
+            committed.append(shown)
+        }
+        controller.voiceFinal("")
+        results = null; detached = false
+        partial = ""; level = 0f
+        if (message != null) { error = message; state = State.ERROR } else state = State.IDLE
+        changed()
     }
 
     /**
@@ -265,7 +352,10 @@ class VoiceSession(
         when {
             state == State.CHOOSING -> discard()
             active && results != null -> { detached = true; stop() }
+            // 已在收尾：等结果，最多等到兜底时限。 Already finalizing: the finalize limit bounds the wait.
             active -> stop()
+            // 错误状态：确保识别器已停，下次打开面板从头开始。 Error: make sure the recognizer is stopped.
+            state == State.ERROR -> cancel()
         }
     }
 
@@ -327,13 +417,20 @@ class VoiceSession(
     /** 取消：丢弃未确定的文本。 Cancel and drop interim text. */
     fun cancel() {
         if (state == State.CHOOSING) { discard(); return }
-        if (!active) { if (state == State.ERROR) { state = State.IDLE; changed() }; return }
+        if (!active) {
+            if (state == State.ERROR) {
+                if (rec?.isRunning == true) { token++; rec?.cancel() }
+                state = State.IDLE
+                changed()
+            }
+            return
+        }
         token++
         rec?.cancel()
         controller.voiceCancel()
         partial = ""; level = 0f
         state = State.IDLE
-        main.removeCallbacks(silenceCheck); main.removeCallbacks(connectTimeout)
+        clearTimers()
         changed()
     }
 
@@ -360,6 +457,17 @@ class VoiceSession(
     companion object {
         private const val SILENCE_MS = 2500L
         private const val NO_SPEECH_MS = 6000L
+        /** 引擎自己判断说完时的兜底静音时限。 Silence backstop for engines with their own endpointing. */
+        private const val SELF_END_MS = 15_000L
         private const val LOUD_MIN = 0.02f
+        /** 一直连不上的时限（系统识别会先换服务、再改用本地识别）。 Connect limit; the system path retries first. */
+        const val CONNECT_LIMIT_MS = 15_000L
+        /** 停止后等结果的时限。 Limit for the result after stopping. */
+        const val FINALIZE_LIMIT_MS = 10_000L
+        /** 「识别中」超过这么久，再点麦克风就不等了，重新开始。 After this long in FINALIZING a mic tap starts over. */
+        const val TAKEOVER_MS = 1_500L
+        /** 这么久没有任何回调算卡住。 No callback for this long counts as stuck. */
+        const val STALE_MS = 8_000L
+        private const val NO_RESPONSE = "语音服务没有响应，请重试"
     }
 }

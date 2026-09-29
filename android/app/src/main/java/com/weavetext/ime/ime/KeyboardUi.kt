@@ -8,7 +8,8 @@ import android.view.View
  */
 interface KeyboardUi {
     val view: View
-    fun onShown() {}
+    /** @param restarting 同一输入框重新开始（onStartInputView 的 restarting）。 The same field restarted. */
+    fun onShown(restarting: Boolean = false) {}
     fun onHidden() {}
     fun dispose() {}
     /** 由 [WeaveImeService.onComputeInsets] 调用。 Called from onComputeInsets. */

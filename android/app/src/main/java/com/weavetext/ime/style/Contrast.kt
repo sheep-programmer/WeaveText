@@ -31,6 +31,17 @@ object Contrast {
         return StyleParser.mix(bg or 0xFF000000.toInt(), fg or 0xFF000000.toInt(), a)
     }
 
+    /**
+     * 强调色上的文字色：白色够 4.5:1 用白色，否则取白色与近黑中对比度更高的一个。
+     * Text colour on an accent: white when it reaches 4.5:1, else whichever of white and near-black contrasts more.
+     */
+    fun onColor(accent: Int): Int {
+        val white = 0xFFFFFFFF.toInt()
+        val black = 0xFF111111.toInt()
+        val w = ratio(white, accent)
+        return if (w >= 4.5 || w >= ratio(black, accent)) white else black
+    }
+
     /** 一条对比度检查。 One contrast check. */
     class Check(val what: String, val ratio: Double, val min: Double) {
         val ok get() = ratio + 1e-6 >= min
@@ -64,6 +75,9 @@ object Contrast {
             out += Check("onAccent/popupSelected$tag", ratio(p.onAccent, over(p.popupSelected, popup)), 4.5)
         }
         out += Check("onAccent/accent", ratio(p.onAccent, p.keyAccent), 4.5)
+        // 红底上的文字（「松手清空」红键、出错提示条、语音出错）：按 onDanger 检查，与正文同标准。
+        // Text on a danger plate (the red hold-to-clear key, error strips, voice errors): checked via onDanger.
+        out += Check("onDanger/danger", ratio(p.onDanger, p.danger), 4.5)
         out += Check("accent/accentSoft (active)", ratio(p.keyAccent, p.accentSoft), 3.0)
         return out
     }

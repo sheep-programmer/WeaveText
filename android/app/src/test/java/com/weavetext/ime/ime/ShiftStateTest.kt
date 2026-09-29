@@ -56,6 +56,18 @@ class ShiftStateTest {
         assertFalse(ShiftState().autoCap(false))
     }
 
+    @Test fun autoCapIsTakenBackWhenItNoLongerApplies() {
+        val s = ShiftState()
+        s.autoCap(true)
+        // 删掉了句号后的空格：不再是句首。 The space after the period was deleted: no longer a sentence start.
+        assertTrue(s.autoCap(false))
+        assertEquals(ShiftState.OFF, s.value)
+        // 用户自己按的单次大写不收回。 A ONCE the user tapped stays.
+        s.tap(1000)
+        assertFalse(s.autoCap(false))
+        assertEquals(ShiftState.ONCE, s.value)
+    }
+
     @Test fun resetClearsDoubleTapWindow() {
         val s = ShiftState()
         s.tap(1000); s.reset(); s.tap(1100)

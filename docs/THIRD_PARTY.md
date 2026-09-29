@@ -16,6 +16,7 @@ Every new dependency must be registered here.
 | 专业词库（可选下载：`med`、`drug`、`chem`、`species`、`celeb`、`dialect` 等） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) 的领域词表（`yixue`、`yaopin`、`huaxue`、`wuzhong`、`yiren`、`fangyan`，提交 `516b1bb6`） | CC BY 4.0 | 领域词候选 | 由 `data/packs.sh` 可复现构建，与基础词库同尺度计分并整体靠后；不随 APK 分发，用户在「词库 › 专业词库」按需下载 |
 | 专业词库（可选下载：`it`、`finance`、`law`、`car`、`places`、`culture`、`history`、`food`，及 `med`、`species` 的一部分） | [thunlp/THUOCL](https://github.com/thunlp/THUOCL)（提交 `a30ce79d`） | MIT | 领域词候选 | 上游无拼音：构建时按基础词库最长匹配注音，频次按对数排名换算；读不出的词（含外文）跳过 |
 | 手写识别模板（`hand.wvz`） | [skishore/makemeahanzi](https://github.com/skishore/makemeahanzi) 的 `graphics.txt`（提交 `bddc96d4`），源自文鼎 Arphic PL KaitiM GB / UKai 字体 | Arphic Public License | 手写输入（9574 字，含 GB2312 全部 6763 字） | 由 `core/weave-dict/src/bin/handgen.rs` 从上游数据生成（可复现），作为**独立数据文件**分发，派生数据仍适用 Arphic Public License，许可证全文见 `docs/licenses/ARPHIC-PUBLIC-LICENSE*.txt`；字频先验取自万象 `zi.dict.yaml`（CC BY 4.0） |
+| 手写识别网络（`hand_net.wvz`） | 由 `tools/handnet/` 从上面同一份 Make Me a Hanzi 笔画中线，以及霞鹜文楷、Noto Sans/Serif SC、马善政、智莽行、刘建毛草、龙藏、站酷小薇、站酷快乐等字体（均为 SIL OFL 1.1）的字形骨架合成样本训练 | Arphic Public License（字体部分：OFL 1.1 只约束字体本身，不约束由其渲染的图像） | 手写输入（与模板匹配融合，连笔、潦草书写） | 训练脚本在仓库内，可复现；权重作为**独立数据文件**分发，未使用任何只限研究用途的手写数据库 |
 
 *Wanxiang data (CC BY 4.0) is tone-stripped and compiled into `pinyin.wvl` / `english.wvl`, attributed on the
 About page. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvz` with the license

@@ -109,19 +109,49 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 p.color = when { i == pressed -> pal.keyPressed; on -> pal.accentSoft; else -> pal.card }
                 c.drawRoundRect(rect, m.dp(12f), m.dp(12f), p)
                 val fg = if (on) pal.keyAccent else pal.icon
-                val iconCy = rect.top + rect.height() * 0.40f
-                if (it.icon != 0) {
-                    kb.icons.draw(c, it.icon, fg, rect.centerX(), iconCy, m.dp(26f))
-                } else {
-                    p.typeface = Typeface.DEFAULT
-                    p.textSize = m.dp(22f)
-                    p.color = fg
-                    c.drawText(it.text!!, rect.centerX(), iconCy - (p.ascent() + p.descent()) / 2, p)
-                }
+                val lbl = label(it)
                 p.typeface = Typeface.DEFAULT
-                p.textSize = m.dp(12f)
+                p.textSize = m.panel(12f)
+                // 跟随系统字号，但不超出卡片。 Follows the font scale, but stays inside the card.
+                p.measureText(lbl).let { w -> val maxW = rect.width() - m.dp(8f); if (w > maxW && w > 0f) p.textSize *= maxW / w }
+                val labelSize = p.textSize
+                val lw = p.measureText(lbl)
+                var iconSize = m.dp(26f)
+                var iconCx = rect.centerX()
+                var iconCy = rect.top + rect.height() * 0.40f
+                var labelX = rect.centerX()
+                var labelY = iconCy + m.dp(13f) + m.dp(6f) - p.ascent() * 0.8f
+                // 卡片矮（横屏、紧凑档）：放不下上下两行时，宽卡片改为左图右文，窄卡片缩小图标。
+                // Short cards (landscape, compact level): when icon-over-label doesn't fit, wide cards put the icon
+                // left of the label and narrow ones shrink the icon.
+                if (labelY + p.descent() > rect.bottom - m.dp(2f)) {
+                    val rowIcon = m.dp(22f)
+                    val gap = m.dp(6f)
+                    if (rect.width() >= rowIcon + gap + lw + m.dp(16f)) {
+                        iconSize = rowIcon
+                        val x0 = rect.centerX() - (rowIcon + gap + lw) / 2
+                        iconCx = x0 + rowIcon / 2
+                        iconCy = rect.centerY()
+                        labelX = x0 + rowIcon + gap + lw / 2
+                        labelY = rect.centerY() - (p.ascent() + p.descent()) / 2
+                    } else {
+                        val lh = p.descent() - p.ascent()
+                        iconSize = (rect.height() - lh - m.dp(10f)).coerceIn(m.dp(12f), m.dp(26f))
+                        val top = rect.centerY() - (iconSize + m.dp(3f) + lh) / 2
+                        iconCy = top + iconSize / 2
+                        labelY = top + iconSize + m.dp(3f) - p.ascent()
+                    }
+                }
+                if (it.icon != 0) {
+                    kb.icons.draw(c, it.icon, fg, iconCx, iconCy, iconSize)
+                } else {
+                    p.textSize = iconSize * 22f / 26f
+                    p.color = fg
+                    c.drawText(it.text!!, iconCx, iconCy - (p.ascent() + p.descent()) / 2, p)
+                    p.textSize = labelSize
+                }
                 p.color = if (on) pal.keyAccent else pal.labelSecondary
-                c.drawText(label(it), rect.centerX(), iconCy + m.dp(13f) + m.dp(6f) - p.ascent() * 0.8f, p)
+                c.drawText(lbl, labelX, labelY, p)
             }
         }
 

@@ -287,6 +287,8 @@ pub struct Paths {
     pub emoji: Option<Source>,
     /// 手写识别模板（.wvh）。 Handwriting templates.
     pub hand: Option<Source>,
+    /// 手写识别卷积网络（.wvn，可缺省）。 Handwriting CNN (.wvn, optional).
+    pub hand_net: Option<Source>,
     /// 字符搭配模型（.wvg）。 Character collocation model.
     pub gram_model: Option<Source>,
     /// 联想接续表（.wvf）。 Prediction follow table.
@@ -299,7 +301,7 @@ pub struct Paths {
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
 /// Resource key → raw file name; packed copies are named `<key>.wvz`.
-pub const RESOURCES: [(&str, &str); 9] = [
+pub const RESOURCES: [(&str, &str); 10] = [
     ("pinyin", "pinyin.wvl"),
     ("wubi86", "wubi86.wvl"),
     ("english", "english.wvl"),
@@ -308,6 +310,7 @@ pub const RESOURCES: [(&str, &str); 9] = [
     ("st_characters", "STCharacters.txt"),
     ("emoji", "emoji.txt"),
     ("hand", "hand.wvh"),
+    ("hand_net", "hand_net.wvn"),
     ("follow", "follow.wvf"),
 ];
 
@@ -329,6 +332,7 @@ impl Paths {
             "st_characters" => &mut self.st_characters,
             "emoji" => &mut self.emoji,
             "hand" => &mut self.hand,
+            "hand_net" => &mut self.hand_net,
             "follow" => &mut self.follow,
             _ => return false,
         };
@@ -388,9 +392,13 @@ pub struct Engine {
     wubi_reverse: Option<HashMap<String, String>>,
     st_sources: (Option<Source>, Option<Source>),
     traditional: Option<Traditional>,
-    /// 手写模板来源与（首次使用时载入的）识别器。 Handwriting source and the recognizer, loaded on first use.
-    hand_src: Option<Source>,
-    hand: Option<weave_dict::hand::Recognizer>,
+    /// 手写模型来源（模板、网络）与首次使用时载入的模型（可在线程间共享，识别不必持有引擎锁）。
+    /// Handwriting sources (templates, network) and the models loaded on first use (shareable, so recognition
+    /// need not hold the engine lock).
+    hand_src: (Option<Source>, Option<Source>),
+    hand: Option<std::sync::Arc<weave_dict::handnet::HandModels>>,
+    /// 当前笔画的候选字，以及是按几笔识别出来的。 Candidates of the current strokes and the stroke count they are for.
+    hand_cands: (Vec<char>, usize),
     /// 当前这个字已写的笔画。 Strokes of the character being written.
     hand_strokes: Vec<weave_dict::hand::Stroke>,
     /// 本次刷新最多生成的候选数。 Candidate budget for the current refresh.
@@ -439,7 +447,7 @@ const TYPO_MARGIN: u32 = 500;
 /// 只是句中有零声母音节时，纠错读法要好得多才换。 When only a mid-input zero-initial syllable hints at a typo.
 const TYPO_MARGIN_VOWEL: u32 = 5000;
 /// 手写每次给出的候选数。 Candidates per handwriting recognition.
-const HAND_CANDIDATES: usize = 12;
+pub const HAND_CANDIDATES: usize = 12;
 
 impl Engine {
     pub fn new(paths: &Paths) -> Self {
@@ -480,8 +488,9 @@ impl Engine {
             emoji: paths.emoji.as_ref().map(Emoji::load).unwrap_or_default(),
             st_sources: (paths.st_phrases.clone(), paths.st_characters.clone()),
             traditional: None,
-            hand_src: paths.hand.clone(),
+            hand_src: (paths.hand.clone(), paths.hand_net.clone()),
             hand: None,
+            hand_cands: (Vec::new(), 0),
             hand_strokes: Vec::new(),
             cand_cap: CAND_FIRST,
             cands_more: false,
@@ -589,12 +598,16 @@ impl Engine {
         if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 {
             let mut i = 0;
             let mut inserted = 0;
-            while i < self.cands.len().min(6 + inserted) && inserted < 3 {
+            // 手写每个候选都是单字，各带一个表情会把别的字挤出候选栏：只给首选配一个。
+            // Handwriting candidates are single chars; an emoji after each would push the other chars out of the
+            // bar, so only the top one gets one.
+            let (scan, cap) = if self.schema == Schema::Hand && !self.predicting { (1, 1) } else { (6, 3) };
+            while i < self.cands.len().min(scan + inserted) && inserted < cap {
                 let emojis: Vec<String> = self
                     .emoji
                     .lookup(&self.cands[i].view.text)
                     .iter()
-                    .take(2)
+                    .take(2.min(cap - inserted))
                     .cloned()
                     .collect();
                 for (k, e) in emojis.into_iter().enumerate() {
@@ -648,48 +661,47 @@ impl Engine {
     /// 载入或替换一个扩展词库；失败（文件无效、超过上限）返回 false。
     /// Load or replace an extra lexicon; false when the file is invalid or the limit is reached.
     pub fn load_pack(&mut self, id: &str, src: &Source) -> bool {
+        match open_pack(id, src) {
+            Some(l) => self.attach_pack(id, l),
+            None => false,
+        }
+    }
+
+    /// 挂上已打开的扩展词库（同 id 则替换）。只换词库，不重算正在显示的候选：后台载入不会让用户手指下的列表
+    /// 变掉（下一次按键起才用上新词）。
+    /// Attach an opened extra lexicon (replacing one with the same id). Only the lexicon is swapped; the
+    /// candidates on screen are not recomputed, so a background load never changes the list under the user's
+    /// finger (new words apply from the next key).
+    pub fn attach_pack(&mut self, id: &str, lex: Lexicon) -> bool {
         if !valid_pack_id(id) {
             return false;
         }
-        let Ok(l) = Lexicon::open_source(src) else { return false };
-        if let Some(i) = self.pack_ids.iter().position(|p| p == id) {
-            self.packs[i] = l;
-        } else if self.packs.len() + 1 < crate::decoder::MAX_LEX {
-            self.packs.push(l);
-            self.pack_ids.push(id.to_string());
-        } else {
-            return false;
-        }
-        self.refresh_if_composing();
-        true
-    }
-
-    /// 载入云端热词（验签、去掉过期词后作为扩展词库 `cloud`），返回词数；签名不对或文件无效返回 Err。
-    /// Load cloud hot words (verified, expired rows dropped) as the extra lexicon `cloud`; returns the word count.
-    pub fn load_hotwords(&mut self, tsv: &[u8], sig_hex: &str) -> Result<usize, String> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        let today = (now + self.options.utc_offset_min as i64 * 60).div_euclid(86_400);
-        let c = crate::cloud::compile(tsv, sig_hex, &crate::cloud::HOTWORDS_KEY, today)?;
-        let lex = Lexicon::from_bytes(c.lexicon).map_err(|e| format!("{e:?}"))?;
-        let id = "cloud";
         if let Some(i) = self.pack_ids.iter().position(|p| p == id) {
             self.packs[i] = lex;
         } else if self.packs.len() + 1 < crate::decoder::MAX_LEX {
             self.packs.push(lex);
             self.pack_ids.push(id.to_string());
         } else {
-            return Err("too many packs".into());
+            return false;
         }
-        self.refresh_if_composing();
-        Ok(c.words)
+        true
     }
 
-    /// 卸下一个扩展词库。 Unload an extra lexicon.
+    /// 载入云端热词（验签、去掉过期词后作为扩展词库 `cloud`），返回词数；签名不对或文件无效返回 Err。
+    /// Load cloud hot words (verified, expired rows dropped) as the extra lexicon `cloud`; returns the word count.
+    pub fn load_hotwords(&mut self, tsv: &[u8], sig_hex: &str) -> Result<usize, String> {
+        let (lex, words) = compile_hotwords(tsv, sig_hex, self.options.utc_offset_min)?;
+        if !self.attach_pack(HOTWORDS_PACK, lex) {
+            return Err("too many packs".into());
+        }
+        Ok(words)
+    }
+
+    /// 卸下一个扩展词库（正在显示的候选同样不重算）。 Unload an extra lexicon (candidates on screen stay as they are).
     pub fn unload_pack(&mut self, id: &str) -> bool {
         let Some(i) = self.pack_ids.iter().position(|p| p == id) else { return false };
         self.packs.remove(i);
         self.pack_ids.remove(i);
-        self.refresh_if_composing();
         true
     }
 
@@ -698,18 +710,12 @@ impl Engine {
         &self.pack_ids
     }
 
-    fn refresh_if_composing(&mut self) {
-        if self.is_composing() {
-            self.refresh();
-        }
-    }
-
     pub fn has_lexicon(&self, schema: Schema) -> bool {
         match schema {
             Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) => self.pinyin.is_some(),
             Schema::Wubi86 => self.wubi.is_some(),
             Schema::English => self.english.is_some(),
-            Schema::Hand => self.hand_src.is_some(),
+            Schema::Hand => self.hand_src.0.is_some() || self.hand_src.1.is_some(),
         }
     }
 
@@ -1135,6 +1141,7 @@ impl Engine {
     pub fn clear(&mut self) {
         self.predicting = false;
         self.hand_strokes.clear();
+        self.hand_cands = (Vec::new(), 0);
         self.raw.clear();
         self.near.clear();
         self.t9_units.clear();
@@ -1454,6 +1461,35 @@ impl Engine {
         if self.schema != Schema::Hand {
             return false;
         }
+        let cands = self.hand_models().map(|m| m.recognize(&strokes, HAND_CANDIDATES)).unwrap_or_default();
+        self.hand_apply(strokes, cands)
+    }
+
+    /// 手写识别用的模型（首次调用时载入）。拿到后可在引擎锁外、别的线程上识别，再用 [`Engine::hand_apply`] 交回结果。
+    /// The handwriting models, loaded on first use. They can recognise outside the engine lock on another thread;
+    /// hand the result back with [`Engine::hand_apply`].
+    pub fn hand_models(&mut self) -> Option<std::sync::Arc<weave_dict::handnet::HandModels>> {
+        if self.hand.is_none() {
+            let templates = self.hand_src.0.as_ref().and_then(|s| weave_dict::hand::Recognizer::open(s).ok());
+            let net = self.hand_src.1.as_ref().and_then(|s| weave_dict::handnet::HandNet::open(s).ok());
+            let m = weave_dict::handnet::HandModels { templates, net };
+            if m.is_empty() {
+                return None;
+            }
+            self.hand = Some(std::sync::Arc::new(m));
+        }
+        self.hand.clone()
+    }
+
+    /// 交回在别处识别好的结果：这些笔画及其候选字。返回是否有候选。
+    /// Hand back a result recognised elsewhere: the strokes and their candidate chars. Returns whether any.
+    pub fn hand_apply(&mut self, strokes: Vec<weave_dict::hand::Stroke>, cands: Vec<char>) -> bool {
+        if self.schema != Schema::Hand {
+            return false;
+        }
+        // 开始写下一个字：收起上一个字的联想词。 Writing the next char dismisses the previous char's predictions.
+        self.drop_predictions();
+        self.hand_cands = (cands, strokes.len());
         self.hand_strokes = strokes;
         self.refresh();
         !self.cands.is_empty()
@@ -1463,11 +1499,12 @@ impl Engine {
         if self.hand_strokes.is_empty() {
             return;
         }
-        if self.hand.is_none() {
-            self.hand = self.hand_src.as_ref().and_then(|s| weave_dict::hand::Recognizer::open(s).ok());
+        // 笔画变了（退一笔）而结果还是旧的：当场重新识别。 Strokes changed (undo) since the result: recognise again.
+        if self.hand_cands.1 != self.hand_strokes.len() {
+            let cands = self.hand_models().map(|m| m.recognize(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
+            self.hand_cands = (cands, self.hand_strokes.len());
         }
-        let Some(r) = &self.hand else { return };
-        for (c, _) in r.recognize(&self.hand_strokes, HAND_CANDIDATES) {
+        for &c in &self.hand_cands.0 {
             let text = c.to_string();
             self.cands.push(Cand {
                 view: CandidateView { text: text.clone(), comment: String::new(), user: false },
@@ -1907,6 +1944,28 @@ pub fn valid_pack_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
+/// 云端热词挂载用的扩展词库 id。 Extra-lexicon id the cloud hot words are attached under.
+pub const HOTWORDS_PACK: &str = "cloud";
+
+/// 打开一个扩展词库文件（不需要引擎，可在锁外调用）。 Open an extra lexicon file; needs no engine, so it can run outside the lock.
+pub fn open_pack(id: &str, src: &Source) -> Option<Lexicon> {
+    if !valid_pack_id(id) {
+        return None;
+    }
+    Lexicon::open_source(src).ok()
+}
+
+/// 验签并编译云端热词，返回 (词库, 词数)；不需要引擎，可在锁外调用（验签与建表较慢）。
+/// Verify and compile cloud hot words into (lexicon, word count); needs no engine, so the slow verification
+/// and build can run outside the lock.
+pub fn compile_hotwords(tsv: &[u8], sig_hex: &str, utc_offset_min: i32) -> Result<(Lexicon, usize), String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let today = (now + utc_offset_min as i64 * 60).div_euclid(86_400);
+    let c = crate::cloud::compile(tsv, sig_hex, &crate::cloud::HOTWORDS_KEY, today)?;
+    let lex = Lexicon::from_bytes(c.lexicon).map_err(|e| format!("{e:?}"))?;
+    Ok((lex, c.words))
+}
+
 #[cfg(test)]
 mod wubi_tests {
     use super::*;
@@ -1940,6 +1999,25 @@ mod wubi_tests {
         e.set_schema(Schema::Pinyin);
         e.options.emoji = false;
         e
+    }
+
+    #[test]
+    fn attaching_a_pack_keeps_the_visible_candidates() {
+        let mut e = pinyin_engine();
+        let k = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        typing(&mut e, "shixin");
+        let before: Vec<String> = e.snapshot().candidates.iter().map(|c| c.text.clone()).collect();
+        let mut b = Builder::new(Kind::Pinyin);
+        b.insert(&k("shi xing"), "室性", 30_000);
+        let bytes = b.build();
+        assert!(!e.attach_pack("Bad Id", Lexicon::from_bytes(bytes.clone()).unwrap()));
+        assert!(e.attach_pack("med", Lexicon::from_bytes(bytes).unwrap()));
+        // 后台挂上词库：屏幕上的列表不变，选第 i 个仍是看到的那个。 The list on screen stays; index i is what the user sees.
+        let after: Vec<String> = e.snapshot().candidates.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(before, after);
+        // 下一次按键起用上新词。 The next key uses the new words.
+        typing(&mut e, "g");
+        assert!(e.snapshot().candidates.iter().any(|c| c.text == "室性"));
     }
 
     #[test]
@@ -2234,6 +2312,31 @@ mod hand_tests {
         let s = e.snapshot();
         assert_eq!(s.commit, "一");
         assert!(!s.composing);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_result_recognised_elsewhere_is_shown_and_undo_recognises_again() {
+        let mut b = weave_dict::hand::Builder::default();
+        b.push('一', 255, &[line(0.0, 50.0, 100.0, 50.0)]);
+        b.push('十', 200, &[line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)]);
+        let dir = std::env::temp_dir().join(format!("weave-hand-apply-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hand.wvh");
+        std::fs::write(&file, b.build()).unwrap();
+        let mut e = Engine::new(&Paths { hand: Some(Source::file(&file)), ..Default::default() });
+        e.set_schema(Schema::Hand);
+        // 模型可以拿出来在别处识别，结果原样交回。 The models recognise elsewhere; the result comes back as is.
+        let m = e.hand_models().expect("models");
+        let strokes = vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)];
+        let got = m.recognize(&strokes, HAND_CANDIDATES);
+        assert_eq!(got[0], '十');
+        assert!(e.hand_apply(strokes, vec!['干', '十']));
+        let snap = e.snapshot();
+        assert_eq!(snap.candidates[0].text, "干", "the handed-back order is kept");
+        // 退一笔后结果过期：当场重新识别。 After an undo the result is stale and is recognised again.
+        assert!(e.backspace());
+        assert_eq!(e.snapshot().candidates[0].text, "一");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

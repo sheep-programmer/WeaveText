@@ -2,12 +2,12 @@
 //! 可选：`--gram <file.wvg>` `--lambda 1.0` `--baseline 12` `--schema pinyin|t9|xiaohe` `--show 20`
 //! 触控误差模拟：`--touch-noise 0.2`（高斯标准差，单位键宽）按 26 键几何把每个字母加噪声后判键，
 //! `--near` 再把交界处的邻键交给引擎纠正；`--seed 1`。
-//! 打错模拟：`--typo swap|drop|extra` 每句在一个随机音节里交换相邻字母 / 漏一个字母 / 多按一个字母；
+//! 打错模拟：`--typo swap|drop|extra|sub` 每句在一个随机音节里交换相邻字母 / 漏一个字母 / 多按一个字母 / 按成相邻的键；
 //! `--no-autocorrect` 关掉引擎纠错作对照。
 //! Sentence benchmark; prints top-1 / top-3 sentence accuracy and character accuracy.
 //! Touch simulation: `--touch-noise 0.2` (Gaussian sigma in key widths) jitters every letter on the 26-key
 //! geometry before hit-testing; `--near` also passes border neighbours to the engine; `--seed 1`.
-//! Typo simulation: `--typo swap|drop|extra` swaps two adjacent letters / drops one / doubles one inside a random
+//! Typo simulation: `--typo swap|drop|extra|sub` swaps two adjacent letters / drops one / doubles one / hits a neighbouring key inside a random
 //! syllable of every sentence; `--no-autocorrect` turns the engine's correction off for comparison.
 
 use std::path::PathBuf;
@@ -209,6 +209,12 @@ fn main() {
                         "swap" => t.swap(at - 1, at),
                         "drop" => {
                             t.remove(at);
+                        }
+                        // 按成左右相邻的键（整键按错，不在交界处）。 A whole wrong key: its left or right neighbour.
+                        "sub" => {
+                            let (cx, cy) = key_center(b[at]);
+                            let dx = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+                            t[at] = hit(cx + dx, cy).0;
                         }
                         _ => t.insert(at, b[at]),
                     }

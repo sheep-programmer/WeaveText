@@ -189,7 +189,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             val w = (key.width() * 1.45f).coerceAtLeast(m.dp(44f))
             val h = key.height() * 1.05f
             var left = key.centerX() - w / 2
-            left = left.coerceIn(m.dp(2f), width - m.dp(2f) - w)
+            left = clampLeft(left, w, width.toFloat(), m.dp(2f))
             val headBottom = key.top - key.height() * 0.2f
             bubble.set(left, headBottom - h, left + w, headBottom)
             val r = m.dp(spec.radius)
@@ -205,7 +205,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             val w = (key.width() + m.dp(16f)).coerceAtLeast(m.dp(48f))
             val h = key.height() + m.dp(12f)
             var left = key.centerX() - w / 2
-            left = left.coerceIn(m.dp(4f), width - m.dp(4f) - w)
+            left = clampLeft(left, w, width.toFloat(), m.dp(4f))
             val bottom = key.top - m.dp(6f)
             bubble.set(left, bottom - h, left + w, bottom)
         }
@@ -291,17 +291,27 @@ class PopupOverlay(ctx: Context) : View(ctx) {
      */
     fun showAlternatives(key: RectF, items: List<String>, anchor: Int, selected: Int = anchor) {
         hideBubble(true)
+        if (items.isEmpty()) { hideAlternatives(); return }
         val m = metrics
-        val cw = key.width().coerceAtLeast(m.dp(40f))
-        val ch = key.height().coerceAtLeast(m.dp(44f))
-        val perRow = items.size.coerceAtMost(6)
-        val rows = (items.size + perRow - 1) / perRow
+        val margin = m.dp(4f)
         val pad = m.dp(4f)
+        var cw = key.width().coerceAtLeast(m.dp(40f))
+        val ch = key.height().coerceAtLeast(m.dp(44f))
+        var perRow = items.size.coerceAtMost(6)
+        // 一行放不下时先收窄格子，仍不够再换行（如竖屏九键 7、9 的五个候选，按键本身就宽）。
+        // When a row doesn't fit, narrow the cells first, then wrap (e.g. the five items of 9-key 7 / 9 in portrait,
+        // whose keys are wide).
+        val avail = width - 2 * margin - 2 * pad
+        if (avail > 0f && perRow * cw > avail) {
+            perRow = (avail / m.dp(MIN_ALT_CELL_DP)).toInt().coerceIn(1, perRow)
+            cw = minOf(cw, avail / perRow)
+        }
+        val rows = (items.size + perRow - 1) / perRow
         val boxW = perRow * cw + 2 * pad
         val boxH = rows * ch + 2 * pad
         val init = anchor.coerceIn(0, items.size - 1)
         var left = key.centerX() - pad - (init % perRow) * cw - cw / 2
-        left = left.coerceIn(m.dp(4f), width - m.dp(4f) - boxW)
+        left = clampLeft(left, boxW, width.toFloat(), margin)
         val bottom = key.top - m.dp(6f)
         altBox.set(left, bottom - boxH, left + boxW, bottom)
         altCells = Array(items.size) { i ->
@@ -353,6 +363,10 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     fun selectedAlternative(): String? = altItems.getOrNull(altSelected)
 
+    /** 长按浮层的外框（本层坐标，测试用）。 Bounds of the alternatives box in overlay coordinates (for tests). */
+    @get:androidx.annotation.VisibleForTesting
+    val altBounds: RectF get() = RectF(altBox)
+
     fun hideAlternatives() {
         altItems = emptyList()
         altSelected = -1
@@ -379,7 +393,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         val lineH = m.dp(18f)
         val h = (m.dp(32f)).coerceAtLeast(infoLines.size * lineH + m.dp(14f))
         var left = anchor.centerX() - w / 2
-        left = left.coerceIn(m.dp(8f), width - m.dp(8f) - w)
+        left = clampLeft(left, w, width.toFloat(), m.dp(8f))
         val bottom = anchor.top - m.dp(8f)
         info.set(left, bottom - h, left + w, bottom)
         infoText = msg
@@ -432,7 +446,13 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     /** 短暂提示（无权限 / 无引擎）。 Short message that hides itself. */
     fun showStripMessage(msg: String) {
         showStrip(msg, 0f, danger = false, live = false)
-        postDelayed(stripAutoHide, 1800)
+        hideStripAfter(1800)
+    }
+
+    /** [ms] 后收起语音条；其间再次 [showStrip] 会取消这次收起。 Hide the strip after [ms]; a new [showStrip] cancels it. */
+    fun hideStripAfter(ms: Long) {
+        removeCallbacks(stripAutoHide)
+        postDelayed(stripAutoHide, ms)
     }
 
     fun hideStrip() {
@@ -451,7 +471,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         var x = strip.left + m.dp(16f)
         val cy = strip.centerY()
         val t = android.os.SystemClock.uptimeMillis()
-        fill.color = if (stripDanger) p.onAccent else p.voiceWave
+        fill.color = if (stripDanger) p.onDanger else p.voiceWave
         for (i in 0 until 9) {
             val win = kotlin.math.sin(Math.PI * i / 8).toFloat()
             val jitter = 0.55f + 0.45f * kotlin.math.sin(t * 0.011 + i * 1.7).toFloat()
@@ -459,7 +479,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             canvas.drawRoundRect(x, cy - h / 2, x + bw, cy + h / 2, bw / 2, bw / 2, fill)
             x += bw + gap
         }
-        text.color = if (stripDanger) p.onAccent else p.label
+        text.color = if (stripDanger) p.onDanger else p.label
         text.textSize = m.dp(15f)
         text.typeface = Typeface.DEFAULT
         text.textAlign = Paint.Align.LEFT
@@ -527,7 +547,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         if (infoText.isNotEmpty()) {
             val rr = if (infoLines.size > 1) m.dp(12f) else info.height() / 2
             plate(canvas, info, rr, null, if (infoDanger) p.danger else p.popup, 255, m.dp(12f), m.dp(4f))
-            text.color = if (infoDanger) p.onAccent else p.label
+            text.color = if (infoDanger) p.onDanger else p.label
             text.textSize = m.dp(13f)
             val lineH = m.dp(18f)
             val top = info.centerY() - infoLines.size * lineH / 2
@@ -536,4 +556,20 @@ class PopupOverlay(ctx: Context) : View(ctx) {
             }
         }
     }
+
+    companion object {
+        /** 长按浮层格子的最小宽度（放不下时先收窄到这里再换行）。 Narrowest alternative cell before wrapping. */
+        const val MIN_ALT_CELL_DP = 36f
+    }
+}
+
+/**
+ * 把宽 [w] 的浮层左沿夹在 [margin, total − margin − w] 内；浮层比可用宽度还宽（或视图尚未布局）时居中，
+ * 不像 coerceIn 那样在范围倒置时抛异常。
+ * Clamp the left edge of a popup [w] wide into [margin, total − margin − w]. When the popup is wider than the room
+ * (or the view isn't laid out yet) it is centred instead; unlike coerceIn this never throws on an inverted range.
+ */
+internal fun clampLeft(left: Float, w: Float, total: Float, margin: Float): Float {
+    val hi = total - margin - w
+    return if (hi < margin) (total - w) / 2 else left.coerceIn(margin, hi)
 }

@@ -37,11 +37,23 @@ class KeyboardStyle(
             )
         }
 
+        /**
+         * 激活态底色：强调色按 [mix] 混入背景；强调色字在上面不到 3:1 时减淡底色（最淡到 0.04）。
+         * Active-state fill: the accent mixed into the background by [mix]; lightened (down to 0.04) while the accent
+         * text on it stays under 3:1.
+         */
+        private fun softFor(bg: Int, accent: Int, mix: Float): Int {
+            var t = mix
+            var soft = StyleParser.mix(bg, accent, t)
+            while (Contrast.ratio(accent, soft) < 3.0 && t > 0.05f) { t -= 0.02f; soft = StyleParser.mix(bg, accent, t) }
+            return soft
+        }
+
         /** 把微调叠加到配色上（强调色、阴影、按键不透明度）。 Applies colour tweaks. */
         fun palette(p: KbPalette, o: StyleOverrides): KbPalette {
             var out = p
             o.accent?.let { a ->
-                val on = if (Contrast.ratio(0xFFFFFFFF.toInt(), a) >= 3.5) 0xFFFFFFFF.toInt() else 0xFF111111.toInt()
+                val on = Contrast.onColor(a)
                 // 首选候选与激活态文字需要落在背景上可读：必要时向文字色靠拢。 Keep accent text readable on the background.
                 var text = a
                 var t = 0f
@@ -49,7 +61,7 @@ class KeyboardStyle(
                 out = out.copy(
                     keyAccent = a, keyAccentPressed = StyleParser.mix(a, 0xFF000000.toInt(), 0.15f), onAccent = on,
                     candidateFirst = text, popupSelected = a, voiceWave = text,
-                    accentSoft = StyleParser.mix(p.background, a, if (p.dark) 0.22f else 0.16f),
+                    accentSoft = softFor(p.background, a, if (p.dark) 0.22f else 0.16f),
                 )
             }
             when (o.shadow) {

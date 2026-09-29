@@ -15,9 +15,9 @@ class StylePreviewView(ctx: Context) : ViewGroup(ctx) {
     private val topBar = TopBarView(ctx, object : TopBarHost {
         override val feedback: Feedback? = null
         override fun onToolbar(index: Int) {}
-        override fun onToolbarLong(index: Int) {}
+        override fun onToolbarLong(index: Int) = false
         override fun onCandidate(index: Int) {}
-        override fun onCandidateLong(index: Int) {}
+        override fun onCandidateLong(index: Int) = false
         override fun onExpand() {}
         override fun onNeedMore() {}
         override fun onClipChip() {}

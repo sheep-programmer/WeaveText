@@ -95,6 +95,18 @@ class PadView(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         if (onLong?.invoke(k) == true) { down = null; kb.feedback.haptic(this); invalidate() }
     }
 
+    /** 放开当前按下的键并停止连发（面板收起时）。 Drop the pressed key and stop repeating (when the panel closes). */
+    fun cancelPress() {
+        removeCallbacks(repeatTask); removeCallbacks(longTask)
+        if (down != null) { down = null; invalidate() }
+    }
+
+    // 自己或上层被隐藏时不再连发（手指可能还按着）。 No repeating once this view or a parent is hidden.
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (visibility != VISIBLE) cancelPress()
+    }
+
     fun relayout() {
         if (width > 0) layouter?.invoke(width.toFloat(), height.toFloat())
         invalidate()

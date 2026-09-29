@@ -89,6 +89,8 @@ class Key(
 /** 左侧可滚动列表（九键拼音/标点、数字键盘符号）。 Left scrollable column. */
 class SideList {
     val rect = RectF()
+    /** 列表所在的整格（含边距，贴到视图左沿），用于命中判断。 The list's whole cell (margins included) for hit-testing. */
+    val cell = RectF()
     var items: List<String> = emptyList()
     var highlighted = -1
     var itemHeight = 0f
@@ -358,6 +360,7 @@ object Layouts {
         val x0 = m.padH + sideW
         val unit = (w - m.padH - x0) / 5f
         side.rect.set(m.padH, 0f, x0, 3 * m.rowPitch)
+        side.cell.set(0f, 0f, x0, 3 * m.rowPitch)
         side.rect.inset(m.insetH, m.insetV)
         side.itemHeight = m.dp(44f).coerceAtMost(side.rect.height() / 4f)
         side.textSize = minOf(m.label(15f), side.itemHeight * 0.6f)
@@ -401,6 +404,7 @@ object Layouts {
         val xs = columns(w, spec.columns, m)
         for (k in keys) grid(k, xs, m)
         side.rect.set(xs[0], 0f, xs[1], 3 * m.rowPitch)
+        side.cell.set(0f, 0f, xs[1], 3 * m.rowPitch)
         side.rect.inset(m.insetH, m.insetV)
         side.itemHeight = m.dp(44f).coerceAtMost(side.rect.height() / 4f)
         side.textSize = minOf(m.label(15f), side.itemHeight * 0.6f)
@@ -441,6 +445,8 @@ object Layouts {
         pad.rect.set(xs[0], 0f, xs[4], 3 * m.rowPitch)
         pad.rect.inset(m.insetH, m.insetV)
         pad.minStep = m.dp(1.5f)
+        // 笔画基准宽 6dp（慢写处最粗，快写收到约一半）。 Base width 6dp: full when slow, about half when fast.
+        pad.strokeWidth = m.dp(6f) * m.iconScale.coerceIn(0.9f, 1.3f)
         var units = 0f
         for (k in keys) if (k.row == 3) units += k.weight
         var x = xs[0]
@@ -485,6 +491,7 @@ object Layouts {
         val xs = columns(w, spec.columns, m)
         for (k in keys) grid(k, xs, m)
         side.rect.set(xs[0], 0f, xs[1], 3 * m.rowPitch)
+        side.cell.set(0f, 0f, xs[1], 3 * m.rowPitch)
         side.rect.inset(m.insetH, m.insetV)
         side.itemHeight = 3 * m.rowPitch / 5f
         side.textSize = minOf(m.label(18f), side.itemHeight * 0.6f)

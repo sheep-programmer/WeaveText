@@ -26,6 +26,11 @@ interface KeyboardHost {
     fun onKeyText(key: Key, text: String)
     /** 用上滑/长按选中的 [text] 替换按下时已输出的字符。 Replace the char already emitted on DOWN with [text]. */
     fun onKeyReplace(key: Key, text: String) = onKeyText(key, text)
+    /**
+     * 系统截走了手势（边缘返回手势等），撤回按下时已输出的字符。
+     * The system took the gesture over (edge back gesture and the like): take back the char emitted on DOWN.
+     */
+    fun onKeyRevert(key: Key) {}
     /** 空格横滑能否移动光标（中文组合中不能）。 Whether a space-bar slide may move the cursor. */
     fun cursorDragAllowed(): Boolean = true
     fun onCursorSteps(steps: Int)
@@ -67,6 +72,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     var hand: HandPad? = null
         private set
     private val handPad = HandPad()
+    /** 手写停笔多久算写完一个字（毫秒，来自设置）。 Pause that ends a handwritten char, in ms (from settings). */
+    var handPauseMs = HandPad.COMMIT_PAUSE_MS
+    /** 正在处理的触摸事件时刻（笔画按事件时间计时，不受主线程忙闲影响）。 Time of the event being handled. */
+    private var evTime = 0L
     private var layoutKind = Layouts.QWERTY
     private var builder: ((Float) -> Unit)? = null
 
@@ -365,9 +374,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             KeyPainter.draw(c, k.rect, tmp, tmp2, fill, bg, pressed, radius, p, m)
         }
 
-        val onAccent = danger || k.style == KeyStyle.ACCENT || (k.code == KeyCode.ENTER && enterAccent)
+        val onAccent = k.style == KeyStyle.ACCENT || (k.code == KeyCode.ENTER && enterAccent)
         val labelColor = when {
             k.disabled -> p.labelDisabled
+            danger -> p.onDanger
             onAccent -> p.onAccent
             k.active -> p.keyAccent
             else -> p.label
@@ -384,7 +394,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             }
             else -> {
                 if (k.icon != 0) {
-                    val col = when { danger || onAccent -> p.onAccent; k.active -> p.keyAccent; k.disabled -> p.labelDisabled; else -> p.icon }
+                    val col = when { danger -> p.onDanger; onAccent -> p.onAccent; k.active -> p.keyAccent; k.disabled -> p.labelDisabled; else -> p.icon }
                     icons.draw(c, k.icon, col, cx, cy, m.icon(22f))
                 } else if (k.sub != null) {
                     // 九键：字母组 + 数字副标签；大字号挤不下时只留主字。 T9: letters + digit; drop the digit when crowded.
@@ -554,9 +564,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         c.restore()
     }
 
-    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-    }
+    /** 墨迹是填充轮廓（粗细已在 [HandPad] 里按速度算好）。 Ink is a filled outline; widths come from [HandPad]. */
+    private val inkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private var guideDash: android.graphics.DashPathEffect? = null
     private var guideDashFor = 0f
@@ -594,7 +603,6 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         c.save()
         c.clipRect(pad.rect)
         c.translate(pad.rect.left, pad.rect.top)
-        inkPaint.strokeWidth = m.dp(4f) * m.iconScale.coerceIn(0.9f, 1.3f)
         inkPaint.color = p.label
         if (fade >= 0f) {
             inkPaint.alpha = ((1f - fade) * (p.label ushr 24)).toInt()
@@ -647,6 +655,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (!::metrics.isInitialized) return false
+        evTime = e.eventTime
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 // 上一轮没收到抬起（被系统截走等）时先复位。 Drop leftovers of a gesture that never ended.
@@ -660,9 +669,40 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 movePointer(p, e.getX(i), e.getY(i), e.eventTime)
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> ptrOf(e.getPointerId(e.actionIndex))?.let { finishPointer(it, commit = true) }
-            MotionEvent.ACTION_CANCEL -> for (p in ptrs) if (p.id >= 0) finishPointer(p, commit = false)
+            MotionEvent.ACTION_CANCEL -> systemCancel()
         }
         return true
+    }
+
+    /**
+     * 系统发来的取消（边缘返回手势、下拉通知栏等截走了手指）：单指按字符键时撤回按下即输出的那个字，
+     * 否则手势结束时键盘收起，留下一个没人想打的字母。面板切换等内部复位走 [cancelTouch]，不撤回。
+     * A cancel from the system (an edge back gesture, the notification shade, …took the finger over): for a
+     * single finger on a char key, take back the char emitted on DOWN, otherwise the keyboard closes and leaves a
+     * letter nobody meant to type. Internal resets (panel switches) go through [cancelTouch] and keep it.
+     */
+    private fun systemCancel() {
+        var active: Ptr? = null
+        var n = 0
+        for (p in ptrs) if (p.id >= 0) { n++; active = p }
+        val p = active
+        val k = p?.key
+        val revert = n == 1 && p != null && k != null && p.emitted && (p.mode == M_TAP || p.mode == M_SWIPE || p.mode == M_ALT)
+        for (q in ptrs) if (q.id >= 0) finishPointer(q, commit = false)
+        if (revert && k != null) host?.onKeyRevert(k)
+    }
+
+    /**
+     * 这次落笔算不算写字：在书写区内；或者刚写过一笔（停顿不到判字时间）、落在书写区外 8dp 以内——
+     * 贴边起笔不会误按到删除键或底行的键。
+     * Does this pen-down ink: inside the pad, or within 8dp outside it while a character is in progress (the last
+     * lift was less than the pause ago), so a stroke started at the edge doesn't hit Delete or a bottom-row key.
+     */
+    private fun inPad(pad: HandPad, x: Float, y: Float, t: Long): Boolean {
+        if (pad.rect.contains(x, y)) return true
+        if (pad.strokes.isEmpty() || pad.sinceLastStroke(t) >= handPauseMs) return false
+        val band = metrics.dp(8f)
+        return x >= pad.rect.left - band && x <= pad.rect.right + band && y >= pad.rect.top - band && y <= pad.rect.bottom + band
     }
 
     private fun startPointer(e: MotionEvent, index: Int) {
@@ -674,23 +714,27 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val x = e.getX(index)
         val y = e.getY(index)
         val pad = hand
-        if (pad != null && pad.rect.contains(x, y)) {
+        if (pad != null && inPad(pad, x, y, e.eventTime)) {
             settleOthers()
             p.id = e.getPointerId(index)
             p.key = null
             p.mode = M_INK
             inkOwner = p
             // 停笔够久后落笔：先上屏上一个字的首选。 Pen down after a pause commits the previous char first.
-            if (pad.strokes.isNotEmpty() && pad.sinceLastStroke() >= HandPad.COMMIT_PAUSE_MS) {
+            // 按事件时刻算停顿：主线程忙时处理得晚，不会被误当成停笔。 Pause by event time, so a busy main thread doesn't fake one.
+            if (pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
                 host?.onHandCommit()
                 pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
             }
-            pad.begin(x - pad.rect.left, y - pad.rect.top)
+            // 书写要跟手：这根手指的移动不等下一帧批量送达。 Ink must follow the finger: moves are not batched per frame.
+            requestUnbufferedDispatch(e)
+            pad.begin((x - pad.rect.left).coerceIn(0f, pad.rect.width()), (y - pad.rect.top).coerceIn(0f, pad.rect.height()), e.eventTime)
             invalidate()
             return
         }
         val s = side
-        if (s != null && s.rect.contains(x, y)) {
+        // 按列表所在的整格判断，边距里的按下不会落到相邻的键上。 Hit-test the whole cell, so its margins don't hit a neighbour.
+        if (s != null && s.cell.contains(x, y)) {
             if (sideOwner != null) return
             p.id = e.getPointerId(index)
             p.downX = x; p.downY = y
@@ -698,7 +742,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             sideOwner = p
             sideDragging = false
             sideDownScroll = s.scroll
-            s.highlighted = ((y - s.rect.top + s.scroll) / s.itemHeight).toInt()
+            s.highlighted = ((y.coerceIn(s.rect.top, s.rect.bottom - 1f) - s.rect.top + s.scroll) / s.itemHeight).toInt()
             host?.feedback?.key(this)
             invalidate()
             return
@@ -841,7 +885,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                     return
                 }
                 if (k.code == KeyCode.DELETE) {
-                    if (abs(dx) > slop || abs(dy) > slop) removeCallbacks(p.repeat)
+                    // 只有还没开始连发时，移动才取消连发；连发中手指缓慢漂移很正常，只有左滑清空或抬手结束连发。
+                    // Movement only cancels a repeat that hasn't started: once repeating, a slow drift of the thumb is
+                    // normal, and only the swipe-left clear or lifting the finger ends it.
+                    if (p.repeatCount == 0 && (abs(dx) > slop || abs(dy) > slop)) removeCallbacks(p.repeat)
                     val unit = keyOf('q'.code)?.cell?.width() ?: m.dp(40f)
                     if (dx <= -1.5f * unit) {
                         removeCallbacks(p.longPress)
@@ -907,8 +954,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val pad = hand ?: return
         val l = pad.rect.left
         val t = pad.rect.top
-        for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t)
-        pad.add(e.getX(i) - l, e.getY(i) - t)
+        for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t, e.getHistoricalEventTime(h))
+        pad.add(e.getX(i) - l, e.getY(i) - t, e.eventTime)
         invalidate()
     }
 
@@ -944,7 +991,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             }
             return
         }
-        when (host?.onLongPressFunc(k) ?: 0) {
+        val r = host?.onLongPressFunc(k) ?: 0
+        // 回调里打开了面板时触摸已被复位（cancelTouch），这根手指不再跟踪。 A panel opened in the callback reset the touch.
+        if (p.id < 0) return
+        when (r) {
             LONG_VOICE -> { p.mode = M_VOICE; invalidate() }
             LONG_CONSUMED -> { p.mode = M_CONSUMED; invalidate() }
         }
@@ -966,7 +1016,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 inkOwner = null
                 val pad = hand
                 if (pad != null) {
-                    if (commit && pad.end() != null) host?.onHandStroke(pad.strokes) else pad.cancel()
+                    if (commit && pad.end(evTime) != null) host?.onHandStroke(pad.strokes) else pad.cancel()
                 }
             }
             M_SIDE -> {

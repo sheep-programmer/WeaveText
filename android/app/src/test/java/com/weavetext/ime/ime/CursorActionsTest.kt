@@ -110,8 +110,10 @@ class CursorActionsTest {
     @Test fun pairedTextPlacesCursorInside() {
         c.onPairedText("（", "）")
         assertEquals("hello world（）", ic.editable.toString())
-        val d = downs().single()
-        assertEquals(KeyEvent.KEYCODE_DPAD_LEFT, d.keyCode)
+        assertEquals(12, ic.selStart)
+        assertEquals(12, ic.selEnd)
+        // 不发方向键（文本边缘会让焦点跳走）。 No arrow keys (at the text edge they move focus away).
+        assertEquals(0, downs().size)
     }
 
     @Test fun deleteWordRemovesTrailingRun() {

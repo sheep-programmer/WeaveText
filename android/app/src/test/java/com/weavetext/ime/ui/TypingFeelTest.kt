@@ -19,6 +19,7 @@ import com.weavetext.ime.ui.keyboard.Key
 import com.weavetext.ime.ui.keyboard.KeyCode
 import com.weavetext.ime.ui.keyboard.KeyboardView
 import com.weavetext.ime.ui.keyboard.WeaveKeyboard
+import com.weavetext.ime.ui.keyboard.clampLeft
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,6 +56,8 @@ class TypingFeelTest {
     @Before fun setUp() {
         android.provider.Settings.Global.putFloat(app.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
         WeavePrefs.of(app).edit().clear().commit()
+        // 上一个测试的剪贴板写入可能还在后台排队。 A previous test's clip writes may still be queued.
+        com.weavetext.ime.ime.ClipHistory.awaitIo()
         File(app.filesDir, "clipboard").deleteRecursively()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val frame = FrameLayout(activity)
@@ -123,6 +126,21 @@ class TypingFeelTest {
     // ------------------------------------------------------------ multi-touch rollover
 
     /** 导航栏边衬：底部与横屏侧边都要让开；视图重建后也能拿到。 Navigation bar insets, bottom and sides. */
+    @Test fun anAutoCapitalFromEnglishDoesNotCarryIntoChinese() {
+        controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }, false)
+        kb.onShown()
+        idle()
+        val lang = kv.keyOf(com.weavetext.ime.ui.keyboard.KeyCode.LANG)!!
+        press(9, lang); release(9)
+        assertFalse("switched to English", controller.state.chinese)
+        press(9, kv.keyOf(com.weavetext.ime.ui.keyboard.KeyCode.LANG)!!); release(9)
+        assertTrue("back to Chinese", controller.state.chinese)
+        tap('n')
+        // 拼音 n 进组合串，不是直接上屏一个大写 N。 Pinyin n composes; no capital N is committed.
+        assertEquals("", ic.text)
+        assertTrue(engine.isComposing())
+    }
+
     @Test fun keepsClearOfTheNavigationBar() {
         val insets = android.view.WindowInsets.Builder()
             .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(0, 0, 0, 126))
@@ -223,10 +241,47 @@ class TypingFeelTest {
         assertEquals("a", engine.raw.toString())
     }
 
-    @Test fun cancelKeepsAnEmittedChar() {
+    @Test fun systemCancelTakesBackTheEmittedChar() {
+        // 边缘返回手势等截走手指：按下即输出的字撤回。 The system took the finger (edge back gesture): the char is taken back.
+        tap('n')
         press(0, key('z'))
+        assertEquals("nz", engine.raw.toString())
         cancelAll()
+        assertEquals("n", engine.raw.toString())
+    }
+
+    @Test fun internalResetKeepsTheEmittedChar() {
+        // 面板切换等内部复位不撤回。 Internal resets (panel switches) keep it.
+        press(0, key('z'))
+        kv.cancelTouch()
+        down.clear()
         assertEquals("z", engine.raw.toString())
+    }
+
+    @Test fun deleteRepeatSurvivesThumbDrift() {
+        ic.commitText("abcdefghijklmnopqrstuvwxyz", 1)
+        press(0, key(KeyCode.DELETE))
+        hold(400 + 50 * 3 + 10)
+        val after = ic.text.length
+        assertTrue("repeating, ${ic.text}", after < 26)
+        // 连发中手指漂移 12 dp：继续删。 A 12 dp drift while repeating keeps deleting.
+        move(0, dp(6f), dp(-10f))
+        hold(50 * 4 + 10)
+        assertTrue("still repeating: ${ic.text}", ic.text.length < after)
+        release(0)
+    }
+
+    @Test fun slowTapOnAnOrdinaryCandidateStillCommits() {
+        tap('n'); tap('i')
+        hold(20)
+        val bar = kb.topBar
+        val y = bar.height - dp(8f)
+        val x = dp(60f)
+        val t0 = SystemClock.uptimeMillis()
+        bar.dispatchTouchEvent(MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, x, y, 0))
+        hold(600)
+        bar.dispatchTouchEvent(MotionEvent.obtain(t0, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0))
+        assertEquals("【ni】", ic.text)
     }
 
     // ------------------------------------------------------------ space bar
@@ -317,6 +372,30 @@ class TypingFeelTest {
         tap('p')
         hold(20)
         assertEquals("help", kb.topBar.candidateAt(0))
+    }
+
+    @Test fun nineKeyLongPressOnWideDigitKeysStaysOnScreen() {
+        // 竖屏九键的 7（PQRS）、9（WXYZ）各有五个候选，按键又宽，一行按原宽放不下。
+        // Portrait 9-key 7 (PQRS) and 9 (WXYZ) have five items each on wide keys: a row at key width doesn't fit.
+        WeavePrefs.of(app).edit().putString(WeavePrefs.KEYBOARDS, "t9,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "t9").commit()
+        idle()
+        val ov = kb.overlay!!
+        for (c in "79") {
+            press(0, key(c))
+            hold(KeyboardView.LONG_PRESS_MS + 20)
+            assertTrue("popup for $c", ov.altShown)
+            val box = ov.altBounds
+            assertTrue("box $box within ${ov.width}", box.left >= 0f && box.right <= ov.width)
+            release(0)
+        }
+    }
+
+    @Test fun popupClampNeverThrows() {
+        // 放得下：夹在边距内；放不下（范围倒置）：居中。 Fits: clamped to the margins; too wide (inverted range): centred.
+        assertEquals(4f, clampLeft(-10f, 50f, 100f, 4f), 0f)
+        assertEquals(46f, clampLeft(90f, 50f, 100f, 4f), 0f)
+        assertEquals(-5f, clampLeft(30f, 110f, 100f, 4f), 0f)
+        assertEquals(-25f, clampLeft(0f, 50f, 0f, 4f), 0f)
     }
 
     // ------------------------------------------------------------ 14-key

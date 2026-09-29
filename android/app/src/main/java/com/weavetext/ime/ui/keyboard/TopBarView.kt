@@ -29,12 +29,14 @@ import kotlin.math.min
 interface TopBarHost {
     val feedback: Feedback?
     fun onToolbar(index: Int)
-    fun onToolbarLong(index: Int)
+    /** 工具长按；返回 false 表示没有长按功能，这次按下仍按点击处理。 Tool long-press; false = none, the press stays a tap. */
+    fun onToolbarLong(index: Int): Boolean
     /** 长按后抬起（顶栏 🎙 按住说话）。 Release after a long-press. */
     fun onToolbarLongEnd(index: Int, cancelled: Boolean) {}
     fun onToolbarLongMove(index: Int, dy: Float) {}
     fun onCandidate(index: Int)
-    fun onCandidateLong(index: Int)
+    /** 候选长按；返回 false 表示没有长按功能，这次按下仍按点击处理。 Candidate long-press; false = none, still a tap. */
+    fun onCandidateLong(index: Int): Boolean
     fun onExpand()
     fun onNeedMore()
     fun onClipChip()
@@ -120,6 +122,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var downScroll = 0f
     private var longFired = false
     private var longTool = -1
+    /** 这次按下只用来收起提示条。 This touch only dismissed the action strip. */
+    private var swallowed = false
     private var cursorOn = true
     private var lastInput = 0L
     private val blink = object : Runnable {
@@ -131,9 +135,19 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         }
     }
     private val longPress = Runnable {
+        val handled = when {
+            pressedCand >= 0 -> host.onCandidateLong(pressedCand)
+            pressedTool >= 0 && !candidateMode -> {
+                val t = tools[pressedTool]
+                longTool = t
+                host.onToolbarLong(t).also { if (!it) longTool = -1 }
+            }
+            else -> false
+        }
+        // 没有长按功能（普通候选、大多数工具）：保持按下，慢慢按的一下松手时照常生效。
+        // Nothing to do on a long press (ordinary candidates, most tools): keep the press so a slow tap still works.
+        if (!handled) return@Runnable
         longFired = true
-        if (pressedCand >= 0) host.onCandidateLong(pressedCand)
-        else if (pressedTool >= 0 && !candidateMode) { longTool = tools[pressedTool]; host.onToolbarLong(longTool) }
         pressedCand = -1
         pressedTool = -1
         pressedChip = false
@@ -221,13 +235,19 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         this.english = english
         this.total = total
         candidateMode = preedit.isNotEmpty() || texts.isNotEmpty()
-        if (floating) host.onFloatingPreedit(if (!english && preedit.isNotEmpty()) preedit else null)
+        // 不浮动时也通知一次（样式从浮动切回行内时收起浮条）。 Notify when inline too, so switching styles drops the chip.
+        host.onFloatingPreedit(if (floating && !english && preedit.isNotEmpty()) preedit else null)
         if (changed && !keepScroll) { scrollX0 = 0f; scroller.forceFinished(true) }
+        // 按住时候选变了：原位置已是别的词，这次按下作废。 Candidates changed under the finger: that press no longer applies.
+        if (changed && pressedCand >= 0) { removeCallbacks(longPress); pressedCand = -1 }
         lastInput = SystemClock.uptimeMillis()
         cursorOn = true
         removeCallbacks(blink)
         if (preedit.isNotEmpty()) postDelayed(blink, 530)
         remeasure(preeditChanged)
+        // 保留滚动位置时，候选可能变少了（翻页加载的已丢掉）：夹回范围内，否则栏里一片空白。
+        // A kept scroll offset may now be past a shorter list (loaded pages are dropped): clamp it, or the bar goes blank.
+        if (scrollX0 > 0f && !strip) scrollX0 = scrollX0.coerceIn(0f, maxScroll())
         invalidate()
         if (changed) a11y.invalidate()
     }
@@ -705,13 +725,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             else -> null
         }
 
-        override fun a11yLongClick(id: Int): Boolean {
-            when {
-                id == ToolIds.MENU -> host.onToolbarLong(ToolIds.MENU)
-                id >= CAND_BASE -> host.onCandidateLong(id - CAND_BASE)
-                else -> return false
-            }
-            return true
+        override fun a11yLongClick(id: Int): Boolean = when {
+            id == ToolIds.MENU -> host.onToolbarLong(ToolIds.MENU)
+            id >= CAND_BASE -> host.onCandidateLong(id - CAND_BASE)
+            else -> false
         }
 
         override fun a11yLiftToActivate(id: Int) = id >= CAND_BASE
@@ -748,21 +765,26 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 dragging = false
                 longFired = false
                 longTool = -1
+                swallowed = false
                 downScroll = scrollX0
                 scroller.forceFinished(true)
                 velocity?.recycle()
                 velocity = VelocityTracker.obtain().also { it.addMovement(e) }
-                if (actionMsg != null) return true
+                if (actionMsg != null) {
+                    // 点在操作按钮外：收起提示条（不落到被它盖住、看不见的工具上）。
+                    // A tap outside the action button dismisses the strip (without hitting the tools hidden under it).
+                    if (!actionRect.contains(e.x, e.y)) { clearAction(); swallowed = true }
+                    return true
+                }
                 if (candidateMode) {
                     val right = width - (if (hasMore) expandW() else 0f)
                     if (e.x >= right) return true
                     if (!strip && e.x < leadW()) { pressedTool = 0; invalidate(); return true }
-                    if (e.y >= rowTop() || english) {
-                        pressedCand = candAt(e.x)
-                        if (pressedCand >= 0) {
-                            host.feedback?.key(this)
-                            postDelayed(longPress, 400)
-                        }
+                    // 组合串那一行不可操作，点在它上面按横向位置算候选。 The preedit line isn't interactive: map by x.
+                    pressedCand = candAt(e.x)
+                    if (pressedCand >= 0) {
+                        host.feedback?.key(this)
+                        postDelayed(longPress, 400)
                     }
                 } else {
                     pressedTool = toolAt(e.x)
@@ -778,6 +800,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                if (swallowed) return true
                 velocity?.addMovement(e)
                 val dx = e.x - downX
                 val dy = e.y - downY
@@ -804,6 +827,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
+                if (swallowed) { swallowed = false; return true }
                 velocity?.addMovement(e)
                 if (longFired) {
                     longFired = false

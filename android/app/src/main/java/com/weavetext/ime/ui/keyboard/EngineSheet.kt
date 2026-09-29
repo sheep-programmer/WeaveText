@@ -182,6 +182,12 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         return if (i in plugins.indices) i else NONE
     }
 
+    /** 弹层吃掉悬停：读屏触摸浏览不会穿过它落到下面的键上。 Swallow hover so touch exploration can't reach the keys below. */
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        super.onHoverEvent(event)
+        return true
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
@@ -296,6 +302,8 @@ class VoiceStrip(private val kb: WeaveKeyboard) {
             else -> (session.committed.toString() + session.partial).ifEmpty { if (session.state == VoiceSession.State.FINALIZING) "识别中…" else "正在聆听…上滑取消" }
         }
         ov.showStrip(msg, session.level, cancel || session.state == VoiceSession.State.ERROR, session.state == VoiceSession.State.LISTENING)
-        if (session.state == VoiceSession.State.ERROR) { engaged = false; ov.postDelayed({ ov.hideStrip() }, 1500) }
+        // 可取消的延时收起：1.5 秒内重新按住说话时，新语音条不会被这次的计时收掉。
+        // A cancellable delayed hide: a new hold-to-talk within 1.5 s isn't hidden by this timer.
+        if (session.state == VoiceSession.State.ERROR) { engaged = false; ov.hideStripAfter(1500) }
     }
 }

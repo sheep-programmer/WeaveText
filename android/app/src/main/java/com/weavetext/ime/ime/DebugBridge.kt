@@ -77,7 +77,8 @@ class DebugBridge(private val controller: InputController) {
             t == "toggle" -> controller.toggleChinese()
             t.startsWith("sel:") -> t.removePrefix("sel:").toIntOrNull()?.let(controller::onCandidate)
             t.startsWith("py:") -> t.removePrefix("py:").toIntOrNull()?.let(controller::onPinyinOption)
-            t.startsWith("schema:") -> controller.setSchema(t.removePrefix("schema:"))
+            // 与用户设置里选方案一样：中文状态才切换，密码框等英文框只记下。 Like choosing it in settings: applied only in Chinese mode.
+            t.startsWith("schema:") -> controller.setPreferredSchema(t.removePrefix("schema:"))
             t.startsWith("opt:") -> {
                 val (k, v) = t.removePrefix("opt:").split('=', limit = 2).let { it[0] to (it.getOrNull(1) == "true") }
                 controller.setOption(k, v)

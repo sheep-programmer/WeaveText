@@ -9,6 +9,8 @@ class ShiftState(private val doubleTapMs: Long = 300) {
     var value = OFF
         private set
     private var lastTap = Long.MIN_VALUE / 2
+    /** 当前的单次态是自动大写给的（不是用户按的）。 The current ONCE came from auto-capitalisation, not the user. */
+    private var auto = false
 
     val upper get() = value != OFF
 
@@ -25,16 +27,25 @@ class ShiftState(private val doubleTapMs: Long = 300) {
             else -> ONCE
         }
         lastTap = if (next == LOCK) Long.MIN_VALUE / 2 else now
+        auto = false
         return set(next)
     }
 
     /** 输出一个字母后调用；单次态回到关。 Call after a letter; ONCE falls back to OFF. */
-    fun consume(): Boolean = if (value == ONCE) set(OFF) else false
+    fun consume(): Boolean { auto = false; return if (value == ONCE) set(OFF) else false }
 
-    /** 句首自动大写。 Auto-capitalise at sentence start (only from OFF). */
-    fun autoCap(active: Boolean): Boolean = if (active && value == OFF) set(ONCE) else false
+    /**
+     * 句首自动大写：需要时从关进入单次态；自动给的单次态在不再需要时（如退格删掉了句号后的空格）收回。
+     * Auto-capitalise at sentence start: OFF → ONCE when needed; an auto ONCE is taken back once it no longer
+     * applies (e.g. the space after a period was deleted).
+     */
+    fun autoCap(active: Boolean): Boolean = when {
+        active && value == OFF -> { auto = true; set(ONCE) }
+        !active && auto && value == ONCE -> { auto = false; set(OFF) }
+        else -> false
+    }
 
-    fun reset(): Boolean { lastTap = Long.MIN_VALUE / 2; return set(OFF) }
+    fun reset(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; return set(OFF) }
 
     private fun set(v: Int): Boolean {
         if (v == value) return false

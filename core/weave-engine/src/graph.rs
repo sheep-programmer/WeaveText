@@ -22,6 +22,9 @@ pub mod penalty {
     pub const CORRECTION: u16 = 1800;
     /// 漏打一个字母（zhng → zhong）或多打一个（zhoong → zhong）。 One letter missing or one too many.
     pub const TYPO_EDIT: u16 = 2600;
+    /// 按成了左右相邻的键（整键按错，不在交界处，所以没有触点信息）：xhong → zhong。
+    /// A whole neighbouring key was hit (not near the border, so no touch info): xhong → zhong.
+    pub const TYPO_NEIGHBOUR: u16 = 3200;
     /// 句中简拼（只打声母）。 Abbreviation (initial only) inside the input.
     pub const ABBREV: u16 = 1200;
     /// 末尾简拼：用户可能还没打完。 Abbreviation at the end: user is still typing.
@@ -315,10 +318,26 @@ const CORRECTIONS: &[(&str, &str)] = &[
 /// 漏打时最可能漏的字母。 Letters most likely to be left out.
 const MISSABLE: &[u8] = b"aeiouvghn";
 
-/// 打错的一个音节可能想打的音节：相邻两字母颠倒、漏一个字母、多一个字母；原拼写本身已是音节或（在末尾时）
-/// 还能接着打成音节就不猜。返回 (音节, 惩罚)。
-/// Syllables a mistyped spelling may have meant: two adjacent letters swapped, one letter missing, one extra. Nothing
-/// is guessed when the spelling is already a syllable or, at the end, can still grow into one.
+/// 全键盘上每个字母左右相邻的键。 The keys left and right of each letter on the QWERTY layout.
+fn neighbours(c: u8) -> &'static [u8] {
+    const ROWS: [&[u8]; 3] = [b"qwertyuiop", b"asdfghjkl", b"zxcvbnm"];
+    for row in ROWS {
+        if let Some(i) = row.iter().position(|&k| k == c) {
+            let lo = i.saturating_sub(1);
+            let hi = (i + 2).min(row.len());
+            return &row[lo..hi];
+        }
+    }
+    &[]
+}
+
+/// 打错的一个音节可能想打的音节：相邻两字母颠倒、漏一个字母、多一个字母、按成左右相邻的键；原拼写本身已是音节或
+/// （在末尾时）还能接着打成音节就不猜。返回 (音节, 惩罚)。
+/// 已是音节的拼写也按打错来猜（shang → shuang）在整句评测上没有帮助，反而拖累颠倒纠错，所以不做。
+/// Syllables a mistyped spelling may have meant: two adjacent letters swapped, one letter missing, one extra, or a
+/// neighbouring key hit. Nothing is guessed when the spelling is already a syllable or, at the end, can still grow
+/// into one. Returns (syllable, penalty). Guessing inside spellings that are already syllables (shang → shuang) did
+/// not help on the sentence benchmark and hurt swap correction, so it is not done.
 pub fn typo_variants(s: &str, at_end: bool) -> Vec<(SyllableId, u16)> {
     let b = s.as_bytes();
     let mut out: Vec<(SyllableId, u16)> = Vec::new();
@@ -343,13 +362,23 @@ pub fn typo_variants(s: &str, at_end: bool) -> Vec<(SyllableId, u16)> {
     }
     if b.len() >= 3 {
         // 句中不删末尾字母：它多半是下一个音节的声母（haox 不读成 hao）；连按的字母从下一个音节开头删。
-        // Mid-input the last letter is not dropped: it is most likely the next syllable's initial (haox is not hao);
-        // a doubled letter is dropped from the start of the next syllable instead.
+        // Mid-input the last letter is not dropped: it is most likely the next syllable's initial (haox is not
+        // hao); a doubled letter is dropped from the start of the next syllable instead.
         for p in 0..b.len() - (!at_end) as usize {
             let mut d = b.to_vec();
             d.remove(p);
             add(&d, penalty::TYPO_EDIT);
         }
+    }
+    // 按错邻键：首字母也可能按错（xhong → zhong）。 A neighbouring key, the first letter included.
+    for p in 0..b.len() {
+        for &c in neighbours(b[p]) {
+            if c != b[p] {
+                t[p] = c;
+                add(&t, penalty::TYPO_NEIGHBOUR);
+            }
+        }
+        t[p] = b[p];
     }
     for p in 1..=b.len() {
         for &c in MISSABLE {
@@ -619,6 +648,18 @@ mod tests {
         let p = g.out[2].iter().find(|e| e.end == 5).unwrap();
         assert_eq!(p.kind, EdgeKind::Partial);
         assert!(p.syls.contains(&syllable::id_of("zhong").unwrap()));
+    }
+
+    #[test]
+    fn a_neighbouring_key_is_corrected_but_a_real_syllable_is_not() {
+        // xhong：z 按成了旁边的 x。 xhong: z was hit as its neighbour x.
+        let v = typo_variants("xhong", false);
+        assert!(v.iter().any(|&(id, _)| syllable::spelling(id) == "zhong"), "{v:?}");
+        // 本身就是音节的拼写不改。 A spelling that is already a syllable is left alone.
+        assert!(typo_variants("zhong", false).is_empty());
+        assert!(typo_variants("shang", false).is_empty());
+        assert_eq!(neighbours(b'q'), b"qw");
+        assert_eq!(neighbours(b'g'), b"fgh");
     }
 
     #[test]

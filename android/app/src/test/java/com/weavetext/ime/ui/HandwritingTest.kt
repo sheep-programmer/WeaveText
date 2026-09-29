@@ -62,6 +62,8 @@ class HandwritingTest {
         android.provider.Settings.Global.putFloat(app.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
         WeavePrefs.of(app).edit().clear()
             .putString(WeavePrefs.KEYBOARDS, "hand,pinyin,english").putString(WeavePrefs.ACTIVE_KEYBOARD, "hand").commit()
+        // 上一个测试的剪贴板写入可能还在后台排队。 A previous test's clip writes may still be queued.
+        com.weavetext.ime.ime.ClipHistory.awaitIo()
         File(app.filesDir, "clipboard").deleteRecursively()
         activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         build()
@@ -211,20 +213,32 @@ class HandwritingTest {
 
         stroke(0.1f, 0.5f, 0.9f, 0.5f)
         tap(','.code)
-        assertEquals("1笔01笔0，", ic.text)
+        // 紧跟数字的逗号保持半角，见 InputPathTest.punctuationAfterDigitsStaysAscii。
+        // A comma right after a digit stays ASCII; see InputPathTest.punctuationAfterDigitsStaysAscii.
+        assertEquals("1笔01笔0,", ic.text)
         assertTrue(pad.strokes.isEmpty())
 
         stroke(0.1f, 0.5f, 0.9f, 0.5f)
         stroke(0.5f, 0.1f, 0.5f, 0.9f)
         tap(KeyCode.ENTER)
-        assertEquals("enter commits the top candidate, no newline", "1笔01笔0，2笔0", ic.text)
+        assertEquals("enter commits the top candidate, no newline", "1笔01笔0,2笔0", ic.text)
         assertTrue(pad.strokes.isEmpty())
 
         stroke(0.1f, 0.5f, 0.9f, 0.5f)
         hold(20)
         kb.onCandidate(3)
-        assertEquals("1笔01笔0，2笔01笔3", ic.text)
+        assertEquals("1笔01笔0,2笔01笔3", ic.text)
         assertTrue(pad.strokes.isEmpty())
+    }
+
+    @Test fun inkStaysOnThePadAfterTheLiftAndSpansTheStroke() {
+        stroke(0.1f, 0.5f, 0.3f, 0.5f, 0.6f, 0.5f, 0.9f, 0.5f)
+        val b = android.graphics.RectF()
+        pad.ink.computeBounds(b, true)
+        val r = pad.rect
+        // 墨迹是整条填充轮廓，不是只剩落笔的一个点。 The ink is the whole filled outline, not just the pen-down dot.
+        assertTrue("ink spans the stroke: $b", b.width() > 0.7f * r.width())
+        assertTrue("ink has thickness: $b", b.height() > 0f)
     }
 
     @Test fun deleteUndoesStrokesThenDeletesText() {

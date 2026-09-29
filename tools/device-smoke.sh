@@ -25,13 +25,16 @@ print(m.group(1) if m else '<no field>')"
 }
 check() { # name keys expected [inputType]
   local name="$1" keys="$2" want="$3" type="${4:-131073}"
-  $ADB shell am start -W -S -n com.weavetext.ime/.debug.SmokeActivity --ei type "$type" >/dev/null
+  $ADB shell am start -W -f 0x10008000 -n com.weavetext.ime/.debug.SmokeActivity --ei type "$type" >/dev/null
   sleep 1.5
   $ADB shell am broadcast -a com.weavetext.ime.debug.KEYS --es keys "'{schema:pinyin}'" >/dev/null
   $ADB shell am broadcast -a com.weavetext.ime.debug.KEYS --es keys "'$keys'" >/dev/null
   sleep 0.8
   local got; got="$(field_text)"
-  if [[ "$got" == "$want" ]]; then pass=$((pass+1)); echo "  ✓ $name → $got"; else fail=$((fail+1)); echo "  ✗ $name → [$got] (want [$want])"; fi
+  # 密码框里系统把字显示成圆点（最后一个字可能短暂明文），只比长度。 Password fields show dots: compare length only.
+  local ok=0
+  if [[ "$type" == 129 ]]; then [[ ${#got} == ${#want} ]] && ok=1; else [[ "$got" == "$want" ]] && ok=1; fi
+  if [[ $ok == 1 ]]; then pass=$((pass+1)); echo "  ✓ $name → $got"; else fail=$((fail+1)); echo "  ✗ $name → [$got] (want [$want])"; fi
 }
 echo "== 输入 / typing"
 check "全拼 nihao"        "nihao{space}"                        "你好"

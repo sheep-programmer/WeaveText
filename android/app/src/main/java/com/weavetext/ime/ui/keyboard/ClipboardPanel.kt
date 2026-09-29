@@ -351,11 +351,11 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         private fun buildPrompt() {
             val m = kb.metrics
             val pad = m.dp(20f)
-            body.textSize = m.dp(14f)
+            body.textSize = m.panel(14f)
             val s = PROMPT
             promptText = StaticLayout.Builder.obtain(s, 0, s.length, body, (width - 2 * pad).toInt().coerceAtLeast(1))
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setLineSpacing(m.dp(20f) - body.fontMetrics.let { it.descent - it.ascent }, 1f).build()
+                .setLineSpacing(m.panel(20f) - body.fontMetrics.let { it.descent - it.ascent }, 1f).build()
             var y = m.dp(16f) + promptText!!.height + m.dp(16f)
             val gap = m.dp(12f)
             val bw = (width - 2 * pad - gap) / 2
@@ -373,7 +373,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
             val pad = m.dp(12f)
             val gap = m.dp(8f)
             val cw = (width - 2 * pad - gap) / 2
-            body.textSize = m.dp(14f)
+            body.textSize = m.panel(14f)
             rects.clear(); layouts.clear()
             var y = pad
             var i = 0
@@ -404,7 +404,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
             val s = text.replace('\n', ' ').replace('\t', ' ').let { if (it.length > 300) it.substring(0, 300) else it }
             return StaticLayout.Builder.obtain(s, 0, s.length, body, w.coerceAtLeast(1))
                 .setMaxLines(3).setEllipsize(TextUtils.TruncateAt.END)
-                .setLineSpacing(m.dp(20f) - body.fontMetrics.let { it.descent - it.ascent }, 1f)
+                .setLineSpacing(m.panel(20f) - body.fontMetrics.let { it.descent - it.ascent }, 1f)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
         }
 

@@ -56,6 +56,12 @@ object WeavePrefs {
     const val PREDICTION = "prediction"
     /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
     const val AUTOCORRECT = "autocorrect"
+    /** 手写停笔判字时间档位 0–2（[HAND_PAUSE_MS]）。 How long a pause ends a handwritten character (0–2). */
+    const val HAND_PAUSE = "hand_pause"
+    /** 默认中档：写得慢的人（长辈）用慢档。 Default: the middle level; slow writers pick the slow one. */
+    const val HAND_PAUSE_DEFAULT = 1
+    /** 各档的停笔时间（毫秒）：快 / 中 / 慢。 Pause per level in ms: fast / medium / slow. */
+    val HAND_PAUSE_MS = longArrayOf(550L, 800L, 1200L)
     /** 云端热词（默认关闭）：只下载公开热词库，不上传任何内容。 Cloud hot words, off by default; download only. */
     const val CLOUD_WORDS = "cloud_words"
 
@@ -166,6 +172,8 @@ object WeavePrefs {
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
     fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
     fun autocorrect(p: SharedPreferences) = p.getBoolean(AUTOCORRECT, true)
+    fun handPause(p: SharedPreferences) = p.getInt(HAND_PAUSE, HAND_PAUSE_DEFAULT).coerceIn(0, HAND_PAUSE_MS.size - 1)
+    fun handPauseMs(p: SharedPreferences) = HAND_PAUSE_MS[handPause(p)]
     fun autoPair(p: SharedPreferences) = p.getBoolean(AUTO_PAIR, true)
     fun cloudWords(p: SharedPreferences) = p.getBoolean(CLOUD_WORDS, false)
     fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)

@@ -64,19 +64,19 @@ class EditorIpcTest {
     /** 像编辑器那样回报当前选区。 Report the current selection like the editor does. */
     private fun echo() = controller.onSelectionUpdate(ic.selStart, ic.selEnd, -1, -1)
 
-    @Test fun backspaceIsOneCallOnceTheMirrorIsFilled() {
+    @Test fun backspaceIsOneKeyOnceTheMirrorIsFilled() {
         start("hello world")
         controller.onBackspace()
-        // 首次：读一次光标前文字 + 删除。 First press: one read plus the delete.
-        assertEquals(2, ic.calls)
+        // 首次：读一次光标前文字 + 删除键（按下、抬起）。 First press: one read plus the DEL key (down, up).
+        assertEquals(3, ic.calls)
         echo()
         ic.calls = 0
         repeat(5) { controller.onBackspace() } // 回报晚到也不影响。 Echoes may lag.
         echo()
         assertEquals("hello", ic.text)
-        assertEquals("one IPC per delete", 5, ic.calls)
+        assertEquals("only the key events, no reads", 10, ic.calls)
         assertEquals(0, ic.selectedTextCalls)
-        assertTrue(ic.keyEvents.isEmpty())
+        assertEquals(List(6) { KeyEvent.KEYCODE_DEL }, ic.keyEvents)
     }
 
     @Test fun backspaceRemovesAWholeEmojiCluster() {
@@ -146,6 +146,22 @@ class EditorIpcTest {
         assertEquals("no getCursorCapsMode on the key path", 0, ic.capsCalls)
         // 1 次读取 + 5 次上屏。 One read plus five commits.
         assertEquals(6, ic.calls)
+    }
+
+    @Test fun composingRegionKeepsTheMirrorUntrusted() {
+        start("abc")
+        // 语音中间结果（composing）的第一次回报：选区不可信。 First report with a voice composing region.
+        controller.onSelectionUpdate(5, 5, 3, 5)
+        assertFalse(controller.editor.selectionKnown)
+        controller.onSelectionUpdate(5, 5, -1, -1)
+        assertTrue(controller.editor.selectionKnown)
+    }
+
+    @Test fun editorsThatStopReportingAreNotTrustedForever() {
+        start("", reportsSelection = true)
+        // 给了初始选区却从不回报：多次改动之后不再相信镜像。 Initial selection but no reports: stop trusting it.
+        repeat(20) { controller.onText("a") }
+        assertFalse(controller.editor.selectionKnown)
     }
 
     @Test fun capsModeIsReusedWhileComposing() {

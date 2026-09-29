@@ -85,7 +85,10 @@ class TwoPassRecognizer(
             v.accept(samples)
             // 没说话的开头不留着：只保留最后 0.3 秒作为句首。 Drop leading silence but keep 0.3 s of lead-in.
             if (!v.heard && len > sampleRate * 3 / 10) drop(len - sampleRate * 3 / 10)
-            if (v.heard && len - decodedAt >= sampleRate * 3 / 2) {
+            // 每 1.5 秒重新识别一次；句子越长间隔越大（约为已录长度的四分之一），免得整句反复解码拖慢识别。
+            // Re-decode every 1.5 s, spacing out as the utterance grows (about a quarter of its length) so repeated
+            // whole-utterance decodes don't fall behind.
+            if (v.heard && len - decodedAt >= maxOf(sampleRate * 3 / 2, len / 4)) {
                 decodedAt = len
                 partial(clean(runCatching { offline!!.decode(buf.copyOf(len)) }.getOrDefault("")))
             }

@@ -304,7 +304,7 @@ val syncDicts by tasks.registering(Sync::class) {
         for (n in listOf("pinyin.wvl", "wubi86.wvl", "english.wvl")) check(dataBuildDir.resolve(n), "WVLX", 4)
         check(dataBuildDir.resolve("grammar.wvg"), "WVGM", 1)
         val dir = dictAssetsDir.resolve("dict")
-        for (key in listOf("pinyin", "wubi86", "english", "grammar", "st_phrases", "st_characters", "emoji", "hand", "follow")) {
+        for (key in listOf("pinyin", "wubi86", "english", "grammar", "st_phrases", "st_characters", "emoji", "hand", "hand_net", "follow")) {
             check(dir.resolve("$key.wvz"), "WVPK", 1)
         }
     }

@@ -124,6 +124,7 @@ class ClipHistoryTest {
         h.setPinned(h.list(3).first().id, true)
         h.clearAll()
         assertEquals(0, h.size)
+        ClipHistory.awaitIo()
         assertFalse(file().exists())
         assertEquals(0, ClipHistory(file()).size)
     }

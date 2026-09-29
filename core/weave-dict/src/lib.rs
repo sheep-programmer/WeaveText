@@ -4,6 +4,7 @@
 pub mod blob;
 pub mod gram;
 pub mod hand;
+pub mod handnet;
 pub mod follow;
 pub mod lexicon;
 pub mod syllable;

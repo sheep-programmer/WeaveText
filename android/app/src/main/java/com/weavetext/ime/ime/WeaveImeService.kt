@@ -30,10 +30,32 @@ class WeaveImeService : InputMethodService() {
         debugBridge.register(this)
         // 词库拷贝与 mmap 放后台，键盘先出来。 Load off the main thread; keyboard shows first.
         com.weavetext.ime.voice.VoiceHub.preload(this)
-        EngineHolder.load(this) { engine ->
-            if (engine != null) main.post { controller.attachEngine(engine) }
-        }
+        loadEngine()
         controller.addListener(stateListener)
+        // 手写识别单独一个后台线程，最新的一笔优先。 Handwriting recognition on its own background thread.
+        controller.handWorker = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "weave-hand").apply { isDaemon = true }
+        }
+        controller.postMain = { main.post(it) }
+    }
+
+    /** 正在后台加载内核。 The engine is loading in the background. */
+    private var engineLoading = false
+
+    /**
+     * 后台加载内核；失败时控制器把记下的键原样输出，下次键盘出现时再试。
+     * Load the engine in the background; on failure the controller emits the kept keys as typed, and the next
+     * keyboard show tries again.
+     */
+    private fun loadEngine() {
+        if (engineLoading || controller.state.engineReady) return
+        engineLoading = true
+        EngineHolder.load(this) { engine ->
+            main.post {
+                engineLoading = false
+                if (engine != null) controller.attachEngine(engine) else controller.engineUnavailable()
+            }
+        }
     }
 
     override fun onCreateInputView(): View {
@@ -83,7 +105,10 @@ class WeaveImeService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        ui?.onShown()
+        controller.onStartInputView(info)
+        // 上次加载失败（如存储暂时不可读）：键盘再出现时重试。 The last load failed: retry when the keyboard shows again.
+        loadEngine()
+        ui?.onShown(restarting)
         // 开启了互联时，键盘出现就把服务拉起来（进程被系统回收过也能恢复）。 Revive WeaveLink when the keyboard shows.
         com.weavetext.ime.link.LinkManager.get(this).ensureRunning()
         com.weavetext.ime.core.CloudWords.get(this).refreshIfStale()
@@ -140,6 +165,8 @@ class WeaveImeService : InputMethodService() {
         ui?.dispose()
         // 内核是进程共享的，这里只落盘不销毁。 The engine is shared: flush, don't close.
         controller.detachEngine()?.flush()
+        controller.handWorker?.shutdownNow()
+        controller.handWorker = null
         super.onDestroy()
     }
 

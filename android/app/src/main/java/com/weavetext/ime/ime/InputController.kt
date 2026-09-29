@@ -1,6 +1,7 @@
 package com.weavetext.ime.ime
 
 import android.text.InputType
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -46,7 +47,25 @@ data class ImeState(
  */
 class InputController(private val icProvider: () -> InputConnection?) {
 
-    private var engine: KeyEngine? = null
+    /**
+     * 内核。读取时先交回还在后台识别的手写结果，所以任何内核操作看到的都是最新的笔画与候选。
+     * The engine. Reading it first settles a handwriting recognition still running in the background, so every
+     * engine call sees the latest strokes and candidates.
+     */
+    private var engine: KeyEngine?
+        get() { settleHand(); return engineRef }
+        set(v) { engineRef = v; handJob = null }
+    private var engineRef: KeyEngine? = null
+
+    /**
+     * 手写识别的后台线程（null = 在主线程同步识别，测试用）与把结果送回主线程的方法。
+     * Background thread for handwriting recognition (null = synchronous on the caller, for tests), and how the
+     * result is posted back to the main thread.
+     */
+    var handWorker: java.util.concurrent.ExecutorService? = null
+    var postMain: (Runnable) -> Unit = { it.run() }
+    private var handJob: HandJob? = null
+    private class HandJob(val engine: KeyEngine, val strokes: List<FloatArray>, val result: java.util.concurrent.Future<IntArray?>)
     var state = ImeState()
         private set
     private val listeners = mutableListOf<(ImeState) -> Unit>()
@@ -69,17 +88,59 @@ class InputController(private val icProvider: () -> InputConnection?) {
     val editor = EditorCache()
     /** 编辑框只收按键事件（TYPE_NULL，如终端）。 The field only understands key events (TYPE_NULL). */
     private var keyEventsOnly = false
+    /** 网址 / 邮箱框：不做英文句号快捷方式，方向键保持按键事件。 URL / e-mail field. */
+    private var latinField = false
+    /** 网页里的输入框（WebView / 浏览器）。 A field inside a web page. */
+    private var webField = false
+    /** 上一个输入框的类别（决定重新开始输入时是否保留中/英）。 Kind of the last field, see [onStartInput]. */
+    private var fieldKind = -1
     private var capsCached = false
     private var capsVersion = -1
+    /** [stamp] 等于它时，光标前的空格是选英文词后自动补的。 While equal to [stamp], the space before the cursor was auto-added. */
+    private var autoSpaceStamp = -1
+
+    /**
+     * 内核还没加载完时按下的键（冷启动时进程刚被拉起）：先记下，内核就绪后按原顺序重放，不把拼音字母直接上屏。
+     * Keys pressed before the engine has loaded (a cold start): kept and replayed in order once it is ready,
+     * instead of committing the pinyin letters as they are.
+     */
+    private val pendingKeys = ArrayList<PendingKey>()
+    private var replaying = false
+    /** 上次加载内核失败（重新加载成功前按键照没有内核时处理）。 The last engine load failed. */
+    private var engineFailed = false
 
     fun addListener(l: (ImeState) -> Unit) { listeners += l; l(state) }
     fun removeListener(l: (ImeState) -> Unit) { listeners -= l }
 
+    /**
+     * 内核加载完成。它可能晚于输入框开始：按当前输入框补上学习开关与中/英方案，再重放之前按下的键。
+     * The engine is ready. It may arrive after the field started: apply the field's learning switch and
+     * Chinese/English schema, then replay the keys pressed meanwhile.
+     */
     fun attachEngine(e: KeyEngine) {
         engine = e
-        e.setSchema(chineseSchema)
+        engineFailed = false
         syncClock(e)
+        e.setLearning(!state.privateField)
+        // 首选方案缺词库时退回全拼，只公布内核接受的方案。 Fall back to pinyin when the schema's lexicon is missing.
+        if (!e.setSchema(chineseSchema) && chineseSchema != "pinyin" && e.setSchema("pinyin")) chineseSchema = "pinyin"
+        if (!state.chinese) e.setSchema("english")
+        e.clear()
+        e.setContext(null)
         update { it.copy(engineReady = true, schema = chineseSchema) }
+        refresh()
+        replayPending()
+    }
+
+    /**
+     * 内核加载失败：之前记下的键按没有内核时的方式输出（原样上屏），之后的键也一样，直到重新加载成功。
+     * The engine failed to load: the kept keys go out the engine-less way (committed as typed), as will later
+     * keys until a reload succeeds.
+     */
+    fun engineUnavailable() {
+        if (engine != null) return
+        engineFailed = true
+        replayPending()
     }
 
     fun detachEngine(): KeyEngine? = engine.also { engine = null }
@@ -90,23 +151,61 @@ class InputController(private val icProvider: () -> InputConnection?) {
         editorInfo = info
         engine?.let(::syncClock)
         editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
-        keyEventsOnly = info == null || info.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL
         val e = engine
         if (!restarting) {
             e?.clear()
             e?.setContext(null)
+            pendingKeys.clear()
         }
+        applyEditorInfo(info, restarting)
+        refresh()
+    }
+
+    /**
+     * 键盘显示时再读一次 EditorInfo：浏览器等在 onStartInput 与 onStartInputView 之间可能改了它。
+     * Re-read EditorInfo when the keyboard shows: browsers and others may change it between onStartInput and
+     * onStartInputView.
+     */
+    fun onStartInputView(info: EditorInfo?) {
+        val old = editorInfo
+        if (info == null || old == null) return
+        if (info.inputType == old.inputType && info.imeOptions == old.imeOptions && info.actionId == old.actionId &&
+            info.actionLabel?.toString() == old.actionLabel?.toString()
+        ) return
+        editorInfo = info
+        applyEditorInfo(info, keepMode = true)
+        refresh()
+    }
+
+    /**
+     * 按输入框类型设定学习开关、中/英、回车键。[keepMode] 为真（同一输入框重新开始，如聊天发送后清空）且输入框类别
+     * 没变时保留用户选的中/英。
+     * Learning, Chinese/English and the Enter key from the field type. With [keepMode] (the same field
+     * restarting, e.g. a chat box cleared after sending) the user's Chinese/English choice is kept unless the kind
+     * of field changed.
+     */
+    private fun applyEditorInfo(info: EditorInfo?, keepMode: Boolean) {
+        keyEventsOnly = info == null || info.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL
         val cls = (info?.inputType ?: 0) and InputType.TYPE_MASK_CLASS
         val variation = (info?.inputType ?: 0) and InputType.TYPE_MASK_VARIATION
         val password = cls == InputType.TYPE_CLASS_TEXT && variation in PASSWORD_VARIATIONS ||
             cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
         val noLearn = password || (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
-        e?.setLearning(!noLearn)
+        engine?.setLearning(!noLearn)
         val urlOrEmail = cls == InputType.TYPE_CLASS_TEXT && variation in LATIN_VARIATIONS
+        latinField = urlOrEmail
+        webField = cls == InputType.TYPE_CLASS_TEXT && variation in WEB_VARIATIONS
         val noSuggest = (info?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS != 0
         englishSuggest = cls == InputType.TYPE_CLASS_TEXT && !password && !urlOrEmail && !noSuggest
-        val chinese = !password && !urlOrEmail
-        applyMode(chinese)
+        // 数字、电话、日期框里没有中文可打：按英文处理，实体键盘的「.」不会变成「。」。
+        // Number, phone and date fields have no Chinese to type: treat them as English so a physical "." stays ".".
+        val numeric = cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE || cls == InputType.TYPE_CLASS_DATETIME
+        val forceAscii = (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_FORCE_ASCII != 0
+        val latinOnly = password || urlOrEmail || numeric || forceAscii
+        val kind = if (latinOnly) 1 else 0
+        val chinese = if (keepMode && kind == fieldKind) state.chinese else !latinOnly
+        fieldKind = kind
+        if (chinese != state.chinese || !keepMode) applyMode(chinese)
         update {
             it.copy(
                 enterAction = enterActionOf(info),
@@ -115,7 +214,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
                 chinese = chinese,
             )
         }
-        refresh()
     }
 
     /** 编辑器回报的选区变化。 Selection update from the editor. */
@@ -134,6 +232,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     fun onFinishInput() {
         engine?.let { it.clear(); it.flush() }
+        pendingKeys.clear()
+        autoSpaceStamp = -1
+        lastSpaceAt = 0L
         refresh()
     }
 
@@ -145,8 +246,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * (0 = none), used by the engine to fix taps on the neighbouring key.
      */
     fun onChar(codePoint: Int, near: Int = 0, closeness: Float = 0f) {
+        if (keep(PendingKey(PendingKey.CHAR, codePoint, near, closeness))) return
         val e = engine
-        val ch = codePoint.toChar()
+        val afterAutoSpace = autoSpaceStamp == stamp
         lastSpaceAt = 0L
         // 中文方案，或普通文本框里的英文联想，都交给内核组合。 Chinese, or English with suggestions.
         if (e != null && (state.chinese || englishSuggest) &&
@@ -160,16 +262,49 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // 组合中的首选先上屏，并刷新状态（候选栏收起、手写墨迹清掉）。 Commit the pending top candidate and refresh.
         e?.commitFirst()
         refresh()
-        val text = if (state.chinese) fullWidthPunct(ch) ?: ch.toString() else ch.toString()
+        val raw = String(Character.toChars(codePoint))
+        val text = if (state.chinese && codePoint < 0x10000) chinesePunct(codePoint.toChar()) ?: raw else raw
+        if (afterAutoSpace) dropAutoSpace(text)
         commit(text)
         markUndo(text)
     }
 
+    /**
+     * 中文模式下的标点：紧跟在数字后的「. , :」保持半角（3.14、12:30、1,000）。
+     * Chinese punctuation, except ". , :" right after a digit stay ASCII (3.14, 12:30, 1,000).
+     */
+    private fun chinesePunct(c: Char): String? {
+        val full = fullWidthPunct(c) ?: return null
+        if (c == '.' || c == ',' || c == ':') {
+            val before = editor.textBefore(1) ?: icProvider()?.getTextBeforeCursor(1, 0)?.toString()
+            if (before != null && before.length == 1 && before[0] in '0'..'9') return null
+        }
+        return full
+    }
+
+    /**
+     * 选英文词后自动补了空格、紧接着打标点：先删掉那个空格（"hello," 而不是 "hello ,"）。
+     * A punctuation mark right after the auto-added space of an English word: delete that space first.
+     */
+    private fun dropAutoSpace(text: String) {
+        autoSpaceStamp = -1
+        if (state.chinese || text.length != 1 || text[0] !in AUTO_SPACE_PUNCT) return
+        val ic = ic(modeled = true) ?: return
+        if ((editor.textBefore(1) ?: ic.getTextBeforeCursor(1, 0)?.toString()) != " ") return
+        ic.deleteSurroundingText(1, 0)
+        editor.onDeleteBefore(1)
+    }
+
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
     fun onText(text: String) {
+        if (keep(PendingKey(PendingKey.TEXT, text = text))) return
         val e = engine
-        // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串。 Pinyin v mode: digits and operators keep composing.
-        if (e != null && text.length == 1 && state.chinese && state.schema == "pinyin" && e.isComposing() && e.inputChar(text[0].code)) {
+        val afterAutoSpace = autoSpaceStamp == stamp
+        // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串；字母（实体键盘的大写字母）不进。
+        // Pinyin v mode: digits and operators keep composing; letters (uppercase from a physical keyboard) don't.
+        if (e != null && text.length == 1 && !text[0].isLetter() && state.chinese && state.schema == "pinyin" && e.isComposing() &&
+            e.inputChar(text[0].code)
+        ) {
             stamp++
             refresh()
             markUndo(null)
@@ -178,9 +313,70 @@ class InputController(private val icProvider: () -> InputConnection?) {
         e?.commitFirst()
         refresh()
         if (text.length == 1 && pairText(text[0])) return
+        if (afterAutoSpace) dropAutoSpace(text)
         commit(text)
         markUndo(text)
         if (text == "=" || text == "＝") offerCalc()
+    }
+
+    // ---------------------------------------------------------------- keys before the engine is ready
+
+    /** 内核就绪前按下的一个键。 One key pressed before the engine was ready. */
+    private class PendingKey(val kind: Int, val code: Int = 0, val near: Int = 0, val closeness: Float = 0f, val text: String? = null) {
+        companion object {
+            const val CHAR = 0
+            const val TEXT = 1
+            const val SPACE = 2
+            const val ENTER = 3
+            const val BACKSPACE = 4
+        }
+    }
+
+    /**
+     * 内核未就绪时记下这个键并返回 true：中文模式下的字母开始记录，记录开始后其余的键也按顺序记下。
+     * Keep this key while the engine isn't ready (returns true): a letter in Chinese mode starts keeping, after
+     * which every other key is kept too, in order.
+     */
+    private fun keep(k: PendingKey): Boolean {
+        if (engine != null || replaying || engineFailed) return false
+        if (pendingKeys.isEmpty()) {
+            val letter = k.kind == PendingKey.CHAR && (k.code in 'a'.code..'z'.code || k.code in 'A'.code..'Z'.code)
+            if (!letter || !state.chinese) return false
+        }
+        if (k.kind == PendingKey.BACKSPACE && pendingKeys.lastOrNull()?.kind == PendingKey.CHAR) {
+            pendingKeys.removeAt(pendingKeys.size - 1)
+        } else if (pendingKeys.size < MAX_PENDING) {
+            pendingKeys += k
+        }
+        showPending()
+        return true
+    }
+
+    /** 记下的字母显示在候选栏上方，让用户知道键没丢。 Show the kept letters as the preedit so no key looks lost. */
+    private fun showPending() {
+        val sb = StringBuilder()
+        for (k in pendingKeys) if (k.kind == PendingKey.CHAR) sb.appendCodePoint(k.code)
+        val text = sb.toString()
+        update { it.copy(preedit = text, preeditMarks = emptyList(), candidates = emptyList(), totalCandidates = 0, composing = pendingKeys.isNotEmpty()) }
+    }
+
+    private fun replayPending() {
+        if (pendingKeys.isEmpty()) return
+        val keys = pendingKeys.toList()
+        pendingKeys.clear()
+        replaying = true
+        try {
+            for (k in keys) when (k.kind) {
+                PendingKey.CHAR -> onChar(k.code, k.near, k.closeness)
+                PendingKey.TEXT -> onText(k.text.orEmpty())
+                PendingKey.SPACE -> onSpace()
+                PendingKey.ENTER -> onEnter()
+                PendingKey.BACKSPACE -> onBackspace()
+            }
+        } finally {
+            replaying = false
+        }
+        refresh()
     }
 
     /** 成对符号开关（设置里可关）。 Paired-punctuation switch. */
@@ -205,8 +401,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             return true
         }
         if (c in CLOSERS && ic.getTextAfterCursor(1, 0)?.firstOrNull() == c) {
-            sendKey(KeyEvent.KEYCODE_DPAD_RIGHT)
-            editor.invalidate()
+            moveCursor(1)
             return true
         }
         return false
@@ -261,13 +456,18 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         if (t.isEmpty()) return true
         val ic = ic(modeled = true) ?: return false
-        if ((editor.textBefore(t.length) ?: ic.getTextBeforeCursor(t.length, 0)?.toString()) != t) return false
+        // 上屏还没回报时向编辑器确认：它可能拒收了（字数已满），这时不能删掉真实的字。
+        // Ask the editor while the commit is unconfirmed: it may have been rejected (field full), and then real
+        // characters must not be deleted.
+        val mirrored = if (editor.commitPending) null else editor.textBefore(t.length)
+        if ((mirrored ?: ic.getTextBeforeCursor(t.length, 0)?.toString()) != t) return false
         ic.deleteSurroundingText(t.length, 0)
         editor.onDeleteBefore(t.length)
         return true
     }
 
     fun onBackspace() {
+        if (keep(PendingKey(PendingKey.BACKSPACE))) return
         val e = engine
         if (e != null && e.backspace()) {
             refresh()
@@ -276,33 +476,45 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // 内核这时收起了联想词：界面同步收起，旧候选不能留着（点了也不会上屏）。
         // The engine just dropped its predictions: drop them in the UI too, stale ones would do nothing when tapped.
         if (e != null && !state.composing && state.candidates.isNotEmpty()) refresh()
+        lastSpaceAt = 0L
         val ic = ic(modeled = true) ?: return
         if (!keyEventsOnly && editor.selectionKnown) {
-            // 已知选区：一次 IPC 删掉选区或光标前一个字形。 Known selection: one IPC per delete.
+            // 已知选区：一次 IPC 删掉选区。 Known selection: one IPC deletes it.
             if (!editor.selectionEmpty) {
                 ic.commitText("", 1)
                 editor.onCommit("")
                 return
             }
-            if (editor.textBefore(1) == null) ic.getTextBeforeCursor(EditorCache.FILL, 0)?.let { editor.fill(it, EditorCache.FILL) }
-            val n = editor.lastClusterLength()
-            if (n > 0) {
-                ic.deleteSurroundingText(n, 0)
-                editor.onDeleteBefore(n)
-                return
+            // 光标前一个字形用删除键事件删：聊天应用的表情标签、@ 提及、网页编辑器只在按键里整体删除。
+            // 镜像按最后一个字形簇同步（编辑器删得不一样时，它的回报会让镜像重置）。
+            // The char before the cursor goes with a DEL key event: chat apps' emoji tags and @-mentions and web
+            // editors only delete as a unit on the key. The mirror follows the last grapheme cluster (if the editor
+            // deleted something else, its report resets the mirror).
+            if (editor.needsFill() || editor.commitPending) {
+                ic.getTextBeforeCursor(EditorCache.FILL, 0)?.let { editor.fill(it, EditorCache.FILL) }
             }
+            val n = editor.lastClusterLength()
+            sendKeyTo(ic, KeyEvent.KEYCODE_DEL)
+            if (n > 0) editor.onDeleteBefore(n) else editor.invalidate()
+            return
         }
-        // 不回报选区的编辑器、终端、文本开头：按原来的方式发删除键。 Fallback: query, then a DEL key event.
+        // 不回报选区的编辑器、终端：先查选区，再发删除键。 Fallback: query the selection, then a DEL key event.
         editor.invalidate()
-        val sel = ic.getSelectedText(0)
+        val sel = if (keyEventsOnly) null else ic.getSelectedText(0)
         if (!sel.isNullOrEmpty()) {
             ic.commitText("", 1)
         } else {
-            sendKey(KeyEvent.KEYCODE_DEL)
+            sendKeyTo(ic, KeyEvent.KEYCODE_DEL)
         }
     }
 
-    fun onSpace() {
+    /**
+     * 空格。英文里两次空格间隔很短、前面是「字母 + 空格」时改成 ". "（[periodShortcut] 为假时不做，如实体键盘）。
+     * Space. In English a quick second space after "letter + space" becomes ". " (not with [periodShortcut]
+     * off, e.g. on a physical keyboard).
+     */
+    fun onSpace(periodShortcut: Boolean = true) {
+        if (keep(PendingKey(PendingKey.SPACE))) return
         val e = engine
         dismissPredictions()
         if (e != null && e.isComposing()) {
@@ -312,31 +524,26 @@ class InputController(private val icProvider: () -> InputConnection?) {
             if (!state.chinese) commitSpaceAfterWord()
             return
         }
-        // 英文双击空格 → ". "。 English double-space → ". ".
         val now = android.os.SystemClock.uptimeMillis()
-        if (!state.chinese && lastSpaceAt != 0L && now - lastSpaceAt < DOUBLE_SPACE_MS) {
+        if (periodShortcut && lastSpaceAt != 0L && now - lastSpaceAt < DOUBLE_SPACE_MS) {
             lastSpaceAt = 0L
-            val ic = ic(modeled = true)
-            if (ic != null && (editor.textBefore(1) ?: ic.getTextBeforeCursor(1, 0)?.toString()) == " ") {
-                ic.beginBatchEdit()
-                ic.deleteSurroundingText(1, 0)
-                editor.onDeleteBefore(1)
-                ic.commitText(". ", 1)
-                editor.onCommit(". ")
-                ic.endBatchEdit()
-                return
-            }
+            if (doubleSpacePeriod()) return
         }
         commit(" ")
-        lastSpaceAt = 0L
+        lastSpaceAt = if (periodShortcut && periodAllowed) now else 0L
     }
 
     private fun commitSpaceAfterWord() {
         commit(" ")
+        autoSpaceStamp = stamp
         lastSpaceAt = android.os.SystemClock.uptimeMillis()
     }
 
+    /** 这个输入框可以用双击空格打句号（英文、非密码 / 网址 / 邮箱 / 终端）。 The double-space period applies here. */
+    private val periodAllowed get() = !state.chinese && !state.passwordField && !latinField && !keyEventsOnly
+
     fun onEnter() {
+        if (keep(PendingKey(PendingKey.ENTER))) return
         val e = engine
         lastSpaceAt = 0L
         dismissPredictions()
@@ -352,7 +559,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
         val noEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
         if (state.enterAction != EnterAction.NEWLINE && !noEnterAction) {
-            ic.performEditorAction(action)
+            // 自定义回车文字时用输入框给的动作编号。 A custom Enter label comes with its own action id.
+            ic.performEditorAction(if (info?.actionLabel != null && info.actionId != 0) info.actionId else action)
         } else {
             sendKey(KeyEvent.KEYCODE_ENTER)
         }
@@ -372,16 +580,47 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onHandStrokes(strokes: List<FloatArray>) {
         val e = engine ?: return
         lastSpaceAt = 0L
-        e.handInput(strokes)
+        val worker = handWorker
+        if (worker == null) {
+            e.handInput(strokes)
+            stamp++
+            refresh()
+            return
+        }
+        // 识别放到后台：主线程只画墨迹，下一笔不会卡。结果回来时若已有更新的笔画就丢掉。
+        // Recognise in the background so the main thread only draws ink and the next stroke never stutters. A
+        // result is dropped if newer strokes arrived meanwhile.
+        val copy = strokes.map { it.copyOf() }
+        val job = HandJob(e, copy, worker.submit(java.util.concurrent.Callable { e.handRecognize(copy) }))
+        handJob = job
+        // 单线程执行器：这一步排在识别之后。 Single-thread executor: this runs after the recognition.
+        worker.execute { postMain(Runnable { if (handJob === job) finishHand(job) }) }
+    }
+
+    /** 还有后台识别没交回时，等它算完并交回（最多一次识别的时间）。 Wait for and apply a pending recognition. */
+    private fun settleHand() {
+        val job = handJob ?: return
+        finishHand(job)
+    }
+
+    private fun finishHand(job: HandJob) {
+        handJob = null
+        if (engineRef !== job.engine) return
+        val cps = try { job.result.get(2, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) { null }
+        if (cps == null) job.engine.handInput(job.strokes) else job.engine.handApply(job.strokes, cps)
         stamp++
         refresh()
     }
 
-    /** 上屏当前首选（手写停笔后再落笔）。 Commit the top candidate (handwriting: pen down after a pause). */
+    /**
+     * 手写停笔后再落笔：上屏首选。与点候选一样保留词链（手写的字也能连成用户词），并给出联想。
+     * Handwriting, pen down after a pause: commit the top candidate. Like tapping it, this keeps the word chain
+     * (handwritten chars can form user words) and offers predictions.
+     */
     fun commitFirst() {
         val e = engine ?: return
         if (!e.isComposing()) return
-        e.commitFirst()
+        if (state.schema == "hand" && state.candidates.isNotEmpty()) e.select(0) else e.commitFirst()
         refresh()
     }
 
@@ -397,6 +636,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun loadCandidates(offset: Int, limit: Int): List<Candidate> = engine?.candidates(offset, limit).orEmpty()
 
     fun toggleChinese() {
+        // 内核未就绪时记下的字母按原样上屏，不带到另一种模式里。 Kept letters go out as typed, not into the other mode.
+        if (engine == null) replayPending()
         engine?.commitRaw()
         drainCommit()
         applyMode(!state.chinese)
@@ -428,22 +669,86 @@ class InputController(private val icProvider: () -> InputConnection?) {
         return true
     }
 
-    /** 光标左右移动（空格滑动、光标面板）。 Move the cursor. */
+    /**
+     * 光标左右移动 [dx] 个字（空格滑动、光标面板）。知道光标位置时直接 setSelection，按字形簇移动、到文本两端就停，
+     * 不发方向键：方向键在文本边缘会让焦点跳到别的控件，还会让 App 退出触摸模式。只在不知道位置时（终端、网址栏、
+     * 不回报选区的编辑器）才发方向键。
+     * Move the cursor by [dx] characters (space-bar slide, cursor panel). With a known cursor position this is a
+     * setSelection that steps whole grapheme clusters and stops at either end of the text, without arrow keys:
+     * at the text edge an arrow key moves focus to another widget, and it takes the app out of touch mode. Arrow
+     * keys are only used when the position is unknown (terminals, URL bars, editors that don't report it).
+     */
     fun moveCursor(dx: Int) {
-        val code = if (dx < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
-        repeat(kotlin.math.abs(dx)) { sendKey(code) }
+        if (dx == 0) return
+        val ic = ic(modeled = true) ?: return
+        // 上屏还没回报时光标位置可能不准（编辑器可能拒收了）。 An unconfirmed commit makes the position uncertain.
+        if (keyEventsOnly || latinField || !editor.selectionEmpty || editor.commitPending) {
+            editor.invalidate()
+            val code = if (dx < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+            repeat(kotlin.math.abs(dx)) { sendKeyTo(ic, code) }
+            return
+        }
+        val steps = kotlin.math.abs(dx)
+        // 每个字形簇最多按 8 个 UTF-16 单元估算读取范围（再多读一些，簇的边界才准）。 Read enough for the clusters.
+        val window = (steps * 8 + EditorCache.CLUSTER_LOOKBEHIND).coerceAtMost(MAX_MOVE_READ)
+        val pos = editor.selStart
+        if (dx < 0) {
+            val before = editor.textBefore(window) ?: ic.getTextBeforeCursor(window, 0)?.toString()
+            if (before == null) { editor.invalidate(); repeat(steps) { sendKeyTo(ic, KeyEvent.KEYCODE_DPAD_LEFT) }; return }
+            var i = before.length
+            repeat(steps) { if (i > 0) i = EditorCache.clusterStart(before, i) }
+            val n = before.length - i
+            // 已在开头：什么都不做（不发方向键，焦点不会跳走）。 Already at the start: do nothing.
+            if (n == 0) return
+            ic.setSelection(pos - n, pos - n)
+            editor.onCursorMove(-n, null)
+        } else {
+            val after = ic.getTextAfterCursor(window, 0)?.toString()
+            if (after == null) { editor.invalidate(); repeat(steps) { sendKeyTo(ic, KeyEvent.KEYCODE_DPAD_RIGHT) }; return }
+            val n = clusterPrefix(after, steps)
+            if (n == 0) return
+            ic.setSelection(pos + n, pos + n)
+            editor.onCursorMove(n, after.substring(0, n))
+        }
     }
 
+    /** [text] 开头 [count] 个字形簇的长度。 Length of the first [count] grapheme clusters of [text]. */
+    private fun clusterPrefix(text: String, count: Int): Int {
+        if (text.isEmpty()) return 0
+        val bi = android.icu.text.BreakIterator.getCharacterInstance()
+        bi.setText(text)
+        var end = 0
+        repeat(count) {
+            val next = bi.following(end)
+            if (next == android.icu.text.BreakIterator.DONE) return end
+            end = next
+        }
+        return end
+    }
+
+    /** 发一个按键（按下 + 抬起），带软键盘标记。 Send a key (down + up) marked as coming from a soft keyboard. */
     fun sendKey(code: Int, meta: Int = 0) {
         val ic = ic() ?: return
+        sendKeyTo(ic, code, meta)
+    }
+
+    /**
+     * 与系统输入法框架发按键的方式一致：虚拟键盘设备 + FLAG_SOFT_KEYBOARD | FLAG_KEEP_TOUCH_MODE，App 不会因此退出
+     * 触摸模式（按钮、列表不会突然出现焦点框）。
+     * Like the framework's own key sending: the virtual keyboard device plus FLAG_SOFT_KEYBOARD |
+     * FLAG_KEEP_TOUCH_MODE, so the app stays in touch mode (no focus highlights popping up on buttons and lists).
+     */
+    private fun sendKeyTo(ic: InputConnection, code: Int, meta: Int = 0) {
         val now = android.os.SystemClock.uptimeMillis()
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta))
-        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, meta))
+        val flags = KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags))
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags))
     }
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
     fun reset() {
         engine?.clear()
+        pendingKeys.clear()
         refresh()
     }
 
@@ -484,8 +789,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
      */
     fun clearBeforeCursor(limit: Int = 2000): String? {
         val e = engine
-        if (e != null && e.isComposing()) {
-            e.clear()
+        if (e != null && e.isComposing() || pendingKeys.isNotEmpty()) {
+            e?.clear()
+            pendingKeys.clear()
             refresh()
             return null
         }
@@ -495,7 +801,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
             ic.commitText("", 1)
             return sel.toString()
         }
-        val before = ic.getTextBeforeCursor(limit, 0)?.toString().orEmpty()
+        var before = ic.getTextBeforeCursor(limit, 0)?.toString().orEmpty()
+        // 读到的一段从代理对中间开始：那半个字留着，不拆开。 The read starts inside a surrogate pair: keep that char whole.
+        if (before.length >= limit && before.isNotEmpty() && Character.isLowSurrogate(before[0])) before = before.substring(1)
         if (before.isEmpty()) return null
         ic.deleteSurroundingText(before.length, 0)
         return before
@@ -510,24 +818,12 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         if (e != null && !state.composing && state.candidates.isNotEmpty()) refresh()
         val ic = ic(modeled = true) ?: return
-        val before = editor.textBefore(64) ?: ic.getTextBeforeCursor(64, 0)?.toString().orEmpty().also { editor.fill(it, 64) }
-        if (before.isEmpty()) { sendKey(KeyEvent.KEYCODE_DEL); return }
-        var i = before.length
-        // 先跳过尾部空白，再删同类字符（字母数字一段 / 汉字一段 / 单个标点）。
-        while (i > 0 && before[i - 1].isWhitespace()) i--
-        if (i > 0) {
-            val cls = charClass(before[i - 1])
-            if (cls == 2) i-- else while (i > 0 && charClass(before[i - 1]) == cls) i--
-        }
-        val n = (before.length - i).coerceAtLeast(1)
+        val mirrored = if (editor.commitPending) null else editor.textBefore(64)
+        val before = mirrored ?: ic.getTextBeforeCursor(64, 0)?.toString().orEmpty().also { editor.fill(it, 64) }
+        if (before.isEmpty()) { editor.invalidate(); sendKeyTo(ic, KeyEvent.KEYCODE_DEL); return }
+        val n = wordLengthBefore(before)
         ic.deleteSurroundingText(n, 0)
         editor.onDeleteBefore(n)
-    }
-
-    private fun charClass(c: Char): Int = when {
-        Character.isIdeographic(c.code) -> 1
-        c.isLetterOrDigit() -> 0
-        else -> 2
     }
 
     /**
@@ -553,22 +849,36 @@ class InputController(private val icProvider: () -> InputConnection?) {
         return capsCached
     }
 
-    /** 英文双击空格 → ". "。 Double-space period; true if applied. */
-    fun doubleSpacePeriod(): Boolean {
+    /** 英文双击空格 → ". "（光标前须是「字母或数字 + 空格」）。 Double-space period; true if applied. */
+    private fun doubleSpacePeriod(): Boolean {
+        if (!periodAllowed) return false
         val ic = ic(modeled = true) ?: return false
         val before = editor.textBefore(2) ?: ic.getTextBeforeCursor(2, 0)?.toString() ?: return false
         if (before.length < 2 || before[1] != ' ' || !before[0].isLetterOrDigit()) return false
+        ic.beginBatchEdit()
         ic.deleteSurroundingText(1, 0)
         editor.onDeleteBefore(1)
         ic.commitText(". ", 1)
         editor.onCommit(". ")
+        ic.endBatchEdit()
+        autoSpaceStamp = -1
         return true
     }
 
-    /** 成对符号：插入并把光标放中间。 Paired symbols with the cursor placed inside. */
+    /**
+     * 成对符号：插入并把光标放中间（一次批量编辑，不发方向键）。
+     * Paired symbols with the cursor placed inside (one batch edit, no arrow keys).
+     */
     fun onPairedText(open: String, close: String) {
-        onText(open + close)
-        moveCursor(-close.length)
+        engine?.commitFirst()
+        refresh()
+        val ic = ic() ?: return
+        ic.beginBatchEdit()
+        ic.commitText(open, 1)
+        ic.commitText(close, 0)
+        ic.endBatchEdit()
+        engine?.breakChain()
+        markUndo(null)
     }
 
     // ---------------------------------------------------------------- cursor panel (02 §9)
@@ -579,6 +889,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
      */
     fun cursorArrow(keyCode: Int, select: Boolean) {
         commitRawIfComposing()
+        // 左右移动不扩选时与空格滑动一样用 setSelection。 Plain left/right moves use setSelection like the space slide.
+        if (!select && (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            moveCursor(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+            return
+        }
         sendKey(keyCode, if (select) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
     }
 
@@ -591,13 +906,20 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     /**
-     * 撤销 / 重做编辑器里的修改：先走编辑器的菜单动作，不支持时退回 Ctrl+Z / Ctrl+Shift+Z。
-     * Undo / redo in the editor: its context-menu action first, falling back to Ctrl+Z / Ctrl+Shift+Z.
+     * 撤销 / 重做编辑器里的修改：网页与终端里的输入框发 Ctrl+Z / Ctrl+Shift+Z，其余走编辑器的菜单动作。
+     * 菜单动作是单向调用，返回值只说明连接还在，不能据此判断编辑器是否支持，所以按输入框类型二选一，不两个都发
+     * （两个都支持的编辑器会撤销两次）。
+     * Undo / redo in the editor: Ctrl+Z / Ctrl+Shift+Z in web pages and terminals, the editor's context-menu
+     * action elsewhere. The menu action is one-way, its result only says the connection is alive, so the choice is
+     * made by field type; never both (editors that support both would undo twice).
      */
     fun undoRedo(redo: Boolean) {
         commitRawIfComposing()
         val ic = ic() ?: return
-        if (ic.performContextMenuAction(if (redo) android.R.id.redo else android.R.id.undo)) return
+        if (!webField && !keyEventsOnly) {
+            ic.performContextMenuAction(if (redo) android.R.id.redo else android.R.id.undo)
+            return
+        }
         var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         if (redo) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
         sendKey(KeyEvent.KEYCODE_Z, meta)
@@ -610,6 +932,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun cursorToEdge(end: Boolean, select: Boolean) {
         commitRawIfComposing()
         val ic = ic() ?: return
+        // 到开头不需要知道文本长度：不读整段文字。 The start needs no length: skip reading the whole text.
+        if (!end && !select && !keyEventsOnly) {
+            ic.setSelection(0, 0)
+            return
+        }
         val et = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
         if (et?.text == null) {
             var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
@@ -725,6 +1052,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     private fun refresh() {
+        if (engine == null && pendingKeys.isNotEmpty()) { showPending(); return }
         val snap = drainCommit() ?: EngineSnapshot.EMPTY
         update {
             it.copy(
@@ -753,6 +1081,50 @@ class InputController(private val icProvider: () -> InputConnection?) {
         /** 算式里可出现的非数字字符。 Non-digit characters allowed in an expression. */
         private const val CALC_CHARS = ".+-*/×÷%^()（）"
         private const val DOUBLE_SPACE_MS = 450L
+        /** 内核就绪前最多记下的键数。 Most keys kept before the engine is ready. */
+        private const val MAX_PENDING = 64
+        /** 移动光标时最多读取的字符数。 Most chars read for one cursor move. */
+        private const val MAX_MOVE_READ = 1024
+        /** 自动补的空格之后打这些标点时先删掉空格。 Punctuation that swallows a preceding auto-added space. */
+        private const val AUTO_SPACE_PUNCT = ".,?!:;)"
+        private val WEB_VARIATIONS = setOf(
+            InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
+        )
+
+        /**
+         * 按词删除时删掉的长度：先跳过尾部空白，再删同类的一段（字母数字 / 汉字），其它字符一次删一个字形簇；
+         * 按码位判断，表情与扩展区汉字的代理对不会被拆开。
+         * How much a word delete removes: trailing whitespace, then one run of the same class (letters/digits or
+         * ideographs), or a single grapheme cluster for anything else; classified by code point so surrogate pairs
+         * (emoji, CJK extension characters) are never split.
+         */
+        internal fun wordLengthBefore(before: String): Int {
+            var i = before.length
+            while (i > 0 && before[i - 1].isWhitespace()) i--
+            if (i > 0) {
+                val cls = charClass(Character.codePointBefore(before, i))
+                if (cls == 2) {
+                    i = EditorCache.clusterStart(before, i)
+                } else {
+                    while (i > 0) {
+                        val cp = Character.codePointBefore(before, i)
+                        if (charClass(cp) != cls) break
+                        i -= Character.charCount(cp)
+                    }
+                }
+            }
+            // 读到的一段从代理对中间开始：留下那半个，前面的另一半才不会落单。 Don't split a pair at the window start.
+            if (i == 0 && Character.isLowSurrogate(before[0])) i = 1
+            return (before.length - i).coerceAtLeast(1)
+        }
+
+        private fun charClass(cp: Int): Int = when {
+            Character.isIdeographic(cp) -> 1
+            Character.isLetterOrDigit(cp) -> 0
+            else -> 2
+        }
         private const val CAPS_FLAGS = InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_CAP_WORDS or
             InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         private val PASSWORD_VARIATIONS = setOf(

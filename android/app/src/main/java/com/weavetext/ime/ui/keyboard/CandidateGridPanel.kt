@@ -5,6 +5,8 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.text.TextPaint
+import android.text.TextUtils
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -52,6 +54,8 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     }.apply {
         addView(header); addView(grid); addView(side)
         setOnTouchListener { _, _ -> true }
+        // 空白处的悬停也吃掉，读屏不会摸到下面的键。 Swallow hover over blank parts too, away from the hidden keys.
+        setOnHoverListener { _, _ -> true }
     }
 
     private var cands = ArrayList<Candidate>()
@@ -105,15 +109,36 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         reload()
     }
 
+    override fun onHide() {
+        // 组合删空时网格随即收起：按住的退格不能接着删已上屏的字。 The grid closes as the composition empties:
+        // a held backspace must not go on deleting committed text.
+        side.cancelPress()
+    }
+
     override fun onState(s: ImeState) {
         if (!s.composing && s.candidates.isEmpty()) { kb.closePanel(); return }
+        // 组合串与首页候选都没变（光标回报等引起的刷新）：保留已翻到的位置和加载的页。
+        // Same preedit and first page (a refresh from a selection report and the like): keep the scroll and loaded pages.
+        if (s.preedit == shownPreedit && s.preeditMarks == shownMarks && samePage(s.candidates) &&
+            (if (showPinyin) s.pinyinOptions else emptyList()) == pinyin) return
         reload()
+    }
+
+    private var shownPreedit = ""
+    private var shownMarks: List<PreeditMark> = emptyList()
+
+    private fun samePage(page: List<Candidate>): Boolean {
+        if (page.size > cands.size) return false
+        for (i in page.indices) if (page[i] != cands[i]) return false
+        return true
     }
 
     private fun reload() {
         val s = kb.state
         cands = ArrayList(s.candidates)
         pinyin = if (showPinyin) s.pinyinOptions else emptyList()
+        shownPreedit = s.preedit
+        shownMarks = s.preeditMarks
         header.set(s.preedit, s.preeditMarks)
         grid.rebuild()
         grid.scrollToTop()
@@ -183,7 +208,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         private var labels: Array<String> = emptyArray()
         private var nPinyin = 0
         private var rowsBottom = 0f
-        private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
+        private val text = TextPaint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
         private val line = Paint()
 
         fun rebuild() {
@@ -278,7 +303,10 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                     else -> p.label
                 }
                 text.textSize = if (isPy) m.dp(15f) else m.dp(19f) * m.candScale
-                c.drawText(labels[i], (l + r) / 2, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
+                // 最多占 4 格，更长的候选在格内中间省略。 At most 4 units wide: longer candidates are ellipsized in the middle.
+                val maxW = r - l - m.dp(16f)
+                val label = labels[i].let { if (maxW > 0f && text.measureText(it) > maxW) TextUtils.ellipsize(it, text, maxW, TextUtils.TruncateAt.MIDDLE).toString() else it }
+                c.drawText(label, (l + r) / 2, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
                 line.color = p.divider
                 c.drawRect(0f, b - hair / 2, width.toFloat(), b + hair / 2, line)
                 if (r < width - 1f) c.drawRect(r - hair / 2, t + m.dp(10f), r + hair / 2, b - m.dp(10f), line)
@@ -306,11 +334,20 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         private fun items() = com.weavetext.ime.settings.WeavePrefs.keyboards(kb.prefs)
 
+        /** 字号 [size]，放不下 [maxW] 时缩小。 Text size [size], shrunk to fit [maxW]. */
+        private fun fit(s: String, size: Float, maxW: Float) {
+            p.textSize = size
+            val w = p.measureText(s)
+            if (w > maxW && w > 0f) p.textSize = size * maxW / w
+        }
+
         private fun cell(i: Int, out: android.graphics.RectF) {
             val m = kb.metrics
             val gap = m.dp(8f)
             val cw = m.dp(76f).coerceAtMost((width - m.dp(24f) - 3 * gap) / 4)
-            val ch = m.dp(72f)
+            // 行高按可用高度收：横屏键区矮，两行也要放得下。 Row height shrinks to fit: two rows fit even in landscape.
+            val rows = (items().size + 3) / 4
+            val ch = if (rows <= 1) m.dp(72f) else ((height - m.dp(44f) - m.dp(8f) - (rows - 1) * gap) / rows).coerceIn(m.dp(40f), m.dp(72f))
             val totalW = 4 * cw + 3 * gap
             val left0 = (width - totalW) / 2
             val col = i % 4
@@ -353,11 +390,20 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                     c.drawRoundRect(rect, m.dp(12f), m.dp(12f), p)
                     p.style = Paint.Style.FILL
                 }
-                kb.icons.draw(c, R.drawable.ic_keyboard, if (sel) pal.keyAccent else pal.icon, rect.centerX(), rect.top + m.dp(20f), m.dp(20f))
-                p.typeface = medium; p.textSize = m.dp(13f); p.color = if (sel) pal.keyAccent else pal.label
-                c.drawText(title(list[i]), rect.centerX(), rect.top + m.dp(46f), p)
-                p.typeface = Typeface.DEFAULT; p.textSize = m.dp(11f); p.color = if (sel) pal.keyAccent else pal.labelSecondary
-                c.drawText(sub(list[i]) + if (sel) " ✓" else "", rect.centerX(), rect.top + m.dp(62f), p)
+                // 格子够高：图标、标题、说明三行；矮格子（横屏）省掉图标，两行文字居中。
+                // Tall cells: icon, title, subtitle; short cells (landscape) drop the icon and centre the two lines.
+                val tall = rect.height() >= m.dp(64f)
+                val titleY = if (tall) rect.top + rect.height() * 46f / 72f else rect.centerY() - m.dp(3f)
+                val subY = if (tall) rect.top + rect.height() * 62f / 72f else rect.centerY() + m.dp(12f)
+                if (tall) kb.icons.draw(c, R.drawable.ic_keyboard, if (sel) pal.keyAccent else pal.icon, rect.centerX(), rect.top + rect.height() * 20f / 72f, m.dp(20f))
+                p.typeface = medium; p.color = if (sel) pal.keyAccent else pal.label
+                val t = title(list[i])
+                fit(t, m.panel(13f), rect.width() - m.dp(8f))
+                c.drawText(t, rect.centerX(), titleY, p)
+                p.typeface = Typeface.DEFAULT; p.color = if (sel) pal.keyAccent else pal.labelSecondary
+                val st = sub(list[i]) + if (sel) " ✓" else ""
+                fit(st, m.panel(11f), rect.width() - m.dp(8f))
+                c.drawText(st, rect.centerX(), subY, p)
             }
             if (list.size <= 4) {
                 p.textSize = m.dp(12f); p.color = pal.labelSecondary
