@@ -231,6 +231,15 @@ class HandwritingTest {
         assertTrue(pad.strokes.isEmpty())
     }
 
+    @Test fun switchingTo123CommitsTheHalfWrittenChar() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        tap(KeyCode.NUMBER)
+        // 回来时书写区是空的，候选也不能还是旧的：这个字先上屏。 The pad comes back empty, so the char is committed first.
+        assertEquals("2笔0", ic.text)
+        assertFalse(engine.isComposing())
+    }
+
     @Test fun inkStaysOnThePadAfterTheLiftAndSpansTheStroke() {
         stroke(0.1f, 0.5f, 0.3f, 0.5f, 0.6f, 0.5f, 0.9f, 0.5f)
         val b = android.graphics.RectF()

@@ -2,8 +2,9 @@
 //! Handwriting accuracy on real ink. Each input line is `char<TAB>stroke;stroke…`, a stroke being
 //! space-separated `x,y` points (y down).
 //!
-//! 用法 / Usage: `handeval <hand.wvh | hand.wvn> <samples.txt> [limit]`
-//! 模型按文件头区分：模板（WVHW）或卷积网络（WVHN）。 The model kind is taken from the file header.
+//! 用法 / Usage: `handeval <hand.wvh | hand.wvn> <samples.txt> [limit] [hand.wvh]`
+//! 模型按文件头区分：模板（WVHW）或卷积网络（WVHN）；网络后再给模板文件时评测两者融合（即随应用发布的识别）。
+//! The model kind is taken from the file header; a network plus a template file evaluates the fusion the app ships.
 
 use std::time::Instant;
 
@@ -15,7 +16,9 @@ fn main() {
     let bytes = std::fs::read(&args[0]).unwrap();
     let recognize: Box<dyn Fn(&[Stroke]) -> Vec<char>> = if bytes.starts_with(weave_dict::handnet::MAGIC) {
         let net = HandNet::from_bytes(&bytes).unwrap();
-        Box::new(move |s| net.recognize(s, 10).into_iter().map(|c| c.0).collect())
+        let templates = args.get(3).map(|p| Recognizer::from_bytes(&std::fs::read(p).unwrap()).unwrap());
+        let models = weave_dict::handnet::HandModels { templates, net: Some(net) };
+        Box::new(move |s| models.recognize(s, 10))
     } else {
         let rec = Recognizer::from_bytes(&bytes).unwrap();
         Box::new(move |s| rec.recognize(s, 10).into_iter().map(|c| c.0).collect())

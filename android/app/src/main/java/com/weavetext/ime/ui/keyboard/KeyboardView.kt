@@ -195,6 +195,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         cancelTouch()
         hand = null
         handPad.reset()
+        inkLayer?.invalidate()
     }
 
     /**
@@ -591,8 +592,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val inset = m.dp(12f)
         c.drawLine(pad.rect.left + inset, cy, pad.rect.right - inset, cy, guidePaint)
         c.drawLine(cx, pad.rect.top + inset, cx, pad.rect.bottom - inset, guidePaint)
-        val fade = pad.fadeProgress()
-        if (!pad.hasInk && fade < 0f) {
+        if (!pad.hasInk) {
             text.textSize = m.label(13f)
             text.typeface = Typeface.DEFAULT
             text.color = p.labelHint
@@ -600,18 +600,40 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             c.drawText("在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
             text.textAlign = Paint.Align.CENTER
         }
+        val layer = inkLayer
+        if (layer == null) drawInk(c, 0f, 0f) else layer.invalidate()
+    }
+
+    /**
+     * 墨迹层：盖在书写区上、不接触摸的透明视图。写字时只重画它，不必每次移动都重画整块键盘（按键、文字）。
+     * The ink layer: a transparent, non-touchable view over the pad. While writing only it is redrawn, instead of
+     * every key and label on each move.
+     */
+    var inkLayer: View? = null
+
+    /** 画墨迹；[dx]/[dy] 为本视图相对画布所在视图的偏移。 Draw the ink; [dx]/[dy] offset this view within the canvas's view. */
+    fun drawInk(c: Canvas, dx: Float, dy: Float) {
+        val pad = hand ?: return
+        if (!::palette.isInitialized) return
+        val p = palette
         c.save()
+        c.translate(dx, dy)
         c.clipRect(pad.rect)
         c.translate(pad.rect.left, pad.rect.top)
         inkPaint.color = p.label
+        val fade = pad.fadeProgress()
         if (fade >= 0f) {
             inkPaint.alpha = ((1f - fade) * (p.label ushr 24)).toInt()
             c.drawPath(pad.fading, inkPaint)
             inkPaint.color = p.label
-            postInvalidateOnAnimation()
+            (inkLayer ?: this).postInvalidateOnAnimation()
         }
         c.drawPath(pad.ink, inkPaint)
         c.restore()
+    }
+
+    private fun invalidateInk() {
+        inkLayer?.invalidate() ?: invalidate()
     }
 
     // ================================================================ touch
@@ -956,7 +978,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val t = pad.rect.top
         for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t, e.getHistoricalEventTime(h))
         pad.add(e.getX(i) - l, e.getY(i) - t, e.eventTime)
-        invalidate()
+        invalidateInk()
     }
 
     private fun onLongPress(p: Ptr) {

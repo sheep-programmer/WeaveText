@@ -259,16 +259,25 @@ impl HandModels {
         if probs.is_empty() {
             return Vec::new();
         }
-        let prior = |c: char| self.templates.as_ref().map_or(0.0, |t| t.prior_of(c));
-        fuse(&probs, &tmpl, prior, top)
+        let t = self.templates.as_ref();
+        fuse(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
     }
 }
 
-/// 合并两个识别器的候选（见 [`HandModels::recognize`]）。只在一边出现的字，另一边按「刚好排不上」计分。
+/// 合并两个识别器的候选（见 [`HandModels::recognize`]）。只在一边出现的字，另一边按「刚好排不上」计分；
+/// 模板里根本没有的字（数字、字母、标点）模板无从评判，按模板的最好代价计，只看网络。
 /// Merge the two candidate lists (see [`HandModels::recognize`]). A char found by only one side scores on the
-/// other side as if it just missed that list.
-pub fn fuse(net: &[(char, f32)], tmpl: &[(char, f32)], prior: impl Fn(char) -> f32, top: usize) -> Vec<char> {
+/// other side as if it just missed that list. A char with no template at all (digits, letters, punctuation) can't
+/// be judged by the templates, so it gets their best cost and only the network decides.
+pub fn fuse(
+    net: &[(char, f32)],
+    tmpl: &[(char, f32)],
+    prior: impl Fn(char) -> f32,
+    has_template: impl Fn(char) -> bool,
+    top: usize,
+) -> Vec<char> {
     let worst = tmpl.last().map_or(1.0, |x| x.1) + 0.05;
+    let best = tmpl.first().map_or(0.0, |x| x.1);
     let pmin = (net.last().map_or(1e-6, |x| x.1) * 0.5).max(1e-6);
     let mut cand: Vec<char> = net.iter().chain(tmpl).map(|x| x.0).collect();
     cand.sort_unstable();
@@ -278,7 +287,7 @@ pub fn fuse(net: &[(char, f32)], tmpl: &[(char, f32)], prior: impl Fn(char) -> f
         .map(|c| {
             let p = net.iter().find(|x| x.0 == c).map_or(pmin, |x| x.1.max(1e-9));
             let w = if tmpl.is_empty() { 0.0 } else { FUSE_TEMPLATE };
-            let cost = tmpl.iter().find(|x| x.0 == c).map_or(worst, |x| x.1);
+            let cost = tmpl.iter().find(|x| x.0 == c).map_or(if has_template(c) { worst } else { best }, |x| x.1);
             (c, p.ln() - w * cost + FUSE_PRIOR * prior(c))
         })
         .collect();
@@ -519,10 +528,14 @@ mod tests {
         // The net slightly prefers 干, the templates clearly say 于: 于 wins; 千, only known to the net, stays.
         let net = [('干', 0.40), ('于', 0.35), ('千', 0.10)];
         let tmpl = [('于', 0.05), ('干', 0.12)];
-        let got = fuse(&net, &tmpl, |_| 0.0, 3);
+        let got = fuse(&net, &tmpl, |_| 0.0, |_| true, 3);
         assert_eq!(got, vec!['于', '干', '千']);
         // 没有模板时就是网络的次序。 Without templates it is the network's order.
-        assert_eq!(fuse(&net, &[], |_| 0.0, 2), vec!['干', '于']);
+        assert_eq!(fuse(&net, &[], |_| 0.0, |_| true, 2), vec!['干', '于']);
+        // 模板里没有的数字不因模板吃亏：网络更看好「2」就排在前。 A digit with no template isn't penalised by them.
+        let net = [('2', 0.45), ('乙', 0.30)];
+        let tmpl = [('乙', 0.10), ('之', 0.20)];
+        assert_eq!(fuse(&net, &tmpl, |_| 0.0, |c| c != '2', 2), vec!['2', '乙']);
     }
 
     #[test]

@@ -109,6 +109,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     val full = FrameLayout(service)
     val keyboardView = KeyboardView(service, this)
     private val oneHandButton = OneHandButton(service)
+    private val inkLayer = InkLayer(service, keyboardView)
     private val popup = PopupOverlay(service)
     private val engineSheet = EngineSheet(service, this)
 
@@ -192,6 +193,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         board.addView(engineSheet)
         engineSheet.visibility = View.GONE
         main.addView(keyboardView, FrameLayout.LayoutParams(-1, -1))
+        // 墨迹单独一层，写字时不重画整块键盘。 Ink on its own layer, so writing doesn't redraw the whole keyboard.
+        main.addView(inkLayer, FrameLayout.LayoutParams(-1, -1))
+        keyboardView.inkLayer = inkLayer
         main.addView(oneHandButton)
         card.addView(handle)
         card.addView(board)
@@ -657,7 +661,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             KeyCode.HAND_CLEAR -> clearHand()
             KeyCode.SYMBOL -> showPanel("symbol")
             KeyCode.EMOJI -> { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji() }
-            KeyCode.NUMBER -> { numberMode = true; refreshLayout() }
+            KeyCode.NUMBER -> {
+                // 写到一半切到数字键盘：先上屏这个字，回来时书写区和候选对得上。 Commit a half-written char first.
+                if (s.schema == "hand" && s.composing) { controller.commitFirst(); keyboardView.clearInk() }
+                numberMode = true
+                refreshLayout()
+            }
             KeyCode.BACK -> { numberMode = false; refreshLayout() }
             // 双击空格打句号在控制器里统一处理。 The double-space period lives in the controller.
             KeyCode.SPACE -> controller.onSpace()

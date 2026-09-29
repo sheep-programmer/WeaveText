@@ -165,6 +165,8 @@ pub struct Recognizer {
     points: Vec<[(f32, f32); POINTS]>,
     /// 与 points 一一对应的笔画特征（载入时算好）。 Per-stroke features, parallel to `points`, computed at load.
     feats: Vec<Feat>,
+    /// 字 → 字频先验（查找用）。 Char → frequency prior, for lookups.
+    priors: std::collections::HashMap<char, f32>,
 }
 
 /// 笔画特征：重心，以及各段走向（量化成 0..=255 的角度，[`NO_DIR`] 表示该段太短）。
@@ -261,7 +263,8 @@ impl Recognizer {
             points[r].copy_from_slice(&renorm);
         }
         let feats = points.iter().map(Feat::of).collect();
-        Ok(Recognizer { templates, points, feats })
+        let priors = templates.iter().map(|t| (t.ch, t.prior)).collect();
+        Ok(Recognizer { templates, points, feats, priors })
     }
 
     pub fn len(&self) -> usize {
@@ -270,7 +273,12 @@ impl Recognizer {
 
     /// 某字的字频先验（0..=1，没有该字为 0）。 Frequency prior of a char (0..=1; 0 when absent).
     pub fn prior_of(&self, c: char) -> f32 {
-        self.templates.iter().find(|t| t.ch == c).map_or(0.0, |t| t.prior)
+        self.priors.get(&c).copied().unwrap_or(0.0)
+    }
+
+    /// 有没有这个字的模板。 Whether there is a template for this char.
+    pub fn contains(&self, c: char) -> bool {
+        self.priors.contains_key(&c)
     }
 
     pub fn is_empty(&self) -> bool {
