@@ -983,12 +983,24 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun voicePartial(text: String) {
         val ic = ic() ?: return
         if (engine?.isComposing() == true) { engine?.commitFirst(); drainCommit(); refresh() }
+        voiceTouched()
         ic.setComposingText(text, 1)
+    }
+
+    /**
+     * 语音往输入框里写了字：联想的上文和词链都作废，旧联想收起（留着的点了也上不了屏，退格还会被它先吃掉）。
+     * Voice wrote into the field: the prediction context and the word chain are stale; dismiss the old predictions
+     * (a stale one does nothing when tapped, and would swallow a backspace).
+     */
+    private fun voiceTouched() {
+        engine?.breakChain()
+        dismissPredictions()
     }
 
     /** 语音最终结果上屏（替换 composing）。 Commit a final voice segment. */
     fun voiceFinal(text: String) {
         val ic = ic() ?: return
+        voiceTouched()
         if (text.isEmpty()) ic.finishComposingText() else ic.commitText(text, 1)
     }
 
@@ -997,6 +1009,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val ic = ic() ?: return
         val before = ic.getTextBeforeCursor(old.length, 0)?.toString() ?: return
         if (before == old) {
+            voiceTouched()
             ic.deleteSurroundingText(old.length, 0)
             ic.commitText(new, 1)
         }

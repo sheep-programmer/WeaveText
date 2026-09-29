@@ -81,4 +81,20 @@ class PredictionFlowTest {
         type("h")
         assertEquals("h", controller.state.preedit)
     }
+
+    @Test fun voiceTextDismissesStalePredictions() {
+        type("ni"); controller.onCandidate(0); echo()
+        assertEquals(3, controller.state.candidates.size)
+        controller.voicePartial("你好")
+        echo()
+        controller.voiceFinal("你好")
+        echo()
+        assertEquals("【ni】你好", text())
+        // 语音写进去的字让联想的上文作废：不能留着点了不上屏的旧联想。 Voice text makes the context stale.
+        assertTrue("stale predictions must be gone", controller.state.candidates.isEmpty())
+        controller.onBackspace()
+        assertEquals("【ni】你", text())
+        repeat(6) { controller.onBackspace() }
+        assertEquals("", text())
+    }
 }
