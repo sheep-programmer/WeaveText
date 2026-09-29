@@ -328,7 +328,7 @@ final class WeaveInputController: IMKInputController {
                 preedit = ""
             } else {
                 preedit = s.preedit
-                if let client { setMarked(s.preedit, client) }
+                if let client { setMarked(s.preedit, client, marks: s.marks) }
             }
             showCandidates(client)
         } else {
@@ -339,10 +339,15 @@ final class WeaveInputController: IMKInputController {
         }
     }
 
-    private func setMarked(_ text: String, _ client: IMKTextInput) {
+    private func setMarked(_ text: String, _ client: IMKTextInput, marks: [PreeditMark] = []) {
         let attrs = mark(forStyle: kTSMHiliteRawText, at: NSRange(location: 0, length: (text as NSString).length))
             as? [NSAttributedString.Key: Any] ?? [.underlineStyle: NSUnderlineStyle.single.rawValue]
-        client.setMarkedText(NSAttributedString(string: text, attributes: attrs),
+        let styled = NSMutableAttributedString(string: text, attributes: attrs)
+        // 自动纠错改过的字母标红，一眼看出输入被改了哪里。 Letters the auto-correction changed are red.
+        for r in PreeditMark.ranges(marks, in: text) {
+            styled.addAttribute(.foregroundColor, value: NSColor.systemRed, range: r)
+        }
+        client.setMarkedText(styled,
                              selectionRange: NSRange(location: (text as NSString).length, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }

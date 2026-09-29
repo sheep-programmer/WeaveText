@@ -23,6 +23,47 @@ public struct Candidate: Decodable, Equatable, Sendable {
     }
 }
 
+/// 预编辑里的一处纠错标记；位置按 Unicode 标量计，左闭右开。
+/// One auto-correction mark in the preedit; positions count Unicode scalars, half-open.
+public struct PreeditMark: Decodable, Equatable, Sendable {
+    public enum Kind: String, Decodable, Sendable { case swap, insert, replace, delete }
+    public var start: Int
+    public var end: Int
+    public var kind: Kind
+    /// 被去掉的多打字母（仅 delete）。 The dropped extra letter (delete only).
+    public var removed: String
+
+    public init(start: Int, end: Int, kind: Kind, removed: String = "") {
+        self.start = start
+        self.end = end
+        self.kind = kind
+        self.removed = removed
+    }
+
+    private enum CodingKeys: String, CodingKey { case start, end, kind, removed }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        start = try c.decode(Int.self, forKey: .start)
+        end = try c.decode(Int.self, forKey: .end)
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .replace
+        removed = try c.decodeIfPresent(String.self, forKey: .removed) ?? ""
+    }
+
+    /// 预编辑里需要标红的 UTF-16 范围（删除类没有可标的字母）。
+    /// The UTF-16 ranges of `preedit` to draw in red (a deletion has no letter left to mark).
+    public static func ranges(_ marks: [PreeditMark], in preedit: String) -> [NSRange] {
+        let scalars = Array(preedit.unicodeScalars)
+        var utf16 = [0]
+        for s in scalars { utf16.append(utf16.last! + String(s).utf16.count) }
+        return marks.compactMap { m in
+            guard m.kind != .delete else { return nil }
+            let a = max(0, m.start), b = min(scalars.count, m.end)
+            return a < b ? NSRange(location: utf16[a], length: utf16[b] - utf16[a]) : nil
+        }
+    }
+}
+
 /// 一次操作后的内核状态（weave_snapshot_json）。 Engine state after an operation (weave_snapshot_json).
 public struct Snapshot: Decodable, Equatable, Sendable {
     /// 需要上屏的文字。 Text to commit.
@@ -36,9 +77,11 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     /// 开头一批候选。 The first batch of candidates.
     public var candidates: [Candidate]
     public var schema: String
+    /// 预编辑里的纠错标记。 Auto-correction marks in the preedit.
+    public var marks: [PreeditMark]
 
     public init(commit: String = "", preedit: String = "", composing: Bool = false, predicting: Bool = false,
-                total: Int = 0, candidates: [Candidate] = [], schema: String = "pinyin") {
+                total: Int = 0, candidates: [Candidate] = [], schema: String = "pinyin", marks: [PreeditMark] = []) {
         self.commit = commit
         self.preedit = preedit
         self.composing = composing
@@ -46,9 +89,10 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         self.total = total
         self.candidates = candidates
         self.schema = schema
+        self.marks = marks
     }
 
-    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, predicting, total, candidates, schema }
+    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, predicting, total, candidates, schema, marks }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -59,6 +103,7 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
         candidates = try c.decodeIfPresent([Candidate].self, forKey: .candidates) ?? []
         schema = try c.decodeIfPresent(String.self, forKey: .schema) ?? "pinyin"
+        marks = try c.decodeIfPresent([PreeditMark].self, forKey: .marks) ?? []
     }
 
     public static func decode(_ json: String) -> Snapshot? {

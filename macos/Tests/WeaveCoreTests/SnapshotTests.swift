@@ -31,4 +31,15 @@ import Testing
         let w = try JSONDecoder().decode([UserWord].self, from: Data(#"[{"pinyin":"zhi wen","text":"织文","count":3}]"#.utf8))
         #expect(w == [UserWord(pinyin: "zhi wen", text: "织文", count: 3)])
     }
+
+    @Test func decodesCorrectionMarks() throws {
+        let json = #"{"preedit":"nihao","composing":true,"marks":[{"start":1,"end":3,"kind":"swap","removed":""},{"start":4,"end":4,"kind":"delete","removed":"x"}]}"#
+        let s = try #require(Snapshot.decode(json))
+        #expect(s.marks == [PreeditMark(start: 1, end: 3, kind: .swap), PreeditMark(start: 4, end: 4, kind: .delete, removed: "x")])
+        // 删除类没有字母可标；其余按 UTF-16 范围。 A deletion has nothing to mark; the rest map to UTF-16 ranges.
+        #expect(PreeditMark.ranges(s.marks, in: s.preedit) == [NSRange(location: 1, length: 2)])
+        #expect(Snapshot.decode(#"{"composing":true}"#)?.marks == [])
+        // 越界的标记被截断，不崩。 Out-of-range marks are clamped.
+        #expect(PreeditMark.ranges([PreeditMark(start: 3, end: 9, kind: .replace)], in: "abcd") == [NSRange(location: 3, length: 1)])
+    }
 }
