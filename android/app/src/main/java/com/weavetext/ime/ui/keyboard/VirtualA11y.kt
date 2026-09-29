@@ -128,7 +128,8 @@ class VirtualA11y(private val view: View, private val src: Source) : Accessibili
         info.contentDescription = src.a11yLabel(virtualViewId)
         src.a11yState(virtualViewId)?.let { if (android.os.Build.VERSION.SDK_INT >= 30) info.stateDescription = it }
         rf.round(r)
-        r.intersect(0, 0, view.width, view.height)
+        // 完全在视图外的键给空框，而不是保留越界的范围。 A key wholly outside the view gets an empty box, not an out-of-range one.
+        if (!r.intersect(0, 0, view.width, view.height)) r.setEmpty()
         @Suppress("DEPRECATION")
         info.setBoundsInParent(r)
         view.getLocationOnScreen(loc)
