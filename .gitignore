@@ -1,6 +1,7 @@
 .ref/
 target/
 build/
+/dist/
 .gradle/
 local.properties
 *.iml
