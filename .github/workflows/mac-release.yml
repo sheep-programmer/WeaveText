@@ -1,0 +1,78 @@
+name: Mac Release
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing public release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+
+      - name: Check public release and version
+        run: |
+          gh release view "$TAG" --json isDraft --jq 'select(.isDraft == false)' | grep -q false
+          version=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/app/build.gradle.kts)
+          test "v$version" = "$TAG"
+          # Older tags may have kept the engine version behind the Android release.
+          # Align only package metadata in this checkout, leaving the tagged source code intact.
+          python3 - "$version" <<'PY'
+          from pathlib import Path
+          import re, sys
+          path = Path("core/Cargo.toml")
+          text, count = re.subn(r'^version = "[^"]*"$', f'version = "{sys.argv[1]}"', path.read_text(), count=1, flags=re.M)
+          assert count == 1
+          path.write_text(text)
+          PY
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: actions/cache@v6
+        with:
+          path: .ref
+          key: mac-ref-${{ hashFiles('data/build.sh') }}
+          restore-keys: mac-ref-
+
+      - name: Build dictionaries
+        run: ./data/build.sh
+
+      - name: Build and test universal Mac installer
+        env:
+          WEAVE_VERSION: ${{ env.VERSION }}
+        run: macos/scripts/build-app.sh
+
+      - name: Upload Mac assets
+        run: |
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          if printf '%s\n' "$assets" | grep -Fxq "WeaveText-$VERSION-mac.pkg" &&
+             printf '%s\n' "$assets" | grep -Fxq "WeaveText-$VERSION-mac.dmg" &&
+             printf '%s\n' "$assets" | grep -Fxq SHA256SUMS-mac.txt; then
+            echo "Mac assets already uploaded for $TAG"
+            exit 0
+          fi
+          mkdir -p dist
+          cp "macos/build/WeaveText-$VERSION.pkg" "dist/WeaveText-$VERSION-mac.pkg"
+          cp "macos/build/WeaveText-$VERSION.dmg" "dist/WeaveText-$VERSION-mac.dmg"
+          (cd dist && shasum -a 256 *-mac.pkg *-mac.dmg > SHA256SUMS-mac.txt)
+          gh release upload "$TAG" dist/*

@@ -3,7 +3,7 @@
 # Build WeaveText for macOS: universal engine lib → Swift for both archs → assemble .app → ad-hoc sign → zip, .pkg and DMG.
 #
 # 只需命令行工具（无需 Xcode）。 Needs only the command-line tools (no Xcode).
-# 用法 / Usage: macos/scripts/build-app.sh [--skip-tests]
+# 用法 / Usage: [WEAVE_VERSION=0.1.0-beta.N] macos/scripts/build-app.sh [--skip-tests]
 set -euo pipefail
 
 MAC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,7 +13,7 @@ APP="$BUILD/WeaveText.app"
 # 内核源码目录；WEAVE_CORE 可指向另一份（比如 `git archive HEAD core` 导出的已提交版本）。
 # The engine sources; WEAVE_CORE may point at another copy (e.g. the committed tree exported with `git archive HEAD core`).
 CORE="${WEAVE_CORE:-$ROOT/core}"
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CORE/Cargo.toml" | head -1)"
+VERSION="${WEAVE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$CORE/Cargo.toml" | head -1)}"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 SKIP_TESTS=0
 [[ "${1:-}" == "--skip-tests" ]] && SKIP_TESTS=1

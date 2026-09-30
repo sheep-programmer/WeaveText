@@ -172,8 +172,8 @@ android {
         applicationId = "com.weavetext.ime"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.0-beta.5"
+        versionCode = 6
+        versionName = "0.1.0-beta.6"
         // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
         // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
         ndk { abiFilters += abiList(isRelease = releaseBuild) }
@@ -260,6 +260,7 @@ val buildRust by tasks.registering(Exec::class) {
     // 只编本次要打包的 ABI（正式版只有 arm64）。 Build only the ABIs being packaged (release: arm64).
     val targets = abiList(isRelease = releaseBuild).flatMap { listOf("-t", it) }
     commandLine(listOf(cargo, "ndk") + targets + listOf("-o", rustJniDir.absolutePath, "build", "-p", "weave-ffi", "--release"))
+    inputs.files(coreDir.resolve("Cargo.toml"), coreDir.resolve("Cargo.lock"))
     inputs.dir(coreDir.resolve("weave-engine/src"))
     inputs.dir(coreDir.resolve("weave-dict/src"))
     inputs.dir(coreDir.resolve("weave-ffi/src"))
