@@ -364,6 +364,14 @@ impl UserDict {
         }
     }
 
+    /// 删除一条用户二元组（长按删除联想词）。 Forget a user bigram (deleting a predicted word).
+    pub fn forget_bigram(&mut self, prev: &str, next: &str) {
+        let k = (prev.to_string(), next.to_string());
+        if let Some(s) = self.bigrams.remove(&k) {
+            self.write_line(format!("B\t{prev}\t{next}\t0\t{}", s.last));
+        }
+    }
+
     /// 以 `prev` 开头的全部用户二元组（联想用）。 All user bigrams starting with `prev`, for prediction.
     pub fn bigrams_after(&self, prev: &str) -> Vec<(String, BigramStat)> {
         self.bigrams.iter().filter(|((p, _), _)| p == prev).map(|((_, n), s)| (n.clone(), *s)).collect()
@@ -475,13 +483,18 @@ mod tests {
             d.learn(&[1, 2], "织文");
             d.learn(&[3], "输");
             d.learn_bigram("织文", "输入法");
+            d.learn_bigram("织文", "键盘");
             d.forget(&[3], "输");
+            d.forget_bigram("织文", "键盘");
         }
         let d = UserDict::open(&path).unwrap();
         assert_eq!(d.get(&[1, 2], "织文").unwrap().count, 2);
         assert!(d.get(&[3], "输").is_none());
         assert_eq!(d.bigram("织文", "输入法").unwrap().count, 1);
-        assert_eq!(d.tick(), 4);
+        // 删掉的二元组重放后不再出现。 A forgotten bigram stays gone after a replay.
+        assert!(d.bigram("织文", "键盘").is_none());
+        assert_eq!(d.bigrams_after("织文").len(), 1);
+        assert_eq!(d.tick(), 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

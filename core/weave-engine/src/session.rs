@@ -796,36 +796,14 @@ impl Engine {
         if n > 8 {
             self.recent = self.recent.chars().skip(n - 8).collect();
         }
+        self.drop_predictions();
         if !self.options.prediction || !self.user_pinyin.learning || !committed.chars().last().is_some_and(is_cjk) {
             return;
         }
         if !matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Hand) {
             return;
         }
-        let Some(lex) = self.pinyin.as_ref() else { return };
-        let readings = self.readings.get_or_insert_with(|| crate::predict::Readings::build(lex));
-        let list = crate::predict::predict(
-            &self.recent,
-            self.last_word.as_deref(),
-            lex,
-            readings,
-            self.follow.as_ref(),
-            self.gram.as_ref(),
-            &self.user_pinyin,
-            crate::predict::PREDICTIONS,
-        );
-        if list.is_empty() {
-            return;
-        }
-        self.cands = list
-            .into_iter()
-            .map(|p| {
-                let text = self.out(&p.text);
-                Cand { view: CandidateView { text: text.clone(), comment: String::new(), user: p.user }, action: Action::Table { text } }
-            })
-            .collect();
-        self.cands_more = false;
-        self.predicting = true;
+        self.refresh_predictions();
     }
 
     pub fn is_composing(&self) -> bool {
@@ -1008,7 +986,8 @@ impl Engine {
             }
             self.predicting = false;
             self.cands.clear();
-            self.commit.push_str(&text);
+            let out = self.out(&text);
+            self.commit.push_str(&out);
             self.last_word = Some(text.clone());
             self.predict_next(&text);
             return true;
@@ -1123,19 +1102,54 @@ impl Engine {
 
     /// 删除用户学到的候选。 Forget a learned candidate.
     pub fn forget_candidate(&mut self, index: usize) -> bool {
-        let Some(Cand {
-            action: Action::Pinyin(c),
-            view,
-        }) = self.cands.get(index).cloned()
-        else {
-            return false;
-        };
-        if !view.user {
+        let Some(c) = self.cands.get(index).cloned() else { return false };
+        if !c.view.user {
             return false;
         }
-        self.user_pinyin.forget(&c.key, &c.text);
-        self.refresh();
+        match c.action {
+            Action::Pinyin(p) => {
+                self.user_pinyin.forget(&p.key, &p.text);
+                self.refresh();
+            }
+            // 联想词来自用户二元组，不是词条：删掉这条搭配，再按同样的上文重算。
+            // A prediction comes from a user bigram, not a word entry: drop the pair and recompute from the same context.
+            Action::Table { text } => {
+                if !self.predicting { return false }
+                let Some(prev) = self.last_word.as_deref() else { return false };
+                self.user_pinyin.forget_bigram(prev, &text);
+                self.refresh_predictions();
+            }
+        }
         true
+    }
+
+    /// 按现有上文重算联想，先清掉旧候选。 Recompute predictions from the current context, clearing the old list first.
+    fn refresh_predictions(&mut self) {
+        self.drop_predictions();
+        let Some(lex) = self.pinyin.as_ref() else { return };
+        let readings = self.readings.get_or_insert_with(|| crate::predict::Readings::build(lex));
+        let list = crate::predict::predict(
+            &self.recent,
+            self.last_word.as_deref(),
+            lex,
+            readings,
+            self.follow.as_ref(),
+            self.gram.as_ref(),
+            &self.user_pinyin,
+            crate::predict::PREDICTIONS,
+        );
+        self.cands_more = false;
+        if list.is_empty() {
+            return;
+        }
+        self.cands = list
+            .into_iter()
+            .map(|p| {
+                let text = self.out(&p.text);
+                Cand { view: CandidateView { text, comment: String::new(), user: p.user }, action: Action::Table { text: p.text } }
+            })
+            .collect();
+        self.predicting = true;
     }
 
     pub fn clear(&mut self) {
@@ -2090,6 +2104,88 @@ mod wubi_tests {
         typing(&mut e, "shijian");
         e.select(0);
         assert!(e.snapshot().candidates.is_empty());
+    }
+
+    #[test]
+    fn forgetting_a_prediction_removes_it_from_the_bar() {
+        let mut e = pinyin_engine();
+        // 已学到的搭配「时间 → 不够」：上屏「时间」后会作为用户联想词出现。
+        // A learned pair "时间 → 不够": it shows as a user prediction after committing 时间.
+        e.user_pinyin.learn_bigram("时间", "不够");
+        typing(&mut e, "shijian");
+        e.select(0);
+        assert!(e.is_predicting());
+        let s = e.snapshot();
+        let j = s.candidates.iter().position(|c| c.text == "不够").unwrap_or_else(|| {
+            panic!("the learned pair should be predicted: {:?}", s.candidates.iter().map(|c| &c.text).collect::<Vec<_>>())
+        });
+        assert!(s.candidates[j].user, "the learned pair should be marked as a user word");
+        // 长按删除后，不再显示旧候选或用户词标记。 Forgetting removes the old candidate and user-word flag.
+        assert!(e.forget_candidate(j));
+        let s = e.snapshot();
+        assert!(!s.candidates.iter().any(|c| c.text == "不够"), "the forgotten word stays in the bar: {:?}", s.candidates.iter().map(|c| &c.text).collect::<Vec<_>>());
+        assert!(!s.candidates.iter().any(|c| c.user), "a candidate still claims to be a user word");
+        assert!(!e.is_predicting());
+        assert!(!e.select(j));
+    }
+
+    #[test]
+    fn forgetting_a_prediction_keeps_remaining_candidates_selectable() {
+        let mut e = pinyin_engine();
+        e.user_pinyin.learn_bigram("时间", "不够");
+        e.user_pinyin.learn_bigram("时间", "到了");
+        typing(&mut e, "shijian");
+        e.select(0);
+        let s = e.snapshot();
+        let i = s.candidates.iter().position(|c| c.text == "不够").unwrap();
+        assert!(e.forget_candidate(i));
+        let s = e.snapshot();
+        assert_eq!(s.candidates.len(), 1);
+        assert_eq!(s.candidates[0].text, "到了");
+        assert!(s.candidates[0].user);
+        assert!(e.is_predicting());
+        assert!(e.select(0));
+        assert_eq!(e.snapshot().commit, "到了");
+        assert!(!e.is_predicting());
+        assert!(e.snapshot().candidates.is_empty());
+    }
+
+    #[test]
+    fn traditional_predictions_keep_original_learning_and_deletion_keys() {
+        let mut e = pinyin_engine();
+        let dir = std::env::temp_dir().join(format!("weave-predict-trad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let phrases = dir.join("phrases.txt");
+        let chars = dir.join("chars.txt");
+        std::fs::write(&phrases, "时间\t時間\n不够\t不夠\n").unwrap();
+        std::fs::write(&chars, "间\t間\n够\t夠\n").unwrap();
+        e.traditional = Some(Traditional::load(&Source::file(phrases), &Source::file(chars)));
+        e.options.traditional = true;
+        e.user_pinyin.learn_bigram("时间", "不够");
+        e.user_pinyin.learn_bigram("不够", "到了");
+        typing(&mut e, "shijian");
+        e.select(0);
+        let s = e.snapshot();
+        assert_eq!(s.commit, "時間");
+        assert_eq!(s.candidates[0].text, "不夠");
+        assert!(e.forget_candidate(0));
+        assert!(e.user_pinyin.bigram("时间", "不够").is_none());
+        assert!(e.snapshot().candidates.is_empty());
+
+        e.user_pinyin.learn_bigram("时间", "不够");
+        e.set_context(None);
+        typing(&mut e, "shijian");
+        e.select(0);
+        e.snapshot();
+        assert!(e.select(0));
+        let s = e.snapshot();
+        assert_eq!(s.commit, "不夠");
+        assert_eq!(s.candidates[0].text, "到了");
+        assert!(e.user_pinyin.bigram("时间", "不够").is_some());
+        assert!(e.user_pinyin.bigram("时间", "不夠").is_none());
+        assert!(e.forget_candidate(0));
+        assert!(e.snapshot().candidates.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
