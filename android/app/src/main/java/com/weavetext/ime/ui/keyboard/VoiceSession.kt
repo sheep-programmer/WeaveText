@@ -155,7 +155,9 @@ class VoiceSession(
         floor = -1f
         val my = ++token
         val ok = r.start(object : MultiVoiceListener {
-            fun live() = (my == token).also { if (it) lastActivity = clock() }
+            // 已结束或报错的会话不能再把迟到结果写回编辑器；多引擎选结果时仍接收各引擎的收尾。
+            // Ended/failed sessions must not write late results; multi-engine choosing still accepts engine completions.
+            fun live() = (my == token && (active || state == State.CHOOSING)).also { if (it) lastActivity = clock() }
             override fun onEngines(engines: List<VoicePlugin>) {
                 if (!live() || engines.size < 2) return
                 results = MultiEngineResults(engines.map { it.id to it.name }, engines.first().id, timeoutMs)

@@ -2,10 +2,13 @@ package com.weavetext.ime.ime
 
 import android.Manifest
 import android.app.Application
+import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import androidx.test.core.app.ApplicationProvider
 import com.weavetext.ime.testing.FakeEngines
+import com.weavetext.ime.testing.FakeEngine
+import com.weavetext.ime.testing.FakeInputConnection
 import com.weavetext.ime.testing.ScriptedRecognizer
 import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.voice.VoiceListener
@@ -52,6 +55,17 @@ class VoiceSessionRecoveryTest {
     }
 
     private fun idle(ms: Long) = ShadowLooper.idleMainLooper(ms, TimeUnit.MILLISECONDS)
+
+    /** 可处理删除键的编辑器，测试中每次退格都会真的删字。 An editor that handles DEL in these tests. */
+    private fun deletableEditor(): FakeInputConnection {
+        val ic = FakeInputConnection(edit)
+        controller = InputController { ic }
+        controller.attachEngine(FakeEngine().apply { predicts = true })
+        controller.onStartInput(EditorInfo().apply {
+            inputType = InputType.TYPE_CLASS_TEXT; initialSelStart = 0; initialSelEnd = 0
+        }, false)
+        return ic
+    }
 
     @Test fun hungFinalizeEndsAndMicWorksAgain() {
         val rec = SilentRecognizer()
@@ -127,5 +141,43 @@ class VoiceSessionRecoveryTest {
         rec.endAll()
         session.start()
         assertEquals(null, session.notice)
+    }
+
+    @Test fun endedSessionCannotRestoreDeletedText() {
+        val ic = deletableEditor()
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val l = rec.listener!!
+        l.onPartial("明天见")
+        l.onFinal("明天见")
+        rec.endAll()
+        repeat(3) { controller.onBackspace(); idle(10) }
+        assertEquals("", ic.text)
+        l.onPartial("明天见")
+        l.onFinal("明天见。")
+        l.onReplace("明天见", "明天见。")
+        l.onEnd()
+        assertEquals("late callbacks must not restore deleted text", "", ic.text)
+        assertTrue(controller.state.candidates.isEmpty())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+    }
+
+    @Test fun erroredSessionCannotRestoreDeletedText() {
+        val ic = deletableEditor()
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val l = rec.listener!!
+        l.onPartial("明天见")
+        l.onError("识别中断")
+        // 连按删除，停止识别器的异步任务还没执行。 Delete before recognizer cleanup runs.
+        repeat(3) { controller.onBackspace() }
+        assertEquals("", ic.text)
+        l.onFinal("明天见。")
+        idle(10)
+        assertEquals("", ic.text)
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertFalse(rec.isRunning)
     }
 }

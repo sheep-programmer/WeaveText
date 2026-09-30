@@ -17,6 +17,7 @@ import com.weavetext.ime.BuildConfig
  * adb shell am broadcast -a com.weavetext.ime.debug.KEYS --es keys "nihao{space}"
  * ```
  * 记号 / Tokens: `{space}` `{enter}` `{bs}` `{sel:N}` `{py:N}` `{schema:KEY}` `{opt:KEY=true}` `{toggle}`；其余字符逐个按下。
+ * 语音回调 / Voice callbacks: `{voice-partial:TEXT}` `{voice-final:TEXT}` `{voice-replace:OLD|NEW}` `{voice-cancel}`。
  * 每批按键后在 logcat（tag `WeaveSmoke`）输出按键数、平均/最大单键耗时和当前候选前 5 个。
  */
 class DebugBridge(private val controller: InputController) {
@@ -75,6 +76,13 @@ class DebugBridge(private val controller: InputController) {
             t == "enter" -> controller.onEnter()
             t == "bs" -> controller.onBackspace()
             t == "toggle" -> controller.toggleChinese()
+            t == "voice-cancel" -> controller.voiceCancel()
+            t.startsWith("voice-partial:") -> controller.voicePartial(t.removePrefix("voice-partial:"))
+            t.startsWith("voice-final:") -> controller.voiceFinal(t.removePrefix("voice-final:"))
+            t.startsWith("voice-replace:") -> {
+                val parts = t.removePrefix("voice-replace:").split('|', limit = 2)
+                if (parts.size == 2) controller.voiceReplace(parts[0], parts[1])
+            }
             t.startsWith("sel:") -> t.removePrefix("sel:").toIntOrNull()?.let(controller::onCandidate)
             t.startsWith("py:") -> t.removePrefix("py:").toIntOrNull()?.let(controller::onPinyinOption)
             // 与用户设置里选方案一样：中文状态才切换，密码框等英文框只记下。 Like choosing it in settings: applied only in Chinese mode.

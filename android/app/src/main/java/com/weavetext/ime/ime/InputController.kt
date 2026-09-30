@@ -982,25 +982,30 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** 语音中间结果以 composing 文本显示（带下划线）。 Voice interim result as composing text. */
     fun voicePartial(text: String) {
         val ic = ic() ?: return
-        if (engine?.isComposing() == true) { engine?.commitFirst(); drainCommit(); refresh() }
-        voiceTouched()
+        prepareVoiceText()
         ic.setComposingText(text, 1)
     }
 
+    /** 没有中间结果的识别器也要先结束拼音/手写组合。 Settle typed/handwritten input even when no partial arrives. */
+    private fun prepareVoiceText() {
+        engine?.let { e -> if (e.isComposing()) { e.commitFirst(); refresh() } }
+        voiceTouched()
+    }
+
     /**
-     * 语音往输入框里写了字：联想的上文和词链都作废，旧联想收起（留着的点了也上不了屏，退格还会被它先吃掉）。
-     * Voice wrote into the field: the prediction context and the word chain are stale; dismiss the old predictions
-     * (a stale one does nothing when tapped, and would swallow a backspace).
+     * 语音往输入框里写了字：清掉旧上文和词链，再同步收起界面的联想词。
+     * Voice wrote into the field: clear the old context and word chain, then dismiss the predictions in the UI.
      */
     private fun voiceTouched() {
         engine?.breakChain()
+        engine?.setContext(null)
         dismissPredictions()
     }
 
     /** 语音最终结果上屏（替换 composing）。 Commit a final voice segment. */
     fun voiceFinal(text: String) {
         val ic = ic() ?: return
-        voiceTouched()
+        if (text.isEmpty()) voiceTouched() else prepareVoiceText()
         if (text.isEmpty()) ic.finishComposingText() else ic.commitText(text, 1)
     }
 
