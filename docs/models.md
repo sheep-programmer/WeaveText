@@ -66,6 +66,34 @@ verifies SHA-256 and extracts only the needed files into uncompressed assets.*
 | 离线语音版（内置运行时与实时识别小模型，原生库压缩存放） / offline voice | `./gradlew :app:assembleRelease` | ≈ 64 MB |
 | 轻量版（不含端侧语音识别） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 30 MB |
 
+### 正式包语音验证 / Speech in a release APK
+
+sherpa-onnx 的 JNI 会按原名读取 Kotlin 配置与结果字段，因此正式版必须保留
+`com.k2fsa.sherpa.onnx` 中的类和成员。只测试 debug 或桌面 JVM 无法覆盖 R8 的改名与删字段。
+发布工作流在构建后检查最终 APK 中的全部配置与结果字段；缺失或类型变化会阻止发布。
+
+```sh
+python3 tools/check-release-jni.py dist/WeaveText-<version>-arm64-voice.apk .ref/cache/sherpa-onnx-1.13.8.aar
+```
+
+设备验证使用独立的 `voice-smoke` instrumentation APK，其签名需与被测正式包一致
+（沿用 `android/keystore.properties`）。测试通过被测应用的 class loader 获取类，测试包不带
+sherpa 副本，避免绕开正式包的混淆问题。测试目录使用模型压缩包解开的原始目录与 `test_wavs`。
+
+```sh
+cd android
+./gradlew :voice-smoke:assembleRelease
+adb -s <serial> install -r <voice-release.apk>
+adb -s <serial> install -r -t voice-smoke/build/outputs/apk/release/voice-smoke-release.apk
+cd ..
+python3 tools/voice-smoke.py <serial> .ref/sherpa
+# 已安装 lite 正式包时，另外指定从运行库包解出的 Android arm64 .so 目录：
+python3 tools/voice-smoke.py <serial> .ref/sherpa --native --runtime <runtime-lib-dir>
+```
+
+测试依次加载实时小模型、实时大模型、终稿小模型、SenseVoice、Paraformer 和智能标点，
+识别模型均输入实际录音并要求非空识别结果。模型、录音和运行库仅放在独立测试目录里。
+
 轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与识别模型（实时模型，或只装终稿模型时整句识别；§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
 两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
 *Lite drops the sherpa-onnx runtime (~27 MB) and models; until the runtime and a streaming model are installed from the

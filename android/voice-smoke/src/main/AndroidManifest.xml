@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="WeaveText voice release test" android:testOnly="true" />
+    <instrumentation
+        android:name=".VoiceSmoke"
+        android:targetPackage="com.weavetext.ime"
+        android:label="Speech in the installed release APK" />
+</manifest>
