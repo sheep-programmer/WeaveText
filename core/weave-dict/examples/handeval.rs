@@ -17,7 +17,7 @@ fn main() {
     let recognize: Box<dyn Fn(&[Stroke]) -> Vec<char>> = if bytes.starts_with(weave_dict::handnet::MAGIC) {
         let net = HandNet::from_bytes(&bytes).unwrap();
         let templates = args.get(3).map(|p| Recognizer::from_bytes(&std::fs::read(p).unwrap()).unwrap());
-        let models = weave_dict::handnet::HandModels { templates, net: Some(net) };
+        let models = weave_dict::handnet::HandModels::new(templates, Some(net));
         let plain = args.iter().any(|s| s == "--plain");
         Box::new(move |s| {
             if !plain { return models.recognize(s, 10) }

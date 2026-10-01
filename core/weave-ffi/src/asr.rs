@@ -346,6 +346,7 @@ api! {
     online_finished: "SherpaOnnxOnlineStreamInputFinished" => fn(H);
     create_offline: "SherpaOnnxCreateOfflineRecognizer" => fn(*const OfflineRecognizerConfig) -> H;
     destroy_offline: "SherpaOnnxDestroyOfflineRecognizer" => fn(H);
+    offline_set_config: "SherpaOnnxOfflineRecognizerSetConfig" => fn(H, *const OfflineRecognizerConfig);
     create_offline_stream: "SherpaOnnxCreateOfflineStream" => fn(H) -> H;
     destroy_offline_stream: "SherpaOnnxDestroyOfflineStream" => fn(H);
     offline_accept: "SherpaOnnxAcceptWaveformOffline" => fn(H, i32, *const f32, i32);
@@ -478,14 +479,19 @@ impl Online {
         if arch != "zipformer2-ctc" && arch != "zipformer-transducer" {
             return Err(format!("unsupported streaming arch {arch}"));
         }
-        let paths = if arch == "zipformer-transducer" {
-            let paths: Vec<String> = serde_json::from_str(model).map_err(|e| format!("invalid transducer files: {e}"))?;
+        let options = if arch == "zipformer-transducer" {
+            Some(serde_json::from_str::<serde_json::Value>(model).map_err(|e| format!("invalid transducer files: {e}"))?)
+        } else { None };
+        let beam_paths = options.as_ref().and_then(|v| v.get("beam_paths")).and_then(|v| v.as_i64()).unwrap_or(0).clamp(0, 8) as i32;
+        let paths = if let Some(options) = &options {
+            let paths: Vec<String> = serde_json::from_value(options.get("files").unwrap_or(options).clone())
+                .map_err(|e| format!("invalid transducer files: {e}"))?;
             if paths.len() != 3 { return Err("transducer requires encoder, decoder and joiner".into()); }
             paths
         } else { vec![model.to_string()] };
         let models = paths.iter().map(|p| cstr(p)).collect::<Result<Vec<_>, _>>()?;
         let tokens = cstr(tokens)?;
-        let (cpu, greedy) = (cstr("cpu")?, cstr("greedy_search")?);
+        let (cpu, greedy) = (cstr("cpu")?, cstr(if beam_paths > 1 { "modified_beam_search" } else { "greedy_search" })?);
         let mut c: OnlineRecognizerConfig = zeroed();
         c.feat_config = FeatureConfig {
             sample_rate: 16000,
@@ -498,6 +504,7 @@ impl Online {
         c.model_config.num_threads = threads.max(1);
         c.model_config.provider = cpu.as_ptr();
         c.decoding_method = greedy.as_ptr();
+        c.max_active_paths = beam_paths.max(1);
         c.enable_endpoint = 1;
         c.rule1_min_trailing_silence = ep.no_speech;
         c.rule2_min_trailing_silence = ep.after_speech;
@@ -545,6 +552,14 @@ impl Online {
         unsafe { (self.api.online_reset)(self.rec, self.stream) }
     }
 
+    pub fn new_stream(&mut self) -> Result<(), String> {
+        let next = unsafe { (self.api.create_online_stream)(self.rec) };
+        if next.is_null() { return Err("failed to create recording stream".into()); }
+        unsafe { (self.api.destroy_online_stream)(self.stream) };
+        self.stream = next;
+        Ok(())
+    }
+
     /// 补 0.5 秒静音并解码完剩余部分。 Pad 0.5 s of silence and decode the rest.
     pub fn finish(&mut self) {
         self.accept(&[0f32; 8000]);
@@ -569,6 +584,10 @@ impl Drop for Online {
 pub struct Offline {
     api: Arc<Api>,
     rec: H,
+    arch: String,
+    config: OfflineRecognizerConfig,
+    _strings: Vec<CString>,
+    language: CString,
 }
 
 // SAFETY: 同 [Online]。 Same as [Online].
@@ -578,7 +597,15 @@ impl Offline {
     /// arch：`zipformer-ctc` / `sense-voice` / `paraformer`。
     pub fn new(arch: &str, model: &str, tokens: &str, threads: i32) -> Result<Offline, String> {
         let api = api()?;
-        let (model, tokens) = (cstr(model)?, cstr(tokens)?);
+        let paths: Vec<String> = if arch == "whisper" {
+            let paths = serde_json::from_str::<Vec<String>>(model).map_err(|e| e.to_string())?;
+            if paths.len() != 2 { return Err("whisper requires encoder and decoder".into()); }
+            paths
+        } else { vec![model.to_string()] };
+        let model = cstr(&paths[0])?;
+        let decoder = cstr(paths.get(1).map_or("", String::as_str))?;
+        let tokens = cstr(tokens)?;
+        let task = cstr("transcribe")?;
         let (cpu, greedy, auto) = (cstr("cpu")?, cstr("greedy_search")?, cstr("auto")?);
         let mut c: OfflineRecognizerConfig = zeroed();
         c.feat_config = FeatureConfig {
@@ -591,6 +618,12 @@ impl Offline {
             "dolphin" => c.model_config.dolphin.model = model.as_ptr(),
             "telespeech-ctc" => c.model_config.telespeech_ctc = model.as_ptr(),
             "wenet-ctc" => c.model_config.wenet_ctc.model = model.as_ptr(),
+            "whisper" => {
+                c.model_config.whisper.encoder = model.as_ptr();
+                c.model_config.whisper.decoder = decoder.as_ptr();
+                c.model_config.whisper.task = task.as_ptr();
+                c.model_config.whisper.tail_paddings = 1000;
+            }
             "sense-voice" => {
                 c.model_config.sense_voice.model = model.as_ptr();
                 c.model_config.sense_voice.language = auto.as_ptr();
@@ -606,7 +639,23 @@ impl Offline {
         if rec.is_null() {
             return Err("failed to create offline recognizer".into());
         }
-        Ok(Offline { api, rec })
+        Ok(Offline { api, rec, arch: arch.to_string(), config: c,
+            _strings: vec![model, decoder, tokens, cpu, greedy, auto, task], language: cstr("")? })
+    }
+
+    /// Change language conditioning without re-reading model weights.
+    pub fn set_language(&mut self, language: &str) -> Result<(), String> {
+        if !["auto", "zh", "en"].contains(&language) { return Err("unsupported recognition language".into()); }
+        let language = if self.arch == "whisper" && language == "auto" { "" } else { language };
+        if self.language.to_bytes() == language.as_bytes() { return Ok(()); }
+        self.language = cstr(language)?;
+        match self.arch.as_str() {
+            "sense-voice" => self.config.model_config.sense_voice.language = self.language.as_ptr(),
+            "whisper" => self.config.model_config.whisper.language = self.language.as_ptr(),
+            _ => return Ok(()),
+        }
+        unsafe { (self.api.offline_set_config)(self.rec, &self.config) };
+        Ok(())
     }
 
     pub fn decode(&self, samples: &[f32]) -> String {
@@ -975,6 +1024,14 @@ mod jni_api {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineNewStream(
+        mut env: JNIEnv, _c: JClass, h: jlong,
+    ) -> jstring {
+        let result = with::<Online, Result<(), String>>(h, Err("invalid recognizer".into()), |o| o.new_stream());
+        match result { Ok(()) => std::ptr::null_mut(), Err(error) => out(&mut env, &error) }
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineDestroy(
         _env: JNIEnv,
         _c: JClass,
@@ -1003,6 +1060,15 @@ mod jni_api {
             catch_unwind(|| Offline::new(&arch, &model, &tokens, threads))
                 .unwrap_or(Err("panic".into())),
         )
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOfflineSetLanguage(
+        mut env: JNIEnv, _c: JClass, h: jlong, language: JString,
+    ) -> jstring {
+        let Some(language) = string(&mut env, &language) else { return std::ptr::null_mut(); };
+        let result = with::<Offline, Result<(), String>>(h, Err("invalid recognizer".into()), |o| o.set_language(&language));
+        match result { Ok(()) => std::ptr::null_mut(), Err(error) => out(&mut env, &error) }
     }
 
     #[no_mangle]

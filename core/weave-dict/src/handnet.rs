@@ -257,9 +257,65 @@ const FUSE_POOL: usize = 30;
 pub struct HandModels {
     pub templates: Option<crate::hand::Recognizer>,
     pub net: Option<HandNet>,
+    corrections: std::sync::Mutex<Corrections>,
+    personal_enabled: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Default)]
+struct Corrections {
+    examples: Vec<(char, Vec<Stroke>)>,
+    recognizer: Option<crate::hand::Recognizer>,
+    undo: Option<Vec<(char, Vec<Stroke>)>>,
 }
 
 impl HandModels {
+    pub fn new(templates: Option<crate::hand::Recognizer>, net: Option<HandNet>) -> Self {
+        Self { templates, net, corrections: std::sync::Mutex::new(Corrections::default()), personal_enabled: std::sync::atomic::AtomicBool::new(true) }
+    }
+
+    pub fn set_personal_enabled(&self, enabled: bool) {
+        self.personal_enabled.store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Only explicit candidate corrections teach personal shapes; bounded to this engine process.
+    pub fn correct(&self, ch: char, strokes: &[Stroke]) {
+        if !self.personal_enabled.load(std::sync::atomic::Ordering::Acquire) { return; }
+        if strokes.is_empty() || strokes.len() > 64 || strokes.iter().any(|s| s.len() > 4096 || s.iter().any(|&(x,y)| !x.is_finite() || !y.is_finite())) { return; }
+        let sampled: Vec<Stroke> = strokes.iter().filter(|s|!s.is_empty()).map(|s| crate::hand::resample(s).to_vec()).collect();
+        if sampled.is_empty() { return; }
+        let mut learned = self.corrections.lock().unwrap_or_else(|e|e.into_inner());
+        learned.undo = Some(learned.examples.clone());
+        if learned.examples.iter().filter(|(c,_)| *c == ch).count() >= 4 {
+            if let Some(i) = learned.examples.iter().position(|(c,_)| *c == ch) { learned.examples.remove(i); }
+        }
+        learned.examples.push((ch, sampled));
+        if learned.examples.len() > 96 { learned.examples.remove(0); }
+        let mut builder = crate::hand::Builder::default();
+        for (c, ink) in &learned.examples { builder.push(*c, 0, ink); }
+        learned.recognizer = crate::hand::Recognizer::from_bytes(&builder.build()).ok();
+    }
+
+    pub fn undo_correction(&self) {
+        let mut learned = self.corrections.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(before) = learned.undo.take() {
+            learned.examples = before;
+            let mut builder = crate::hand::Builder::default();
+            for (ch, ink) in &learned.examples { builder.push(*ch, 0, ink); }
+            learned.recognizer = crate::hand::Recognizer::from_bytes(&builder.build()).ok();
+        }
+    }
+
+    fn corrected_char(&self, strokes: &[Stroke]) -> Option<char> {
+        if !self.personal_enabled.load(std::sync::atomic::Ordering::Acquire) { return None; }
+        let learned = self.corrections.lock().unwrap_or_else(|e| e.into_inner());
+        let found = learned.recognizer.as_ref()?.recognize(strokes, 8);
+        let first = found.first()?;
+        // A partial character must not be promoted from a learned complete character.
+        if !learned.examples.iter().any(|(ch, ink)| *ch == first.0 && ink.len() == strokes.iter().filter(|s|!s.is_empty()).count()) { return None; }
+        let next = found.iter().find(|(ch,_)| *ch != first.0).map_or(1.0, |x| x.1);
+        (first.1 < 0.16 && next - first.1 > 0.05).then_some(first.0)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.templates.is_none() && self.net.is_none()
     }
@@ -272,16 +328,20 @@ impl HandModels {
     /// the templates neat writing in standard stroke order; together they beat the network alone by about three
     /// points of top-1 on real ink.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<char> {
+        if top == 0 { return Vec::new(); }
         let tmpl = self.templates.as_ref().map(|t| t.recognize(strokes, FUSE_POOL.max(top))).unwrap_or_default();
-        let Some(net) = &self.net else {
-            return tmpl.into_iter().take(top).map(|c| c.0).collect();
-        };
-        let probs = net.recognize_robust(strokes, FUSE_POOL.max(top));
-        if probs.is_empty() {
-            return Vec::new();
+        let mut result = if let Some(net) = &self.net {
+            let probs = net.recognize_robust(strokes, FUSE_POOL.max(top));
+            let t = self.templates.as_ref();
+            fuse(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
+        } else { tmpl.into_iter().take(top).map(|c| c.0).collect() };
+        if let Some(ch) = self.corrected_char(strokes) {
+            result.retain(|&c| c != ch);
+            result.insert(0, ch);
+            result.truncate(top);
         }
-        let t = self.templates.as_ref();
-        fuse(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
+        result
+
     }
 }
 
@@ -459,6 +519,24 @@ fn pool2(x: &[f32], ch: usize, side: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn personal_corrections_generalize_to_scaled_ink_and_do_not_affect_private_fields() {
+        let cross = vec![vec![(0.0,50.0),(100.0,50.0)],vec![(50.0,0.0),(50.0,100.0)]];
+        let mut builder = crate::hand::Builder::default();
+        builder.push('十', 200, &cross);
+        builder.push('一', 255, &cross[..1]);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        assert_eq!(models.recognize(&cross, 5)[0], '十');
+        models.correct('土', &cross);
+        let shifted: Vec<Stroke> = cross.iter().map(|s|s.iter().map(|&(x,y)|(x*1.05+17.0,y*0.97+9.0)).collect()).collect();
+        assert_eq!(models.recognize(&shifted, 5)[0], '土');
+        assert_eq!(models.recognize(&cross[..1], 5)[0], '一');
+        models.set_personal_enabled(false);
+        assert_eq!(models.recognize(&shifted, 5)[0], '十');
+        models.correct('干', &cross);
+        models.set_personal_enabled(true);
+        assert_eq!(models.recognize(&shifted, 5)[0], '土');
+    }
     use super::*;
 
     /// 手工拼一个小网络文件：一层卷积、池化、全局平均、全连接。 Assemble a tiny network file by hand.

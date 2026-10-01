@@ -99,9 +99,20 @@ fun VoiceListScreen() {
     val engines = remember { deps.engines() }
     val models = remember { deps.models() }
     val modelTick = rememberModelTick(models)
-    val engine = remember(modelTick) { engines.active() }
+    var language by remember { mutableStateOf(engines.language) }
+    val engine = remember(modelTick, language) { engines.active() }
     SubPage("离线语音") {
         OfflineModelsCard(models) { nav.push(Route.Models) }
+        GroupTitle("识别语言")
+        GroupCard {
+            Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                com.weavetext.ime.voice.VoiceLanguage.entries.forEach { mode ->
+                    androidx.compose.material3.FilterChip(selected = language == mode,
+                        onClick = { engines.language = mode; language = mode }, label = { Text(mode.label) })
+                }
+            }
+            Text("默认中英混合；中文、英文模式使用对应模型的语言参数。", Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp), style = MaterialTheme.typography.bodySmall)
+        }
         if (engine == null) {
             GroupCard(Modifier.padding(top = 12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -14,7 +14,7 @@
 
 标准与增强双语压缩包含浮点和多种上下文版本，所以下载量大于安装后的模型大小；界面显示实际下载量。Lite 另下载运行库，各档都安装 Silero 人声检测。文件按目录中的 SHA-256 和大小校验。新增 WeNet 中英粤语可单独下载，Dolphin、TeleSpeech、Paraformer 等中文模型继续保留；结构支持不能替代实际识别准确率测量。
 
-语音面板的模型下拉列表只显示已装好的识别模型，可勾选 1–3 个。一份 PCM 同时交给各模型独立识别，停止后显示最多三行结果，点击一行上屏；相同文本也保留各自结果。未选中的模型缓存会释放，选中的模型处理过慢时给出错误。只有运行库、人声检测或标点时不能开始识别。
+语音面板的模型下拉列表只显示已装好的识别模型，可勾选 1–3 个。默认中英混合，中文、English 模式只提供适用的模型，各模式独立记住选择。一份 PCM 同时交给各模型独立识别，停止后显示最多三行结果，点击一行上屏；相同文本也保留各自结果。候选行左右滑动查看完整文字，长按展开换行全文；展开后左右换模型、上下浏览，点击上屏选择所看结果。未选中的模型缓存会释放，选中的模型处理过慢时给出错误。只有运行库、人声检测或标点时不能开始识别。
 
 点按模式第二次点击结束，按住模式松手结束；空格长按同样可说话，允许小幅手指漂移。麦克风立即采集，首次模型加载期间缓存音频，松手后仍处理已经收到的语音。静音不会关闭麦克风，分句等待 1.6 秒，长句约 28 秒分段并补齐末尾。声波取最近的真实 PCM 音量，轻声可见，响声保留变化，数字静音保持平直。停止前送完最后一块 PCM，再完成各模型的解码。
 
@@ -106,3 +106,12 @@ Rust 解压真实模型包、两遍识别（真实 sherpa-onnx + 测试用模型
 *Desktop tests cover catalog parsing, downloader fallback/resume/cancel, route selection with per-file checks, real archive
 extraction, two-pass recognition with the real runtime, archive-source fallback, and (on macOS arm64) an end-to-end
 `NativeAsr` decode through the same run-time loading path as the lite build; `WEAVE_NET_TEST=1` adds a real-network download.*
+
+
+## beta.10 缓存与英文补强
+
+隐藏键盘保留模型和词库缓存；语音模型闲置 20 分钟、真正内存压力或模型变更时释放。主模型提前加载，其他模型随后准备，权重加载串行，解码线程按并行数分配。录音之间重建流状态并复用权重；中文、英文的配置变更不重读同一模型。
+
+新增 Whisper base/small int8，英文模式推荐增强（small），混说优先双语 Zipformer。Whisper 在停止或分句时整句处理，避免反复解码造成积压。基础压缩包约 208 MB/模型 161 MB，增强约 639 MB/模型 375 MB；HuggingFace 逐文件路线可能下载更少。各文件和压缩包都核对 SHA-256。
+
+各模型的实际中英混说仍有错词、粘连或漏词，语音调研记录保留了失败案例。内存不够时会在相应结果行说明，其他可用模型仍能继续，不替换用户选择的模型。

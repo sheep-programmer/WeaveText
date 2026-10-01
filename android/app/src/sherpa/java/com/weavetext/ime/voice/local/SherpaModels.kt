@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineDolphinModelConfig
 import com.k2fsa.sherpa.onnx.OfflineWenetCtcModelConfig
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig
 import com.k2fsa.sherpa.onnx.OfflinePunctuation
 import com.k2fsa.sherpa.onnx.OfflinePunctuationConfig
@@ -36,15 +37,15 @@ internal object SherpaModels {
     @Suppress("UNUSED_PARAMETER")
     fun prepare(runtimeDir: File?) {}
 
-    fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr {
+    fun streaming(spec: ModelSpec, loc: ModelLocation, threads: Int = THREADS): StreamingAsr {
         require(spec.arch in setOf("zipformer2-ctc", "zipformer-transducer")) { "unsupported streaming arch ${spec.arch}" }
         val model = if (spec.arch == "zipformer-transducer") OnlineModelConfig(
             transducer = OnlineTransducerModelConfig(
                 encoder = loc.path(spec.files.first { it.name.startsWith("encoder") }.name),
                 decoder = loc.path(spec.files.first { it.name.startsWith("decoder") }.name),
                 joiner = loc.path(spec.files.first { it.name.startsWith("joiner") }.name),
-            ), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false,
-        ) else OnlineModelConfig(zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = loc.path("model.int8.onnx")), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            ), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false,
+        ) else OnlineModelConfig(zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = loc.path("model.int8.onnx")), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
         val config = OnlineRecognizerConfig(
             featConfig = FEATURES,
             modelConfig = model,
@@ -56,10 +57,17 @@ internal object SherpaModels {
                 rule3 = EndpointRule(false, 0f, 30f),
             ),
             enableEndpoint = true,
+            decodingMethod = if (spec.arch == "zipformer-transducer") "modified_beam_search" else "greedy_search",
+            maxActivePaths = 4,
         )
         val rec = OnlineRecognizer(loc.assets, config)
         return object : StreamingAsr {
             private var stream: OnlineStream = rec.createStream()
+            override fun startSession() {
+                val next = rec.createStream()
+                stream.release()
+                stream = next
+            }
             override fun accept(samples: FloatArray) {
                 stream.acceptWaveform(samples, 16000)
                 while (rec.isReady(stream)) rec.decode(stream)
@@ -78,24 +86,37 @@ internal object SherpaModels {
         }
     }
 
-    fun offline(spec: ModelSpec, loc: ModelLocation): OfflineAsr {
+    fun offline(spec: ModelSpec, loc: ModelLocation, threads: Int = THREADS): OfflineAsr {
         val model = loc.path("model.int8.onnx")
         val modelConfig = when (spec.arch) {
-            "zipformer-ctc" -> OfflineModelConfig(zipformerCtc = OfflineZipformerCtcModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            "zipformer-ctc" -> OfflineModelConfig(zipformerCtc = OfflineZipformerCtcModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
+            "whisper" -> OfflineModelConfig(whisper = OfflineWhisperModelConfig(
+                encoder = loc.path(spec.files.first { it.name.contains("encoder") }.name),
+                decoder = loc.path(spec.files.first { it.name.contains("decoder") }.name),
+                language = "", task = "transcribe", tailPaddings = 1000,
+            ), tokens = loc.path(spec.files.first { it.name.contains("tokens") }.name), numThreads = threads, debug = false)
             "sense-voice" -> OfflineModelConfig(
                 senseVoice = OfflineSenseVoiceModelConfig(model = model, language = "auto", useInverseTextNormalization = true),
                 tokens = loc.path("tokens.txt"),
-                numThreads = THREADS,
+                numThreads = threads,
                 debug = false,
             )
-            "paraformer" -> OfflineModelConfig(paraformer = OfflineParaformerModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
-            "dolphin" -> OfflineModelConfig(dolphin = OfflineDolphinModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
-            "telespeech-ctc" -> OfflineModelConfig(teleSpeech = model, tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
-            "wenet-ctc" -> OfflineModelConfig(wenetCtc = OfflineWenetCtcModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            "paraformer" -> OfflineModelConfig(paraformer = OfflineParaformerModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
+            "dolphin" -> OfflineModelConfig(dolphin = OfflineDolphinModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
+            "telespeech-ctc" -> OfflineModelConfig(teleSpeech = model, tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
+            "wenet-ctc" -> OfflineModelConfig(wenetCtc = OfflineWenetCtcModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
             else -> throw IllegalArgumentException("unsupported offline arch ${spec.arch}")
         }
-        val rec = OfflineRecognizer(loc.assets, OfflineRecognizerConfig(featConfig = FEATURES, modelConfig = modelConfig))
+        val config = OfflineRecognizerConfig(featConfig = FEATURES, modelConfig = modelConfig)
+        val rec = OfflineRecognizer(loc.assets, config)
         return object : OfflineAsr {
+            override val livePreview = spec.arch != "whisper"
+            override fun setLanguage(language: String) {
+                if (spec.arch == "sense-voice") config.modelConfig.senseVoice.language = language
+                else if (spec.arch == "whisper") config.modelConfig.whisper.language = if (language == "auto") "" else language
+                else return
+                rec.setConfig(config)
+            }
             override fun decode(samples: FloatArray): String {
                 val s = rec.createStream()
                 try {

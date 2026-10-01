@@ -294,7 +294,7 @@ impl Recognizer {
         }
         let input = normalise(&input);
         let input_feats: Vec<Feat> = input.iter().map(Feat::of).collect();
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(self.templates.len() / 1000).clamp(1, 4);
         let chunk = self.templates.len().div_ceil(threads);
         let mut all: Vec<(char, f32)> = if threads == 1 {
             self.scan(&self.templates, &input, &input_feats, top)

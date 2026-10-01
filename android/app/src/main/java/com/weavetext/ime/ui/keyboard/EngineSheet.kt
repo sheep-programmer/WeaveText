@@ -215,6 +215,7 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         val ids = selectedIds
         if (p.id in ids && ids.size == 1) { selectionHint = "至少保留一个模型"; invalidate(); return }
         if (p.id !in ids && ids.size >= 3) { selectionHint = "最多同时使用三个模型"; invalidate(); return }
+        kb.voiceSession.cancel()
         kb.stopVoice()
         selectedIds = if (p.id in ids) ids - p.id else ids + p.id
         selectionHint = null

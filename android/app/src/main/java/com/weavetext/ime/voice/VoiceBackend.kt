@@ -30,6 +30,9 @@ internal fun isBuiltinEngine(id: String) = id == LOCAL_ENGINE_ID || id.startsWit
 private class OfflineEngines(private val ctx: Context) : VoiceEngines {
     private val models = com.weavetext.ime.models.ModelManager.get(ctx)
     private val selected = com.weavetext.ime.voice.local.OfflineModelSelection(ctx, models)
+    override var language: VoiceLanguage
+        get() = selected.mode
+        set(value) { selected.mode = value }
     private val instances = java.util.concurrent.ConcurrentHashMap<String, LocalAsrEngine>()
     fun local(id: String) = instances.getOrPut(id) { LocalAsrEngine(ctx, id) }
     override fun list(): List<VoicePlugin> = if (!com.weavetext.ime.models.AsrRuntime.ready(models)) emptyList() else selected.available().map { model ->
@@ -53,7 +56,11 @@ private class OfflineEngines(private val ctx: Context) : VoiceEngines {
     fun preload() {
         val ids = selection().map { it.id }.toSet()
         for ((id, engine) in instances) if (id !in ids) engine.releaseIdle()
-        for (id in ids) local(id).preload()
+        val ordered = ids.toList()
+        val first = ordered.firstOrNull() ?: return
+        local(first).preload {
+            if (selection().map { it.id }.toSet() == ids) for (id in ordered.drop(1)) local(id).preload()
+        }
     }
     override fun install(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException("请在「语音包」下载离线模型"))
     override fun uninstall(id: String): Result<Unit> = Result.failure(UnsupportedOperationException("请在「语音包」卸载模型"))

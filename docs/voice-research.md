@@ -35,3 +35,14 @@
 
 
 Lite 正式包的三模型长录音回归：两段自然中英夹杂录音，中间 8 秒停顿，增强行保留两次 IN TIME 与中文内容，选择后上屏并完整删除；ON TIME 在该次录音中误识别，词级准确率检查失败。2 GB 模拟器上三个模型冷加载与积压解码较慢，完成延迟最高约 39 秒；界面分别显示识别进度，已经完成的行可以先选。录音与选择链路通过不代表每个测试词都正确。
+
+
+2026-10-02 beta.10：核查 Sherpa 1.13.8 [离线配置更新](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.8/sherpa-onnx/csrc/offline-recognizer-impl.cc)与 [Whisper 解码](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.8/sherpa-onnx/csrc/offline-recognizer-whisper-impl.h)，语言切换复用权重、更新配置；新录音创建新流，句中端点仍按原流重置。Android 的 UI_HIDDEN=20 表示界面隐藏，不能用 `level >= RUNNING_LOW` 将它当成内存压力。缓存改为只在真实压力事件、20 分钟闲置或模型变更时释放。
+
+新增 Whisper base/small 官方 int8 导出与大小、SHA-256；按 [OpenAI MIT 许可](https://github.com/openai/whisper/blob/main/LICENSE)登记。实际英文样本：基础模型把 chieftain 分成 chief then，增强模型得到正确的 tribal chieftain 与 50 pieces of gold。中文样本增强模型为“開放時間早上9點至下午5點”；自然混说里仍将 on time / in time 粘连并有中文错字。基础模型在该混说样本漏掉了英文，保留失败记录，混说仍推荐双语实时模型。不能将多语种能力当成所有混说都准确。
+
+候选使用原始完整文本，行内横向滚动、长按展开换行全文；展开时左右换模型、上下浏览，滑动不会上屏，明确选择正在查看的模型。语言改变和模型选择取消未选结果，避免设置操作替用户提交首选。
+
+正式 Android 12/API31 arm64 模拟器验证：三模型混说保留 ON TIME、IN TIME 与中文，候选行滑动、长按展开、左右切换到第三模型并提交全文、完整删除通过。切换到另一输入法并发送 UI_HIDDEN=20，再切回录音，模型加载计数保持 3，没有重新加载。该轮初载记录约 0.7–1.2 秒；环境内存 3 GB、4 核，不能与旧轮次不同负载的延迟作直接因果比较。正式包英文录音仍把 chieftain 识别为 chief then，整句上屏和删除通过，词级失败保留。
+
+最终 Lite APK 经下载运行库的 C API 识别真实英文录音，得到完整的 After early nightfall the yellow lamps would light up ... 句子，上屏后键盘完整删除通过。正式语音版中文模式使用 SenseVoice，识别“开放时间早上九点至下午五点”并完整删除通过。

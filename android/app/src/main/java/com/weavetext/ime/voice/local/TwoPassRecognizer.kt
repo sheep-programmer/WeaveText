@@ -2,6 +2,8 @@ package com.weavetext.ime.voice.local
 
 /** 流式识别器（首遍）。 Streaming recognizer (first pass). */
 interface StreamingAsr {
+    /** Fresh recording state, keeping the loaded model weights. */
+    fun startSession() = reset()
     /** 16 kHz 单声道浮点样本。 16 kHz mono float samples. */
     fun accept(samples: FloatArray)
     /** 当前句的实时文本。 Live text of the current utterance. */
@@ -17,6 +19,8 @@ interface StreamingAsr {
 
 /** 非流式识别器（终稿二遍）。 Offline recognizer (second pass). */
 interface OfflineAsr {
+    val livePreview: Boolean get() = true
+    fun setLanguage(language: String) {}
     fun decode(samples: FloatArray): String
     fun release()
 }
@@ -99,7 +103,7 @@ class TwoPassRecognizer(
             // 每 1.5 秒重新识别一次；句子越长间隔越大（约为已录长度的四分之一），免得整句反复解码拖慢识别。
             // Re-decode every 1.5 s, spacing out as the utterance grows (about a quarter of its length) so repeated
             // whole-utterance decodes don't fall behind.
-            if (v.heard && len - decodedAt >= maxOf(sampleRate * 3 / 2, len / 4, interimBudget)) {
+            if (offline?.livePreview == true && v.heard && len - decodedAt >= maxOf(sampleRate * 3 / 2, len / 4, interimBudget)) {
                 decodedAt = len
                 val started = System.nanoTime()
                 partial(clean(offline!!.decode(buf.copyOf(len))))

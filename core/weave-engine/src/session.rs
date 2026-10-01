@@ -427,6 +427,7 @@ struct Learned {
     words: Vec<(Vec<SyllableId>, String)>,
     bigrams: Vec<(String, String)>,
     at: std::time::Instant,
+    hand_correction: bool,
 }
 
 /// 上屏后多久内的退格算「选错了」。 A backspace this soon after a commit counts as "wrong pick".
@@ -733,6 +734,7 @@ impl Engine {
     /// 关闭学习（密码框、无痕模式）。 Disable learning (password fields, incognito).
     pub fn set_learning(&mut self, on: bool) {
         self.user_pinyin.learning = on;
+        if let Some(hand) = &self.hand { hand.set_personal_enabled(on); }
     }
 
     /// 换了输入框：清空上下文。 New editor: forget context.
@@ -759,6 +761,7 @@ impl Engine {
         if l.at.elapsed() > UNDO_WINDOW {
             return;
         }
+        if l.hand_correction { if let Some(models) = &self.hand { models.undo_correction(); } }
         for (k, w) in &l.words {
             self.user_pinyin.unlearn(k, w);
         }
@@ -994,12 +997,21 @@ impl Engine {
         }
         match c.action {
             Action::Table { text } => {
+                let hand_corrected = self.schema == Schema::Hand && index > 0 && self.user_pinyin.learning;
+                if hand_corrected {
+                    if let Some(ch) = text.chars().next().filter(|_| text.chars().count() == 1) {
+                        if let Some(models) = self.hand_models() { models.correct(ch, &self.hand_strokes); }
+                    }
+                }
                 // 已部分选定的字词先上屏。 Earlier partial selections go first.
                 let mut all: String = self.selected.iter().map(|s| s.text.as_str()).collect();
                 all.push_str(&text);
                 let out = self.out(&all);
                 self.commit.push_str(&out);
                 self.finish_composition();
+                if hand_corrected {
+                    self.last_learned = Some(Learned { words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
+                }
                 if self.schema == Schema::Hand {
                     self.last_word = Some(text.clone());
                 }
@@ -1338,7 +1350,7 @@ impl Engine {
             words.extend(s.words.iter().cloned());
         }
         let mut prev = self.last_word.clone();
-        let mut learned = Learned { words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now() };
+        let mut learned = Learned { hand_correction: false, words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now() };
         for (k, w) in &words {
             self.user_pinyin.learn(k, w);
             learned.words.push((k.clone(), w.clone()));
@@ -1486,7 +1498,8 @@ impl Engine {
         if self.hand.is_none() {
             let templates = self.hand_src.0.as_ref().and_then(|s| weave_dict::hand::Recognizer::open(s).ok());
             let net = self.hand_src.1.as_ref().and_then(|s| weave_dict::handnet::HandNet::open(s).ok());
-            let m = weave_dict::handnet::HandModels { templates, net };
+            let m = weave_dict::handnet::HandModels::new(templates, net);
+            m.set_personal_enabled(self.user_pinyin.learning);
             if m.is_empty() {
                 return None;
             }
@@ -2482,6 +2495,30 @@ mod hand_tests {
         assert_eq!(s.commit, "一");
         assert!(!s.composing);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn choosing_a_handwriting_correction_improves_similar_ink_and_honors_private_mode() {
+        let cross = vec![line(0.0,50.0,100.0,50.0),line(50.0,0.0,50.0,100.0)];
+        let mut builder = weave_dict::hand::Builder::default();
+        builder.push('十', 255, &cross);
+        builder.push('土', 200, &[line(20.0,35.0,80.0,35.0),line(50.0,0.0,50.0,100.0),line(0.0,100.0,100.0,100.0)]);
+        let dir = std::env::temp_dir().join(format!("weave-hand-correct-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("hand.wvh");std::fs::write(&file,builder.build()).unwrap();
+        let mut e=Engine::new(&Paths{hand:Some(Source::file(&file)),..Default::default()});
+        e.set_schema(Schema::Hand);e.set_learning(true);
+        e.hand_input(cross.clone());
+        let i=e.snapshot().candidates.iter().position(|c|c.text=="土").unwrap();assert!(i>0);
+        e.select(i);assert_eq!(e.snapshot().commit,"土");
+        assert!(!e.backspace());
+        e.hand_input(cross.clone());assert_eq!(e.snapshot().candidates[0].text,"十");
+        let i=e.snapshot().candidates.iter().position(|c|c.text=="土").unwrap();e.select(i);
+        e.hand_input(cross.clone());assert_eq!(e.snapshot().candidates[0].text,"土");
+        e.set_learning(false);e.hand_input(cross.clone());assert_eq!(e.snapshot().candidates[0].text,"十");
+        e.hand_apply(cross.clone(),vec!['十','干']);e.select(1);
+        e.set_learning(true);e.hand_input(cross);assert_eq!(e.snapshot().candidates[0].text,"土");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -109,6 +109,7 @@ class WeaveImeService : InputMethodService() {
         // 上次加载失败（如存储暂时不可读）：键盘再出现时重试。 The last load failed: retry when the keyboard shows again.
         loadEngine()
         ui?.onShown(restarting)
+        com.weavetext.ime.voice.VoiceHub.preload(this)
         // 开启了互联时，键盘出现就把服务拉起来（进程被系统回收过也能恢复）。 Revive WeaveLink when the keyboard shows.
         com.weavetext.ime.link.LinkManager.get(this).ensureRunning()
         com.weavetext.ime.core.CloudWords.get(this).refreshIfStale()
@@ -151,10 +152,7 @@ class WeaveImeService : InputMethodService() {
     /** 内存紧张时丢掉词库解压缓存（键盘收起时更积极）。 Drop dictionary caches under memory pressure. */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        @Suppress("DEPRECATION")
-        val hidden = !isInputViewShown && level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
-        @Suppress("DEPRECATION")
-        if (hidden || level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+        if (com.weavetext.ime.voice.local.AsrCachePolicy.releaseForTrim(level)) {
             com.weavetext.ime.core.EngineHolder.trim()
         }
     }

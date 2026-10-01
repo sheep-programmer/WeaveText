@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "mirrors": [
     {
       "id": "github",
@@ -268,6 +268,74 @@
         "rtf": 0.28
       },
       "hf": "csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30"
+    },
+    {
+      "id": "asr-whisper-small",
+      "kind": "asr-offline",
+      "arch": "whisper",
+      "name": "Whisper · 中英增强",
+      "description": "较大的 Whisper 多语种模型，支持自动、中文、英文模式；英文识别更强，混说可能漏词，可与双语实时模型比较。内存与处理时间较高。",
+      "license": "MIT（OpenAI Whisper；sherpa-onnx 转换）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2",
+        "size": 639387718,
+        "sha256": "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6"
+      },
+      "files": [
+        {
+          "name": "small-encoder.int8.onnx",
+          "size": 112442483,
+          "sha256": "4cbe7b22fa9026b843b60a68640c747de05bafb1a11b57edc0e66c232d9f33a9"
+        },
+        {
+          "name": "small-decoder.int8.onnx",
+          "size": 262226114,
+          "sha256": "acad50b5c782696e91b55914cc5ab4f756f1532f76e22aa6fc615f39fb69a8ee"
+        },
+        {
+          "name": "small-tokens.txt",
+          "size": 816730,
+          "sha256": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
+        }
+      ],
+      "installedSize": 375485327,
+      "bench": null,
+      "hf": "csukuangfj/sherpa-onnx-whisper-small"
+    },
+    {
+      "id": "asr-whisper-base",
+      "kind": "asr-offline",
+      "arch": "whisper",
+      "name": "Whisper · 中英终稿",
+      "description": "OpenAI Whisper 多语种整句识别，支持自动、中文、英文模式；英文词句补强，中英混说优先双语实时模型。",
+      "license": "MIT（OpenAI Whisper；sherpa-onnx 转换）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
+        "size": 207557382,
+        "sha256": "911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de"
+      },
+      "files": [
+        {
+          "name": "base-encoder.int8.onnx",
+          "size": 29120534,
+          "sha256": "0b8fb1304b6109976038efff5ace81720e00386f3ff6b54ee8c75291ca0a1e11"
+        },
+        {
+          "name": "base-decoder.int8.onnx",
+          "size": 130672026,
+          "sha256": "9759d217388a01b3a4c7c15533201067b48ae819c4daafc8624e64b9409dc02d"
+        },
+        {
+          "name": "base-tokens.txt",
+          "size": 816730,
+          "sha256": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
+        }
+      ],
+      "installedSize": 160609290,
+      "bench": null,
+      "hf": "csukuangfj/sherpa-onnx-whisper-base"
     },
     {
       "id": "asr-sensevoice",

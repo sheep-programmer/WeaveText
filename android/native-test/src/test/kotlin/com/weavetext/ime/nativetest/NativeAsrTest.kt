@@ -25,6 +25,49 @@ class NativeAsrTest {
     private val models = File(System.getProperty("weave.models"))
     private val wav = File(System.getProperty("weave.testWavs"), "0.wav")
 
+    @Test fun whisperLanguageAndMixedAccuracyComparison() {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val sense = root.resolve("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09")
+        val mixed = root.resolve("sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile/test_wavs/4.wav")
+        assumeTrue(File(runtime,"libsherpa-onnx-c-api.dylib").isFile)
+        NativeAsrModels.load(runtime)
+        for (size in listOf("base", "small")) {
+            val dir = root.resolve("sherpa-onnx-whisper-$size")
+            assumeTrue(dir.resolve("$size-encoder.int8.onnx").isFile)
+            val paths = org.json.JSONArray(listOf("$dir/$size-encoder.int8.onnx", "$dir/$size-decoder.int8.onnx")).toString()
+            val rec = NativeAsrModels.offline("whisper", paths, "$dir/$size-tokens.txt")
+            try {
+                for ((language,wav) in listOf("en" to sense.resolve("test_wavs/en.wav"),"zh" to sense.resolve("test_wavs/zh.wav"),"auto" to mixed)) {
+                    rec.setLanguage(language)
+                    val text=TwoPassRecognizer.clean(rec.decode(samples(wav)))
+                    println("whisper $size $language: $text")
+                    if (language=="en") assertTrue(text,text.lowercase().contains("boy") && text.lowercase().contains("gold"))
+                    else assertTrue(text,text.any {it in '\u4e00'..'\u9fff'})
+                    if (language=="auto") println("mixed English retained: ${text.lowercase().contains("on time")} / ${text.lowercase().contains("in time")}")
+                }
+            } finally {rec.release()}
+        }
+    }
+
+    @Test fun bilingualShortUtterancesCompareGreedyAndBeamWithoutPrimingAudio() {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val dir = root.resolve("sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile")
+        val fixture = dir.resolve("test_wavs/4.wav")
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").isFile && fixture.isFile)
+        NativeAsrModels.load(runtime)
+        val audio = samples(fixture).copyOf(4 * 16000)
+        for (beam in listOf(0, 4)) {
+            val rec = NativeAsrModels.streamingTransducer("$dir/encoder-epoch-99-avg-1.int8.onnx", "$dir/decoder-epoch-99-avg-1.onnx", "$dir/joiner-epoch-99-avg-1.int8.onnx", "$dir/tokens.txt", beamPaths = beam)
+            try {
+                rec.startSession()
+                for (i in audio.indices step 640) rec.accept(audio.copyOfRange(i,minOf(i+640,audio.size)))
+                rec.finish()
+                println("short beam=$beam: ${rec.text()}")
+                assertTrue(rec.text(), rec.text().lowercase().contains("in time"))
+            } finally { rec.release() }
+        }
+    }
+
     @Test fun bilingualStreamingModelsKeepActualWordsAcrossLanguages() {
         val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
         val names = listOf("sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile", "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-mobile")

@@ -20,6 +20,7 @@ import java.io.File
 
 /** 测试用的通用示例插件（不指向任何真实服务）。 Generic sample plugins for tests. */
 class FakeEngines(var plugins: List<VoicePlugin> = SAMPLE) : VoiceEngines {
+    override var language = com.weavetext.ime.voice.VoiceLanguage.MIXED
     private val config = HashMap<String, String>()
     override fun list() = plugins
     override var activeId: String? = plugins.firstOrNull()?.id

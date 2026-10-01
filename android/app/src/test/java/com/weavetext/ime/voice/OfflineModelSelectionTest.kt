@@ -34,4 +34,22 @@ class OfflineModelSelectionTest {
         assertTrue(selection.toggle("asr-stream-small"))
         assertFalse(selection.toggle("asr-wenet-mixed"))
     }
+    @Test fun languageModesRememberIndependentSelectionsAndExcludeUnsupportedModels() {
+        val repo = FakeModels(listOf("asr-stream-mixed-medium", "asr-stream-small", "asr-sensevoice", "asr-whisper-base").associateWith { ModelState.Installed })
+        val selection = OfflineModelSelection(ctx, repo)
+        assertEquals(VoiceLanguage.MIXED, selection.mode)
+        selection.select(listOf("asr-stream-mixed-medium", "asr-sensevoice"))
+        selection.mode = VoiceLanguage.ENGLISH
+        assertEquals(setOf("asr-sensevoice", "asr-whisper-base"), selection.available().map { it.id }.toSet())
+        selection.select(listOf("asr-whisper-base"))
+        selection.mode = VoiceLanguage.CHINESE
+        assertEquals(listOf("asr-sensevoice"), selection.ids())
+        assertFalse(selection.available().any { it.id == "asr-stream-mixed-medium" })
+        selection.select(listOf("asr-stream-small"))
+        selection.mode = VoiceLanguage.MIXED
+        assertEquals(listOf("asr-stream-mixed-medium", "asr-sensevoice"), selection.ids())
+        selection.mode = VoiceLanguage.ENGLISH
+        assertEquals(listOf("asr-whisper-base"), selection.ids())
+    }
+
 }

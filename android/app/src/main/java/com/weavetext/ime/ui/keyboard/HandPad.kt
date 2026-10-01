@@ -52,6 +52,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     var taper = true
 
     /** 当前墨迹（书写区坐标，填充轮廓）。 Current ink in pad coordinates (a filled outline). */
+    private val finishedInk = Path()
     val ink = Path()
     /** 正在淡出的上一个字。 The previous character fading out. */
     val fading = Path()
@@ -120,6 +121,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         done += geom
         drawnXy += cur.copyOf(curLen)
         doneW += curW.copyOf(curN)
+        fill(finishedInk, drawnXy.last(), doneW.last(), drawnXy.last().size / 2)
         curN = 0
         rebuild()
         return geom
@@ -139,6 +141,8 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         done.removeAt(done.size - 1)
         drawnXy.removeAt(drawnXy.size - 1)
         doneW.removeAt(doneW.size - 1)
+        finishedInk.rewind()
+        for (i in drawnXy.indices) fill(finishedInk, drawnXy[i], doneW[i], drawnXy[i].size / 2)
         rebuild()
         return true
     }
@@ -158,6 +162,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         done.clear()
         drawnXy.clear()
         doneW.clear()
+        finishedInk.rewind()
         rebuild()
     }
 
@@ -180,6 +185,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         fadeStart = -1L
         fading.rewind()
         ink.rewind()
+        finishedInk.rewind()
     }
 
     private fun clampWidth(w: Float): Float = w.coerceIn(strokeWidth * 0.25f, strokeWidth)
@@ -195,8 +201,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
 
     /** 由点列与宽度重建墨迹轮廓。 Rebuild the ink outline from the points and their widths. */
     private fun rebuild() {
-        ink.rewind()
-        for (i in drawnXy.indices) fill(ink, drawnXy[i], doneW[i], drawnXy[i].size / 2)
+        ink.set(finishedInk)
         if (drawing && curN >= 1) fill(ink, cur, curW, curN)
     }
 
@@ -212,7 +217,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         }
         var started = false
         // 先沿左侧从头走到尾，再沿右侧从尾走回头。 Forward along the left side, then back along the right.
-        for (side in intArrayOf(-1, 1)) {
+        for (side in -1..1 step 2) {
             val step = -side
             var i = if (side < 0) 0 else k - 1
             while (i in 0 until k) {

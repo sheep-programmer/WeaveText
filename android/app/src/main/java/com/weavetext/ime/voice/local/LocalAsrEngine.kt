@@ -12,10 +12,10 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 本地离线语音识别引擎：两遍识别（实时模型 + 终稿模型）+ 可选智能标点，全部在手机上完成。
- * 模型首次使用时加载，闲置 3 分钟后释放（两个内置小模型约占 100 MB 内存）。
+ * 选中的模型提前加载并缓存，闲置 20 分钟或真正内存紧张时释放。
  *
  * On-device two-pass recognition (live + final models) with optional punctuation. Models load on first
- * use and are released after 3 idle minutes (~100 MB for the two built-in models).
+ * use, cached across recordings, and released after 20 idle minutes or real memory pressure.
  */
 internal class LocalAsrEngine(private val ctx: Context, private val modelId: String? = null) {
     private val models = ModelManager.get(ctx)
@@ -45,7 +45,7 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         // 系统内存紧张且没在说话时立即释放。 Release right away under memory pressure when idle.
         ctx.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {
-                if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && activeSessions.get() == 0) {
+                if (AsrCachePolicy.releaseForTrim(level) && activeSessions.get() == 0) {
                     worker.execute { if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }
                 }
             }
@@ -57,7 +57,7 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         })
     }
 
-    private class Loaded(val key: String, val streaming: StreamingAsr?, val offline: OfflineAsr?, val punct: Punctuator?, val detector: SpeechDetector?) {
+    private class Loaded(val key: String, val requestKey: String, val streaming: StreamingAsr?, val offline: OfflineAsr?, val punct: Punctuator?, val detector: SpeechDetector?) {
         fun release() {
             streaming?.release()
             offline?.release()
@@ -136,6 +136,7 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
 
     /** 一次识别会话；所有方法可在任意线程调用，识别在专属线程上进行。 One session; thread-safe entry points. */
     inner class Session(private val listener: TwoPassListener, private val onEnd: () -> Unit, private val onError: (String) -> Unit, private val onReady: () -> Unit = {}) {
+        private val language = OfflineModelSelection(ctx, models).mode.key
         @Volatile private var cancelled = false
         private var recognizer: TwoPassRecognizer? = null
         /**
@@ -161,21 +162,20 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
             worker.execute {
                 idleRelease?.cancel(false)
                 if (cancelled) { uncount(); scheduleIdleRelease(); return@execute }
-                recognizer = runCatching { ensureLoaded() }
-                    .onFailure {
-                        Log.e(TAG, "load failed", it)
-                        // 加载失败即结束本会话（调用方据此停止录音）。 A load failure ends the session; the caller stops recording.
-                        if (!cancelled) { onError("离线模型加载失败：${it.message}"); stopped = true; uncount(); onEnd() }
-                    }
-                    .getOrNull()
-                    ?.let { l ->
-                        l.streaming?.reset()
-                        l.detector?.reset()
-                        TwoPassRecognizer(l.streaming, l.offline, l.punct, object : TwoPassListener {
-                            override fun onPartial(text: String) { if (!cancelled) listener.onPartial(text) }
-                            override fun onFinal(text: String) { if (!cancelled) listener.onFinal(text) }
-                        }, speechDetector = l.detector)
-                    }
+                recognizer = runCatching {
+                    val l = ensureLoaded()
+                    if (cancelled) return@runCatching null
+                    l.offline?.setLanguage(language)
+                    l.streaming?.startSession()
+                    l.detector?.reset()
+                    TwoPassRecognizer(l.streaming, l.offline, l.punct, object : TwoPassListener {
+                        override fun onPartial(text: String) { if (!cancelled) listener.onPartial(text) }
+                        override fun onFinal(text: String) { if (!cancelled) listener.onFinal(text) }
+                    }, speechDetector = l.detector)
+                }.onFailure {
+                    Log.e(TAG, "load failed", it)
+                    if (!cancelled) { onError("离线模型准备失败：${it.message}"); stopped = true; uncount(); onEnd() }
+                }.getOrNull()
                 if (recognizer != null && !cancelled && !stopped) onReady()
             }
         }
@@ -247,6 +247,9 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         var fid = finalId()
         if (sid == null && fid == null) error("没有可用的识别模型")
         var punct = punctuationOn()
+        val detectorId = VAD_ID.takeIf { models.isAvailable(VAD_ID) }
+        val requestKey = "$sid|$fid|${if (punct) PUNCT_ID else null}|$detectorId"
+        loaded?.let { if (it.requestKey == requestKey) return it }
         val budget = memoryBudget()
         val size = { id: String? -> id?.let { models.catalog.find(it)?.installedSize } ?: 0L }
         // 运行时占用约为模型文件的 1.2 倍（int8 权重 + 工作区）。 Runtime RSS ≈ 1.2 × file size (int8 weights + work area).
@@ -255,7 +258,6 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         if (need() * 6 / 5 > budget && fid != null && sid != null) fid = null
         if (fid != finalId() || punct != punctuationOn()) Log.w(TAG, "low memory ($budget bytes): final=$fid punct=$punct")
         // 键里放模型 id（含标点模型），删除某个模型时据此找到要释放的识别器。 Model ids, so a delete finds its user.
-        val detectorId = VAD_ID.takeIf { models.isAvailable(VAD_ID) }
         val key = "$sid|$fid|${if (punct) PUNCT_ID else null}|$detectorId"
         loaded?.let { if (it.key == key) return it; it.release(); loaded = null }
         val t0 = System.nanoTime()
@@ -264,13 +266,20 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         var detector: SpeechDetector? = null
         var p: Punctuator? = null
         try {
-            SherpaModels.prepare(models.runtimeDir())
-            streaming = sid?.let { id -> SherpaModels.streaming(models.catalog.find(id)!!, models.location(id)!!) }
-            offline = fid?.let { id -> SherpaModels.offline(models.catalog.find(id)!!, models.location(id)!!) }
-            detector = detectorId?.let { models.location(it)?.let(SherpaModels::detector) }
-            p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null
+            AsrLoadQueue.load {
+                SherpaModels.prepare(models.runtimeDir())
+                val threads = AsrCachePolicy.threads(OfflineModelSelection(ctx, models).ids().size)
+                val speechBytes = size(sid) + size(fid)
+                val reserve = if (fid?.let { models.catalog.find(it)?.arch } == "whisper") speechBytes * 3 / 2 + 64L * 1024 * 1024
+                    else speechBytes * 6 / 5 + 32L * 1024 * 1024
+                if (reserve > memoryBudget()) error("当前内存不足，请减少同时使用的模型或选择较小的模型")
+                streaming = sid?.let { id -> SherpaModels.streaming(models.catalog.find(id)!!, models.location(id)!!, threads) }
+                offline = fid?.let { id -> SherpaModels.offline(models.catalog.find(id)!!, models.location(id)!!, threads) }
+                detector = detectorId?.let { models.location(it)?.let(SherpaModels::detector) }
+                p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null
+            }
             Log.i(TAG, "models $key loaded in ${(System.nanoTime() - t0) / 1_000_000} ms")
-            return Loaded(key, streaming, offline, p, detector).also { loaded = it }
+            return Loaded(key, requestKey, streaming, offline, p, detector).also { loaded = it }
         } catch (t: Throwable) {
             runCatching { offline?.release() }
             runCatching { streaming?.release() }
@@ -293,19 +302,20 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
     }
 
     /** 预热：打开语音面板时调用，缩短第一次说话的等待。 Warm up when the voice panel opens. */
-    fun preload() {
+    fun preload(done: () -> Unit = {}) {
         worker.execute {
             // 有会话在用时不换模型（换会释放它正用着的）。 Don't swap models under a running session.
-            if (activeSessions.get() > 0) return@execute
+            if (activeSessions.get() > 0) { done(); return@execute }
             idleRelease?.cancel(false)
             runCatching { ensureLoaded() }.onFailure { Log.w(TAG, "preload failed", it) }
             scheduleIdleRelease()
+            done()
         }
     }
 
     private fun scheduleIdleRelease() {
         idleRelease?.cancel(false)
-        idleRelease = worker.schedule({ if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }, IDLE_RELEASE_MINUTES, TimeUnit.MINUTES)
+        idleRelease = worker.schedule({ if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }, AsrCachePolicy.IDLE_MINUTES, TimeUnit.MINUTES)
     }
 
     fun releaseIdle() {
@@ -322,6 +332,5 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         private const val KEY_FINAL = LocalAsrChoice.KEY_FINAL
         private const val KEY_PUNCT = "punctuation"
         private const val NONE_LABEL = "不使用"
-        private const val IDLE_RELEASE_MINUTES = 3L
     }
 }

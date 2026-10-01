@@ -101,6 +101,14 @@ class ResponsiveScreenshotTest : KeyboardSnapshotSupport() {
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landCandidates() = candidates("land")
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landSymbols() = symbols("land")
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landVoice() = voice("land")
+    @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landVoiceListening() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        val (k, _) = keyboard(false)
+        k.showPanel("voice")
+        (k.panel as com.weavetext.ime.ui.keyboard.VoicePanel).session.preview(
+            com.weavetext.ime.ui.keyboard.VoiceSession.State.LISTENING, "中文为主，讨论 GitHub API and English words", "", 0.6f)
+        snap("land_voice_listening")
+    }
     @Config(qualifiers = "w800dp-h360dp-land-xhdpi") @Test fun landT9() = t9("land")
 
     // ---------------------------------------------------------------- 宽屏分体 / wide split

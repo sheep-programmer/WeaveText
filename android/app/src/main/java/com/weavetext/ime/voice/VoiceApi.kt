@@ -87,6 +87,9 @@ interface MultiVoiceListener : VoiceListener {
 
 /** 语音插件管理。 Voice plugin management. */
 interface VoiceEngines {
+    var language: VoiceLanguage
+        get() = VoiceLanguage.MIXED
+        set(@Suppress("UNUSED_PARAMETER") value) {}
     fun list(): List<VoicePlugin>
     /** 主引擎 id：实时显示它的中间结果，结果列表默认选中它。 Primary engine. */
     var activeId: String?
@@ -149,7 +152,7 @@ object VoiceHub {
     /** 在后台线程预热离线语音管理。 Warm up offline voice management in the background. */
     fun preload(ctx: Context) {
         val app = ctx.applicationContext
-        Thread({ runCatching { get(app) } }, "weave-voice-init").start()
+        Thread({ runCatching { get(app).second.warmUp() } }, "weave-voice-init").start()
     }
 
     fun engines(ctx: Context): VoiceEngines = get(ctx).first

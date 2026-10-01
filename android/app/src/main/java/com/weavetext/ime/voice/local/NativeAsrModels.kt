@@ -23,13 +23,16 @@ internal object NativeAsrModels {
     }
 
     /** 流式识别器；端点规则与离线语音版相同。 Streaming recognizer with the voice build's endpoint rules. */
-    fun streaming(arch: String, model: String, tokens: String): StreamingAsr {
+    fun streaming(arch: String, model: String, tokens: String, threads: Int = THREADS): StreamingAsr {
         // 句尾判定：说过话后静音 1.6 秒分句；无说话 4 秒；单句最长 30 秒。
         // Endpoints: 1.6 s silence after speech, 4 s with no speech, 30 s max.
-        val h = NativeAsr.nativeOnlineCreate(arch, model, tokens, THREADS, 4f, 1.6f, 30f)
+        val h = NativeAsr.nativeOnlineCreate(arch, model, tokens, threads, 4f, 1.6f, 30f)
         if (h == 0L) throw IllegalStateException(friendly(NativeAsr.nativeLastError()))
         return object : StreamingAsr {
             private var handle = h
+            override fun startSession() {
+                NativeAsr.nativeOnlineNewStream(handle)?.let { throw IllegalStateException(it) }
+            }
             override fun accept(samples: FloatArray) = NativeAsr.nativeOnlineAccept(handle, samples, samples.size)
             override fun text(): String = NativeAsr.nativeOnlineText(handle).orEmpty()
             override fun isEndpoint(): Boolean = NativeAsr.nativeOnlineIsEndpoint(handle)
@@ -42,15 +45,21 @@ internal object NativeAsrModels {
         }
     }
 
-    fun streamingTransducer(encoder: String, decoder: String, joiner: String, tokens: String): StreamingAsr =
-        streaming("zipformer-transducer", org.json.JSONArray(listOf(encoder, decoder, joiner)).toString(), tokens)
+    fun streamingTransducer(encoder: String, decoder: String, joiner: String, tokens: String,
+        threads: Int = THREADS, beamPaths: Int = 4): StreamingAsr =
+        streaming("zipformer-transducer", org.json.JSONObject().put("files", org.json.JSONArray(listOf(encoder, decoder, joiner)))
+            .put("beam_paths", beamPaths).toString(), tokens, threads)
 
     /** 非流式识别器（终稿）。 Offline recognizer for the final pass. */
-    fun offline(arch: String, model: String, tokens: String): OfflineAsr {
-        val h = NativeAsr.nativeOfflineCreate(arch, model, tokens, THREADS)
+    fun offline(arch: String, model: String, tokens: String, threads: Int = THREADS): OfflineAsr {
+        val h = NativeAsr.nativeOfflineCreate(arch, model, tokens, threads)
         if (h == 0L) throw IllegalStateException(friendly(NativeAsr.nativeLastError()))
         return object : OfflineAsr {
+            override val livePreview = arch != "whisper"
             private var handle = h
+            override fun setLanguage(language: String) {
+                NativeAsr.nativeOfflineSetLanguage(handle, language)?.let { throw IllegalStateException(it) }
+            }
             override fun decode(samples: FloatArray): String = NativeAsr.nativeOfflineDecode(handle, samples, samples.size).orEmpty()
             override fun release() {
                 NativeAsr.nativeOfflineDestroy(handle)

@@ -33,6 +33,7 @@ object NativeAsr {
     @JvmStatic external fun nativeOnlineText(h: Long): String?
     @JvmStatic external fun nativeOnlineIsEndpoint(h: Long): Boolean
     @JvmStatic external fun nativeOnlineReset(h: Long)
+    @JvmStatic external fun nativeOnlineNewStream(h: Long): String?
     /** 补静音并解码完剩余部分。 Pad silence and flush. */
     @JvmStatic external fun nativeOnlineFinish(h: Long)
     @JvmStatic external fun nativeOnlineDestroy(h: Long)
@@ -40,6 +41,7 @@ object NativeAsr {
     /** 非流式识别器：arch = "zipformer-ctc" / "sense-voice" / "paraformer"；失败返回 0。 */
     @JvmStatic external fun nativeOfflineCreate(arch: String, model: String, tokens: String, threads: Int): Long
     @JvmStatic external fun nativeOfflineDecode(h: Long, samples: FloatArray, n: Int): String?
+    @JvmStatic external fun nativeOfflineSetLanguage(h: Long, language: String): String?
     @JvmStatic external fun nativeOfflineDestroy(h: Long)
 
     @JvmStatic external fun nativeVadCreate(model: String): Long

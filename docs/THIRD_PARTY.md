@@ -34,6 +34,7 @@ text and source link; a self-built table is planned.*
 | Zipformer 中文模型（实时/终稿按需下载） | k2-fsa，随 sherpa-onnx 发布 | Apache-2.0（模型卡未单独声明） | 详见 `docs/models.md` |
 | Zipformer 中英双语 transducer 标准/增强 | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) 官方双语 mobile 导出 | Apache-2.0 | 编码器、解码器、连接器与词表按需下载，详见模型目录 |
 | WeNet 中英粤语 CTC | [ASLP-lab/WSYue-ASR](https://huggingface.co/ASLP-lab/WSYue-ASR)，Sherpa ONNX 导出 | Apache-2.0 | 模型卡声明许可；按需下载，不随 APK 分发 |
+| Whisper base/small int8 | [OpenAI Whisper](https://github.com/openai/whisper)、Sherpa ONNX 转换 | MIT（Copyright 2022 OpenAI） | 按需下载，可选自动、中文、英文；英文测试与混说边界见语音调研记录 |
 | SenseVoice / Paraformer / CT-Transformer 标点 | [FunASR](https://github.com/modelscope/FunASR) 模型经 sherpa-onnx 转换 | FunASR Model License（需署名） | 仅按需下载，不随 APK 分发 |
 
 ## 2. Rust crates

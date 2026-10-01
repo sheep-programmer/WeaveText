@@ -65,7 +65,7 @@ internal fun VoicePackHeader(repo: ModelRepository) {
     var confirmMetered by remember { mutableStateOf(false) }
     // 装好后自动选中本地离线识别。 Select the local engine once installed.
     val start: (Boolean) -> Unit = { metered ->
-        pack.start(allowMetered = metered) { runCatching { deps.engines().setSelection(profile.modelIds) } }
+        pack.start(allowMetered = metered) { runCatching { deps.engines().apply { language = profile.language; setSelection(profile.modelIds) } } }
     }
     val onDownload = { if (repo.wifiOnly && repo.isMetered()) confirmMetered = true else start(!repo.wifiOnly) }
     GroupCard(Modifier.padding(top = 8.dp)) {
@@ -113,7 +113,7 @@ internal fun VoicePackHeader(repo: ModelRepository) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("正在解压与校验…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                VoicePack.State.Ready -> Button(onClick = { deps.engines().setSelection(profile.modelIds) }, Modifier.fillMaxWidth()) { Text("已安装 · 选用此档") }
+                VoicePack.State.Ready -> Button(onClick = { deps.engines().apply { language = profile.language; setSelection(profile.modelIds) } }, Modifier.fillMaxWidth()) { Text("已安装 · 选用此档") }
             }
         }
     }

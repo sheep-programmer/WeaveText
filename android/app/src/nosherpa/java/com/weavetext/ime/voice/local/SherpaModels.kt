@@ -23,17 +23,23 @@ internal object SherpaModels {
         return loc
     }
 
-    fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr =
+    fun streaming(spec: ModelSpec, loc: ModelLocation, threads: Int = 2): StreamingAsr =
         files(loc).let {
             if (spec.arch == "zipformer-transducer") NativeAsrModels.streamingTransducer(
                 it.path(spec.files.first { f -> f.name.startsWith("encoder") }.name),
                 it.path(spec.files.first { f -> f.name.startsWith("decoder") }.name),
-                it.path(spec.files.first { f -> f.name.startsWith("joiner") }.name), it.path("tokens.txt"),
-            ) else NativeAsrModels.streaming(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt"))
+                it.path(spec.files.first { f -> f.name.startsWith("joiner") }.name), it.path("tokens.txt"), threads,
+            ) else NativeAsrModels.streaming(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt"), threads)
         }
 
-    fun offline(spec: ModelSpec, loc: ModelLocation): OfflineAsr =
-        files(loc).let { NativeAsrModels.offline(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }
+    fun offline(spec: ModelSpec, loc: ModelLocation, threads: Int = 2): OfflineAsr =
+        files(loc).let {
+            if (spec.arch == "whisper") NativeAsrModels.offline("whisper", org.json.JSONArray(listOf(
+                it.path(spec.files.first { f -> f.name.contains("encoder") }.name),
+                it.path(spec.files.first { f -> f.name.contains("decoder") }.name),
+            )).toString(), it.path(spec.files.first { f -> f.name.contains("tokens") }.name), threads)
+            else NativeAsrModels.offline(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt"), threads)
+        }
 
     fun punctuator(loc: ModelLocation): Punctuator = NativeAsrModels.punctuator(files(loc).path("model.int8.onnx"))
 

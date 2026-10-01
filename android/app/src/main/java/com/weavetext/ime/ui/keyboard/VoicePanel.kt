@@ -15,6 +15,8 @@ import android.graphics.Typeface
 import android.os.Build
 import android.os.SystemClock
 import android.text.TextPaint
+import android.text.StaticLayout
+import android.text.Layout
 import android.view.MotionEvent
 import android.view.View
 import com.weavetext.ime.R
@@ -127,6 +129,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private var extras = 0
 
         // 命中区 / hit areas
+        private val languageRects = List(3) { RectF() }
+        private val contentTop get() = kb.metrics.topBar + kb.metrics.dp(28f)
         private val close = RectF(); private val chip = RectF(); private val gear = RectF()
         private val comma = RectF(); private val kbd = RectF(); private val del = RectF(); private val enter = RectF()
         private val mic = RectF(); private val seg = RectF(); private val segTap = RectF(); private val segHold = RectF()
@@ -138,6 +142,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private val lines = ArrayList<String>()
         private var pressed = NONE
         private var downY = 0f
+        private var downX = 0f
         private var holdActive = false
         private var holdCancel = false
 
@@ -156,6 +161,12 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val w = width.toFloat()
             val h = height.toFloat()
             val top = m.topBar
+            val gap = m.dp(6f)
+            val lw = (w - m.dp(24f) - gap * 2) / 3
+            for (i in languageRects.indices) {
+                val left = m.dp(12f) + i * (lw + gap)
+                languageRects[i].set(left, top, left + lw, contentTop - m.dp(3f))
+            }
             close.set(m.dp(6f), 0f, m.dp(50f), top)
             gear.set(w - m.dp(50f), 0f, w - m.dp(6f), top)
             text.textSize = m.dp(14f); text.typeface = medium
@@ -203,6 +214,15 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             c.drawText(chipName(), tmp.right + m.dp(6f), chip.centerY() - (text.ascent() + text.descent()) / 2, text)
             kb.icons.draw(c, R.drawable.ic_chevron_down, pal.icon, chip.right - m.dp(18f), chip.centerY(), m.dp(16f))
 
+            val language = runCatching { VoiceAccess.engines(kb.ctx).language }.getOrDefault(com.weavetext.ime.voice.VoiceLanguage.MIXED)
+            for ((i, mode) in com.weavetext.ime.voice.VoiceLanguage.entries.withIndex()) {
+                val r = languageRects[i]
+                fill.color = if (mode == language) pal.accentSoft else pal.keyFunc
+                c.drawRoundRect(r, m.dp(8f), m.dp(8f), fill)
+                text.textAlign = Paint.Align.CENTER; text.textSize = m.dp(12f); text.typeface = medium
+                text.color = if (mode == language) pal.keyAccent else pal.labelSecondary
+                c.drawText(mode.label, r.centerX(), r.centerY() - (text.ascent() + text.descent()) / 2, text)
+            }
             if (choosing()) {
                 drawResults(c)
                 if (session.active && session.state != VoiceSession.State.LISTENING) postInvalidateDelayed(40)
@@ -239,9 +259,12 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             c.drawText(s, r.centerX(), r.centerY() - (text.ascent() + text.descent()) / 2, text)
         }
 
+        private fun compactWide() = height < kb.metrics.dp(240f) && mic.left - comma.right >= kb.metrics.dp(122f)
+
         private fun transcriptArea(out: RectF) {
             val m = kb.metrics
-            out.set(m.dp(20f), kb.metrics.topBar + m.dp(2f), width - m.dp(20f), comma.top - m.dp(40f))
+            val bottom = if (compactWide()) mic.top - m.dp(8f) else comma.top - m.dp(40f)
+            out.set(m.dp(20f), contentTop + m.dp(2f), width - m.dp(20f), bottom)
         }
 
         /**
@@ -336,10 +359,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private fun drawWave(c: Canvas) {
             val pal = kb.palette
             val m = kb.metrics
-            val cy = comma.top - m.dp(20f)
+            val cy = if (compactWide()) mic.centerY() else comma.top - m.dp(20f)
             val bw = m.dp(3f); val gap = m.dp(3f)
             val total = 17 * bw + 16 * gap
-            var x = width / 2f - total / 2
+            var x = if (compactWide()) mic.left - m.dp(20f) - total else width / 2f - total / 2
             fill.color = pal.voiceWave
             val listening = session.state == VoiceSession.State.LISTENING
             for (i in 0 until 17) {
@@ -442,6 +465,25 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private var listScroll = 0f
         private var listDrag = false
         private var pressedRow = -1
+        private var resultSet: com.weavetext.ime.voice.MultiEngineResults? = null
+        private val rowOffsets = HashMap<String, Float>()
+        private val rowWidths = HashMap<String, Float>()
+        private var dragRow = -1
+        private var dragAxis = 0
+        private var downOffset = 0f
+        private var previewId: String? = null
+        private var previewScroll = 0f
+        private var previewMaxScroll = 0f
+        private var openedPreview = false
+        private val expandResult = Runnable {
+            val row = session.results?.rows()?.getOrNull(pressedRow) ?: return@Runnable
+            previewId = row.id
+            previewScroll = 0f
+            pressedRow = -1
+            openedPreview = true
+            kb.feedback.haptic(this)
+            invalidate()
+        }
 
         private fun choosing() = session.state == VoiceSession.State.CHOOSING && session.results != null
 
@@ -455,7 +497,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             val w = width.toFloat(); val h = height.toFloat()
             val bar = m.dp(56f)
-            listArea.set(m.dp(12f), m.topBar + m.dp(2f), w - m.dp(12f), h - bar - m.dp(2f))
+            listArea.set(m.dp(12f), contentTop + m.dp(2f), w - m.dp(12f), h - bar - m.dp(2f))
             val cy = h - bar / 2
             cancelBtn.set(m.dp(12f), cy - m.dp(20f), m.dp(12f) + m.dp(88f), cy + m.dp(20f))
             commitBtn.set(w - m.dp(12f) - m.dp(88f), cy - m.dp(20f), w - m.dp(12f), cy + m.dp(20f))
@@ -468,13 +510,19 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val pal = kb.palette
             val m = kb.metrics
             val res = session.results ?: return
+            if (resultSet !== res) {
+                resultSet = res; rowOffsets.clear(); rowWidths.clear()
+                previewId = null; previewScroll = 0f; listScroll = 0f
+            }
             resultsGeometry()
             val rows = res.rows()
-            val def = session.defaultRow
+            val previewIndex = rows.indexOfFirst { it.id == previewId }
+            val def = if (previewIndex >= 0 && rows[previewIndex].selectable) previewIndex else
+                if (previewId == null) session.defaultRow else -1
             listScroll = listScroll.coerceIn(0f, maxListScroll(rows.size))
             c.save()
             c.clipRect(listArea)
-            for ((i, r) in rows.withIndex()) {
+            if (previewIndex < 0) for ((i, r) in rows.withIndex()) {
                 val top = listArea.top + i * (rowH() + rowGap()) - listScroll
                 if (top > listArea.bottom || top + rowH() < listArea.top) continue
                 tmp.set(listArea.left, top, listArea.right, top + rowH())
@@ -511,15 +559,32 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 text.typeface = Typeface.DEFAULT; text.textSize = if (rowH() < m.dp(40f)) m.dp(13f) else m.dp(16f)
                 val body = r.text.ifEmpty { if (r.pending) "…" else "" }
                 text.color = if (r.selectable) pal.label else pal.labelSecondary
-                c.drawText(android.text.TextUtils.ellipsize(body, text, right - left, android.text.TextUtils.TruncateAt.START).toString(), left, top + min(m.dp(40f), rowH() * 0.82f), text)
+                val singleLine = body.replace('\n', ' ')
+                val overflow = (text.measureText(singleLine) - (right - left)).coerceAtLeast(0f)
+                rowWidths[r.id] = overflow
+                val offset = (rowOffsets[r.id] ?: 0f).coerceIn(0f, overflow)
+                rowOffsets[r.id] = offset
+                c.save()
+                c.clipRect(left, top + rowH() * 0.40f, right, top + rowH())
+                c.drawText(singleLine, left - offset, top + min(m.dp(40f), rowH() * 0.82f), text)
+                c.restore()
+                if (overflow > 0f) {
+                    fill.color = pal.divider
+                    c.drawRect(left, top + rowH() - m.dp(3f), right, top + rowH() - m.dp(2f), fill)
+                    val thumb = ((right - left) * (right - left) / text.measureText(singleLine)).coerceAtLeast(m.dp(16f))
+                    val position = (right - left - thumb) * offset / overflow
+                    fill.color = pal.keyAccent
+                    c.drawRect(left + position, top + rowH() - m.dp(3f), left + position + thumb, top + rowH() - m.dp(2f), fill)
+                }
             }
+            if (previewIndex >= 0) drawResultPreview(c, rows[previewIndex], previewIndex, rows.size)
             c.restore()
             // 底部操作 / bottom actions
             text.textSize = m.dp(14f); text.typeface = medium; text.textAlign = Paint.Align.CENTER
             fill.color = if (pressed == R_CANCEL) pal.keyFuncPressed else pal.keyFunc
             c.drawRoundRect(cancelBtn, m.dp(20f), m.dp(20f), fill)
             text.color = pal.label
-            c.drawText("取消", cancelBtn.centerX(), cancelBtn.centerY() - (text.ascent() + text.descent()) / 2, text)
+            c.drawText(if (previewId != null) "返回" else "取消", cancelBtn.centerX(), cancelBtn.centerY() - (text.ascent() + text.descent()) / 2, text)
             val canCommit = def >= 0
             fill.color = when { !canCommit -> pal.keyFunc; pressed == R_COMMIT -> pal.keyAccentPressed; else -> pal.keyAccent }
             c.drawRoundRect(commitBtn, m.dp(20f), m.dp(20f), fill)
@@ -538,13 +603,36 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             return if (within && i in 0 until (session.results?.rows()?.size ?: 0)) i else -1
         }
 
+        private fun drawResultPreview(c: Canvas, row: com.weavetext.ime.voice.MultiEngineResults.Row, index: Int, count: Int) {
+            val m = kb.metrics
+            fill.color = kb.palette.card
+            c.drawRoundRect(listArea, m.dp(10f), m.dp(10f), fill)
+            text.typeface = medium; text.textSize = m.dp(12f); text.color = kb.palette.keyAccent
+            text.textAlign = Paint.Align.LEFT
+            val title = "${row.name}  ${index + 1}/$count · 左右切换"
+            c.drawText(android.text.TextUtils.ellipsize(title, text, listArea.width() - m.dp(24f), android.text.TextUtils.TruncateAt.END).toString(), listArea.left + m.dp(12f), listArea.top + m.dp(20f), text)
+            val top = listArea.top + m.dp(30f)
+            text.typeface = Typeface.DEFAULT; text.textSize = m.dp(16f); text.color = kb.palette.label
+            val body = row.text.ifEmpty { row.error ?: "正在识别…" }
+            val layout = StaticLayout.Builder.obtain(body, 0, body.length, text, (listArea.width() - m.dp(24f)).toInt().coerceAtLeast(1))
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(m.dp(3f), 1f).build()
+            previewMaxScroll = (layout.height - (listArea.bottom - top - m.dp(8f))).coerceAtLeast(0f)
+            previewScroll = previewScroll.coerceIn(0f, previewMaxScroll)
+            c.save()
+            c.clipRect(listArea.left, top, listArea.right, listArea.bottom - m.dp(8f))
+            c.translate(listArea.left + m.dp(12f), top - previewScroll)
+            layout.draw(c)
+            c.restore()
+        }
+
         private fun resultsTouch(e: MotionEvent): Boolean {
             val m = kb.metrics
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     resultsGeometry()
-                    downY = e.y; listDrag = false
+                    downX = e.x; downY = e.y; listDrag = false; dragAxis = 0; openedPreview = false
                     pressed = when {
+                        languageRects.any { it.contains(e.x, e.y) } -> LANGUAGE_BASE + languageRects.indexOfFirst { it.contains(e.x, e.y) }
                         close.contains(e.x, e.y) -> CLOSE
                         gear.contains(e.x, e.y) -> GEAR
                         chip.contains(e.x, e.y) -> CHIP
@@ -553,30 +641,57 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                         redoBtn.contains(e.x, e.y) -> R_REDO
                         else -> NONE
                     }
-                    pressedRow = if (pressed == NONE) rowAt(e.x, e.y) else -1
+                    dragRow = if (pressed == NONE && previewId == null) rowAt(e.x, e.y) else -1
+                    pressedRow = dragRow
+                    downOffset = session.results?.rows()?.getOrNull(dragRow)?.id?.let { rowOffsets[it] } ?: 0f
+                    downScroll = if (previewId != null) previewScroll else listScroll
                     if (pressed != NONE || pressedRow >= 0) kb.feedback.key(this)
-                    downScroll = listScroll
+                    if (pressedRow >= 0) postDelayed(expandResult, 450)
                     invalidate()
                 }
-                MotionEvent.ACTION_MOVE -> if (pressed == NONE && listArea.contains(e.x, downY)) {
-                    val dy = e.y - downY
-                    if (!listDrag && kotlin.math.abs(dy) > m.dp(8f)) { listDrag = true; pressedRow = -1 }
-                    if (listDrag) { listScroll = (downScroll - dy).coerceIn(0f, maxListScroll(session.results?.rows()?.size ?: 0)); invalidate() }
+                MotionEvent.ACTION_MOVE -> if (pressed == NONE && listArea.contains(downX, downY) && !openedPreview) {
+                    val dx = e.x - downX; val dy = e.y - downY
+                    if (dragAxis == 0 && max(kotlin.math.abs(dx), kotlin.math.abs(dy)) > m.dp(8f)) {
+                        removeCallbacks(expandResult)
+                        dragAxis = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else 2
+                        listDrag = true; pressedRow = -1
+                    }
+                    if (dragAxis == 1 && previewId == null) {
+                        session.results?.rows()?.getOrNull(dragRow)?.id?.let { id ->
+                            rowOffsets[id] = (downOffset - dx).coerceIn(0f, rowWidths[id] ?: 0f)
+                        }
+                    } else if (dragAxis == 2) {
+                        if (previewId != null) previewScroll = (downScroll - dy).coerceIn(0f, previewMaxScroll)
+                        else listScroll = (downScroll - dy).coerceIn(0f, maxListScroll(session.results?.rows()?.size ?: 0))
+                    }
+                    invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
+                    removeCallbacks(expandResult)
                     val p = pressed; val row = pressedRow
                     pressed = NONE; pressedRow = -1
-                    if (!listDrag) when {
+                    if (previewId != null && dragAxis == 1 && kotlin.math.abs(e.x - downX) > m.dp(48f)) {
+                        val rows = session.results?.rows().orEmpty()
+                        val index = rows.indexOfFirst { it.id == previewId }
+                        val next = (index + if (e.x < downX) 1 else -1).coerceIn(0, (rows.size - 1).coerceAtLeast(0))
+                        previewId = rows.getOrNull(next)?.id; previewScroll = 0f
+                    } else if (!listDrag && !openedPreview) when {
                         row >= 0 && row == rowAt(e.x, e.y) -> session.choose(row)
-                        p == R_CANCEL && cancelBtn.contains(e.x, e.y) -> session.cancel()
-                        p == R_COMMIT && commitBtn.contains(e.x, e.y) -> session.defaultRow.takeIf { it >= 0 }?.let { session.choose(it) }
-                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { listScroll = 0f; session.start() }
+                        p == R_CANCEL && cancelBtn.contains(e.x, e.y) -> if (previewId != null) { previewId = null; previewScroll = 0f } else session.cancel()
+                        p == R_COMMIT && commitBtn.contains(e.x, e.y) -> {
+                            val index = if (previewId == null) session.defaultRow else session.results?.rows()?.indexOfFirst { it.id == previewId } ?: -1
+                            if (index >= 0) session.choose(index)
+                        }
+                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { previewId = null; listScroll = 0f; session.start() }
                         p != NONE && p == hitAt(e.x, e.y) -> onTap(p)
                     }
                     listDrag = false
                     invalidate()
                 }
-                MotionEvent.ACTION_CANCEL -> { pressed = NONE; pressedRow = -1; listDrag = false; invalidate() }
+                MotionEvent.ACTION_CANCEL -> {
+                    removeCallbacks(expandResult)
+                    pressed = NONE; pressedRow = -1; listDrag = false; dragAxis = 0; invalidate()
+                }
             }
             return true
         }
@@ -585,6 +700,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private var resultsGesture = false
 
         private fun hitAt(x: Float, y: Float): Int = when {
+            languageRects.any { it.contains(x, y) } -> LANGUAGE_BASE + languageRects.indexOfFirst { it.contains(x, y) }
             close.contains(x, y) -> CLOSE
             gear.contains(x, y) -> GEAR
             chip.contains(x, y) -> CHIP
@@ -653,6 +769,14 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         }
 
         private fun onTap(id: Int) {
+            if (id in LANGUAGE_BASE..LANGUAGE_BASE + 2) {
+                session.cancel()
+                kb.stopVoice()
+                VoiceAccess.engines(kb.ctx).language = com.weavetext.ime.voice.VoiceLanguage.entries[id - LANGUAGE_BASE]
+                kb.onEngineChanged()
+                session.warmUp()
+                return
+            }
             val c = kb.controller
             when (id) {
                 CLOSE -> kb.closePanel()
@@ -702,5 +826,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private const val SEG_TAP = 10; private const val SEG_HOLD = 11
         private const val R_CANCEL = 12; private const val R_COMMIT = 13; private const val R_REDO = 14
         private const val OFFLINE = 15
+        private const val LANGUAGE_BASE = 16
     }
 }
