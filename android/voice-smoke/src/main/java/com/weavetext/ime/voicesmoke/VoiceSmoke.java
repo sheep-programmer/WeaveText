@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.res.AssetManager;
 import android.os.Bundle;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.RandomAccessFile;
@@ -15,6 +16,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.security.MessageDigest;
 
 /** Uses only the installed app's classes: test dependencies cannot hide R8/JNI failures. */
 public final class VoiceSmoke extends Instrumentation {
@@ -31,6 +33,7 @@ public final class VoiceSmoke extends Instrumentation {
             if (root == null || (!root.isDirectory() && !root.mkdirs())) throw new IllegalStateException("No test directory");
             String text;
             if (kind.equals("prepare")) text = root.getPath();
+            else if (kind.equals("stage-lite-pack")) text = stageLitePack();
             else if (args.getString("backend", "bundled").equals("native")) text = nativeRecognize(kind);
             else if (kind.startsWith("online")) text = online(kind.equals("online-bundled"));
             else if (kind.equals("offline")) text = offline();
@@ -52,6 +55,58 @@ public final class VoiceSmoke extends Instrumentation {
 
     private Class<?> target(String name) throws ClassNotFoundException {
         return Class.forName(name, true, getTargetContext().getClassLoader());
+    }
+
+    /** Stage verified files as a downloaded pack on a dedicated emulator before testing the release UI. */
+    private String stageLitePack() throws Exception {
+        JSONObject catalog;
+        try (java.io.InputStream input = getTargetContext().getAssets().open("models/catalog.json")) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int size;
+            while ((size = input.read(buffer)) >= 0) bytes.write(buffer, 0, size);
+            catalog = new JSONObject(bytes.toString("UTF-8"));
+        }
+        org.json.JSONArray models = catalog.getJSONArray("models");
+        int copied = 0;
+        for (int i = 0; i < models.length(); i++) {
+            JSONObject model = models.getJSONObject(i);
+            String id = model.getString("id");
+            if (!id.equals("asr-runtime") && !id.equals("asr-stream-small")) continue;
+            boolean assetPack = "assets".equals(args.getString("pack"));
+            File destination = new File(getTargetContext().getFilesDir(), "models/" + id);
+            org.json.JSONArray files = model.getJSONArray("files");
+            for (int j = 0; j < files.length(); j++) {
+                JSONObject spec = files.getJSONObject(j);
+                String name = spec.getString("name");
+                byte[] bytes;
+                if (assetPack) {
+                    try (java.io.InputStream input = getContext().getAssets().open("voice-ui-pack/" + new File(name).getName())) {
+                        java.io.ByteArrayOutputStream data = new java.io.ByteArrayOutputStream();
+                        byte[] buffer = new byte[8192];
+                        int size;
+                        while ((size = input.read(buffer)) >= 0) data.write(buffer, 0, size);
+                        bytes = data.toByteArray();
+                    }
+                } else {
+                    File source = new File(args.getString(id.equals("asr-runtime") ? "runtime" : "model"));
+                    bytes = Files.readAllBytes(new File(source, new File(name).getName()).toPath());
+                }
+                StringBuilder hash = new StringBuilder();
+                for (byte value : MessageDigest.getInstance("SHA-256").digest(bytes)) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+                if (bytes.length != spec.getLong("size") || !hash.toString().equals(spec.getString("sha256"))) {
+                    throw new AssertionError("The test pack does not match the published catalog: " + name);
+                }
+                File output = new File(destination, name);
+                Files.createDirectories(output.getParentFile().toPath());
+                if (output.exists() && !output.setWritable(true, true)) throw new IllegalStateException("Cannot replace " + output);
+                Files.write(output.toPath(), bytes);
+                if (name.endsWith(".so") && !output.setReadOnly()) throw new IllegalStateException("Cannot protect " + output);
+                copied++;
+            }
+        }
+        if (copied != 4) throw new AssertionError("Expected runtime, model and tokens files");
+        return "4 catalog-verified test files staged";
     }
 
     private Object config(String name) throws Exception { return target(SHERPA + name).getConstructor().newInstance(); }

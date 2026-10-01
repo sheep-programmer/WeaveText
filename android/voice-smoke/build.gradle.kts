@@ -30,4 +30,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    // Optional, local-only fixtures for a downloaded-pack UI test. Never part of the product APK.
+    (findProperty("weave.voiceSmokePack") as String?)?.let { sourceSets["main"].assets.srcDir(it) }
 }

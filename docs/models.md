@@ -104,6 +104,33 @@ adb -s <serial> shell am start -n com.weavetext.ime.voicesmoke/.SpeechEditorActi
 这类录音生命周期检查与向模型输入 WAV 的测试不同，模拟器通过也不能代替不同手机上的真人录音、
 麦克风权限、音源处理和第三方输入框兼容性验证。
 
+完整上屏回归可使用 `tools/voice-ime-e2e.py`：它通过模拟器 gRPC 把 WAV 送进虚拟麦克风，
+按住公开 APK 的语音按钮，确认普通编辑器中出现样本词句，并通过键盘退格删到空。
+它不向输入法发送文字结果；识别、语音会话和 `InputConnection` 均由公开 APK 执行。
+
+已验证的环境为独立的 Android 12/API 31 arm64 AVD、1080×2400 屏幕与三键导航。
+模拟器应开启 gRPC token 认证，并用 `-feature -VirtioSndCard` 切到兼容音频转发的声卡。
+新版 Android 镜像使用的 virtio 声卡不能套用这条转发路径，调用成功也必须检查实际输入框文字。
+脚本在调用前禁止宿主真人麦克风，只注入测试录音。
+
+在隔离的 Python 环境安装 `grpcio`、`grpcio-tools`，并从本机模拟器的
+`lib/emulator_controller.proto` 生成 Python 模块后，用 `PYTHONPATH` 指向生成目录：
+
+```sh
+# 测试输入框和语音面板已打开，选择「按住说话」；坐标按当前模拟器调整。
+python3 tools/voice-ime-e2e.py <serial> <sample.wav> \
+  --discovery <emulator-pid.ini> --mic 540 1900 --delete 965 1850 \
+  --expect '我想说的是' --report <report-directory>/microphone-e2e.json
+```
+
+JSON 报告保存输入框中的实际文字和删除后的状态，旁边的 PNG 保存删除前的实测截图。
+
+Lite 界面测试需要在独立 AVD 里准备已安装的语音包。可用
+`-Pweave.voiceSmokePack=<local-assets-directory>` 给测试 APK 临时加入
+`voice-ui-pack/{model.int8.onnx,tokens.txt,libonnxruntime.so,libsherpa-onnx-c-api.so}`。
+随后运行 `VoiceSmoke` 的 `stage-lite-pack` 用例（`-e pack assets`），它会先按照公开 APK 的模型目录
+核对大小和 SHA-256，再复制到该测试实例的私有模型目录。测试代码与这些文件均不会进入产品 APK。
+
 轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与识别模型（实时模型，或只装终稿模型时整句识别；§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
 两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
 *Lite drops the sherpa-onnx runtime (~27 MB) and models; until the runtime and a streaming model are installed from the
