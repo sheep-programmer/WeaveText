@@ -31,11 +31,7 @@ val pluginAssetsDir = layout.buildDirectory.dir("pluginAssets").get().asFile
 // 语音识别运行时 sherpa-onnx（Apache-2.0）与内置模型在构建时下载，经多个 GitHub 镜像回退并校验 SHA-256。
 // The sherpa-onnx runtime (Apache-2.0) and built-in models are fetched at build time through
 // several GitHub mirrors with SHA-256 verification.
-/**
- * -Pweave.lite=true：轻量版，不带端侧语音识别运行时与模型（语音输入仍可用系统识别与插件），APK 约小 125 MB。
- * Lite build: no on-device speech runtime or models (voice still works via the system recognizer and
- * plugins); about 125 MB smaller.
- */
+/** Lite downloads runtime + models; voice bundles only the runtime. Both require model downloads. */
 val liteBuild = (findProperty("weave.lite") as String?) == "true"
 
 /** ABI 过滤在 AGP 里跨构建类型取并集，所以按本次要构建的类型决定。 AGP unions ABI filters, so decide per invocation. */
@@ -172,8 +168,8 @@ android {
         applicationId = "com.weavetext.ime"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.1.0-beta.7"
+        versionCode = 8
+        versionName = "0.1.0-beta.8"
         // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
         // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
         ndk { abiFilters += abiList(isRelease = releaseBuild) }

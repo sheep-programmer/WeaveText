@@ -42,6 +42,12 @@ object NativeAsr {
     @JvmStatic external fun nativeOfflineDecode(h: Long, samples: FloatArray, n: Int): String?
     @JvmStatic external fun nativeOfflineDestroy(h: Long)
 
+    @JvmStatic external fun nativeVadCreate(model: String): Long
+    /** Flags: 1 = speech detected, 2 = completed speech segment. */
+    @JvmStatic external fun nativeVadAccept(h: Long, samples: FloatArray, n: Int): Int
+    @JvmStatic external fun nativeVadReset(h: Long)
+    @JvmStatic external fun nativeVadDestroy(h: Long)
+
     /** 智能标点（ct-transformer）；失败返回 0。 Punctuation; 0 on failure. */
     @JvmStatic external fun nativePunctCreate(model: String, threads: Int): Long
     @JvmStatic external fun nativePunctuate(h: Long, text: String): String?

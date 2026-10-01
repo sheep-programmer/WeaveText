@@ -8,7 +8,6 @@ import android.os.Looper
 import android.os.SystemClock
 import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.ui.VoiceAccess
-import com.weavetext.ime.voice.VoiceHelp
 import com.weavetext.ime.voice.MultiEngineResults
 import com.weavetext.ime.voice.MultiVoiceListener
 import com.weavetext.ime.voice.VoicePlugin
@@ -49,8 +48,8 @@ class VoiceSession(
     /** 平滑后的音量 0..1。 Smoothed input level. */
     var level = 0f
         private set
-    /** 点按模式下说完后静音 2.5s（一直没说话则 6s）自动结束。 Auto-stop after silence (tap mode). */
-    var autoStop = true
+    /** Recent microphone levels, oldest first, for the waveform. */
+    val levels = FloatArray(17)
     /** 多引擎会话的结果；单引擎为 null。 Multi-engine results; null for single-engine sessions. */
     var results: MultiEngineResults? = null
         private set
@@ -63,14 +62,7 @@ class VoiceSession(
     private val main = Handler(Looper.getMainLooper())
     private val listeners = ArrayList<() -> Unit>()
     private var rec: VoiceRecognizer? = null
-    private var lastLoud = 0L
-    /** 本次是否已听到说话（响度或识别出字）。 Whether speech was heard in this session. */
-    private var spoke = false
-    /** 底噪（自适应）。 Adaptive noise floor. */
-    private var floor = -1f
     private var token = 0
-    /** 引擎自己判断说完（系统识别）：不按音量自动结束。 The engine detects the end of speech itself. */
-    private var selfEnd = false
     /** 识别器最近一次回调的时间：长时间没有回调说明它卡住了。 Last callback; a long silence means it is stuck. */
     private var lastActivity = 0L
     /** 进入「识别中」的时间。 When FINALIZING began. */
@@ -82,7 +74,7 @@ class VoiceSession(
      * voice panel replaces it with in-panel guidance.
      */
     var onNoEngine: () -> Unit = {
-        val route = if (VoiceHelp.canOfferOfflineBuild) "voice/upgrade" else "voice"
+        val route = "voice/upgrade"
         runCatching {
             ctx.startActivity(
                 android.content.Intent(ctx, com.weavetext.ime.settings.SettingsActivity::class.java)
@@ -107,19 +99,7 @@ class VoiceSession(
     // delivers after the stop, so the session can't hang.
     private val connectGuard = Runnable { if (state == State.CONNECTING) settle(NO_RESPONSE) }
     private val finalizeGuard = Runnable { if (state == State.FINALIZING) settle() }
-    private val silenceCheck = object : Runnable {
-        override fun run() {
-            if (state != State.LISTENING) return
-            // 还没开口时多等一会儿（模型可能还在加载、人也要想一想）。 Wait longer before the first word.
-            // 引擎自己判断说完时只在很久没声音后兜底。 An engine with its own endpointing gets a long backstop only.
-            val limit = if (selfEnd) SELF_END_MS else if (spoke) SILENCE_MS else NO_SPEECH_MS
-            if (autoStop && SystemClock.uptimeMillis() - lastLoud > limit) { stop(); return }
-            main.postDelayed(this, 250)
-        }
-    }
-
     private fun clearTimers() {
-        main.removeCallbacks(silenceCheck)
         main.removeCallbacks(connectGuard)
         main.removeCallbacks(finalizeGuard)
     }
@@ -146,13 +126,9 @@ class VoiceSession(
         val r = recognizerProvider()
         rec = r
         committed.clear(); partial = ""; error = null; notice = null; level = 0f
-        results = null; detached = false
+        results = null; detached = false; levels.fill(0f)
         state = State.CONNECTING
-        lastLoud = SystemClock.uptimeMillis()
         lastActivity = clock()
-        spoke = false
-        selfEnd = false
-        floor = -1f
         val my = ++token
         val ok = r.start(object : MultiVoiceListener {
             // 已结束或报错的会话不能再把迟到结果写回编辑器；多引擎选结果时仍接收各引擎的收尾。
@@ -168,7 +144,6 @@ class VoiceSession(
                 res.partial(id, text)
                 if (id == res.primaryId) {
                     enterListening()
-                    if (text.isNotEmpty()) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
                 }
                 multiChanged()
             }
@@ -194,7 +169,6 @@ class VoiceSession(
                 if (!live()) return
                 enterListening()
                 partial = text
-                if (text.isNotEmpty()) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
                 controller.voicePartial(text)
                 changed()
             }
@@ -228,17 +202,12 @@ class VoiceSession(
             }
             override fun onReady(selfEnd: Boolean) {
                 if (!live()) return
-                this@VoiceSession.selfEnd = selfEnd
                 enterListening()
                 changed()
             }
             override fun onNotice(message: String) {
                 if (!live()) return
-                // 换了引擎重新收音：按新引擎的方式判断说完。 Another engine took over: reset the end-of-speech state.
                 notice = message
-                selfEnd = false
-                spoke = false
-                lastLoud = SystemClock.uptimeMillis()
                 changed()
             }
             override fun onEnd() {
@@ -259,9 +228,12 @@ class VoiceSession(
             }
             override fun onLevel(level: Float) {
                 if (!live()) return
-                enterListening()
-                this@VoiceSession.level = this@VoiceSession.level * 0.65f + level.coerceIn(0f, 1f) * 0.35f
-                if (isLoud(level)) { lastLoud = SystemClock.uptimeMillis(); spoke = true }
+                val target = level.coerceIn(0f, 1f)
+                val weight = if (target > this@VoiceSession.level) 0.65f else 0.18f
+                this@VoiceSession.level += (target - this@VoiceSession.level) * weight
+                System.arraycopy(levels, 1, levels, 0, levels.size - 1)
+                levels[levels.lastIndex] = this@VoiceSession.level
+                changed()
             }
         })
         if (!ok) {
@@ -274,34 +246,16 @@ class VoiceSession(
         return true
     }
 
-    /**
-     * 是否算在说话：高于底噪约 2.5 倍且不低于一个很小的下限。有的机型语音音源不做增益、说话声很小，固定门槛会
-     * 把正在说的话当成静音而提前结束。
-     * Whether this level counts as speech: about 2.5× the adaptive noise floor and above a small minimum. Some
-     * phones apply no gain to the voice source, so a fixed threshold would cut people off mid-sentence.
-     */
-    private fun isLoud(level: Float): Boolean {
-        floor = when {
-            floor < 0f -> level
-            level < floor -> floor * 0.8f + level * 0.2f
-            else -> floor + (level - floor) * 0.01f
-        }
-        return level > maxOf(LOUD_MIN, floor * 2.5f)
-    }
-
     private fun enterListening() {
         if (state == State.CONNECTING) {
             state = State.LISTENING
             main.removeCallbacks(connectGuard)
-            main.removeCallbacks(silenceCheck)
-            main.postDelayed(silenceCheck, 250)
         }
     }
 
     /** 结束收音，等待最终结果。 Stop and wait for the final result. */
     fun stop() {
         if (!active || state == State.FINALIZING) return
-        main.removeCallbacks(silenceCheck)
         main.removeCallbacks(connectGuard)
         if (results != null) {
             rec?.stop()
@@ -338,7 +292,7 @@ class VoiceSession(
             committed.append(shown)
         }
         controller.voiceFinal("")
-        results = null; detached = false
+        results = null; detached = false; levels.fill(0f)
         partial = ""; level = 0f
         if (message != null) { error = message; state = State.ERROR } else state = State.IDLE
         changed()
@@ -449,7 +403,7 @@ class VoiceSession(
     fun preview(state: State, committed: String, partial: String, level: Float, error: String? = null) {
         this.state = state
         this.committed.clear(); this.committed.append(committed)
-        this.partial = partial; this.level = level; this.error = error
+        this.partial = partial; this.level = level; levels.fill(level); this.error = error
         changed()
     }
 
@@ -457,19 +411,14 @@ class VoiceSession(
     var timeoutMs = MultiEngineResults.DEFAULT_TIMEOUT_MS
 
     companion object {
-        private const val SILENCE_MS = 2500L
-        private const val NO_SPEECH_MS = 6000L
-        /** 引擎自己判断说完时的兜底静音时限。 Silence backstop for engines with their own endpointing. */
-        private const val SELF_END_MS = 15_000L
-        private const val LOUD_MIN = 0.02f
-        /** 一直连不上的时限（系统识别会先换服务、再改用本地识别）。 Connect limit; the system path retries first. */
-        const val CONNECT_LIMIT_MS = 15_000L
+        /** Cold model loading can take tens of seconds on slower phones. */
+        const val CONNECT_LIMIT_MS = 90_000L
         /** 停止后等结果的时限。 Limit for the result after stopping. */
-        const val FINALIZE_LIMIT_MS = 10_000L
+        const val FINALIZE_LIMIT_MS = 60_000L
         /** 「识别中」超过这么久，再点麦克风就不等了，重新开始。 After this long in FINALIZING a mic tap starts over. */
-        const val TAKEOVER_MS = 1_500L
+        const val TAKEOVER_MS = 8_000L
         /** 这么久没有任何回调算卡住。 No callback for this long counts as stuck. */
-        const val STALE_MS = 8_000L
-        private const val NO_RESPONSE = "语音服务没有响应，请重试"
+        const val STALE_MS = 120_000L
+        private const val NO_RESPONSE = "离线模型加载超时，请重试或换一个较小模型"
     }
 }

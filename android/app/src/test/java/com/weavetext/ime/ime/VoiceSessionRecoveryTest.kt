@@ -143,6 +143,44 @@ class VoiceSessionRecoveryTest {
         assertEquals(null, session.notice)
     }
 
+    @Test fun thinkingPauseDoesNotStopRecordingOrLoseTheNextSentence() {
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val l = rec.listener!!
+        l.onReady(false)
+        l.onPartial("我想")
+        repeat(200) { l.onLevel(0f); idle(40) } // eight-second thinking pause
+        assertEquals(VoiceSession.State.LISTENING, session.state)
+        assertTrue(rec.isRunning)
+        l.onFinal("我想")
+        l.onPartial("继续说")
+        l.onFinal("继续说")
+        session.stop()
+        l.onEnd()
+        assertEquals("我想继续说", edit.text.toString())
+    }
+
+    @Test fun quietSpeechDoesNotStopAndLevelsDoNotPretendModelIsReady() {
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val l = rec.listener!!
+        l.onLevel(0.01f)
+        assertEquals(VoiceSession.State.CONNECTING, session.state)
+        idle(20_000)
+        assertEquals(VoiceSession.State.CONNECTING, session.state)
+        l.onReady(false)
+        repeat(1000) { l.onLevel(0.01f); idle(40) }
+        assertEquals(VoiceSession.State.LISTENING, session.state)
+        assertTrue(session.level > 0f)
+        assertTrue(rec.isRunning)
+        session.stop()
+        l.onFinal("轻声说话也能继续")
+        l.onEnd()
+        assertEquals("轻声说话也能继续", edit.text.toString())
+    }
+
     @Test fun endedSessionCannotRestoreDeletedText() {
         val ic = deletableEditor()
         val rec = ScriptedRecognizer(FakeEngines())

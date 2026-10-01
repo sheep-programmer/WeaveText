@@ -24,9 +24,9 @@ internal object NativeAsrModels {
 
     /** 流式识别器；端点规则与离线语音版相同。 Streaming recognizer with the voice build's endpoint rules. */
     fun streaming(arch: String, model: String, tokens: String): StreamingAsr {
-        // 句尾判定：说过话后静音 0.8 秒即断句；一直没说话 2.4 秒；单句最长 20 秒。
-        // Endpoints: 0.8 s silence after speech, 2.4 s with no speech, 20 s max.
-        val h = NativeAsr.nativeOnlineCreate(arch, model, tokens, THREADS, 2.4f, 0.8f, 20f)
+        // 句尾判定：说过话后静音 1.6 秒分句；无说话 4 秒；单句最长 30 秒。
+        // Endpoints: 1.6 s silence after speech, 4 s with no speech, 30 s max.
+        val h = NativeAsr.nativeOnlineCreate(arch, model, tokens, THREADS, 4f, 1.6f, 30f)
         if (h == 0L) throw IllegalStateException(friendly(NativeAsr.nativeLastError()))
         return object : StreamingAsr {
             private var handle = h
@@ -66,6 +66,25 @@ internal object NativeAsrModels {
                 NativeAsr.nativePunctDestroy(handle)
                 handle = 0
             }
+        }
+    }
+
+    fun detector(model: String): SpeechDetector {
+        val h = NativeAsr.nativeVadCreate(model)
+        check(h != 0L) { friendly(NativeAsr.nativeLastError()) }
+        return object : SpeechDetector {
+            private var handle = h
+            override var heard = false
+                private set
+            override var endpoint = false
+                private set
+            override fun accept(samples: FloatArray) {
+                val flags = NativeAsr.nativeVadAccept(handle, samples, samples.size)
+                heard = heard || flags != 0
+                endpoint = flags and 2 != 0
+            }
+            override fun reset() { NativeAsr.nativeVadReset(handle); heard = false; endpoint = false }
+            override fun release() { NativeAsr.nativeVadDestroy(handle); handle = 0 }
         }
     }
 

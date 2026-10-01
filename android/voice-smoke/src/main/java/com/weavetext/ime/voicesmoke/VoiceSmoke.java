@@ -35,6 +35,7 @@ public final class VoiceSmoke extends Instrumentation {
             if (kind.equals("prepare")) text = root.getPath();
             else if (kind.equals("stage-lite-pack")) text = stageLitePack();
             else if (args.getString("backend", "bundled").equals("native")) text = nativeRecognize(kind);
+            else if (kind.equals("vad")) text = vad(false);
             else if (kind.startsWith("online")) text = online(kind.equals("online-bundled"));
             else if (kind.equals("offline")) text = offline();
             else if (kind.equals("punctuation")) text = punctuation();
@@ -72,7 +73,7 @@ public final class VoiceSmoke extends Instrumentation {
         for (int i = 0; i < models.length(); i++) {
             JSONObject model = models.getJSONObject(i);
             String id = model.getString("id");
-            if (!id.equals("asr-runtime") && !id.equals("asr-stream-small")) continue;
+            if (!Arrays.asList(args.getString("ids", "asr-runtime,asr-stream-small,vad-silero").split(",")).contains(id)) continue;
             boolean assetPack = "assets".equals(args.getString("pack"));
             File destination = new File(getTargetContext().getFilesDir(), "models/" + id);
             org.json.JSONArray files = model.getJSONArray("files");
@@ -89,7 +90,7 @@ public final class VoiceSmoke extends Instrumentation {
                         bytes = data.toByteArray();
                     }
                 } else {
-                    File source = new File(args.getString(id.equals("asr-runtime") ? "runtime" : "model"));
+                    File source = new File(args.getString(id.equals("asr-runtime") ? "runtime" : id.equals("vad-silero") ? "vad" : "model"));
                     bytes = Files.readAllBytes(new File(source, new File(name).getName()).toPath());
                 }
                 StringBuilder hash = new StringBuilder();
@@ -105,8 +106,8 @@ public final class VoiceSmoke extends Instrumentation {
                 copied++;
             }
         }
-        if (copied != 4) throw new AssertionError("Expected runtime, model and tokens files");
-        return "4 catalog-verified test files staged";
+        if (copied < 2) throw new AssertionError("Expected model files");
+        return copied + " catalog-verified test files staged";
     }
 
     private Object config(String name) throws Exception { return target(SHERPA + name).getConstructor().newInstance(); }
@@ -176,9 +177,12 @@ public final class VoiceSmoke extends Instrumentation {
             case "zipformer-ctc" -> "zipformerCtc";
             case "sense-voice" -> "senseVoice";
             case "paraformer" -> "paraformer";
+            case "dolphin" -> "dolphin";
+            case "telespeech-ctc" -> "teleSpeech";
             default -> throw new IllegalArgumentException(arch);
         };
-        set(field(model, name), "model", args.getString("model") + "/model.int8.onnx");
+        if (arch.equals("telespeech-ctc")) set(model, name, args.getString("model") + "/model.int8.onnx");
+        else set(field(model, name), "model", args.getString("model") + "/model.int8.onnx");
         if (arch.equals("sense-voice")) {
             set(field(model, name), "language", "auto");
             set(field(model, name), "useInverseTextNormalization", true);
@@ -221,6 +225,7 @@ public final class VoiceSmoke extends Instrumentation {
         }
         Object error = bridge.getMethod("nativeLoad", String.class).invoke(null, runtime.getPath());
         if (error != null) throw new IllegalStateException(error.toString());
+        if (kind.equals("vad")) return vad(true);
         String dir = args.getString("model");
         boolean online = kind.startsWith("online");
         boolean punct = kind.equals("punctuation");
@@ -228,7 +233,7 @@ public final class VoiceSmoke extends Instrumentation {
         long handle;
         if (punct) handle = (Long) bridge.getMethod(prefix + "Create", String.class, int.class).invoke(null, dir + "/model.int8.onnx", 1);
         else if (online) handle = (Long) bridge.getMethod(prefix + "Create", String.class, String.class, String.class, int.class, float.class, float.class, float.class)
-                .invoke(null, "zipformer2-ctc", dir + "/model.int8.onnx", dir + "/tokens.txt", 2, 2.4f, 0.8f, 20f);
+                .invoke(null, "zipformer2-ctc", dir + "/model.int8.onnx", dir + "/tokens.txt", 2, 4f, 1.6f, 30f);
         else handle = (Long) bridge.getMethod(prefix + "Create", String.class, String.class, String.class, int.class)
                 .invoke(null, args.getString("arch", "zipformer-ctc"), dir + "/model.int8.onnx", dir + "/tokens.txt", 2);
         if (handle == 0) throw new IllegalStateException("Create failed: " + bridge.getMethod("nativeLastError").invoke(null));
@@ -244,6 +249,54 @@ public final class VoiceSmoke extends Instrumentation {
             bridge.getMethod(prefix + "Finish", long.class).invoke(null, handle);
             return (String) bridge.getMethod(prefix + "Text", long.class).invoke(null, handle);
         } finally { bridge.getMethod(prefix + "Destroy", long.class).invoke(null, handle); }
+    }
+
+    private String vad(boolean nativeBackend) throws Exception {
+        String path = args.getString("model") + "/silero_vad_v5.onnx";
+        Class<?> bridge = nativeBackend ? target("com.weavetext.ime.voice.local.NativeAsr") : null;
+        Object detector = null;
+        long handle = 0;
+        if (nativeBackend) {
+            handle = (Long) bridge.getMethod("nativeVadCreate", String.class).invoke(null, path);
+            if (handle == 0) throw new IllegalStateException("VAD create failed");
+        } else {
+            Object config = config("VadModelConfig");
+            Object silero = field(config, "sileroVadModelConfig");
+            set(silero, "model", path); set(silero, "threshold", 0.35f);
+            set(silero, "minSpeechDuration", 0.1f); set(silero, "minSilenceDuration", 1.6f); set(silero, "maxSpeechDuration", 30f);
+            detector = recognizer("Vad", config, false);
+        }
+        int ended = 0;
+        boolean heard = false;
+        float[] speech = wav(args.getString("wav"));
+        float[] audio = new float[4 * 16000 + speech.length + 8 * 16000 + speech.length + 2 * 16000];
+        for (int i = 0; i < speech.length; i++) audio[4 * 16000 + i] = speech[i] * 0.1f;
+        System.arraycopy(speech, 0, audio, 12 * 16000 + speech.length, speech.length);
+        try {
+            for (int i = 0; i < audio.length; i += 640) {
+                float[] chunk = Arrays.copyOfRange(audio, i, Math.min(i + 640, audio.length));
+                boolean endpoint;
+                if (nativeBackend) {
+                    int flags = (Integer) bridge.getMethod("nativeVadAccept", long.class, float[].class, int.class).invoke(null, handle, chunk, chunk.length);
+                    heard |= flags != 0; endpoint = (flags & 2) != 0;
+                } else {
+                    call(detector, "acceptWaveform", new Class<?>[]{float[].class}, chunk);
+                    endpoint = !(Boolean) call(detector, "empty");
+                    heard |= endpoint || (Boolean) call(detector, "isSpeechDetected");
+                }
+                if (i < 3 * 16000 && heard) throw new AssertionError("Silence classified as speech");
+                if (endpoint) {
+                    ended++;
+                    if (nativeBackend) bridge.getMethod("nativeVadReset", long.class).invoke(null, handle);
+                    else { call(detector, "reset"); call(detector, "clear"); }
+                }
+            }
+            if (ended != 2) throw new AssertionError("Expected two real speech segments, got " + ended);
+            return "2 speech segments: quiet speech + 8s pause + continued speech";
+        } finally {
+            if (nativeBackend) bridge.getMethod("nativeVadDestroy", long.class).invoke(null, handle);
+            else call(detector, "release");
+        }
     }
 
     private static float[] wav(String path) throws Exception {

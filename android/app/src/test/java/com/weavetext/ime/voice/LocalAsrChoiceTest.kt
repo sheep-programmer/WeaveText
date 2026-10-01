@@ -28,7 +28,7 @@ class LocalAsrChoiceTest {
     private val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
 
     @Test fun newlyDownloadedModelsAreUsedAndCanBeSwitched() {
-        val repo = FakeModels(mapOf("asr-final-small" to ModelState.Installed))
+        val repo = FakeModels(mapOf("asr-stream-small" to ModelState.Installed, "asr-final-small" to ModelState.Installed))
         val c = LocalAsrChoice(ctx, repo)
         assertEquals("asr-stream-small", c.streamId())
         assertEquals("asr-final-small", c.finalId())
@@ -75,10 +75,10 @@ class LocalAsrChoiceTest {
         assertTrue("开头的静音不识别 / leading silence is not decoded", finals.isEmpty() && off.lengths.isEmpty())
         feedChunks(r, tone(2.0, 0.2f))
         assertEquals("说话中出实时文字 / live text while speaking", listOf("你好世界"), partials)
-        feedChunks(r, quiet(1.2))
+        feedChunks(r, quiet(1.8))
         assertEquals(listOf("你好世界"), finals)
         // 终稿只含 0.3 秒句首 + 说话 + 断句前的静音，不含开头 2 秒。 The final skips the 2 s of leading silence.
-        assertTrue(off.lengths.last() < 16000 * 3.7)
+        assertTrue(off.lengths.last() < 16000 * 4.2)
         // 只有噪声就结束：不上屏。 Only noise, then stop: nothing is committed.
         feedChunks(r, quiet(1.0))
         r.finish()
@@ -93,7 +93,7 @@ class LocalAsrChoiceTest {
         e.accept(tone(0.5, 0.3f))
         assertTrue(e.heard)
         assertFalse(e.endpoint)
-        e.accept(tone(1.0, 0.03f))
+        e.accept(tone(1.8, 0.03f))
         assertTrue(e.endpoint)
     }
 }

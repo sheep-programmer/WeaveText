@@ -262,9 +262,8 @@ class VoiceStrip(private val kb: WeaveKeyboard) {
             return false
         }
         val hasEngine = runCatching { VoiceAccess.engines(kb.ctx).list().isNotEmpty() }.getOrDefault(false)
-        if (!hasEngine) { ov.showStripMessage("还没有语音引擎"); return false }
+        if (!hasEngine) { kb.showPanel("voice"); return false }
         cancel = false
-        session.autoStop = false
         engaged = true
         if (!session.start()) { engaged = false; return false }
         kb.feedback.haptic(kb.keyboardView)
@@ -299,9 +298,10 @@ class VoiceStrip(private val kb: WeaveKeyboard) {
         val msg = when {
             session.state == VoiceSession.State.ERROR -> session.error ?: "识别失败"
             cancel -> "松手取消"
+            session.state == VoiceSession.State.CONNECTING -> "正在加载离线模型…"
             else -> (session.committed.toString() + session.partial).ifEmpty { if (session.state == VoiceSession.State.FINALIZING) "识别中…" else "正在聆听…上滑取消" }
         }
-        ov.showStrip(msg, session.level, cancel || session.state == VoiceSession.State.ERROR, session.state == VoiceSession.State.LISTENING)
+        ov.showStrip(msg, session.level, cancel || session.state == VoiceSession.State.ERROR, session.state == VoiceSession.State.LISTENING, session.levels)
         // 可取消的延时收起：1.5 秒内重新按住说话时，新语音条不会被这次的计时收掉。
         // A cancellable delayed hide: a new hold-to-talk within 1.5 s isn't hidden by this timer.
         if (session.state == VoiceSession.State.ERROR) { engaged = false; ov.hideStripAfter(1500) }

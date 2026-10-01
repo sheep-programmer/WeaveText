@@ -148,18 +148,71 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 横屏时侧边导航栏占的宽度（左、右）。 Side navigation bar widths in landscape (left, right). */
     private var navLeft = 0
     private var navRight = 0
+    private var navigationBars = NavigationClearance.Edges()
+    private val navigationLayout = Runnable { updateNavigationClearance() }
 
     /**
      * 按系统导航栏（底部或横屏时的侧边）留出空白，键不被三键导航或手势条盖住。
      * Keep clear of the system navigation bar (bottom, or the side in landscape) so no key sits under it.
      */
     private fun applyInsets(insets: WindowInsets) {
-        val (b, l, r) = if (android.os.Build.VERSION.SDK_INT >= 30) {
-            val n = insets.getInsets(WindowInsets.Type.navigationBars())
-            Triple(n.bottom, n.left, n.right)
+        fun edges(source: WindowInsets): NavigationClearance.Edges = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val type = WindowInsets.Type.navigationBars()
+            val current = source.getInsets(type)
+            // Consuming insets may zero their size while retaining the visibility flag.
+            val n = if (current == android.graphics.Insets.NONE && source.isVisible(type))
+                source.getInsetsIgnoringVisibility(type) else current
+            NavigationClearance.Edges(n.bottom, n.left, n.right)
         } else {
-            @Suppress("DEPRECATION") Triple(insets.systemWindowInsetBottom, insets.systemWindowInsetLeft, insets.systemWindowInsetRight)
+            // Stable system bars exclude the IME itself on older Android versions.
+            fun barSize(name: String): Int {
+                @SuppressLint("DiscouragedApi")
+                val id = ctx.resources.getIdentifier(name, "dimen", "android")
+                return if (id != 0) ctx.resources.getDimensionPixelSize(id) else 0
+            }
+            @Suppress("DEPRECATION")
+            NavigationClearance.Edges(
+                NavigationClearance.legacyInset(source.systemWindowInsetBottom, source.stableInsetBottom, barSize("navigation_bar_height")),
+                NavigationClearance.legacyInset(source.systemWindowInsetLeft, source.stableInsetLeft, barSize("navigation_bar_width")),
+                NavigationClearance.legacyInset(source.systemWindowInsetRight, source.stableInsetRight, barSize("navigation_bar_width")),
+            )
         }
+        navigationBars = edges(insets)
+        val visible = android.os.Build.VERSION.SDK_INT < 30 || insets.isVisible(WindowInsets.Type.navigationBars())
+        if (visible) {
+            // Read the window-level source when a framework parent consumed the child's insets.
+            val raw = host.window?.decorView?.rootWindowInsets ?: root.rootWindowInsets
+            raw?.let { source ->
+                val n = edges(source)
+                navigationBars = NavigationClearance.Edges(
+                    maxOf(navigationBars.bottom, n.bottom), maxOf(navigationBars.left, n.left), maxOf(navigationBars.right, n.right),
+                )
+            }
+        }
+        updateNavigationClearance()
+    }
+
+    private fun updateNavigationClearance() {
+        var clearance = navigationBars
+        if (root.isLaidOut && host.window != null) {
+            val bounds = runCatching {
+                val wm = ctx.getSystemService(android.view.WindowManager::class.java)
+                if (android.os.Build.VERSION.SDK_INT >= 30) wm.currentWindowMetrics.bounds else {
+                    val size = android.graphics.Point()
+                    @Suppress("DEPRECATION")
+                    wm.defaultDisplay.getRealSize(size)
+                    Rect(0, 0, size.x, size.y)
+                }
+            }.getOrNull()
+            if (bounds != null && !bounds.isEmpty) {
+                val location = IntArray(2)
+                root.getLocationOnScreen(location)
+                clearance = NavigationClearance.overlap(bounds, Rect(
+                    location[0], location[1], location[0] + root.width, location[1] + root.height,
+                ), navigationBars)
+            }
+        }
+        val (b, l, r) = clearance
         if (b != navInset || l != navLeft || r != navRight) {
             navInset = b; navLeft = l; navRight = r
             applyGeometry()
@@ -289,7 +342,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (floating) {
             val kbH = m.kbHeight.toInt()
             val handleH = m.dp(HANDLE_DP).toInt()
-            val w = (FloatingGeometry.cardWidth(ctx.resources.displayMetrics.widthPixels, m.landscape, m.density) * floatScale).toInt()
+            val available = ((root.width.takeIf { it > 0 } ?: ctx.resources.displayMetrics.widthPixels) - navLeft - navRight).coerceAtLeast(1)
+            val w = (FloatingGeometry.cardWidth(available, m.landscape, m.density) * floatScale).toInt()
             card.layoutParams = FrameLayout.LayoutParams(w, handleH + kbH)
             handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
             handle.visibility = View.VISIBLE
@@ -1084,14 +1138,15 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private fun posKey() = if (metrics.landscape) WeavePrefs.FLOAT_POS_LAND else WeavePrefs.FLOAT_POS_PORT
     private fun floatMinTop() = metrics.dp(24f).toInt()
     private fun floatMaxBottom() = root.height - navInset - metrics.dp(8f).toInt()
+    private fun floatAvailableWidth() = (root.width - navLeft - navRight).coerceAtLeast(1)
 
     /** 按保存的比例放置卡片（窗口尺寸变化时也调用）。 Place the card from the stored fractions. */
     private fun placeCard() {
         if (!floating || root.height == 0) return
         val (fx, fy) = FloatingGeometry.decode(prefs.getString(posKey(), null))
         val lp = card.layoutParams
-        val b = FloatingGeometry.place(fx, fy, root.width, lp.width, lp.height, floatMinTop(), floatMaxBottom())
-        card.translationX = b.left.toFloat()
+        val b = FloatingGeometry.place(fx, fy, floatAvailableWidth(), lp.width, lp.height, floatMinTop(), floatMaxBottom())
+        card.translationX = (b.left + navLeft).toFloat()
         card.translationY = b.top.toFloat()
         syncOverlayAnchor()
     }
@@ -1105,18 +1160,18 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     private fun moveCardBy(dx: Float, dy: Float) {
         val b = FloatingGeometry.clamp(
-            (card.translationX + dx).toInt(), (card.translationY + dy).toInt(),
-            root.width, card.width, card.height, floatMinTop(), floatMaxBottom(),
+            (card.translationX + dx).toInt() - navLeft, (card.translationY + dy).toInt(),
+            floatAvailableWidth(), card.width, card.height, floatMinTop(), floatMaxBottom(),
         )
-        card.translationX = b.left.toFloat()
+        card.translationX = (b.left + navLeft).toFloat()
         card.translationY = b.top.toFloat()
         syncOverlayAnchor()
     }
 
     private fun saveCardPosition() {
-        val b = FloatingGeometry.Box(card.translationX.toInt(), card.translationY.toInt(),
-            card.translationX.toInt() + card.width, card.translationY.toInt() + card.height)
-        val f = FloatingGeometry.fractions(b, root.width, floatMinTop(), floatMaxBottom())
+        val b = FloatingGeometry.Box(card.translationX.toInt() - navLeft, card.translationY.toInt(),
+            card.translationX.toInt() - navLeft + card.width, card.translationY.toInt() + card.height)
+        val f = FloatingGeometry.fractions(b, floatAvailableWidth(), floatMinTop(), floatMaxBottom())
         prefs.edit().putString(posKey(), FloatingGeometry.encode(f)).apply()
     }
 
@@ -1216,8 +1271,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 缩放中：保持右下角不动，再夹回屏幕内。 While resizing: keep the bottom-right corner, then clamp on screen. */
     private fun placeResizing() {
         val (l, t) = FloatingGeometry.anchorBottomRight(resizeRight, resizeBottom, card.width, card.height)
-        val b = FloatingGeometry.clamp(l, t, root.width, card.width, card.height, floatMinTop(), floatMaxBottom())
-        card.translationX = b.left.toFloat()
+        val b = FloatingGeometry.clamp(l - navLeft, t, floatAvailableWidth(), card.width, card.height, floatMinTop(), floatMaxBottom())
+        card.translationX = (b.left + navLeft).toFloat()
         card.translationY = b.top.toFloat()
         syncOverlayAnchor()
     }
@@ -1332,6 +1387,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     val clipboard: ClipboardRepo by clipboardLazy
 
     override fun dispose() {
+        root.removeCallbacks(navigationLayout)
         Choreographer.getInstance().removeFrameCallback(frameRender)
         renderPending = false
         controller.removeListener(stateListener)
@@ -1377,6 +1433,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             super.onLayout(changed, left, top, right, bottom)
+            // Recheck after the framework positions the IME, without changing layout mid-pass.
+            removeCallbacks(navigationLayout)
+            post(navigationLayout)
             if (floating) { if (resizing) placeResizing() else placeCard() } else syncOverlayAnchor()
         }
     }

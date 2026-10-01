@@ -3,7 +3,7 @@ package com.weavetext.ime.voice
 import android.content.Context
 
 /**
- * 语音输入对界面暴露的接口。界面只依赖这里；实现（Lua 插件宿主 + 录音）由 [VoiceHub] 提供。
+ * 语音输入对界面暴露的接口。界面只依赖这里；离线模型与录音由 [VoiceHub] 提供。
  * Voice input API for the UI. The UI depends only on this; [VoiceHub] provides the implementation
  * (Lua plugin host + audio capture).
  */
@@ -61,9 +61,8 @@ interface VoiceListener {
      */
     fun onReady(selfEnd: Boolean) {}
     /**
-     * 给用户的一行提示，不算错误（如系统识别用不了、已自动改用本地识别）。会话继续进行。
-     * A one-line note for the user, not an error (e.g. the system engine failed and local recognition took
-     * over). The session goes on.
+     * 给用户的一行提示，不算错误。会话继续进行。
+     * A one-line note; the session continues.
      */
     fun onNotice(message: String) {}
 }
@@ -99,10 +98,9 @@ interface VoiceEngines {
         set(@Suppress("UNUSED_PARAMETER") value) {}
 
     /**
-     * 能否与其它引擎共用一次录音。系统识别服务自己占用麦克风，只能单独使用。
-     * Whether the engine can share one recording; the platform recognizer owns the mic.
+     * 能否与其它引擎共用一次录音。 Whether the engine can share one recording.
      */
-    fun canCombine(id: String): Boolean = id != SYSTEM_ENGINE_ID
+    fun canCombine(id: String): Boolean = true
 
     /** 本次录音要用的引擎，主引擎在前。 Engines for the next recording, primary first. */
     fun selection(): List<VoicePlugin> {
@@ -111,22 +109,6 @@ interface VoiceEngines {
         val extra = extraIds
         return listOf(primary) + list().filter { it.id != primary.id && it.id in extra && canCombine(it.id) }
     }
-    /**
-     * 停用系统语音识别：它是内置引擎不能卸载，停用后不再出现在列表里（可随时恢复）。
-     * Disable the platform recognizer: built in, so it can't be uninstalled; disabled it leaves the list.
-     */
-    var systemDisabled: Boolean
-        get() = false
-        set(@Suppress("UNUSED_PARAMETER") value) {}
-
-    /** 手机上有系统语音识别服务（不论是否停用）。 A platform recognition service exists, disabled or not. */
-    fun systemPresent(): Boolean = false
-
-    /**
-     * 重新检查系统语音服务：用户可能刚装好或启用了它。变了才重建列表，开销很小。
-     * Re-check the platform service, which may have just been installed or enabled; rebuilds the list only on a
-     * change, so it is cheap.
-     */
     fun recheck() {}
 
     /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
@@ -157,7 +139,7 @@ interface VoiceRecognizer {
 object VoiceHub {
     @Volatile private var impl: Pair<VoiceEngines, VoiceRecognizer>? = null
 
-    /** 在后台线程预热（扫描插件、解包内置插件）。 Warm up on a background thread. */
+    /** 在后台线程预热离线语音管理。 Warm up offline voice management in the background. */
     fun preload(ctx: Context) {
         val app = ctx.applicationContext
         Thread({ runCatching { get(app) } }, "weave-voice-init").start()

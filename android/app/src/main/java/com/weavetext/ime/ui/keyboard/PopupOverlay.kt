@@ -77,6 +77,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private val strip = RectF()
     private var stripText = ""
     private var stripLevel = 0f
+    private val stripLevels = FloatArray(9)
     private var stripDanger = false
     private var stripLive = false
     private var stripShown = false
@@ -432,12 +433,13 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     // ------------------------------------------------------------ voice strip (02 §12.2)
 
-    fun showStrip(msg: String, level: Float, danger: Boolean, live: Boolean) {
+    fun showStrip(msg: String, level: Float, danger: Boolean, live: Boolean, levels: FloatArray? = null) {
         removeCallbacks(stripAutoHide)
         val m = metrics
         val top = (anchorTop() - m.dp(68f)).coerceAtLeast(0f)
         strip.set(anchorLeft() + m.dp(12f), top, anchorRight() - m.dp(12f), top + m.dp(64f))
         stripText = msg; stripLevel = level; stripDanger = danger; stripLive = live
+        for (i in stripLevels.indices) stripLevels[i] = levels?.getOrNull(levels.size - stripLevels.size + i) ?: level
         stripShown = true
         syncUnder()
         invalidate()
@@ -470,12 +472,9 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         val bw = m.dp(3f); val gap = m.dp(3f)
         var x = strip.left + m.dp(16f)
         val cy = strip.centerY()
-        val t = android.os.SystemClock.uptimeMillis()
         fill.color = if (stripDanger) p.onDanger else p.voiceWave
         for (i in 0 until 9) {
-            val win = kotlin.math.sin(Math.PI * i / 8).toFloat()
-            val jitter = 0.55f + 0.45f * kotlin.math.sin(t * 0.011 + i * 1.7).toFloat()
-            val h = if (stripLive) (m.dp(4f) + m.dp(24f) * (stripLevel * 1.6f).coerceAtMost(1f) * win * jitter) else m.dp(4f)
+            val h = m.dp(4f) + if (stripLive) m.dp(24f) * stripLevels[i] else 0f
             canvas.drawRoundRect(x, cy - h / 2, x + bw, cy + h / 2, bw / 2, bw / 2, fill)
             x += bw + gap
         }

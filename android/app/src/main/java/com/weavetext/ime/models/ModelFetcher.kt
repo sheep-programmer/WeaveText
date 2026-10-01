@@ -103,7 +103,10 @@ class ModelFetcher(
             try {
                 val ranked = if (i == 0) order else dl.probeAll(a.url).map { it.first }
                 dl.download(a.url, a.sha256, file, cancel, preferred, ranked, a.size, onProgress)
-                val err = extract(file, dest, spec.fileNames())
+                val err = if (spec.files.size == 1 && a.url.endsWith(".onnx")) {
+                    file.copyTo(File(dest, spec.files.single().name), overwrite = true)
+                    null
+                } else extract(file, dest, spec.fileNames())
                 file.delete()
                 if (err != null) throw IOException("解压失败：$err")
                 // 在这里校验，内容不对时还能换下一个来源。 Verify here so a bad pack falls through to the next source.

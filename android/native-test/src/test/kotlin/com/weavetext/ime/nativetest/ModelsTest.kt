@@ -45,7 +45,7 @@ class ModelsTest {
         val cat = ModelCatalog.parse(File("../app/src/main/assets/models/catalog.json").readText())
         assertTrue(cat.mirrors.first().template == "{url}")
         // 离线语音版只内置实时识别小模型，终稿模型改为按需安装。 Only the small streaming model is built in.
-        assertEquals(listOf("asr-stream-small"), cat.models.filter { it.builtin }.map { it.id })
+        assertTrue(cat.models.none { it.builtin })
         assertTrue(cat.models.all { m -> m.archiveSha256.length == 64 && m.files.isNotEmpty() && m.files.all { it.sha256.length == 64 } })
         assertTrue(cat.hfMirrors.isNotEmpty())
         assertTrue(cat.models.all { m -> m.archives.all { it.sha256.length == 64 && it.size > 0 } })
@@ -134,6 +134,33 @@ class ModelsTest {
     }
 
     // ------------------------------------------------------------ downloader
+
+    @Test fun singleOnnxModelIsVerifiedWithoutArchiveExtraction() {
+        val payload = ByteArray(2048) { (it % 251).toByte() }
+        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
+        val srv = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        srv.createContext("/vad.onnx") { ex ->
+            ex.sendResponseHeaders(200, payload.size.toLong())
+            ex.responseBody.use { it.write(payload) }
+        }
+        srv.start()
+        val work = Files.createTempDirectory("weave-vad").toFile()
+        try {
+            val spec = com.weavetext.ime.models.ModelSpec(
+                id = "vad", kind = com.weavetext.ime.models.ModelKind.VAD, arch = "silero-vad", name = "vad",
+                description = "", license = "MIT", builtin = false,
+                archives = listOf(com.weavetext.ime.models.ModelArchive("http://127.0.0.1:${srv.address.port}/vad.onnx", sha, payload.size.toLong())),
+                files = listOf(com.weavetext.ime.models.ModelFile("vad.onnx", payload.size.toLong(), sha)),
+                installedSize = payload.size.toLong(), bench = null, hfRepo = null,
+            )
+            val fetcher = com.weavetext.ime.models.ModelFetcher(listOf(Mirror("direct", "direct", "{url}")), emptyList(), work) { _, _, _ ->
+                error("Single-file ONNX must not be extracted as tar")
+            }
+            val dest = File(work, "out")
+            fetcher.fetch(spec, dest)
+            assertEquals(sha, Downloader.sha256Of(File(dest, "vad.onnx")))
+        } finally { srv.stop(0); work.deleteRecursively() }
+    }
 
     private fun server(payload: ByteArray): Pair<HttpServer, AtomicInteger> {
         val drops = AtomicInteger(1)

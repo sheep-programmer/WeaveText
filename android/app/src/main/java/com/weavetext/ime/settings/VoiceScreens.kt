@@ -96,79 +96,32 @@ fun missingRequired(e: VoiceEngines, p: VoicePlugin): List<ConfigField> =
 fun VoiceListScreen() {
     val deps = LocalDeps.current
     val nav = LocalNav.current
-    // 系统语音服务可能刚装好或启用，打开列表时重新检查。 Re-check the system service: it may have just been set up.
-    val engines = remember { deps.engines().also { runCatching { it.recheck() } } }
-    var tick by remember { mutableIntStateOf(0) }
+    val engines = remember { deps.engines() }
     val models = remember { deps.models() }
-    // 语音包装好后本地引擎会出现，模型状态变化时也重读列表。 Re-read when models change: the pack adds the local engine.
     val modelTick = rememberModelTick(models)
-    val runtimeReady = remember(modelTick) { com.weavetext.ime.models.AsrRuntime.ready(models) }
-    val plugins = remember(tick, modelTick) { runCatching { engines.list() }.getOrDefault(emptyList()) }
-    val active = remember(tick, modelTick) { engines.active()?.id }
-    val snack = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-    val importer = rememberXipkImporter(engines) { tick++ }
-
-    SubPage("语音引擎", snackbar = snack, actions = {
-        TextButton(onClick = importer.launch) {
-            Icon(painterResource(R.drawable.ic_import), null, Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("导入")
-        }
-    }) {
-        // 「语音包」入口始终在：轻量版没装时点进去就是安装列表。 Always shown; on lite it leads to installing.
-        OfflineModelsCard(models) { nav.push(if (runtimeReady) Route.Models else Route.VoiceUpgrade) }
-        if (plugins.isEmpty()) {
-            Column(Modifier.fillMaxWidth().padding(top = 96.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(painterResource(R.drawable.ic_waveform), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("还没有语音引擎", style = MaterialTheme.typography.titleMedium)
-                val ctx = androidx.compose.ui.platform.LocalContext.current
-                Text(
-                    if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) "手机上没有找到系统语音服务。下载离线语音包（约 30\u00A0MB）即可在手机上识别，也可以任选其它方式："
-                    else "手机上没有找到系统语音服务。可以任选一种方式：",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 32.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-                if (com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild) {
+    val engine = remember(modelTick) { engines.active() }
+    SubPage("离线语音") {
+        OfflineModelsCard(models) { nav.push(Route.Models) }
+        if (engine == null) {
+            GroupCard(Modifier.padding(top = 12.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("下载后才能使用语音", style = MaterialTheme.typography.titleMedium)
+                    Text("先下载一个离线识别模型。轻量版会同时安装运行库，之后识别无需联网。")
                     Button(onClick = { nav.push(Route.VoiceUpgrade) }) { Text("下载离线语音包") }
                 }
-                FilledTonalButton(onClick = { com.weavetext.ime.voice.VoiceHelp.openSystemVoiceSettings(ctx) }) { Text("打开系统语音输入设置") }
-                FilledTonalButton(onClick = importer.launch) { Text("导入 .xipk 插件") }
             }
         } else {
-            GroupTitle("已安装 · ${plugins.size}")
+            GroupTitle("识别设置")
             GroupCard {
-                plugins.forEachIndexed { i, p ->
-                    if (i > 0) RowDivider()
-                    PluginRow(p, p.id == active, onSelect = {
-                        engines.activeId = p.id
-                        tick++
-                        scope.launch { snack.showSnackbar("已切换到 ${p.name}") }
-                    }, onDetail = { nav.push(Route.VoiceDetail(p.id)) })
-                }
-            }
-            if (plugins.size >= 2) CombineCard(engines, plugins, active) { tick++ }
-        }
-        // 停用的系统语音识别：可以随时恢复。 A disabled platform recognizer can be restored.
-        val systemOff = remember(tick) { engines.systemPresent() && engines.systemDisabled }
-        if (systemOff) {
-            GroupCard(Modifier.padding(top = 12.dp)) {
-                SettingRow("系统语音识别已停用", "不会出现在引擎列表和键盘里") {
-                    TextButton(onClick = { engines.systemDisabled = false; tick++ }) { Text("恢复") }
-                }
+                SettingRow("实时文字、终稿与标点", "选择已下载的模型", onClick = { nav.push(Route.VoiceDetail(engine.id)) }) { Chevron() }
             }
         }
-        Row(Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(painterResource(R.drawable.ic_info), null, Modifier.size(16.dp).padding(top = 1.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                "本地离线识别在手机上完成；导入的插件会把语音发送到其服务进行识别，且只能访问声明的域名。点击行切换主引擎，点击右侧图标查看详情与设置。",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Text(
+            "点按开始，再点结束；停顿不会结束录音。按住模式在松手后结束。波纹随麦克风音量跳动，识别文字会直接显示在输入框中。",
+            Modifier.padding(24.dp), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
-    importer.Sheet()
 }
 
 /**
@@ -471,11 +424,6 @@ fun VoiceDetailScreen(id: String) {
             // 内置引擎不能删除；系统语音识别可以停用。 Built-ins can't be removed; the platform recognizer can be disabled.
             if (!isBuiltinEngine(plugin.id)) {
                 TextButton(onClick = { confirmDelete = true }) { Text("删除插件", color = MaterialTheme.colorScheme.error) }
-            } else if (plugin.id == com.weavetext.ime.voice.SYSTEM_ENGINE_ID) {
-                TextButton(onClick = {
-                    engines.systemDisabled = true
-                    nav.pop()
-                }) { Text("停用系统语音识别", color = MaterialTheme.colorScheme.error) }
             }
         }
     }

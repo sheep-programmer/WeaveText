@@ -7,6 +7,7 @@ enum class ModelKind(val key: String) {
     ASR_STREAMING("asr-streaming"),
     ASR_OFFLINE("asr-offline"),
     PUNCTUATION("punctuation"),
+    VAD("vad"),
     /** 识别运行库（轻量版按需下载）。 Speech runtime libraries, downloaded on demand by the lite build. */
     ASR_RUNTIME("asr-runtime");
 

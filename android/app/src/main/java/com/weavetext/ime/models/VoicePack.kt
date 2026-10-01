@@ -8,7 +8,7 @@ package com.weavetext.ime.models
  * together with one combined progress. Once both are installed the onReady given to [start] runs (used to
  * select the local engine). Final-pass and punctuation models stay optional downloads on the models page.
  */
-class VoicePack(private val repo: ModelRepository) {
+class VoicePack(private val repo: ModelRepository, private val bundledRuntime: Boolean = AsrRuntime.bundled) {
     sealed interface State {
         /** 尚未下载；[bytes] 为还需下载的大小。 Not downloaded; [bytes] still to download. */
         data class Idle(val bytes: Long) : State
@@ -23,7 +23,8 @@ class VoicePack(private val repo: ModelRepository) {
     val parts: List<ModelSpec> = PART_IDS.mapNotNull { repo.catalog.find(it) }
 
     /** 目录里两样都有（运行库只在轻量版、且架构相符时才列出）。 Both parts listed for this build and ABI. */
-    val supported: Boolean get() = parts.size == PART_IDS.size
+    val supported: Boolean get() = parts.any { it.id == "asr-stream-small" } &&
+        (parts.any { it.id == AsrRuntime.ID } || bundledRuntime)
 
     fun state(): State {
         val states = parts.map { repo.state(it.id) }
@@ -100,11 +101,16 @@ class VoicePack(private val repo: ModelRepository) {
                 val s = repo.state(rt.id)
                 if (s == ModelState.NotInstalled || s is ModelState.Failed) repo.download(rt.id, allowMetered)
             }
+            if (m.kind == ModelKind.ASR_OFFLINE || m.kind == ModelKind.ASR_STREAMING) {
+                repo.catalog.find("vad-silero")?.let { vad ->
+                    if (!repo.state(vad.id).isReady) repo.download(vad.id, allowMetered)
+                }
+            }
             repo.download(id, allowMetered)
         }
 
         /** 运行库在前：它小，先装好。 Runtime first: it is small. */
-        val PART_IDS = listOf(AsrRuntime.ID, "asr-stream-small")
+        val PART_IDS = listOf(AsrRuntime.ID, "vad-silero", "asr-stream-small")
 
         /** 下载失败的原因换成用户能懂的话；已是中文的原样保留。 Readable failure text; Chinese messages pass through. */
         fun friendly(raw: String): String = when {

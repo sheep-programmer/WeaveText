@@ -25,11 +25,11 @@ class VoicePackTest {
 
     // ------------------------------------------------------------ catalog per build
 
-    @Test fun voiceBuildHidesRuntimeAndKeepsBuiltins() {
+    @Test fun voiceBuildRequiresAModelDownload() {
         val c = FakeModels.CATALOG
         assertNull(c.find(AsrRuntime.ID))
-        assertTrue(c.find(stream)!!.builtin)
-        assertTrue(c.find(stream)!!.description.contains("内置"))
+        assertFalse(c.find(stream)!!.builtin)
+        assertFalse(c.find(stream)!!.description.contains("内置"))
     }
 
     @Test fun liteListsRuntimeWithFallbackSourcesAndNoBuiltins() {
@@ -68,6 +68,8 @@ class VoicePackTest {
     @Test fun bundledRuntimeIsAlwaysReady() {
         val repo = FakeModels()
         assertTrue(AsrRuntime.ready(repo, bundled = true))
+        assertFalse(AsrRuntime.engineReady(repo, bundled = true))
+        repo.emit(stream, ModelState.Installed)
         assertTrue(AsrRuntime.engineReady(repo, bundled = true))
     }
 
@@ -80,18 +82,19 @@ class VoicePackTest {
 
     @Test fun packDownloadsBothPartsWithCombinedProgressThenSelects() {
         val repo = FakeModels(catalog = FakeModels.LITE)
-        val pack = VoicePack(repo)
+        val pack = VoicePack(repo, bundledRuntime = false)
         assertTrue(pack.supported)
         val rt = repo.catalog.find(AsrRuntime.ID)!!
         val model = repo.catalog.find(stream)!!
-        val size = rt.archiveSize + model.archiveSize
+        val size = rt.archiveSize + model.archiveSize + repo.catalog.find("vad-silero")!!.archiveSize
         assertEquals(VoicePack.State.Idle(size), pack.state())
-        assertTrue("约 30 MB / about 30 MB", size in 29_000_000L..32_000_000L)
+        assertTrue("约 30 MB / about 30 MB", size in 32_000_000L..35_000_000L)
 
         var selected = 0
         pack.start(allowMetered = false) { selected++ }
-        assertEquals(listOf(AsrRuntime.ID to false, stream to false), repo.downloads)
+        assertEquals(listOf(AsrRuntime.ID to false, "vad-silero" to false, stream to false), repo.downloads)
 
+        repo.emit("vad-silero", progress(0, repo.catalog.find("vad-silero")!!.archiveSize))
         repo.emit(AsrRuntime.ID, progress(4_000_000, rt.archiveSize, 1_000_000))
         repo.emit(stream, progress(1_000_000, model.archiveSize, 500_000, "gh-proxy.com"))
         val s = pack.state() as VoicePack.State.Downloading
@@ -100,6 +103,7 @@ class VoicePackTest {
         assertEquals(1_500_000L, s.bytesPerSecond)
 
         repo.emit(AsrRuntime.ID, ModelState.Installed)
+        repo.emit("vad-silero", ModelState.Installed)
         repo.emit(stream, ModelState.Extracting)
         assertEquals(VoicePack.State.Installing, pack.state())
         assertEquals(0, selected)
@@ -112,8 +116,8 @@ class VoicePackTest {
     }
 
     @Test fun packOnlyFetchesMissingPartsAndHonoursMetered() {
-        val repo = FakeModels(mapOf(AsrRuntime.ID to ModelState.Installed), catalog = FakeModels.LITE)
-        val pack = VoicePack(repo)
+        val repo = FakeModels(mapOf(AsrRuntime.ID to ModelState.Installed, "vad-silero" to ModelState.Installed), catalog = FakeModels.LITE)
+        val pack = VoicePack(repo, bundledRuntime = false)
         assertEquals(VoicePack.State.Idle(repo.catalog.find(stream)!!.archiveSize), pack.state())
         pack.start(allowMetered = true)
         assertEquals(listOf(stream to true), repo.downloads)
@@ -121,12 +125,13 @@ class VoicePackTest {
 
     @Test fun packFailureIsReadableAndCancelStopsBoth() {
         val repo = FakeModels(catalog = FakeModels.LITE)
-        val pack = VoicePack(repo)
+        val pack = VoicePack(repo, bundledRuntime = false)
         var selected = 0
         pack.start(allowMetered = false) { selected++ }
         repo.emit(AsrRuntime.ID, ModelState.Failed("ARCHIVE: sherpa-onnx-runtime.tar.bz2: all mirrors failed:"))
         // 另一半还在下载：仍显示进度。 The other part is still going: still downloading.
         assertTrue(pack.state() is VoicePack.State.Downloading)
+        repo.emit("vad-silero", ModelState.NotInstalled)
         repo.emit(stream, ModelState.Failed("当前为移动网络，已按设置暂停下载"))
         val f = pack.state() as VoicePack.State.Failed
         assertTrue(f.message, f.message.startsWith("下载失败") || f.message.startsWith("当前为移动网络"))
@@ -137,14 +142,14 @@ class VoicePackTest {
         // 重试后取消：两样都取消，回到未下载。 Retry then cancel: both cancelled, back to idle.
         pack.start(allowMetered = false) { selected++ }
         pack.cancel()
-        assertEquals(listOf(AsrRuntime.ID, stream), repo.cancels)
+        assertEquals(listOf(AsrRuntime.ID, "vad-silero", stream), repo.cancels)
         assertTrue(pack.state() is VoicePack.State.Idle)
         assertEquals(0, selected)
     }
 
     @Test fun packUnsupportedWithoutRuntimeEntry() {
-        assertFalse(VoicePack(FakeModels()).supported)
-        assertFalse(VoicePack(FakeModels(catalog = FakeModels.LITE_X86)).supported)
+        assertTrue(VoicePack(FakeModels(), bundledRuntime = true).supported)
+        assertFalse(VoicePack(FakeModels(catalog = FakeModels.LITE_X86), bundledRuntime = false).supported)
     }
 
     @Test fun nativeErrorsBecomeReadable() {
@@ -163,7 +168,7 @@ class VoicePackTest {
         repo.downloads.clear()
         repo.emit(AsrRuntime.ID, ModelState.Installed)
         VoicePack.install(repo, stream, allowMetered = true)
-        assertEquals(listOf(stream to true), repo.downloads)
+        assertEquals(listOf("vad-silero" to true, stream to true), repo.downloads)
         // 卸载运行库：模型保留，但本地识别下线。 Uninstalling the runtime keeps the model but disables the engine.
         repo.emit(stream, ModelState.Installed)
         assertTrue(AsrRuntime.engineReady(repo, bundled = false))

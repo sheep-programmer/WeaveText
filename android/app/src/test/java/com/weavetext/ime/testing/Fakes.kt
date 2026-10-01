@@ -41,7 +41,7 @@ class FakeEngines(var plugins: List<VoicePlugin> = SAMPLE) : VoiceEngines {
         }
 
         val SAMPLE = listOf(
-            VoicePlugin("org.example.asr.system", "系统语音识别", "调用手机自带的语音识别服务，无需任何配置。", "1.0.3", null, emptyList()),
+            VoicePlugin("weave.local", "离线语音", "下载模型后在手机上识别。", "", null, emptyList()),
             VoicePlugin(
                 "org.example.asr.cloud", "示例云端识别", "示例插件：WebSocket 流式识别，支持自动标点。", "1.0.4", pngIcon(Color.rgb(0x1B, 0x1E, 0x23)),
                 listOf(

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import threading
 import wave
 import xml.etree.ElementTree as ET
 
@@ -29,7 +30,12 @@ def main():
     parser.add_argument("--delete", type=int, nargs=2, required=True, metavar=("X", "Y"))
     parser.add_argument("--expect", required=True, help="Words spoken in the recording")
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--mode", choices=("hold", "tap"), default="hold")
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--pause-seconds", type=float, default=8)
+    parser.add_argument("--wave-snapshots", action="store_true", help="Capture speaking and pause frames")
     args = parser.parse_args()
+    if args.repeat < 1 or args.pause_seconds < 0: parser.error("Invalid repetition or pause")
     if not args.serial.startswith("emulator-"):
         parser.error("This microphone injection test requires a dedicated emulator")
 
@@ -47,6 +53,11 @@ def main():
             raise AssertionError("The test editor is not visible")
         return texts[0]
 
+    def capturing():
+        pid = shell("pidof", "com.weavetext.ime").strip().split()[0]
+        capture = shell("dumpsys", "media.audio_flinger")
+        return bool(re.search(r"^\s*yes\s+\d+\s+" + pid + r"(?:/|\s)", capture, re.M))
+
     values = dict(line.split("=", 1) for line in args.discovery.read_text().splitlines() if "=" in line)
     metadata = [("authorization", "Bearer " + values["grpc.token"])]
     endpoint = "127.0.0.1:" + values["grpc.port"]
@@ -58,34 +69,61 @@ def main():
                          format=pb.AudioFormat.AUD_FMT_S16, mode=pb.AudioFormat.MODE_UNSPECIFIED)
 
     def packets():
-        data = bytes(9600) + pcm + bytes(32000)
-        start = time.monotonic()
-        for offset in range(0, len(data), 640):
-            delay = start + offset / 32000 - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
-            yield pb.AudioPacket(format=fmt, audio=data[offset:offset + 640])
+        data = bytes(9600) + (bytes(int(32000 * args.pause_seconds)).join([pcm] * args.repeat)) + bytes(32000)
+        # MODE_UNSPECIFIED is queue-paced by the emulator. Wall-clock pacing as well
+        # causes under-runs when a busy host cannot schedule Python every 20 ms.
+        for offset in range(0, len(data), 1280):
+            yield pb.AudioPacket(format=fmt, audio=data[offset:offset + 1280])
 
     if editor_text():
         raise AssertionError("Start with an empty editor to prove text came from speech")
+    if capturing():
+        raise AssertionError("Stop the existing recording first to prove the start button works")
+    wave_frames = []
+    wave_errors = []
+    wave_thread = None
     with grpc.insecure_channel(endpoint) as channel:
         stub = rpc.EmulatorControllerStub(channel)
         # Use injected audio only, without recording the host's microphone.
         stub.setMicrophoneState(pb.MicrophoneState(realAudioEnabled=False), metadata=metadata, timeout=5)
-        shell("input", "motionevent", "DOWN", *args.mic)
+        if args.mode == "hold": shell("input", "motionevent", "DOWN", *args.mic)
+        else: shell("input", "tap", *args.mic)
         try:
-            time.sleep(1.2)
-            pid = shell("pidof", "com.weavetext.ime").strip().split()[0]
-            capture = shell("dumpsys", "media.audio_flinger")
-            if not re.search(r"^\s*yes\s+\d+\s+" + pid + r"(?:/|\s)", capture, re.M):
-                raise AssertionError("The actual IME's AudioRecord did not start")
-            stub.injectAudio(packets(), metadata=metadata, timeout=25)
+            ready_deadline = time.monotonic() + 85
+            while True:
+                if capturing(): break
+                if time.monotonic() > ready_deadline: raise AssertionError("The actual IME's AudioRecord did not start")
+                time.sleep(0.3)
+            print("Microphone ready; injecting", args.repeat, "speech segments with", args.pause_seconds, "second pauses", flush=True)
+            if args.wave_snapshots:
+                def capture_waves():
+                    started = time.monotonic()
+                    try:
+                        for offset, label in [(3.0, "speaking"), (len(pcm) / 32000 + 3.3, "pause")]:
+                            time.sleep(max(0, started + offset - time.monotonic()))
+                            path = args.report.with_name(args.report.stem + "-wave-" + label + ".png")
+                            with path.open("wb") as output:
+                                subprocess.run(adb + ["exec-out", "screencap", "-p"], stdout=output, check=True)
+                            wave_frames.append(str(path))
+                    except Exception as error: wave_errors.append(str(error))
+                wave_thread = threading.Thread(target=capture_waves)
+                wave_thread.start()
+            duration = len(pcm) / 32000 * args.repeat + args.pause_seconds * (args.repeat - 1) + 1.3
+            stub.injectAudio(packets(), metadata=metadata, timeout=max(90, duration + 30))
         finally:
-            shell("input", "motionevent", "UP", *args.mic)
-    deadline = time.monotonic() + 15
+            if args.mode == "hold": shell("input", "motionevent", "UP", *args.mic)
+            else: shell("input", "tap", *args.mic)
+    if wave_thread:
+        wave_thread.join()
+        if wave_errors: raise AssertionError(wave_errors)
+    stopped_deadline = time.monotonic() + 5
+    while capturing():
+        if time.monotonic() > stopped_deadline: raise AssertionError("The stop button did not stop the microphone")
+        time.sleep(0.1)
+    deadline = time.monotonic() + 60
     while True:
         text = editor_text()
-        if args.expect in text:
+        if text.count(args.expect) >= args.repeat:
             break
         if time.monotonic() >= deadline:
             raise AssertionError("Speech did not reach the editor: " + repr(text))
@@ -99,6 +137,8 @@ def main():
     if after:
         raise AssertionError("Recognized text could not be deleted completely: " + repr(after))
     report = {"input": "emulated microphone PCM", "wav": str(args.wav), "text": text,
+              "mode": args.mode, "repetitions": args.repeat, "pause_seconds": args.pause_seconds,
+              "wave_frames": wave_frames,
               "after_keyboard_deletion": after, "package": "com.weavetext.ime"}
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print("PASS: microphone -> public IME -> editor text -> delete to empty", flush=True)

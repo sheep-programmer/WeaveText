@@ -42,7 +42,7 @@ import com.weavetext.ime.voice.VoiceUpgrade
 fun VoiceUpgradeScreen() {
     val repo = LocalDeps.current.models()
     val pack = remember(repo) { VoicePack(repo) }
-    if (!AsrRuntime.bundled && pack.supported) ModelsScreen() else FullBuildPage()
+    if (pack.supported) ModelsScreen() else FullBuildPage()
 }
 
 /**
@@ -67,7 +67,7 @@ internal fun VoicePackHeader(repo: ModelRepository) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("推荐：一键装好离线识别", style = MaterialTheme.typography.titleMedium)
             Text(
-                "安装「识别运行库」和「实时识别 · 小」后即可在手机上识别语音：不联网，语音不离开设备，效果与离线语音版相同。" +
+                "下载实时模型与人声检测即可开始；轻量版会同时下载运行库。之后所有识别都在手机上完成。" +
                     "下面的列表可以逐项安装或卸载更准的模型。建议在 Wi-Fi 下下载。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -128,7 +128,6 @@ internal fun VoiceOtherWays() {
     GroupCard {
         FullBuildRow()
         RowDivider()
-        SettingRow("打开系统语音输入设置", "手机自带语音服务可用时，织文会自动使用", onClick = { VoiceHelp.openSystemVoiceSettings(ctx) }) { Chevron() }
     }
 }
 
@@ -221,7 +220,6 @@ private fun FullBuildPage() = SubPage("安装离线语音") {
     }
     GroupTitle("其他方式")
     GroupCard {
-        SettingRow("打开系统语音输入设置", "手机自带语音服务可用时，织文会自动使用", onClick = { VoiceHelp.openSystemVoiceSettings(ctx) }) { Chevron() }
         RowDivider()
         SettingRow("在浏览器中下载", "从发布页手动下载离线语音版", onClick = { VoiceHelp.openOfflineBuild(ctx) }) { Chevron() }
     }

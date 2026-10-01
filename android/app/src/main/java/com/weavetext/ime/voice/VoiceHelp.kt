@@ -27,13 +27,6 @@ object VoiceHelp {
         start(ctx, Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES_URL)))
     }
 
-    /** 打开系统「语音输入」设置；个别系统没有该页面时退到语言与输入法、再退到设置首页。 */
-    fun openSystemVoiceSettings(ctx: Context) {
-        for (action in listOf(Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_INPUT_METHOD_SETTINGS, Settings.ACTION_SETTINGS)) {
-            if (start(ctx, Intent(action))) return
-        }
-    }
-
     /** 打开系统的输入法管理（启用其他语音输入法）。 Open the system IME settings to enable another voice IME. */
     fun openInputMethodSettings(ctx: Context) {
         if (!start(ctx, Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))) start(ctx, Intent(Settings.ACTION_SETTINGS))

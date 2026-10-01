@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "mirrors": [
     {
       "id": "github",
@@ -70,14 +70,37 @@
       "bench": null
     },
     {
+      "id": "vad-silero",
+      "kind": "vad",
+      "arch": "silero-vad",
+      "name": "人声检测 · Silero",
+      "description": "区分人声与背景声音，辅助整句模型分句。下载约 2.3 MB；不用于停止录音。",
+      "license": "MIT",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad_v5.onnx",
+        "sha256": "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
+        "size": 2313101
+      },
+      "files": [
+        {
+          "name": "silero_vad_v5.onnx",
+          "sha256": "6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396",
+          "size": 2313101
+        }
+      ],
+      "installedSize": 2313101,
+      "bench": null
+    },
+    {
       "id": "asr-stream-small",
       "kind": "asr-streaming",
       "arch": "zipformer2-ctc",
       "name": "实时识别 · 小",
-      "description": "流式识别，边说边出字。内置，约 26 MB。",
-      "descriptionLite": "流式识别，边说边出字，约 26 MB。语音包默认包含它。",
+      "description": "下载后边说边出字，适合多数手机。安装约 26 MB；推荐先下载它。",
+      "descriptionLite": "下载后边说边出字，适合多数手机。安装约 26 MB；推荐先下载它。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
-      "builtin": true,
+      "builtin": false,
       "archive": {
         "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01.tar.bz2",
         "sha256": "b3b309f7ce4a737195fcc6963ea19b0653a7d3401580af5ae0d3e284cbb71f0b",
@@ -235,6 +258,90 @@
         "rtf": 0.07
       },
       "hf": "csukuangfj/sherpa-onnx-paraformer-zh-int8-2025-10-07"
+    },
+    {
+      "id": "asr-dolphin-base",
+      "kind": "asr-offline",
+      "arch": "dolphin",
+      "name": "Dolphin · 轻量多语种",
+      "description": "支持东亚多语种与中文方言。整句离线识别；推荐配合实时模型使用。",
+      "license": "Apache-2.0",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02.tar.bz2",
+        "sha256": "6f23da2303c3c2e5fa6445c450fa2a7133cd57e3da070ae5f97ab9e0dfbb4a54",
+        "size": 80671385
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 103729802,
+          "sha256": "a3aa46c97f3f60f135ff949793cb05fabe7a0b3c484dc2e3cc699d354ee11b76"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 504662,
+          "sha256": "c3788261a51df1899ea4b210b552cd42139204de72c0ad60f6cebb199078872e"
+        }
+      ],
+      "installedSize": 104234464,
+      "bench": null
+    },
+    {
+      "id": "asr-dolphin-small",
+      "kind": "asr-offline",
+      "arch": "dolphin",
+      "name": "Dolphin · 多语种增强",
+      "description": "支持东亚多语种与中文方言，模型较大。适合内存充足的手机做终稿识别。",
+      "license": "Apache-2.0",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-dolphin-small-ctc-multi-lang-int8-2025-04-02.tar.bz2",
+        "sha256": "7346b00ffe42396fff5c96d11892f0d4d72ac11418d47c5a8ada2b0f6ac8d27b",
+        "size": 191534345
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 249658954,
+          "sha256": "c1afcb9265de0ebd853eb8f570b371f399a6f9b2b9af9a3cb17c2e509171e697"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 504662,
+          "sha256": "c3788261a51df1899ea4b210b552cd42139204de72c0ad60f6cebb199078872e"
+        }
+      ],
+      "installedSize": 250163616,
+      "bench": null
+    },
+    {
+      "id": "asr-telespeech",
+      "kind": "asr-offline",
+      "arch": "telespeech-ctc",
+      "name": "TeleSpeech · 中文方言",
+      "description": "支持普通话与多种中文方言。整句离线识别；可与实时模型组合。",
+      "license": "TeleSpeech 模型社区许可协议",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04.tar.bz2",
+        "sha256": "a99439d32ae3b0d8e22e55e36d438894c9712d749eca832dd92d08a7f9af659b",
+        "size": 183168450
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 340990949,
+          "sha256": "2bf52b42c971696dc02a2db94c52c8fc75fab321ac4cf10b5a2d6863a73a33b3"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 66642,
+          "sha256": "f1dea25fe751bc3eebd27b2ff3b86298f9598686a090701990dabddde0eba508"
+        }
+      ],
+      "installedSize": 341057591,
+      "bench": null
     },
     {
       "id": "punc-ct",

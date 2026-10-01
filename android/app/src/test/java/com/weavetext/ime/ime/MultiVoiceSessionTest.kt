@@ -124,15 +124,6 @@ class MultiVoiceSessionTest {
         assertEquals(VoiceSession.State.IDLE, session.state)
     }
 
-    @Test fun systemEngineIsSingleOnly() {
-        val sys = VoicePlugin("weave.system", "系统语音识别", "", "", null, emptyList())
-        val e = FakeEngines(listOf(sys, local, a)).apply { activeId = sys.id; extraIds = setOf(local.id, a.id) }
-        assertEquals(listOf(sys), e.selection())
-        e.activeId = local.id
-        e.extraIds = setOf(sys.id, a.id)
-        assertEquals(listOf(local, a), e.selection())
-    }
-
     @Test fun singleEngineUnchanged() {
         engines.extraIds = emptySet()
         session.start()

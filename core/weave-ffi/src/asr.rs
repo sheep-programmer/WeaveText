@@ -32,6 +32,28 @@ struct FeatureConfig {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct VadConfig {
+    model: P,
+    threshold: f32,
+    min_silence: f32,
+    min_speech: f32,
+    window_size: i32,
+    max_speech: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VadModelConfig {
+    silero: VadConfig,
+    sample_rate: i32,
+    num_threads: i32,
+    provider: P,
+    debug: i32,
+    ten: VadConfig,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct Three {
     a: P,
     b: P,
@@ -303,6 +325,13 @@ macro_rules! api {
 }
 
 api! {
+    create_vad: "SherpaOnnxCreateVoiceActivityDetector" => fn(*const VadModelConfig, f32) -> H;
+    destroy_vad: "SherpaOnnxDestroyVoiceActivityDetector" => fn(H);
+    vad_accept: "SherpaOnnxVoiceActivityDetectorAcceptWaveform" => fn(H, *const f32, i32);
+    vad_detected: "SherpaOnnxVoiceActivityDetectorDetected" => fn(H) -> i32;
+    vad_empty: "SherpaOnnxVoiceActivityDetectorEmpty" => fn(H) -> i32;
+    vad_reset: "SherpaOnnxVoiceActivityDetectorReset" => fn(H);
+    vad_clear: "SherpaOnnxVoiceActivityDetectorClear" => fn(H);
     create_online: "SherpaOnnxCreateOnlineRecognizer" => fn(*const OnlineRecognizerConfig) -> H;
     destroy_online: "SherpaOnnxDestroyOnlineRecognizer" => fn(H);
     create_online_stream: "SherpaOnnxCreateOnlineStream" => fn(H) -> H;
@@ -342,6 +371,60 @@ pub fn load(dir: &Path) -> Result<(), String> {
 
 pub fn is_loaded() -> bool {
     API.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+pub struct Vad {
+    api: Arc<Api>,
+    detector: H,
+}
+
+// SAFETY: The JNI wrapper serializes access with a mutex, just as for Online and Offline.
+unsafe impl Send for Vad {}
+
+impl Vad {
+    pub fn new(model: &str) -> Result<Self, String> {
+        let api = api()?;
+        let (model, cpu) = (cstr(model)?, cstr("cpu")?);
+        let mut config: VadModelConfig = zeroed();
+        config.silero = VadConfig {
+            model: model.as_ptr(),
+            threshold: 0.35,
+            min_silence: 1.6,
+            min_speech: 0.1,
+            window_size: 512,
+            max_speech: 30.0,
+        };
+        config.sample_rate = 16000;
+        config.num_threads = 1;
+        config.provider = cpu.as_ptr();
+        let detector = unsafe { (api.create_vad)(&config, 60.0) };
+        if detector.is_null() {
+            return Err("failed to create speech detector".into());
+        }
+        Ok(Self { api, detector })
+    }
+
+    pub fn accept(&self, samples: &[f32]) -> i32 {
+        unsafe {
+            (self.api.vad_accept)(self.detector, samples.as_ptr(), samples.len() as i32);
+            let speech = (self.api.vad_detected)(self.detector) != 0;
+            let ended = (self.api.vad_empty)(self.detector) == 0;
+            i32::from(speech) | (i32::from(ended) << 1)
+        }
+    }
+
+    pub fn reset(&self) {
+        unsafe {
+            (self.api.vad_reset)(self.detector);
+            (self.api.vad_clear)(self.detector);
+        }
+    }
+}
+
+impl Drop for Vad {
+    fn drop(&mut self) {
+        unsafe { (self.api.destroy_vad)(self.detector) };
+    }
 }
 
 fn api() -> Result<Arc<Api>, String> {
@@ -384,7 +467,13 @@ unsafe impl Send for Online {}
 
 impl Online {
     /// 目前支持 zipformer2-ctc 流式模型。 Currently zipformer2-ctc streaming models.
-    pub fn new(arch: &str, model: &str, tokens: &str, threads: i32, ep: Endpoint) -> Result<Online, String> {
+    pub fn new(
+        arch: &str,
+        model: &str,
+        tokens: &str,
+        threads: i32,
+        ep: Endpoint,
+    ) -> Result<Online, String> {
         let api = api()?;
         if arch != "zipformer2-ctc" {
             return Err(format!("unsupported streaming arch {arch}"));
@@ -392,7 +481,10 @@ impl Online {
         let (model, tokens) = (cstr(model)?, cstr(tokens)?);
         let (cpu, greedy) = (cstr("cpu")?, cstr("greedy_search")?);
         let mut c: OnlineRecognizerConfig = zeroed();
-        c.feat_config = FeatureConfig { sample_rate: 16000, feature_dim: 80 };
+        c.feat_config = FeatureConfig {
+            sample_rate: 16000,
+            feature_dim: 80,
+        };
         c.model_config.zipformer2_ctc.model = model.as_ptr();
         c.model_config.tokens = tokens.as_ptr();
         c.model_config.num_threads = threads.max(1);
@@ -481,10 +573,15 @@ impl Offline {
         let (model, tokens) = (cstr(model)?, cstr(tokens)?);
         let (cpu, greedy, auto) = (cstr("cpu")?, cstr("greedy_search")?, cstr("auto")?);
         let mut c: OfflineRecognizerConfig = zeroed();
-        c.feat_config = FeatureConfig { sample_rate: 16000, feature_dim: 80 };
+        c.feat_config = FeatureConfig {
+            sample_rate: 16000,
+            feature_dim: 80,
+        };
         match arch {
             "zipformer-ctc" => c.model_config.zipformer_ctc.model = model.as_ptr(),
             "paraformer" => c.model_config.paraformer.model = model.as_ptr(),
+            "dolphin" => c.model_config.dolphin.model = model.as_ptr(),
+            "telespeech-ctc" => c.model_config.telespeech_ctc = model.as_ptr(),
             "sense-voice" => {
                 c.model_config.sense_voice.model = model.as_ptr();
                 c.model_config.sense_voice.language = auto.as_ptr();
@@ -512,7 +609,11 @@ impl Offline {
             (self.api.offline_accept)(s, 16000, samples.as_ptr(), samples.len() as i32);
             (self.api.offline_decode)(self.rec, s);
             let r = (self.api.offline_result)(s);
-            let t = if r.is_null() { String::new() } else { take_text((*r).text) };
+            let t = if r.is_null() {
+                String::new()
+            } else {
+                take_text((*r).text)
+            };
             if !r.is_null() {
                 (self.api.offline_result_free)(r);
             }
@@ -554,7 +655,9 @@ impl Punct {
     }
 
     pub fn punctuate(&self, text: &str) -> String {
-        let Ok(t) = cstr(text) else { return text.to_string() };
+        let Ok(t) = cstr(text) else {
+            return text.to_string();
+        };
         unsafe {
             let out = (self.api.punct_add)(self.h, t.as_ptr());
             if out.is_null() {
@@ -602,14 +705,20 @@ mod tests {
         assert_eq!(offset_of!(OfflineModelConfig, zipformer_ctc), 240);
         assert_eq!(offset_of!(OfflineModelConfig, sense_voice), 152);
         assert_eq!(offset_of!(OfflineModelConfig, tokens), 96);
-        assert_eq!(offset_of!(OnlineRecognizerConfig, rule1_min_trailing_silence), 160);
+        assert_eq!(
+            offset_of!(OnlineRecognizerConfig, rule1_min_trailing_silence),
+            160
+        );
         assert_eq!(offset_of!(OfflineRecognizerConfig, decoding_method), 528);
     }
 
     /// 真实运行时 + 真实模型（环境变量给出路径时才跑）。 Real runtime and model, when paths are provided.
     #[test]
     fn real_runtime_roundtrip() {
-        let (Ok(dir), Ok(model_dir)) = (std::env::var("WEAVE_ASR_RUNTIME"), std::env::var("WEAVE_ASR_MODEL")) else {
+        let (Ok(dir), Ok(model_dir)) = (
+            std::env::var("WEAVE_ASR_RUNTIME"),
+            std::env::var("WEAVE_ASR_MODEL"),
+        ) else {
             return;
         };
         load(Path::new(&dir)).expect("load runtime");
@@ -619,17 +728,27 @@ mod tests {
             m.join("model.int8.onnx").to_str().unwrap(),
             m.join("tokens.txt").to_str().unwrap(),
             2,
-            Endpoint { no_speech: 2.4, after_speech: 0.8, max_utterance: 20.0 },
+            Endpoint {
+                no_speech: 2.4,
+                after_speech: 0.8,
+                max_utterance: 20.0,
+            },
         )
         .expect("create");
         let silence = vec![0f32; 16000];
         o.accept(&silence);
         o.finish();
-        assert!(o.text().chars().count() < 4, "silence should give (almost) nothing");
+        assert!(
+            o.text().chars().count() < 4,
+            "silence should give (almost) nothing"
+        );
         o.reset();
         if let Ok(wav) = std::env::var("WEAVE_ASR_WAV") {
             let bytes = std::fs::read(wav).unwrap();
-            let pcm: Vec<f32> = bytes[44..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
+            let pcm: Vec<f32> = bytes[44..]
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect();
             o.accept(&pcm);
             o.finish();
             let t = o.text();
@@ -663,7 +782,7 @@ mod jni_api {
     use jni::sys::{jboolean, jfloat, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
     use jni::JNIEnv;
 
-    use super::{Endpoint, Offline, Online, Punct};
+    use super::{Endpoint, Offline, Online, Punct, Vad};
 
     static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
@@ -679,7 +798,9 @@ mod jni_api {
     }
 
     fn out(env: &mut JNIEnv, s: &str) -> jstring {
-        env.new_string(s).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+        env.new_string(s)
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut())
     }
 
     fn floats(env: &mut JNIEnv, a: &JFloatArray, n: jint) -> Vec<f32> {
@@ -729,7 +850,9 @@ mod jni_api {
         _c: JClass,
         dir: JString,
     ) -> jstring {
-        let Some(dir) = string(&mut env, &dir) else { return out(&mut env, "no dir") };
+        let Some(dir) = string(&mut env, &dir) else {
+            return out(&mut env, "no dir");
+        };
         match catch_unwind(|| super::load(Path::new(&dir))) {
             Ok(Ok(())) => std::ptr::null_mut(),
             Ok(Err(e)) => out(&mut env, &e),
@@ -738,12 +861,22 @@ mod jni_api {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeIsLoaded(_env: JNIEnv, _c: JClass) -> jboolean {
-        if super::is_loaded() { JNI_TRUE } else { JNI_FALSE }
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeIsLoaded(
+        _env: JNIEnv,
+        _c: JClass,
+    ) -> jboolean {
+        if super::is_loaded() {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        }
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeLastError(mut env: JNIEnv, _c: JClass) -> jstring {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeLastError(
+        mut env: JNIEnv,
+        _c: JClass,
+    ) -> jstring {
         let e = LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner()).clone();
         out(&mut env, &e)
     }
@@ -761,13 +894,22 @@ mod jni_api {
         after_speech: jfloat,
         max_utterance: jfloat,
     ) -> jlong {
-        let (Some(arch), Some(model), Some(tokens)) =
-            (string(&mut env, &arch), string(&mut env, &model), string(&mut env, &tokens))
-        else {
+        let (Some(arch), Some(model), Some(tokens)) = (
+            string(&mut env, &arch),
+            string(&mut env, &model),
+            string(&mut env, &tokens),
+        ) else {
             return 0;
         };
-        let ep = Endpoint { no_speech, after_speech, max_utterance };
-        boxed(catch_unwind(|| Online::new(&arch, &model, &tokens, threads, ep)).unwrap_or(Err("panic".into())))
+        let ep = Endpoint {
+            no_speech,
+            after_speech,
+            max_utterance,
+        };
+        boxed(
+            catch_unwind(|| Online::new(&arch, &model, &tokens, threads, ep))
+                .unwrap_or(Err("panic".into())),
+        )
     }
 
     #[no_mangle]
@@ -783,28 +925,52 @@ mod jni_api {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineText(mut env: JNIEnv, _c: JClass, h: jlong) -> jstring {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineText(
+        mut env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) -> jstring {
         let t = with::<Online, String>(h, String::new(), |o| o.text());
         out(&mut env, &t)
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineIsEndpoint(_env: JNIEnv, _c: JClass, h: jlong) -> jboolean {
-        if with::<Online, bool>(h, false, |o| o.is_endpoint()) { JNI_TRUE } else { JNI_FALSE }
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineIsEndpoint(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) -> jboolean {
+        if with::<Online, bool>(h, false, |o| o.is_endpoint()) {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        }
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineReset(_env: JNIEnv, _c: JClass, h: jlong) {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineReset(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
         with::<Online, ()>(h, (), |o| o.reset());
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineFinish(_env: JNIEnv, _c: JClass, h: jlong) {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineFinish(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
         with::<Online, ()>(h, (), |o| o.finish());
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineDestroy(_env: JNIEnv, _c: JClass, h: jlong) {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOnlineDestroy(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
         destroy::<Online>(h);
     }
 
@@ -817,12 +983,17 @@ mod jni_api {
         tokens: JString,
         threads: jint,
     ) -> jlong {
-        let (Some(arch), Some(model), Some(tokens)) =
-            (string(&mut env, &arch), string(&mut env, &model), string(&mut env, &tokens))
-        else {
+        let (Some(arch), Some(model), Some(tokens)) = (
+            string(&mut env, &arch),
+            string(&mut env, &model),
+            string(&mut env, &tokens),
+        ) else {
             return 0;
         };
-        boxed(catch_unwind(|| Offline::new(&arch, &model, &tokens, threads)).unwrap_or(Err("panic".into())))
+        boxed(
+            catch_unwind(|| Offline::new(&arch, &model, &tokens, threads))
+                .unwrap_or(Err("panic".into())),
+        )
     }
 
     #[no_mangle]
@@ -839,8 +1010,54 @@ mod jni_api {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOfflineDestroy(_env: JNIEnv, _c: JClass, h: jlong) {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeOfflineDestroy(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
         destroy::<Offline>(h);
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeVadCreate(
+        mut env: JNIEnv,
+        _c: JClass,
+        model: JString,
+    ) -> jlong {
+        let Some(model) = string(&mut env, &model) else {
+            return 0;
+        };
+        boxed(catch_unwind(|| Vad::new(&model)).unwrap_or(Err("panic".into())))
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeVadAccept(
+        mut env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+        samples: JFloatArray,
+        n: jint,
+    ) -> jint {
+        let buf = floats(&mut env, &samples, n);
+        with::<Vad, i32>(h, 0, |v| v.accept(&buf))
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeVadReset(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
+        with::<Vad, ()>(h, (), |v| v.reset());
+    }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativeVadDestroy(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
+        destroy::<Vad>(h);
     }
 
     #[no_mangle]
@@ -850,7 +1067,9 @@ mod jni_api {
         model: JString,
         threads: jint,
     ) -> jlong {
-        let Some(model) = string(&mut env, &model) else { return 0 };
+        let Some(model) = string(&mut env, &model) else {
+            return 0;
+        };
         boxed(catch_unwind(|| Punct::new(&model, threads)).unwrap_or(Err("panic".into())))
     }
 
@@ -861,13 +1080,19 @@ mod jni_api {
         h: jlong,
         text: JString,
     ) -> jstring {
-        let Some(t) = string(&mut env, &text) else { return std::ptr::null_mut() };
+        let Some(t) = string(&mut env, &text) else {
+            return std::ptr::null_mut();
+        };
         let r = with::<Punct, String>(h, t.clone(), |p| p.punctuate(&t));
         out(&mut env, &r)
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativePunctDestroy(_env: JNIEnv, _c: JClass, h: jlong) {
+    pub extern "system" fn Java_com_weavetext_ime_voice_local_NativeAsr_nativePunctDestroy(
+        _env: JNIEnv,
+        _c: JClass,
+        h: jlong,
+    ) {
         destroy::<Punct>(h);
     }
 }

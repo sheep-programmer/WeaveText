@@ -93,7 +93,9 @@ fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
     GroupCard(Modifier.padding(top = 8.dp)) {
         SettingRow(
             "语音包",
-            if (ready) "已安装 $count 项 · 占用 ${formatSize(used)}" else "未安装 · 点此安装，手机上离线识别",
+            if (ready) "已安装 $count 项 · 占用 ${formatSize(used)}"
+            else if (count > 0) "已安装 $count 项 · 点此完成离线语音下载"
+            else "未安装 · 点此下载离线语音包",
             icon = R.drawable.ic_waveform,
             onClick = onClick,
         ) { Chevron() }
@@ -104,7 +106,7 @@ fun OfflineModelsCard(repo: ModelRepository, onClick: () -> Unit) {
 
 // 运行库只在轻量版的目录里出现。 The runtime is only listed in the lite build's catalog.
 private val GROUPS = listOf(
-    ModelKind.ASR_RUNTIME to "识别运行库", ModelKind.ASR_STREAMING to "实时识别", ModelKind.ASR_OFFLINE to "终稿识别", ModelKind.PUNCTUATION to "标点",
+    ModelKind.ASR_RUNTIME to "识别运行库", ModelKind.ASR_STREAMING to "实时识别", ModelKind.ASR_OFFLINE to "终稿识别", ModelKind.PUNCTUATION to "标点", ModelKind.VAD to "人声检测",
 )
 
 @Composable
@@ -129,7 +131,7 @@ fun ModelsScreen() {
 
     SubPage("语音包") {
         // 轻量版：顶部是推荐组合一键安装（装齐后隐藏）。 Lite: the one-tap recommended set on top.
-        if (lite) VoicePackHeader(repo)
+        VoicePackHeader(repo)
         for ((kind, title) in GROUPS) {
             val models = repo.catalog.models.filter { it.kind == kind }
             if (models.isEmpty()) continue

@@ -448,16 +448,16 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
     }
 
     /** 系统识别连接失败：说明原因并给出办法。 System recognizer failed: reason plus ways out. */
-    @Test fun voiceSystemError() {
+    @Test fun voiceModelError() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
-        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "", "", null, emptyList()))
-        engines.activeId = "weave.system"
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.local", "离线语音", "", "", null, emptyList()))
+        engines.activeId = "weave.local"
         com.weavetext.ime.models.AsrRuntime.bundled = false
         try {
             val (k, _) = keyboard(false)
             k.showPanel("voice")
-            (k.panel as VoicePanel).session.preview(VoiceSession.State.ERROR, "", "", 0f, "系统语音服务连接失败")
-            snap("voice_system_error_lite_light")
+            (k.panel as VoicePanel).session.preview(VoiceSession.State.ERROR, "", "", 0f, "离线模型加载失败")
+            snap("voice_model_error_lite_light")
         } finally {
             com.weavetext.ime.models.AsrRuntime.bundled = com.weavetext.ime.BuildConfig.LOCAL_ASR
         }
@@ -474,7 +474,7 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
     /** 轻量版还没装语音包：引擎弹层底栏右侧给出「安装离线语音」。 Lite: the sheet footer offers installing. */
     @Test fun voiceEngineSheetLite() {
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
-        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.system", "系统语音识别", "使用手机自带的语音识别服务。", "", null, emptyList()))
+        engines.plugins = listOf(com.weavetext.ime.voice.VoicePlugin("weave.local", "离线语音", "在手机上识别。", "", null, emptyList()))
         com.weavetext.ime.models.AsrRuntime.bundled = false
         try {
             val (k, _) = keyboard(false)

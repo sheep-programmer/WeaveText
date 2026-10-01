@@ -22,6 +22,7 @@ internal class LocalAsrChoice(ctx: Context, private val models: ModelRepository)
     fun streamId(): String? {
         sync()
         val saved = prefs.getString(KEY_STREAM, null)
+        if (saved == NONE && offlineModels().isNotEmpty()) return null
         val list = streamingModels()
         return list.firstOrNull { it.id == saved }?.id ?: list.firstOrNull()?.id
     }
@@ -30,12 +31,13 @@ internal class LocalAsrChoice(ctx: Context, private val models: ModelRepository)
     fun finalId(): String? {
         sync()
         val saved = prefs.getString(KEY_FINAL, null)
-        if (saved == NONE) return null
+        // Never leave an offline-only setup without its sole recognizer.
+        if (saved == NONE && streamId() != null) return null
         val list = offlineModels()
         return list.firstOrNull { it.id == saved }?.id ?: list.firstOrNull()?.id
     }
 
-    fun setStream(id: String) = prefs.edit().putString(KEY_STREAM, id).apply()
+    fun setStream(id: String?) = prefs.edit().putString(KEY_STREAM, id ?: NONE).apply()
 
     /** null 表示不使用终稿模型。 null turns the final pass off. */
     fun setFinal(id: String?) = prefs.edit().putString(KEY_FINAL, id ?: NONE).apply()

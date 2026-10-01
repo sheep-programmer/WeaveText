@@ -22,15 +22,9 @@ import com.weavetext.ime.settings.PermissionActivity
 import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.ui.VoiceAccess
 import com.weavetext.ime.voice.LOCAL_ENGINE_ID
-import com.weavetext.ime.voice.SYSTEM_ENGINE_ID
-import com.weavetext.ime.voice.VOICE_USER_MESSAGES
-import com.weavetext.ime.voice.VoiceHelp
-import com.weavetext.ime.voice.VoiceIme
 import com.weavetext.ime.voice.VoicePlugin
-import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
 
 /** 插件图标：PNG 圆形/圆角裁切，缺失时用名称首字头像。 Plugin icon or letter avatar. */
 class PluginIcon {
@@ -90,7 +84,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         session.addListener {
             if (session.notice != seenNotice) { seenNotice = session.notice; view.refreshEngine() }
             view.invalidate()
-            if (session.active) view.postInvalidateOnAnimation()
+            if (session.active && session.state != VoiceSession.State.LISTENING) view.postInvalidateDelayed(40)
         }
         // 没有引擎：打开面板显示安装引导，而不是报错。 No engine: show the guidance in the panel, not an error.
         session.onNoEngine = { if (kb.panel !== this) kb.showPanel("voice") else { view.refreshEngine(); view.invalidate() } }
@@ -102,8 +96,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     override fun onPref(key: String?) { if (key == WeavePrefs.VOICE_MODE) view.invalidate() }
 
     override fun onShow() {
-        session.autoStop = !holdMode
-        // 系统语音服务可能刚装好或启用。 A system speech service may have just been installed or enabled.
         runCatching { VoiceAccess.engines(kb.ctx).recheck() }
         session.warmUp()
         view.refreshEngine()
@@ -139,9 +131,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private val comma = RectF(); private val kbd = RectF(); private val del = RectF(); private val enter = RectF()
         private val mic = RectF(); private val seg = RectF(); private val segTap = RectF(); private val segHold = RectF()
         private val permCard = RectF(); private val importBtn = RectF()
-        private val offlineBtn = RectF(); private val sysBtn = RectF(); private val imeBtn = RectF(); private val localBtn = RectF()
-        /** 手机上其他带语音的输入法（零下载的办法）。 Another voice IME on the phone, the zero-download option. */
-        private var voiceIme: VoiceIme.Option? = null
+        private val offlineBtn = RectF()
         private val tmp = RectF()
         private val tmp2 = RectF()
         private val area = RectF()
@@ -158,7 +148,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             hasLocal = list.any { it.id == LOCAL_ENGINE_ID }
             plugin = e?.active()
             extras = ((e?.let { runCatching { it.selection().size }.getOrDefault(1) } ?: 1) - 1).coerceAtLeast(0)
-            voiceIme = if (engines == 0 || plugin?.id == SYSTEM_ENGINE_ID) VoiceIme.find(kb.ctx).firstOrNull() else null
             icon.bind(plugin)
         }
 
@@ -216,7 +205,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
             if (choosing()) {
                 drawResults(c)
-                if (session.active) postInvalidateOnAnimation()
+                if (session.active && session.state != VoiceSession.State.LISTENING) postInvalidateDelayed(40)
                 return
             }
             drawTranscript(c)
@@ -228,7 +217,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             sideKey(c, enter, pressed == ENTER); kb.icons.draw(c, R.drawable.ic_enter, pal.icon, enter.centerX(), enter.centerY(), m.dp(22f))
             drawMic(c)
             drawSeg(c)
-            if (session.active) postInvalidateOnAnimation()
+            if (session.active && session.state != VoiceSession.State.LISTENING) postInvalidateDelayed(40)
         }
 
         private fun pressBg(c: Canvas, r: RectF, on: Boolean) {
@@ -266,20 +255,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val titleSize = min(m.dp(15f), m.dp(15f) * (area.width() / max(1f, text.measureText(title))))
             text.textSize = titleSize
             c.drawText(title, area.centerX(), area.centerY() - m.dp(12f), text)
-            val ime = voiceIme
             clearPills()
-            // 最多三个按钮，最管用的在前：手机上已有的本地识别 → 下载离线语音包（轻量版）→ 其他语音输入法 →
-            // 系统语音设置 → 导入插件。
-            // At most three pills, most useful first: the local engine already on the phone, the offline voice pack
-            // (lite), another voice IME, the system voice settings, plugin import.
-            val useLocal = hasLocal && plugin?.id == SYSTEM_ENGINE_ID
-            val labels = buildList {
-                if (useLocal) add(localBtn to "改用本地识别")
-                if (VoiceHelp.canOfferOfflineBuild && !hasLocal) add(offlineBtn to "下载离线语音")
-                if (ime != null) add(imeBtn to (if (ime.enabled) "切换到${VoiceIme.shortLabel(ime)}" else "启用${VoiceIme.shortLabel(ime)}"))
-                add(sysBtn to "系统语音设置")
-                add(importBtn to "导入插件")
-            }.take(3).toMutableList()
+            val labels = mutableListOf(offlineBtn to "下载离线语音包")
             text.textSize = m.dp(13f); text.typeface = medium
             var pad = m.dp(12f); val gap = m.dp(8f); val bh = m.dp(32f)
             fun width() = labels.sumOf { (text.measureText(it.second) + 2 * pad).toDouble() }.toFloat() + gap * (labels.size - 1)
@@ -296,10 +273,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             for ((rect, label) in labels) {
                 val bw = text.measureText(label) + 2 * pad
                 rect.set(x, top, x + bw, top + bh)
-                val id = when {
-                    rect === offlineBtn -> OFFLINE; rect === sysBtn -> SYSVOICE; rect === imeBtn -> OTHER_IME
-                    rect === localBtn -> USE_LOCAL; else -> IMPORT
-                }
+                val id = OFFLINE
                 fill.color = if (pressed == id) pal.keyPressed else pal.card
                 c.drawRoundRect(rect, bh / 2, bh / 2, fill)
                 text.color = pal.candidateFirst
@@ -313,12 +287,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             transcriptArea(area)
             if (engines == 0) {
-                drawNoEngine(c, if (VoiceHelp.canOfferOfflineBuild) "还没有语音引擎，下载离线语音包即可在手机上识别" else "还没有可用的语音引擎")
-                return
-            }
-            // 系统识别出错：同样给出办法，而不是只有一行错误。 System recognizer failed: offer the same ways out.
-            if (systemFailed()) {
-                drawNoEngine(c, (session.error ?: "系统语音识别暂时用不了") + "。可以：")
+                drawNoEngine(c, "先下载离线语音包，再开始说话")
                 return
             }
             clearPills()
@@ -361,15 +330,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         }
 
         private fun clearPills() {
-            importBtn.setEmpty(); offlineBtn.setEmpty(); sysBtn.setEmpty(); imeBtn.setEmpty(); localBtn.setEmpty()
+            importBtn.setEmpty(); offlineBtn.setEmpty()
         }
-
-        /**
-         * 系统识别出了问题（不是没说话、没听清这类情况）：在面板里给出换引擎的办法。
-         * The system engine itself failed (not silence or a missed word): show ways to use another engine.
-         */
-        private fun systemFailed() = session.state == VoiceSession.State.ERROR && plugin?.id == SYSTEM_ENGINE_ID &&
-            session.error !in VOICE_USER_MESSAGES
 
         private fun drawWave(c: Canvas) {
             val pal = kb.palette
@@ -380,12 +342,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             var x = width / 2f - total / 2
             fill.color = pal.voiceWave
             val listening = session.state == VoiceSession.State.LISTENING
-            val t = SystemClock.uptimeMillis()
-            val lv = session.level
             for (i in 0 until 17) {
-                val win = sin(PI * i / 16).toFloat()
-                val jitter = 0.55f + 0.45f * sin(t * 0.011 + i * 1.7).toFloat()
-                val hh = if (listening) (m.dp(4f) + m.dp(28f) * min(1f, lv * 1.6f) * win * jitter).coerceAtLeast(m.dp(4f)) else m.dp(4f)
+                val amplitude = if (listening) session.levels[i] else 0f
+                val hh = m.dp(4f) + m.dp(32f) * amplitude
                 tmp.set(x, cy - hh / 2, x + bw, cy + hh / 2)
                 c.drawRoundRect(tmp, bw / 2, bw / 2, fill)
                 x += bw + gap
@@ -438,21 +397,18 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 listening -> kb.icons.draw(c, R.drawable.ic_stop, pal.onAccent, cx, cy, m.dp(32f))
                 else -> kb.icons.draw(c, R.drawable.ic_mic, pal.onAccent, cx, cy, m.dp(32f))
             }
-            // 系统识别不可用时上方已给出办法，这里只提示可重试，不用红色。 System failure: guidance is above; no red here.
-            val systemGuide = systemFailed()
             val hint = when {
                 holdCancel -> "松手取消"
-                systemGuide -> "点击麦克风可重试"
                 st == VoiceSession.State.ERROR -> (session.error ?: "识别失败") + "，点击重试"
-                st == VoiceSession.State.CONNECTING -> "正在连接…"
+                st == VoiceSession.State.CONNECTING -> "正在加载离线模型…"
                 st == VoiceSession.State.FINALIZING -> "识别中…"
-                listening -> if (hold) "松手结束，上滑取消" else "正在聆听…点击结束"
-                engines == 0 -> "点击设置语音引擎"
+                listening -> if (hold) "松手结束，上滑取消" else "正在聆听 · 可以停顿，点击结束"
+                engines == 0 -> "请先下载离线语音包"
                 hold -> "按住 说话"
                 else -> "点击开始说话"
             }
             text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(12f)
-            text.color = if ((st == VoiceSession.State.ERROR && !systemGuide) || holdCancel) pal.danger else pal.labelSecondary
+            text.color = if ((st == VoiceSession.State.ERROR) || holdCancel) pal.danger else pal.labelSecondary
             c.drawText(hint, cx, mic.bottom + m.dp(6f) - text.ascent(), text)
         }
 
@@ -637,9 +593,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             session.hasPermission() && mic.contains(x, y) -> MIC
             !importBtn.isEmpty && importBtn.contains(x, y) -> IMPORT
             !offlineBtn.isEmpty && offlineBtn.contains(x, y) -> OFFLINE
-            !sysBtn.isEmpty && sysBtn.contains(x, y) -> SYSVOICE
-            !imeBtn.isEmpty && imeBtn.contains(x, y) -> OTHER_IME
-            !localBtn.isEmpty && localBtn.contains(x, y) -> USE_LOCAL
             segTap.contains(x, y) -> SEG_TAP
             segHold.contains(x, y) -> SEG_HOLD
             else -> NONE
@@ -721,19 +674,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 }
                 IMPORT -> kb.openSettings("voice")
                 OFFLINE -> kb.openSettings("voice/upgrade")
-                SYSVOICE -> VoiceHelp.openSystemVoiceSettings(kb.ctx)
-                USE_LOCAL -> {
-                    runCatching { VoiceAccess.engines(kb.ctx).activeId = LOCAL_ENGINE_ID }
-                    session.cancel()
-                    refreshEngine()
-                    if (!holdMode) session.start()
-                }
-                OTHER_IME -> voiceIme?.let { o ->
-                    if (o.enabled) kb.switchToIme(o.id, o.subtype) else VoiceHelp.openInputMethodSettings(kb.ctx)
-                }
                 MIC -> if (!holdMode) {
                     when {
-                        engines == 0 -> kb.openSettings("voice")
+                        engines == 0 -> kb.openSettings("voice/upgrade")
                         // 「识别中」等了一会儿还没结果：不再等，重新开始。 Finalizing for a while: start over.
                         session.state == VoiceSession.State.FINALIZING -> session.start()
                         session.active -> session.stop()
@@ -743,7 +686,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 SEG_TAP, SEG_HOLD -> {
                     if (session.active) session.stop()
                     kb.prefs.edit().putString(WeavePrefs.VOICE_MODE, if (id == SEG_HOLD) "hold" else "tap").apply()
-                    session.autoStop = id == SEG_TAP
                 }
             }
             if (id != DEL) delRepeats = 0
@@ -756,7 +698,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private const val MIC = 7; private const val PERM = 8; private const val IMPORT = 9
         private const val SEG_TAP = 10; private const val SEG_HOLD = 11
         private const val R_CANCEL = 12; private const val R_COMMIT = 13; private const val R_REDO = 14
-        private const val OFFLINE = 15; private const val SYSVOICE = 16; private const val OTHER_IME = 17
-        private const val USE_LOCAL = 18
+        private const val OFFLINE = 15
     }
 }

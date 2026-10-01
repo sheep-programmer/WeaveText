@@ -4,6 +4,7 @@ import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineDolphinModelConfig
 import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig
 import com.k2fsa.sherpa.onnx.OfflinePunctuation
 import com.k2fsa.sherpa.onnx.OfflinePunctuationConfig
@@ -17,6 +18,9 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.weavetext.ime.models.ModelLocation
 import com.weavetext.ime.models.ModelSpec
 import java.io.File
@@ -40,12 +44,12 @@ internal object SherpaModels {
                 numThreads = THREADS,
                 debug = false,
             ),
-            // 句尾判定：说过话后静音 0.8 秒即断句；一直没说话 2.4 秒；单句最长 20 秒。
-            // Endpoints: 0.8 s silence after speech, 2.4 s with no speech, 20 s max.
+            // 句尾判定：说过话后静音 1.6 秒分句；无说话 4 秒；单句最长 30 秒。
+            // Endpoints: 1.6 s silence after speech, 4 s with no speech, 30 s max.
             endpointConfig = EndpointConfig(
-                rule1 = EndpointRule(false, 2.4f, 0f),
-                rule2 = EndpointRule(true, 0.8f, 0f),
-                rule3 = EndpointRule(false, 0f, 20f),
+                rule1 = EndpointRule(false, 4f, 0f),
+                rule2 = EndpointRule(true, 1.6f, 0f),
+                rule3 = EndpointRule(false, 0f, 30f),
             ),
             enableEndpoint = true,
         )
@@ -81,6 +85,8 @@ internal object SherpaModels {
                 debug = false,
             )
             "paraformer" -> OfflineModelConfig(paraformer = OfflineParaformerModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            "dolphin" -> OfflineModelConfig(dolphin = OfflineDolphinModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            "telespeech-ctc" -> OfflineModelConfig(teleSpeech = model, tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
             else -> throw IllegalArgumentException("unsupported offline arch ${spec.arch}")
         }
         val rec = OfflineRecognizer(loc.assets, OfflineRecognizerConfig(featConfig = FEATURES, modelConfig = modelConfig))
@@ -107,6 +113,21 @@ internal object SherpaModels {
         return object : Punctuator {
             override fun punctuate(text: String): String = p.addPunctuation(text)
             override fun release() = p.release()
+        }
+    }
+
+    fun detector(loc: ModelLocation): SpeechDetector {
+        val vad = Vad(loc.assets, VadModelConfig(sileroVadModelConfig = SileroVadModelConfig(
+            model = loc.path("silero_vad_v5.onnx"), threshold = 0.35f,
+            minSpeechDuration = 0.1f, minSilenceDuration = 1.6f, maxSpeechDuration = 30f,
+        )))
+        return object : SpeechDetector {
+            override var heard = false
+                private set
+            override val endpoint get() = !vad.empty()
+            override fun accept(samples: FloatArray) { vad.acceptWaveform(samples); heard = heard || vad.isSpeechDetected() || endpoint }
+            override fun reset() { vad.reset(); vad.clear(); heard = false }
+            override fun release() = vad.release()
         }
     }
 }

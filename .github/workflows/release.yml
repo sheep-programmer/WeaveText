@@ -81,10 +81,10 @@ jobs:
 
       - name: Verify
         run: |
-          # 内容检查：语音版必须带运行时与内置模型，轻量版不能带。 Content checks for both builds.
+          # 语音版带运行库；两版的识别模型均按需下载。 Both builds require model downloads.
           lite="dist/WeaveText-$VERSION-arm64-lite.apk"; voice="dist/WeaveText-$VERSION-arm64-voice.apk"
           for f in "$lite" "$voice"; do unzip -l "$f" | grep -q 'assets/dict/pinyin.wvz' || { echo "$f: no dictionary"; exit 1; }; done
-          unzip -l "$voice" | grep -q 'assets/models/asr-stream-small/model.int8.onnx' || { echo "voice: missing built-in models"; exit 1; }
+          ! unzip -l "$voice" | grep -qE '\.onnx$' || { echo "voice: models must be downloaded"; exit 1; }
           unzip -l "$voice" | grep -q 'libonnxruntime.so' || { echo "voice: missing runtime"; exit 1; }
           ! unzip -l "$lite" | grep -qE 'libonnxruntime.so|\.onnx$' || { echo "lite: contains speech runtime"; exit 1; }
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner

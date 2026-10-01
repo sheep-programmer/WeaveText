@@ -15,17 +15,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Android 11 起须声明才能找到并连接系统语音识别服务，否则系统识别总是不可用或连接失败。
-         Since Android 11 this declaration is required to see and bind the system speech recognition service. -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-        <!-- 找到其他带语音的输入法，便于一键切过去。 To find other voice IMEs for one-tap switching. -->
-        <intent>
-            <action android:name="android.view.InputMethod" />
-        </intent>
-    </queries>
+
 
     <application
         android:allowBackup="false"

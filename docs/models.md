@@ -1,70 +1,16 @@
 # 端侧模型 / On-device Models
 
-## 1. 概览 / Overview
+## 下载与使用
 
-中文：织文的离线语音识别运行在 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0，含 onnxruntime）之上，采用**两遍识别**：
-流式模型边说边出字，检测到句尾后由非流式模型对这一句重新识别作为终稿，再可选地补全标点。
-只装了终稿模型（没有实时模型）时按音量断句，说话中每 1.5 秒重新识别一次作为实时文字。新装好的识别模型自动设为使用中；「语音包」里已装的模型可点「使用」随时切换。
-*With only a final model, endpoints come from the audio level and the sentence is re-decoded every 1.5 s as live text. A newly installed model is put to use automatically; installed models can be switched with 「使用」.*
-离线语音版随 APK 内置运行时与「实时识别 · 小」，开箱即可离线语音输入，终稿、标点等在「语音包」列表里逐项安装；轻量版可在应用内安装识别运行库与模型（见 §4.1）。
-更准或多语种的模型可在「设置 → 语音引擎 → 离线模型」中按需下载。
+语音只使用设备上的离线模型。Android 系统 SpeechRecognizer 与云端语音插件不再作为输入后端；旧插件文件和配置保留在应用私有目录，不参与录音。
 
-English: offline speech runs on sherpa-onnx with **two-pass recognition** — a streaming model shows text while you speak,
-an offline model re-decodes each utterance for the final text, then punctuation is optionally restored. Two small models
-ship in the offline-voice APK; the lite build downloads a voice pack instead (§4.1); more accurate or multilingual
-ones are optional downloads.
+两个安装包都需先下载识别模型：轻量版一键安装运行库、实时小模型与 Silero 人声检测，下载约 33 MB；语音版已带运行库，一键安装约 24 MB。运行库、模型和人声检测均按目录中的 SHA-256 与大小验证。模型可以分别卸载、重装和切换，只有运行库或只有标点模型均不能开始识别。
 
-## 2. 模型清单 / Catalog
+推荐先用实时小模型；可选终稿小模型、SenseVoice、Paraformer、Dolphin 轻量/增强、TeleSpeech 中文方言与智能标点。在设置中关闭实时模型可单独使用终稿模型，此时 Silero 检测人声并分句。旧安装未下载 Silero 时保留音量分句兼容路径。Dolphin 与 TeleSpeech 的 Sherpa 导出使用 CTC 分支，不能等同于原项目完整模型的评测效果。目录里的历史字错率来自合成样本相对比较，新增模型没有填入未经测量的分数。
 
-目录文件：`android/app/src/main/assets/models/catalog.json`（构建与运行时共用）。 *Shared by the build and the app.*
+点按模式第二次点击结束，按住模式松手结束；静音不会关闭麦克风。分句静音延长至 1.6 秒，长句约 28 秒分段并补齐末尾解码后继续收音。模型加载和麦克风启动都完成后才显示正在聆听；录音音量采用对数刻度，面板和浮动条显示最近的实际采样音量。停止会先送完录音线程最后一块 PCM，再解码终稿。
 
-| id | 用途 Role | 内置 Built-in | 大小 Size | 字错率 CER 干净/嘈杂 clean/noisy | 实时率 RTF | 许可 License |
-|---|---|---|---|---|---|---|
-| `asr-runtime` | 识别运行库 runtime（仅轻量版 / lite only） | – | 27 MB（下载 9 MB） | – | – | Apache-2.0 / MIT |
-| `asr-stream-small` | 实时 streaming | ✓ | 26 MB | 3.11% / 5.90% | 0.09 | Apache-2.0* |
-| `asr-final-small` | 终稿 final | – | 63 MB | 0.98% / 1.80% | 0.06 | Apache-2.0* |
-| `asr-stream-large` | 实时（高精度） | – | 162 MB | 0.33% / 3.77% | 0.28 | Apache-2.0* |
-| `asr-sensevoice` | 终稿（普/粤/英/日/韩，带标点） | – | 237 MB | 0.82% / 3.44% | 0.09 | FunASR Model License |
-| `asr-paraformer` | 终稿（中文） | – | 238 MB | 0.66% / 3.61% | 0.07 | FunASR Model License |
-| `punc-ct` | 智能标点 | – | 76 MB | – | – | FunASR Model License |
-
-\* 这些 Zipformer 模型由 k2-fsa 随 sherpa-onnx（Apache-2.0）发布，模型卡未单独声明许可证；商用发布前需再确认。
-*These Zipformer models are published by k2-fsa with sherpa-onnx (Apache-2.0) without a separate model license; confirm
-before any commercial release.*
-
-评测方法：从 `data/eval/sentences.tsv` 取 60 句，用 macOS 语音合成（Tingting，两种语速）生成 16 kHz 音频，
-「嘈杂」为叠加约 15 dB 信噪比的高斯噪声；RTF 在 M 系列 Mac 上以 2 线程测得。合成语音比真人说话容易，数字只用于模型间相对比较。
-*Method: 60 eval sentences synthesized with macOS TTS; "noisy" adds ~15 dB SNR Gaussian noise; RTF on an M-series Mac with
-2 threads. Synthetic speech is easier than real speech — use the numbers only to compare models.*
-
-## 3. 下载与加速 / Downloads & mirrors
-
-中文：
-- **两条路线**：HuggingFace 逐文件（`hfMirrors`：hf-mirror.com、huggingface.co，无需解压）与 GitHub Releases 压缩包
-  （`mirrors`：GitHub 直连与 ghfast.top、gh-proxy.com、gh-proxy.org、ghproxy.net、gh.llkk.cc 加速镜像）。
-- 下载前并发测速（取前 64 KB），快的路线与镜像先试；中途断开会在同一镜像续传，失败再换下一个镜像/路线。
-- **每个文件都按目录里的 SHA-256 校验**（HuggingFace 与 GitHub 的文件已核对为同一份）；压缩包另外校验整体 SHA-256。
-- 失败时保留已下载部分，重试可续传；取消时清除。安装是先解到暂存目录、校验通过后原子改名。
-- 用户可指定下载源或填自定义镜像模板（形如 `https://example.com/{url}`），并可设置「仅 Wi-Fi 下载」。
-- 镜像可用性会变化：`catalog.json` 中的镜像列表为 2026-09 实测可用的一组，失效的镜像只会被测速排到最后，不影响其它镜像。
-
-English: two routes (HuggingFace per-file via hf-mirror, GitHub archives via five accelerating mirrors plus direct), probed
-concurrently; resume on the same mirror, fall back to the next mirror/route; every file verified by SHA-256; partial
-downloads kept on failure; atomic installs; user-selectable or custom mirrors; Wi-Fi-only option.
-
-## 4. 构建 / Build
-
-`./gradlew :app:assembleDebug` 会自动（经同样的镜像列表）下载 sherpa-onnx AAR 与内置模型到 `.ref/cache/`（不入库），
-校验 SHA-256 后只解出所需文件放入 assets（不压缩）。
-*The build fetches the sherpa-onnx AAR and built-in models into `.ref/cache/` (git-ignored) through the same mirrors,
-verifies SHA-256 and extracts only the needed files into uncompressed assets.*
-
-### 安装包体积 / APK size
-
-| 构建 Build | 命令 Command | 体积 Size |
-|---|---|---|
-| 离线语音版（内置运行时与实时识别小模型，原生库压缩存放） / offline voice | `./gradlew :app:assembleRelease` | ≈ 64 MB |
-| 轻量版（不含端侧语音识别） / lite | `./gradlew :app:assembleRelease -Pweave.lite=true` | ≈ 30 MB |
+语音版仅内置 Sherpa 运行库；轻量版不含 Sherpa 库，下载后由 Rust 动态加载 C API。两版模型均按需下载，构建无需预装识别模型。发布继续保留 R8/JNI 字段检查。
 
 ### 正式包语音验证 / Speech in a release APK
 
@@ -91,7 +37,7 @@ python3 tools/voice-smoke.py <serial> .ref/sherpa --repeat 2
 python3 tools/voice-smoke.py <serial> .ref/sherpa --native --runtime <runtime-lib-dir> --repeat 2
 ```
 
-测试依次加载实时小模型、实时大模型、终稿小模型、SenseVoice、Paraformer 和智能标点，
+测试依次加载实时小模型、实时大模型、终稿小模型、SenseVoice、Paraformer、Dolphin 两种模型、TeleSpeech、Silero 人声检测和智能标点，
 识别模型均输入实际录音并检查样本中的词句；`--repeat` 每次重新打开模型，验证释放后能再次使用。
 模型、录音和运行库仅放在独立测试目录里。
 
@@ -105,8 +51,8 @@ adb -s <serial> shell am start -n com.weavetext.ime.voicesmoke/.SpeechEditorActi
 麦克风权限、音源处理和第三方输入框兼容性验证。
 
 完整上屏回归可使用 `tools/voice-ime-e2e.py`：它通过模拟器 gRPC 把 WAV 送进虚拟麦克风，
-按住公开 APK 的语音按钮，确认普通编辑器中出现样本词句，并通过键盘退格删到空。
-它不向输入法发送文字结果；识别、语音会话和 `InputConnection` 均由公开 APK 执行。
+点击或按住正式 APK 的语音按钮，确认普通编辑器中出现样本词句，并通过键盘退格删到空。
+`--mode tap --repeat 2 --pause-seconds 8` 可验证长停顿后继续说话。它不向输入法发送文字结果；识别、语音会话和 `InputConnection` 均由公开 APK 执行。
 
 已验证的环境为独立的 Android 12/API 31 arm64 AVD、1080×2400 屏幕与三键导航。
 模拟器应开启 gRPC token 认证，并用 `-feature -VirtioSndCard` 切到兼容音频转发的声卡。

@@ -30,4 +30,6 @@ internal object SherpaModels {
         files(loc).let { NativeAsrModels.offline(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }
 
     fun punctuator(loc: ModelLocation): Punctuator = NativeAsrModels.punctuator(files(loc).path("model.int8.onnx"))
+
+    fun detector(loc: ModelLocation): SpeechDetector = NativeAsrModels.detector(files(loc).path("silero_vad_v5.onnx"))
 }

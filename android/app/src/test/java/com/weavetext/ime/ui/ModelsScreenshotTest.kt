@@ -6,6 +6,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -109,8 +110,8 @@ class ModelsScreenshotTest {
         captureScreenRoboImage(File(dir, "models_metered_confirm.png").path)
         compose.onAllNodesWithText("下载").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()
         compose.waitForIdle()
-        assertEquals(listOf("asr-stream-large" to true), models.downloads)
-        compose.onNodeWithText("正在准备…").assertExists()
+        assertEquals(listOf("vad-silero" to true, "asr-stream-small" to true), models.downloads)
+        assertEquals(ModelState.Waiting, models.state("asr-stream-small"))
     }
 
     /** 不计流量时直接下载，不弹框。 Unmetered: download right away. */
@@ -119,7 +120,7 @@ class ModelsScreenshotTest {
         open(models)
         compose.onAllNodesWithText("安装")[0].performClick()
         compose.waitForIdle()
-        assertEquals(listOf("asr-stream-large" to false), models.downloads)
+        assertEquals(listOf("vad-silero" to false, "asr-stream-small" to false), models.downloads)
     }
 
     /** 已安装的一项可单独卸载，需确认。 Uninstalling one installed item asks first. */
@@ -138,7 +139,7 @@ class ModelsScreenshotTest {
     @Test fun sourceDialog() {
         val models = FakeModels(mixed).apply { mirrorPreference = "hfmirror" }
         open(models)
-        compose.onNodeWithText("下载源").performClick()
+        compose.onNodeWithText("下载源").performScrollTo().performClick()
         compose.waitForIdle()
         captureScreenRoboImage(File(dir, "models_source_dialog.png").path)
         compose.onNodeWithText("gh-proxy.com").performClick()
@@ -154,6 +155,6 @@ class ModelsScreenshotTest {
 
     @Test fun voiceListCard() {
         open(FakeModels(mixed), routes = listOf(Route.Home, Route.Voice))
-        compose.onNodeWithText("已安装 2 项 · 占用 75.5\u00A0MB").assertExists()
+        compose.onNodeWithText("已安装 1 项 · 点此完成离线语音下载").assertExists()
     }
 }

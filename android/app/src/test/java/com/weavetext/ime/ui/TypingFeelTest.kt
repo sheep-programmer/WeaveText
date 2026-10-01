@@ -162,6 +162,19 @@ class TypingFeelTest {
         assertTrue("kv=${loc[0]}+${kv.width} root=${root[0]}+${kb.view.width}", loc[0] - root[0] + kv.width <= kb.view.width - 90)
     }
 
+    @Test fun floatingKeyboardCannotBePlacedOverSideNavigation() {
+        val inset = android.view.WindowInsets.Builder()
+            .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(90, 0, 126, 0))
+            .build()
+        kb.view.dispatchApplyWindowInsets(inset)
+        WeavePrefs.of(app).edit().putString(WeavePrefs.FLOAT_POS_PORT, "1,1").commit()
+        kb.toggleFloating()
+        idle()
+        val card = kb.board.parent as android.view.View
+        assertTrue("left edge must stay clear", card.translationX >= 90)
+        assertTrue("right edge must stay clear", card.translationX + card.width <= kb.view.width - 126)
+    }
+
     @Test fun borderTapsCarryTheNeighbourToTheEngine() {
         val z = key('z')
         val x = key('x')

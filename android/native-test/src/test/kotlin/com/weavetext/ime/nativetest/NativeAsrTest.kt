@@ -25,6 +25,57 @@ class NativeAsrTest {
     private val models = File(System.getProperty("weave.models"))
     private val wav = File(System.getProperty("weave.testWavs"), "0.wav")
 
+    @Test fun additionalChineseModelsDecodeRealSpeech() {
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").exists())
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val candidates = listOf(
+            "dolphin" to "sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02",
+            "dolphin" to "sherpa-onnx-dolphin-small-ctc-multi-lang-int8-2025-04-02",
+            "telespeech-ctc" to "sherpa-onnx-telespeech-ctc-int8-zh-2024-06-04",
+        )
+        assumeTrue("Optional downloaded model fixtures", candidates.all { root.resolve(it.second).resolve("model.int8.onnx").isFile } && wav.isFile)
+        NativeAsrModels.load(runtime)
+        val audio = samples(wav)
+        for ((arch, name) in candidates) {
+            val dir = root.resolve(name)
+            val rec = NativeAsrModels.offline(arch, "$dir/model.int8.onnx", "$dir/tokens.txt")
+            try {
+                val text = TwoPassRecognizer.clean(rec.decode(audio))
+                println("$name: $text")
+                assertTrue(text, text.contains("大家") && text.contains("研究"))
+            } finally { rec.release() }
+        }
+    }
+
+    @Test fun neuralDetectorKeepsQuietSpeechAndLongPauses() {
+        val vadFile = File(System.getProperty("weave.cache"), "silero_vad_v5.onnx")
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").exists() && vadFile.isFile && wav.isFile)
+        NativeAsrModels.load(runtime)
+        val detector = NativeAsrModels.detector(vadFile.path)
+        val dir = File(models, "asr-final-small")
+        val offline = NativeAsrModels.offline("zipformer-ctc", "$dir/model.int8.onnx", "$dir/tokens.txt")
+        val finals = mutableListOf<String>()
+        val rec = TwoPassRecognizer(null, offline, null, object : TwoPassListener {
+            override fun onPartial(text: String) {}
+            override fun onFinal(text: String) { finals += text }
+        }, speechDetector = detector)
+        fun feed(audio: FloatArray) { for (i in audio.indices step 640) rec.feed(audio.copyOfRange(i, minOf(i + 640, audio.size))) }
+        try {
+            feed(FloatArray(16_000 * 4))
+            assertTrue("Silence must not hallucinate words", finals.isEmpty())
+            val audio = samples(wav)
+            feed(audio.map { it * 0.1f }.toFloatArray())
+            feed(FloatArray(16_000 * 8))
+            val first = finals.joinToString("")
+            assertTrue("Quiet first sentence: $first", first.contains("研究"))
+            feed(audio)
+            rec.finish()
+            val all = finals.joinToString("")
+            println("quiet speech, 8s pause, continued speech: $all")
+            assertTrue(all, all.length > first.length && all.substring(first.length).contains("研究"))
+        } finally { rec.release() }
+    }
+
     private fun samples(f: File): FloatArray {
         val b = f.readBytes()
         var off = 12

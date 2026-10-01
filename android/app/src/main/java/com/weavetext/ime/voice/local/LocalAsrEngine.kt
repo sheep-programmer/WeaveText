@@ -53,11 +53,12 @@ internal class LocalAsrEngine(private val ctx: Context) {
         })
     }
 
-    private class Loaded(val key: String, val streaming: StreamingAsr?, val offline: OfflineAsr?, val punct: Punctuator?) {
+    private class Loaded(val key: String, val streaming: StreamingAsr?, val offline: OfflineAsr?, val punct: Punctuator?, val detector: SpeechDetector?) {
         fun release() {
             streaming?.release()
             offline?.release()
             punct?.release()
+            detector?.release()
         }
     }
 
@@ -79,7 +80,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
     /** 已装的识别模型组成的签名：变了就要重建引擎列表与设置表单。 Installed-model signature; a change rebuilds the list. */
     fun modelSignature(): String =
-        (streamingModels() + offlineModels()).joinToString(",") { it.id } + "|" + models.isAvailable(PUNCT_ID) + "|" + AsrRuntime.ready(models)
+        (streamingModels() + offlineModels()).joinToString(",") { it.id } + "|" + models.isAvailable(PUNCT_ID) + "|" + models.isAvailable(VAD_ID) + "|" + AsrRuntime.ready(models)
 
     fun fields(): List<ConfigField> {
         val punctInstalled = models.isAvailable(PUNCT_ID)
@@ -87,14 +88,14 @@ internal class LocalAsrEngine(private val ctx: Context) {
         return listOfNotNull(
             ConfigField(
                 KEY_STREAM, "实时模型", "select", section = "模型",
-                options = stream.map { it.name },
+                options = stream.map { it.name } + if (offlineModels().isNotEmpty()) listOf(NONE_LABEL) else emptyList(),
                 defaultValue = stream.firstOrNull()?.name,
                 helpText = "说话时实时显示文字",
             ).takeIf { stream.isNotEmpty() },
             ConfigField(
                 KEY_FINAL, "终稿模型", "select", section = "模型",
                 // 没有实时模型时终稿模型就是唯一的识别模型，不能不用。 Without a streaming model it can't be turned off.
-                options = offlineModels().map { it.name } + (if (stream.isEmpty()) emptyList() else listOf(NONE_LABEL)),
+                options = offlineModels().map { it.name } + (if (streamId() == null) emptyList() else listOf(NONE_LABEL)),
                 defaultValue = offlineModels().firstOrNull()?.name ?: NONE_LABEL,
                 helpText = if (stream.isEmpty()) "没有实时模型：说完一句后整句识别"
                     else "每句说完后用它再识别一遍，更准；选「不使用」则直接用实时结果",
@@ -108,7 +109,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     }
 
     fun getConfig(key: String): String? = when (key) {
-        KEY_STREAM -> streamId()?.let { id -> models.catalog.find(id)?.name }
+        KEY_STREAM -> streamId()?.let { id -> models.catalog.find(id)?.name } ?: NONE_LABEL
         KEY_FINAL -> finalId()?.let { id -> models.catalog.find(id)?.name } ?: NONE_LABEL
         KEY_PUNCT -> prefs.getBoolean(KEY_PUNCT, true).toString()
         else -> null
@@ -116,7 +117,8 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
     fun setConfig(key: String, value: String) {
         when (key) {
-            KEY_STREAM -> streamingModels().firstOrNull { it.name == value }?.let { choice.setStream(it.id) }
+            KEY_STREAM -> if (value == NONE_LABEL && offlineModels().isNotEmpty()) choice.setStream(null)
+                else streamingModels().firstOrNull { it.name == value }?.let { choice.setStream(it.id) }
             KEY_FINAL -> if (value == NONE_LABEL) choice.setFinal(null)
                 else offlineModels().firstOrNull { it.name == value }?.let { choice.setFinal(it.id) }
             KEY_PUNCT -> prefs.edit().putBoolean(KEY_PUNCT, value == "true").apply()
@@ -126,7 +128,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     // ------------------------------------------------------------ sessions
 
     /** 一次识别会话；所有方法可在任意线程调用，识别在专属线程上进行。 One session; thread-safe entry points. */
-    inner class Session(private val listener: TwoPassListener, private val onEnd: () -> Unit, private val onError: (String) -> Unit) {
+    inner class Session(private val listener: TwoPassListener, private val onEnd: () -> Unit, private val onError: (String) -> Unit, private val onReady: () -> Unit = {}) {
         @Volatile private var cancelled = false
         private var recognizer: TwoPassRecognizer? = null
         /**
@@ -144,11 +146,13 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
         /** 停止后到的录音丢掉（录音线程可能还在交最后一块）。 Audio arriving after stop is dropped. */
         @Volatile private var stopped = false
+        private val pendingBytes = java.util.concurrent.atomic.AtomicInteger()
 
         init {
             activeSessions.incrementAndGet()
             worker.execute {
                 idleRelease?.cancel(false)
+                if (cancelled) { uncount(); scheduleIdleRelease(); return@execute }
                 recognizer = runCatching { ensureLoaded() }
                     .onFailure {
                         Log.e(TAG, "load failed", it)
@@ -158,18 +162,35 @@ internal class LocalAsrEngine(private val ctx: Context) {
                     .getOrNull()
                     ?.let { l ->
                         l.streaming?.reset()
+                        l.detector?.reset()
                         TwoPassRecognizer(l.streaming, l.offline, l.punct, object : TwoPassListener {
                             override fun onPartial(text: String) { if (!cancelled) listener.onPartial(text) }
                             override fun onFinal(text: String) { if (!cancelled) listener.onFinal(text) }
-                        })
+                        }, speechDetector = l.detector)
                     }
+                if (recognizer != null && !cancelled && !stopped) onReady()
             }
         }
 
         fun feed(pcm: ByteArray, size: Int) {
             if (stopped || cancelled) return
             val copy = pcm.copyOf(size)
-            worker.execute { if (!cancelled) runCatching { recognizer?.feedPcm16(copy) } }
+            if (pendingBytes.addAndGet(copy.size) > 16_000 * 2 * 60) {
+                pendingBytes.addAndGet(-copy.size)
+                cancel()
+                onError("这个模型在当前手机上处理较慢，请改用「实时识别 · 小」")
+                return
+            }
+            worker.execute {
+                pendingBytes.addAndGet(-copy.size)
+                if (!cancelled) runCatching { recognizer?.feedPcm16(copy) }.onFailure {
+                    Log.e(TAG, "decode failed", it)
+                    cancelled = true
+                    uncount()
+                    scheduleIdleRelease()
+                    onError("离线识别失败，请重试或换一个模型")
+                }
+            }
         }
 
         /** 录音结束：出最后一句终稿后回调 onEnd。 Finish: emit the last final, then onEnd. */
@@ -177,7 +198,10 @@ internal class LocalAsrEngine(private val ctx: Context) {
             if (stopped) return
             stopped = true
             worker.execute {
-                if (!cancelled) runCatching { recognizer?.finish() }.onFailure { Log.w(TAG, "finish", it) }
+                if (!cancelled) runCatching { recognizer?.finish() }.onFailure {
+                    Log.w(TAG, "finish", it)
+                    onError("离线识别未能完成，请重试或换一个模型")
+                }
                 if (!counted.get()) return@execute
                 uncount()
                 scheduleIdleRelease()
@@ -216,21 +240,27 @@ internal class LocalAsrEngine(private val ctx: Context) {
         if (need() * 6 / 5 > budget && fid != null && sid != null) fid = null
         if (fid != finalId() || punct != punctuationOn()) Log.w(TAG, "low memory ($budget bytes): final=$fid punct=$punct")
         // 键里放模型 id（含标点模型），删除某个模型时据此找到要释放的识别器。 Model ids, so a delete finds its user.
-        val key = "$sid|$fid|${if (punct) PUNCT_ID else null}"
+        val detectorId = VAD_ID.takeIf { models.isAvailable(VAD_ID) }
+        val key = "$sid|$fid|${if (punct) PUNCT_ID else null}|$detectorId"
         loaded?.let { if (it.key == key) return it; it.release(); loaded = null }
         val t0 = System.nanoTime()
         var streaming: StreamingAsr? = null
         var offline: OfflineAsr? = null
+        var detector: SpeechDetector? = null
+        var p: Punctuator? = null
         try {
             SherpaModels.prepare(models.runtimeDir())
             streaming = sid?.let { id -> SherpaModels.streaming(models.catalog.find(id)!!, models.location(id)!!) }
             offline = fid?.let { id -> SherpaModels.offline(models.catalog.find(id)!!, models.location(id)!!) }
-            val p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null
+            detector = detectorId?.let { models.location(it)?.let(SherpaModels::detector) }
+            p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null
             Log.i(TAG, "models $key loaded in ${(System.nanoTime() - t0) / 1_000_000} ms")
-            return Loaded(key, streaming, offline, p).also { loaded = it }
+            return Loaded(key, streaming, offline, p, detector).also { loaded = it }
         } catch (t: Throwable) {
             runCatching { offline?.release() }
             runCatching { streaming?.release() }
+            runCatching { detector?.release() }
+            runCatching { p?.release() }
             throw t
         }
     }
@@ -266,6 +296,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     companion object {
         private const val TAG = "WeaveLocalAsr"
         const val PUNCT_ID = "punc-ct"
+        const val VAD_ID = "vad-silero"
         private const val KEY_STREAM = LocalAsrChoice.KEY_STREAM
         private const val KEY_FINAL = LocalAsrChoice.KEY_FINAL
         private const val KEY_PUNCT = "punctuation"
