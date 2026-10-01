@@ -11,6 +11,7 @@
          WeaveLink (off by default): LAN discovery needs multicast; a foreground service keeps it connected while on. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -44,6 +45,7 @@
         <!-- 系统分享「发送到电脑」。 System share target "send to computer". -->
         <activity
             android:name=".link.SendToComputerActivity"
+            android:windowSoftInputMode="adjustResize"
             android:excludeFromRecents="true"
             android:exported="true"
             android:label="@string/send_to_computer"

@@ -16,10 +16,13 @@ import Testing
     /// 等某类事件（其他事件跳过）。 Wait for an event of one kind, skipping others.
     private func wait(_ link: LinkHandle, _ type: String, seconds: Double = 10) -> [String: Any]? {
         let end = Date().addingTimeInterval(seconds)
+        var observed: [String] = []
         while Date() < end {
             guard let json = link.poll(timeoutMs: 200) else { return nil }
             if let o = LinkJSON.object(json), o.str("type") == type { return o }
+            if !json.contains("idle") { observed.append(json) }
         }
+        print("WeaveLink timeout awaiting \(type): \(observed)")
         return nil
     }
 

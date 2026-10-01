@@ -117,7 +117,7 @@ fun LookScreen() {
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
-                    ClipHistory(File(ctx.filesDir, ClipboardRepo.HISTORY_FILE)).clearAll()
+                    ClipHistory.shared(File(ctx.filesDir, ClipboardRepo.HISTORY_FILE)).clearAll()
                     // 通知正在运行的键盘清空内存中的历史。 Tell a running keyboard to drop its in-memory copy.
                     p.edit().putLong(WeavePrefs.CLIPBOARD_CLEARED, System.currentTimeMillis()).apply()
                     scope.launch { snack.showSnackbar("已清空剪贴板历史") }

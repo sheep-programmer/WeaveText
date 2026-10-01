@@ -8,8 +8,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicReference
 
+object ClipPrivacy { @Volatile var privateField = false }
+
 /** 一条剪贴板/常用语记录。 One clipboard (or quick phrase) entry. */
-data class ClipItem(val id: Long, val text: String, val time: Long, val pinned: Boolean = false)
+data class ClipItem(val id: Long, val text: String, val time: Long, val pinned: Boolean = false,
+    val uri: String? = null, val mime: String? = null, val bytes: Long = 0) {
+    val media get() = uri != null
+}
 
 /**
  * 剪贴板历史（02 §10）：已固定在前，其余按时间倒序；未固定最多 [maxUnpinned] 条，
@@ -42,7 +47,7 @@ class ClipHistory(
     private fun ready() { runCatching { loaded.get() } }
 
     /** 排序后的视图。 Sorted view. */
-    fun list(now: Long): List<ClipItem> {
+    @Synchronized fun list(now: Long): List<ClipItem> {
         ready()
         if (prune(now)) save()
         return items.sortedWith(compareByDescending<ClipItem> { it.pinned }.thenByDescending { it.time }.thenByDescending { it.id })
@@ -53,10 +58,10 @@ class ClipHistory(
      * Record text; an existing identical entry moves to the top. Blank or oversized text is ignored.
      * @return 是否有变化。
      */
-    fun add(text: String, now: Long): Boolean {
+    @Synchronized fun add(text: String, now: Long): Boolean {
         if (text.isBlank() || utf8Size(text) > maxItemBytes) return false
         ready()
-        val old = items.indexOfFirst { it.text == text }
+        val old = items.indexOfFirst { !it.media && it.text == text }
         val item = if (old >= 0) items.removeAt(old).copy(time = now) else ClipItem(nextId++, text, now)
         items += item
         prune(now, keep = item.id)
@@ -64,7 +69,17 @@ class ClipHistory(
         return true
     }
 
-    fun setPinned(id: Long, pinned: Boolean) {
+    @Synchronized fun addMedia(uri: String, mime: String, name: String, bytes: Long, now: Long): Boolean {
+        ready()
+        val old = items.indexOfFirst { it.uri == uri }
+        val item = if (old >= 0) items.removeAt(old).copy(time = now) else ClipItem(nextId++, name, now, uri = uri, mime = mime, bytes = bytes)
+        items += item
+        prune(now, keep = item.id)
+        save()
+        return true
+    }
+
+    @Synchronized fun setPinned(id: Long, pinned: Boolean) {
         ready()
         val i = items.indexOfFirst { it.id == id }
         if (i < 0) return
@@ -72,27 +87,33 @@ class ClipHistory(
         save()
     }
 
-    fun delete(ids: Collection<Long>) {
+    @Synchronized fun delete(ids: Collection<Long>) {
         ready()
         if (items.removeAll { it.id in ids }) save()
     }
 
     /** 清空未固定项。 Clear all unpinned entries. */
-    fun clearUnpinned() {
+    @Synchronized fun clearUnpinned() {
         ready()
         if (items.removeAll { !it.pinned }) save()
     }
 
     /** 清空全部（含已固定）并删除文件。 Clear everything, pinned included, and delete the file. */
-    fun clearAll() {
+    @Synchronized fun clearAll() {
         ready()
         items.clear()
         pendingSave.set(null)
+        listeners.forEach { it() }
         val f = file ?: return
-        IO.execute { runCatching { f.delete() } }
+        IO.execute { synchronized(this) {
+            if (items.isEmpty()) {
+                f.delete()
+                if (f.name == "history.json") File(f.parentFile, "media").deleteRecursively()
+            }
+        } }
     }
 
-    val size: Int get() { ready(); return items.size }
+    val size: Int @Synchronized get() { ready(); return items.size }
 
     /** @param keep 刚加入的一条，总量裁剪时不删。 The entry just added; never dropped by the byte cap. */
     private fun prune(now: Long, keep: Long = -1): Boolean {
@@ -119,6 +140,12 @@ class ClipHistory(
             items.removeAll { it.id in drop }
             changed = true
         }
+        var mediaBytes = items.sumOf { it.bytes }
+        for (item in items.sortedWith(compareBy<ClipItem> { it.pinned }.thenBy { it.time })) {
+            if (mediaBytes <= 512L * 1024 * 1024) break
+            if (!item.media || item.id == keep) continue
+            items.remove(item); mediaBytes -= item.bytes; changed = true
+        }
         return changed
     }
 
@@ -129,7 +156,8 @@ class ClipHistory(
             val arr = JSONArray(f.readText())
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                val item = ClipItem(o.getLong("id"), o.getString("text"), o.getLong("time"), o.optBoolean("pinned"))
+                val item = ClipItem(o.getLong("id"), o.getString("text"), o.getLong("time"), o.optBoolean("pinned"),
+                    o.optString("uri").takeIf { it.isNotEmpty() }, o.optString("mime").takeIf { it.isNotEmpty() }, o.optLong("bytes"))
                 nextId = maxOf(nextId, item.id + 1)
                 if (utf8Size(item.text) <= maxItemBytes) items += item
             }
@@ -139,6 +167,7 @@ class ClipHistory(
     /** 把当前内容交给后台写入；已有一次在排队时只更新它要写的内容。 Hand the content to the writer; coalesces. */
     private fun save() {
         val f = file ?: return
+        listeners.forEach { it() }
         if (pendingSave.getAndSet(items.toList()) != null) return
         IO.execute {
             val snapshot = pendingSave.getAndSet(null) ?: return@execute
@@ -148,16 +177,28 @@ class ClipHistory(
 
     private fun write(f: File, list: List<ClipItem>) {
         val arr = JSONArray()
-        for (it in list) arr.put(JSONObject().put("id", it.id).put("text", it.text).put("time", it.time).put("pinned", it.pinned))
+        for (it in list) arr.put(JSONObject().put("id", it.id).put("text", it.text).put("time", it.time).put("pinned", it.pinned).put("uri", it.uri).put("mime", it.mime).put("bytes", it.bytes))
         runCatching {
             f.parentFile?.mkdirs()
             val tmp = File(f.path + ".tmp")
             tmp.writeText(arr.toString())
             if (!tmp.renameTo(f)) { f.writeText(arr.toString()); tmp.delete() }
         }
+        if (f.name == "history.json") synchronized(this) {
+            val keep = items.mapNotNull { it.uri?.substringAfterLast('/') }.toSet()
+            File(f.parentFile, "media").listFiles()?.filter { it.name !in keep }?.forEach { it.delete() }
+        }
     }
 
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    fun observe(listener: () -> Unit) { listeners += listener }
+    fun unobserve(listener: () -> Unit) { listeners -= listener }
+
     companion object {
+        private val stores = HashMap<String, ClipHistory>()
+        @Synchronized fun shared(file: File): ClipHistory = stores.getOrPut(file.absolutePath) { ClipHistory(file) }
+        @androidx.annotation.VisibleForTesting
+        @Synchronized fun resetShared() { stores.clear() }
         /** 所有剪贴板文件共用的读写线程（按提交顺序执行）。 One I/O thread for all clip files, in submission order. */
         private val IO: Executor = Executors.newSingleThreadExecutor { r -> Thread(r, "weave-clips").apply { isDaemon = true } }
 

@@ -24,6 +24,7 @@ data class LinkNearby(val id: String, val name: String, val platform: String, va
 data class LinkTransfer(
     val id: String, val name: String, val incoming: Boolean, val peer: String,
     val done: Long, val size: Long, val state: State, val path: String? = null,
+    val mime: String = "application/octet-stream",
 ) {
     enum class State { RUNNING, DONE, FAILED }
     val fraction get() = if (size <= 0) 0f else (done.toFloat() / size).coerceIn(0f, 1f)
@@ -46,6 +47,13 @@ data class LinkUiState(
     val transfers: List<LinkTransfer> = emptyList(),
     val pairing: PairState = PairState.Idle,
     val clipSync: Boolean = true,
+    val discovery: String = "idle",
+    val discoveryError: String? = null,
+    val receiveDirectory: String = "",
+    val serviceError: String? = null,
+    val addrs: List<String> = emptyList(),
+    val pairingCode: String = "",
+    val pairingUri: String = "",
     /** 扫码打开的配对请求（地址 + 配对码），设置页据此直接配对。 A pairing request from a scanned QR code. */
     val pendingPair: PendingPair? = null,
 ) {
@@ -67,6 +75,12 @@ interface LinkController {
     fun sendFd(to: String?, fd: Int, name: String, mime: String): Boolean
     fun offerPair(p: PendingPair?)
     fun resetPairing()
+    fun rescan() {}
+    fun connect(id: String, addrs: List<String> = emptyList()) {}
+    fun setReceiveDirectory(uri: String) {}
+    fun openPairing(addrs: List<String> = emptyList()) {}
+    fun retrySave(id: String) {}
+    fun sendFd(to: String?, fd: Int, name: String, mime: String, clip: Boolean): Boolean = sendFd(to, fd, name, mime)
 }
 
 /**
@@ -80,16 +94,19 @@ class LinkManager internal constructor(
     private val prefs: SharedPreferences,
     private val backendFactory: () -> LinkBackend,
     private val sink: LinkSink,
+    private val discoveryFactory: (((JSONObject) -> Unit, (String, String?) -> Unit) -> LinkDiscoveryAgent)? = null,
 ) : LinkController {
 
     private val main = Handler(Looper.getMainLooper())
     private val _state = MutableStateFlow(
-        LinkUiState(enabled = WeavePrefs.linkEnabled(prefs), name = WeavePrefs.linkName(prefs), clipSync = WeavePrefs.linkClipSync(prefs)),
+        LinkUiState(enabled = WeavePrefs.linkEnabled(prefs), name = WeavePrefs.linkName(prefs), clipSync = WeavePrefs.linkClipSync(prefs), receiveDirectory = prefs.getString("link_receive_directory", "").orEmpty()),
     )
     override val state: StateFlow<LinkUiState> = _state
 
     @Volatile private var backend: LinkBackend? = null
     private var poller: Thread? = null
+    private var discoveryAgent: LinkDiscoveryAgent? = null
+    private var info = JSONObject()
     /** 刚从电脑收到并写进剪贴板的文字：不再发回去。 Text just received and put on the clipboard: never echoed back. */
     @Volatile private var lastRemote: String? = null
     @Volatile private var lastSent: String? = null
@@ -106,14 +123,19 @@ class LinkManager internal constructor(
             .put("platform", "android")
             .put("stateDir", File(ctx.filesDir, "link").absolutePath)
             .put("inboxDir", File(ctx.cacheDir, "link-inbox").absolutePath)
+            .put("mdns", discoveryFactory == null)
         if (!b.start(cfg.toString())) {
             update { it.copy(running = false) }
             return
         }
         backend = b
         sink.onStarted()
-        val info = runCatching { JSONObject(b.call("""{"op":"info"}""")) }.getOrNull()
-        update { it.copy(running = true, fingerprint = info?.optString("fingerprint").orEmpty()) }
+        info = runCatching { JSONObject(b.call("""{"op":"info"}""")) }.getOrDefault(JSONObject())
+        update { it.copy(running = true, fingerprint = info.optString("fingerprint"), addrs = info.optJSONArray("addrs").strings(), serviceError = null) }
+        discoveryAgent = discoveryFactory?.invoke({ command -> backend?.call(command.toString()) }, { phase, error ->
+            update { it.copy(discovery = phase, discoveryError = error) }
+        })
+        discoveryAgent?.start(info)
         refreshPeers()
         poller = Thread({ pollLoop(b) }, "weavelink-poll").apply { isDaemon = true; start() }
     }
@@ -122,6 +144,7 @@ class LinkManager internal constructor(
     fun shutdown() {
         val b = backend ?: return
         backend = null
+        discoveryAgent?.stop(); discoveryAgent = null
         b.stop()
         poller?.join(1500)
         poller = null
@@ -135,7 +158,7 @@ class LinkManager internal constructor(
             val ev = b.poll(1000) ?: break
             val o = runCatching { JSONObject(ev) }.getOrNull() ?: continue
             if (o.optString("type") == "idle") continue
-            main.post { onEvent(o) }
+            main.post { if (backend === b) onEvent(o) }
         }
     }
 
@@ -146,20 +169,25 @@ class LinkManager internal constructor(
             "paired" -> { update { it.copy(pairing = PairState.Done(o.optString("name")), pendingPair = null) }; refreshPeers() }
             "pairFailed" -> update { it.copy(pairing = PairState.Failed(pairReason(o.optString("reason")))) }
             "text" -> onRemoteText(o.optString("text"), o.optBoolean("clip"), o.optString("fromName"))
-            "fileStart" -> upsert(LinkTransfer(o.optString("id"), o.optString("name"), o.optBoolean("incoming"), o.optString(if (o.optBoolean("incoming")) "fromName" else "to"), 0, o.optLong("size"), LinkTransfer.State.RUNNING))
+            "fileStart" -> upsert(LinkTransfer(o.optString("id"), o.optString("name"), o.optBoolean("incoming"), o.optString(if (o.optBoolean("incoming")) "fromName" else "to"), 0, o.optLong("size"), LinkTransfer.State.RUNNING, mime = o.optString("mime", "application/octet-stream")))
             "fileProgress" -> transfer(o.optString("id")) { it.copy(done = o.optLong("done"), size = o.optLong("size", it.size)) }
             "fileDone" -> onFileDone(o)
-            "fileFailed" -> transfer(o.optString("id")) { it.copy(state = LinkTransfer.State.FAILED) }
+            "fileFailed" -> {
+                transfer(o.optString("id")) { it.copy(state = LinkTransfer.State.FAILED) }
+                update { it.copy(serviceError = "传输失败：${o.optString("reason")}") }
+            }
+            "error" -> update { it.copy(serviceError = o.optString("message")) }
         }
     }
 
     private fun pairReason(r: String) = when {
         r.contains("wrong code") || r.contains("rejected") || r.contains("hello") -> "配对码不对或已过期"
-        r.contains("unreachable") || r.contains("refused") || r.contains("timed out") -> "连不上这台设备，请确认在同一个 Wi-Fi 下"
+        r.contains("unreachable") || r.contains("refused") || r.contains("timed out") -> "连不上这台设备：检查地址、端口、本地网络权限或远程入站规则"
         else -> "配对失败"
     }
 
     private fun onRemoteText(text: String, clip: Boolean, from: String) {
+        if (clip && !_state.value.clipSync) return
         if (text.isEmpty()) return
         lastRemote = text
         sink.setClipboardText(text)
@@ -173,8 +201,21 @@ class LinkManager internal constructor(
         transfer(id) { it.copy(state = LinkTransfer.State.DONE, done = maxOf(it.done, it.size), path = path) }
         if (!incoming || path == null) return
         val mime = o.optString("mime", "application/octet-stream")
-        if (o.optBoolean("clip") && mime.startsWith("image/")) sink.setClipboardImage(File(path), mime)
-        else sink.saveReceived(File(path), o.optString("name"), mime, o.optString("fromName"))
+        if (o.optBoolean("clip")) {
+            if (_state.value.clipSync) sink.setClipboardFileAt(File(path), mime, o.optString("name")) { uri, error ->
+                main.post {
+                    transfer(id) { it.copy(path = uri ?: path, state = if (uri == null) LinkTransfer.State.FAILED else LinkTransfer.State.DONE) }
+                    if (error != null) update { it.copy(serviceError = error) }
+                }
+            }
+            return
+        }
+        sink.saveReceivedAt(File(path), o.optString("name"), mime, o.optString("fromName"), _state.value.receiveDirectory) { destination, error ->
+            main.post {
+                transfer(id) { it.copy(path = destination ?: path, state = if (destination == null) LinkTransfer.State.FAILED else LinkTransfer.State.DONE) }
+                if (error != null) update { it.copy(serviceError = error) }
+            }
+        }
     }
 
     private fun upsert(t: LinkTransfer) = update { s -> s.copy(transfers = (listOf(t) + s.transfers.filter { it.id != t.id }).take(MAX_TRANSFERS)) }
@@ -213,6 +254,8 @@ class LinkManager internal constructor(
         prefs.edit().putString(WeavePrefs.LINK_NAME, n).apply()
         backend?.call(JSONObject().put("op", "rename").put("name", n).toString())
         update { it.copy(name = n) }
+        info.put("name", n)
+        discoveryAgent?.start(info)
     }
 
     override fun pair(addrs: List<String>, code: String) {
@@ -227,16 +270,17 @@ class LinkManager internal constructor(
         refreshPeers()
     }
 
-    override fun sendText(to: String?, text: String, clip: Boolean): Boolean {
+    @Synchronized override fun sendText(to: String?, text: String, clip: Boolean): Boolean {
         val b = backend ?: return false
         val cmd = JSONObject().put("op", "sendText").put("text", text).put("clip", clip)
         if (to != null) cmd.put("to", to)
         return runCatching { JSONObject(b.call(cmd.toString())).optBoolean("ok") }.getOrDefault(false)
     }
 
-    override fun sendFd(to: String?, fd: Int, name: String, mime: String): Boolean {
-        val b = backend ?: return false
-        val cmd = JSONObject().put("op", "sendFile").put("fd", fd).put("name", name).put("mime", mime)
+    override fun sendFd(to: String?, fd: Int, name: String, mime: String): Boolean = sendFd(to, fd, name, mime, false)
+    @Synchronized override fun sendFd(to: String?, fd: Int, name: String, mime: String, clip: Boolean): Boolean {
+        val b = backend ?: run { runCatching { android.os.ParcelFileDescriptor.adoptFd(fd).close() }; return false }
+        val cmd = JSONObject().put("op", "sendFile").put("fd", fd).put("name", name).put("mime", mime).put("clip", clip)
         if (to != null) cmd.put("to", to)
         return runCatching { JSONObject(b.call(cmd.toString())).optBoolean("ok") }.getOrDefault(false)
     }
@@ -244,6 +288,39 @@ class LinkManager internal constructor(
     override fun offerPair(p: PendingPair?) = update { it.copy(pendingPair = p, pairing = PairState.Idle) }
 
     override fun resetPairing() = update { it.copy(pairing = PairState.Idle) }
+    override fun rescan() { discoveryAgent?.start(info) }
+    override fun connect(id: String, addrs: List<String>) {
+        val result = backend?.call(JSONObject().put("op", "connect").put("id", id).put("addrs", JSONArray(addrs)).toString()) ?: return
+        if (!JSONObject(result).optBoolean("ok")) update { it.copy(serviceError = "地址无效，请使用 IPv4:端口 或 [IPv6]:端口") }
+    }
+    override fun setReceiveDirectory(uri: String) {
+        prefs.edit().putString("link_receive_directory", uri).apply()
+        update { it.copy(receiveDirectory = uri) }
+    }
+    override fun openPairing(addrs: List<String>) {
+        val result = backend?.call(JSONObject().put("op", "openPairing").put("addrs", JSONArray(addrs)).toString()) ?: return
+        val r = JSONObject(result)
+        if (r.optString("code").isEmpty()) { update { it.copy(serviceError = "无法生成配对码，请检查本机地址") }; return }
+        update { it.copy(pairingCode = r.optString("code"), pairingUri = r.optString("uri")) }
+        val code = r.optString("code")
+        main.postDelayed({ update { if (it.pairingCode == code) it.copy(pairingCode = "", pairingUri = "") else it } }, 120_000)
+    }
+    override fun retrySave(id: String) {
+        val t = _state.value.transfers.firstOrNull { it.id == id && it.incoming && it.state == LinkTransfer.State.FAILED && it.path?.startsWith('/') == true } ?: return
+        sink.saveReceivedAt(File(t.path!!), t.name, t.mime, t.peer, _state.value.receiveDirectory) { uri, error -> main.post {
+            transfer(id) { it.copy(path = uri ?: t.path, state = if (uri == null) LinkTransfer.State.FAILED else LinkTransfer.State.DONE) }
+            update { it.copy(serviceError = error) }
+        } }
+    }
+
+    fun onLocalMedia(uri: android.net.Uri) {
+        if (!_state.value.clipSync || _state.value.connected.isEmpty()) return
+        if (uri.authority == ctx.packageName + ".files") return // Owned remote clips are never echoed.
+        LinkContent.io.execute {
+            runCatching { _state.value.connected.forEach { LinkContent.send(ctx, this, it.id, uri, true) } }
+                .onFailure { e -> main.post { update { it.copy(serviceError = e.message) } } }
+        }
+    }
 
     /**
      * 键盘看到本机新复制的文字：开启同步且已连接时发给电脑（刚从电脑收到的不回传）。
@@ -265,7 +342,8 @@ class LinkManager internal constructor(
         @Volatile private var instance: LinkManager? = null
 
         fun get(ctx: Context): LinkManager = instance ?: synchronized(this) {
-            instance ?: LinkManager(ctx.applicationContext, WeavePrefs.of(ctx), { NativeLink() }, AndroidLinkSink(ctx.applicationContext)).also { instance = it }
+            instance ?: LinkManager(ctx.applicationContext, WeavePrefs.of(ctx), { NativeLink() }, AndroidLinkSink(ctx.applicationContext),
+                { command, status -> LinkDiscovery(ctx.applicationContext, command, status) }).also { instance = it }
         }
 
         /** 测试用：换掉单例。 For tests: replace the singleton. */
@@ -290,6 +368,13 @@ interface LinkSink {
     fun setClipboardImage(file: File, mime: String)
     fun saveReceived(file: File, name: String, mime: String, from: String)
     fun notifyText(from: String, text: String)
+    fun setClipboardFile(file: File, mime: String, name: String) = setClipboardImage(file, mime)
+    fun setClipboardFileAt(file: File, mime: String, name: String, done: (String?, String?) -> Unit) {
+        setClipboardFile(file, mime, name); done(file.path, null)
+    }
+    fun saveReceivedAt(file: File, name: String, mime: String, from: String, directory: String, done: (String?, String?) -> Unit) {
+        saveReceived(file, name, mime, from); done(file.path, null)
+    }
 }
 
 internal class AndroidLinkSink(private val ctx: Context) : LinkSink {
@@ -300,20 +385,40 @@ internal class AndroidLinkSink(private val ctx: Context) : LinkSink {
     override fun onConnections(count: Int, firstName: String?) = LinkNotifications.ongoing(ctx, count, firstName)
 
     override fun setClipboardText(text: String) {
+        if (WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.privateField) LinkContent.history(ctx).add(text, System.currentTimeMillis())
         runCatching { cm?.setPrimaryClip(ClipData.newPlainText("WeaveLink", text)) }
     }
 
     override fun setClipboardImage(file: File, mime: String) {
-        val uri = runCatching { androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file) }.getOrNull() ?: return
-        runCatching { cm?.setPrimaryClip(ClipData.newUri(ctx.contentResolver, "WeaveLink", uri)) }
+        setClipboardFile(file, mime, file.name)
+    }
+
+    override fun setClipboardFile(file: File, mime: String, name: String) {
+        setClipboardFileAt(file, mime, name) { _, _ -> }
+    }
+    override fun setClipboardFileAt(file: File, mime: String, name: String, done: (String?, String?) -> Unit) {
+        LinkContent.io.execute {
+            runCatching {
+                val item = LinkContent.importFile(ctx, file, mime, name, WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.privateField)
+                main.post {
+                    runCatching { cm?.setPrimaryClip(ClipData("WeaveLink", arrayOf(mime), ClipData.Item(android.net.Uri.parse(item.uri)))) }
+                        .fold({ done(item.uri, null) }, { done(null, "剪贴板写入失败：${it.message}") })
+                }
+            }.onFailure { done(null, "剪贴板文件读取失败：${it.message}") }
+        }
     }
 
     override fun saveReceived(file: File, name: String, mime: String, from: String) {
-        Thread {
-            val uri = LinkFiles.saveToDownloads(ctx, file, name, mime)
-            file.delete()
-            if (uri != null) main.post { LinkNotifications.received(ctx, name, mime, from, uri) }
-        }.start()
+        saveReceivedAt(file, name, mime, from, "") { _, _ -> }
+    }
+
+    override fun saveReceivedAt(file: File, name: String, mime: String, from: String, directory: String, done: (String?, String?) -> Unit) {
+        LinkContent.io.execute {
+            runCatching { LinkFiles.save(ctx, file, name, mime, directory) }.fold({ uri ->
+                file.delete()
+                main.post { LinkNotifications.received(ctx, name, mime, from, uri); done(uri.toString(), null) }
+            }, { error -> done(null, "${error.message}；收到的原文件已保留，可重新保存或转发") })
+        }
     }
 
     override fun notifyText(from: String, text: String) = LinkNotifications.text(ctx, from, text)

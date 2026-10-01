@@ -111,7 +111,7 @@ struct Inner {
     name: Mutex<String>,
     platform: String,
     state_dir: PathBuf,
-    inbox: PathBuf,
+    inbox: Mutex<PathBuf>,
     port: u16,
     peers: Mutex<PeerStore>,
     nearby: Mutex<HashMap<String, Found>>,
@@ -143,7 +143,7 @@ impl Link {
             platform: cfg.platform.clone(),
             peers: Mutex::new(PeerStore::load(&cfg.state_dir)),
             state_dir: cfg.state_dir.clone(),
-            inbox: cfg.inbox_dir.clone(),
+            inbox: Mutex::new(cfg.inbox_dir.clone()),
             port,
             nearby: Mutex::new(HashMap::new()),
             conns: Mutex::new(HashMap::new()),
@@ -193,7 +193,7 @@ impl Link {
         let inner = &self.inner;
         match cmd["op"].as_str().unwrap_or("") {
             "info" => inner.info(),
-            "openPairing" => inner.open_pairing(),
+            "openPairing" => inner.open_pairing(cmd),
             "closePairing" => {
                 *inner.pairing.lock().unwrap() = None;
                 json!({"ok": true})
@@ -201,7 +201,7 @@ impl Link {
             "pair" => {
                 let addrs: Vec<SocketAddr> =
                     cmd["addrs"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
-                let Some(code) = cmd["code"].as_str().map(|c| c.trim().to_string()).filter(|c| c.len() == 6) else {
+                let Some(code) = cmd["code"].as_str().map(|c| c.trim().to_string()).filter(|c| c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())) else {
                     return json!({"ok": false, "error": "code"});
                 };
                 if addrs.is_empty() {
@@ -221,9 +221,29 @@ impl Link {
             }
             "connect" => {
                 let id = cmd["id"].as_str().unwrap_or("").to_string();
-                dial(inner, &id);
+                if inner.peers.lock().unwrap().get(&id).is_none() { return json!({"ok": false, "error": "unknown peer"}); }
+                let explicit: Vec<SocketAddr> = cmd["addrs"].as_array().into_iter().flatten().filter_map(|v| v.as_str()?.parse().ok()).collect();
+                if cmd["addrs"].as_array().is_some_and(|a| !a.is_empty() && explicit.len() != a.len()) { return json!({"ok":false,"error":"invalid address"}); }
+                for addr in cmd["addrs"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).filter(|s| s.parse::<SocketAddr>().is_ok()) {
+                    inner.peers.lock().unwrap().remember_addr(&id, addr);
+                }
+                dial_to(inner, &id, explicit);
                 json!({"ok": true})
             }
+            "setInbox" => {
+                let Some(path) = cmd["path"].as_str().map(PathBuf::from).filter(|p| p.is_absolute()) else { return json!({"ok":false,"error":"invalid directory"}); };
+                if let Err(e) = fs::create_dir_all(&path) { return json!({"ok":false,"error":e.to_string()}); }
+                *inner.inbox.lock().unwrap() = path;
+                json!({"ok":true})
+            }
+            "discovered" => {
+                let addrs: Vec<SocketAddr> = cmd["addrs"].as_array().into_iter().flatten().filter_map(|v| v.as_str()?.parse().ok()).take(16).collect();
+                let id = cmd["id"].as_str().unwrap_or("");
+                if id.len() != 16 || !id.bytes().all(|c| c.is_ascii_hexdigit()) || id == inner.id || addrs.is_empty() { return json!({"ok":false}); }
+                on_seen(inner, Seen::Found(Found { id:id.into(), name:cmd["name"].as_str().unwrap_or("").chars().take(40).collect(), platform:cmd["platform"].as_str().unwrap_or("unknown").into(), addrs }));
+                json!({"ok":true})
+            }
+            "discoveryLost" => { on_seen(inner, Seen::Lost(format!("{}.{}", cmd["id"].as_str().unwrap_or(""), discovery::SERVICE))); json!({"ok":true}) }
             "rename" => {
                 if let Some(n) = cmd["name"].as_str().filter(|n| !n.trim().is_empty()) {
                     *inner.name.lock().unwrap() = n.trim().to_string();
@@ -285,6 +305,17 @@ impl Drop for Link {
 
 fn bind(port: u16) -> Result<TcpListener, String> {
     let want = if port == 0 { DEFAULT_PORT } else { port };
+    // Darwin can allow a reusable IPv6 listener beside an existing IPv4 listener;
+    // IPv4 clients would then reach the other process. Check IPv4 ownership first.
+    let want = if TcpListener::bind(("0.0.0.0", want)).is_ok() { want } else { 0 };
+    for port in [want, 0] {
+        if let Ok(socket) = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, Some(socket2::Protocol::TCP)) {
+            let _ = socket.set_reuse_address(true);
+            if socket.set_only_v6(false).is_ok() && socket.bind(&SocketAddr::from(([0u16;8],port)).into()).is_ok() && socket.listen(128).is_ok() {
+                return Ok(socket.into());
+            }
+        }
+    }
     TcpListener::bind(("0.0.0.0", want)).or_else(|_| TcpListener::bind(("0.0.0.0", 0))).map_err(err)
 }
 
@@ -300,17 +331,19 @@ impl Inner {
     }
 
     fn info(&self) -> Value {
-        let addrs: Vec<String> = discovery::local_addrs().iter().map(|ip| format!("{ip}:{}", self.port)).collect();
+        let addrs: Vec<String> = discovery::local_addrs().iter().map(|ip| SocketAddr::new(*ip,self.port).to_string()).collect();
         json!({
             "id": self.id, "name": self.name(), "platform": self.platform, "port": self.port,
             "fingerprint": fingerprint(&self.me.public), "addrs": addrs,
         })
     }
 
-    fn open_pairing(&self) -> Value {
+    fn open_pairing(&self, cmd: &Value) -> Value {
+        let mut addrs: Vec<String> = cmd["addrs"].as_array().into_iter().flatten().filter_map(|v|v.as_str()?.parse::<SocketAddr>().ok()).map(|a|a.to_string()).collect();
+        if cmd["addrs"].as_array().is_some_and(|a| !a.is_empty() && addrs.len() != a.len()) { return json!({"ok":false,"error":"invalid address"}); }
         let code = secure::new_code();
         *self.pairing.lock().unwrap() = Some(Pairing { code: code.clone(), expires: Instant::now() + PAIRING_WINDOW, attempts: 0 });
-        let addrs: Vec<String> = discovery::local_addrs().iter().map(|ip| format!("{ip}:{}", self.port)).collect();
+        if addrs.is_empty() { addrs = discovery::local_addrs().iter().map(|ip| SocketAddr::new(*ip,self.port).to_string()).collect(); }
         let uri = format!(
             "weavelink://pair?v=1&id={}&n={}&p={}&a={}&c={}",
             self.id,
@@ -363,10 +396,6 @@ impl Inner {
     }
 
     fn send_file(self: &Arc<Self>, cmd: &Value) -> Value {
-        let targets = self.targets(cmd["to"].as_str());
-        let Some(conn) = targets.into_iter().next() else {
-            return json!({"ok": false, "error": "not connected"});
-        };
         let file = if let Some(p) = cmd["path"].as_str() {
             File::open(p).map_err(err)
         } else if let Some(fd) = cmd["fd"].as_i64() {
@@ -377,6 +406,10 @@ impl Inner {
         let file = match file {
             Ok(f) => f,
             Err(e) => return json!({"ok": false, "error": e}),
+        };
+        let targets = self.targets(cmd["to"].as_str());
+        let Some(conn) = targets.into_iter().next() else {
+            return json!({"ok": false, "error": "not connected"});
         };
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         let name = cmd["name"]
@@ -576,7 +609,7 @@ fn handle(inner: &Inner, conn: &Conn, m: Message) -> Result<(), String> {
             let id = m.header["id"].as_str().ok_or("offer id")?.to_string();
             let name = safe_name(m.header["name"].as_str().unwrap_or("file"));
             let clip = m.header["clip"].as_bool().unwrap_or(false);
-            let dir = if clip { inner.state_dir.join("clip") } else { inner.inbox.clone() };
+            let dir = if clip { inner.state_dir.join("clip") } else { inner.inbox.lock().unwrap().clone() };
             fs::create_dir_all(&dir).map_err(err)?;
             let part = dir.join(format!(".{id}.part"));
             let file = File::create(&part).map_err(err)?;
@@ -650,6 +683,10 @@ fn pair_with(inner: &Arc<Inner>, addrs: &[SocketAddr], code: &str) {
 /// 连接一台已配对设备：先试局域网里刚发现的地址，再试记住的地址。
 /// Connect to a trusted device: freshly discovered addresses first, then remembered ones.
 fn dial(inner: &Arc<Inner>, id: &str) {
+    dial_to(inner, id, Vec::new());
+}
+
+fn dial_to(inner: &Arc<Inner>, id: &str, mut addrs: Vec<SocketAddr>) {
     if inner.conns.lock().unwrap().contains_key(id) || !inner.dialing.lock().unwrap().insert(id.to_string()) {
         return;
     }
@@ -657,7 +694,9 @@ fn dial(inner: &Arc<Inner>, id: &str) {
         inner.dialing.lock().unwrap().remove(id);
         return;
     };
-    let mut addrs: Vec<SocketAddr> = inner.nearby.lock().unwrap().get(id).map(|f| f.addrs.clone()).unwrap_or_default();
+    for a in inner.nearby.lock().unwrap().get(id).map(|f| f.addrs.clone()).unwrap_or_default() {
+        if !addrs.contains(&a) { addrs.push(a); }
+    }
     for a in peer.addrs.iter().filter_map(|a| a.parse().ok()) {
         if !addrs.contains(&a) {
             addrs.push(a);
@@ -689,10 +728,10 @@ fn on_seen(inner: &Arc<Inner>, seen: Seen) {
     match seen {
         Seen::Found(f) => {
             let trusted = inner.peers.lock().unwrap().get(&f.id).is_some();
+            inner.nearby.lock().unwrap().insert(f.id.clone(), f.clone());
             inner.emit(json!({"type": "peerFound", "id": f.id, "name": f.name, "platform": f.platform, "trusted": trusted,
                               "addrs": f.addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>()}));
             let id = f.id.clone();
-            inner.nearby.lock().unwrap().insert(f.id.clone(), f);
             if trusted {
                 dial(inner, &id);
             }
@@ -766,8 +805,11 @@ fn prune_clips(dir: &Path) {
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
-    for (_, p) in files.into_iter().skip(CLIP_KEEP) {
-        let _ = fs::remove_file(p);
+    for (modified, p) in files.into_iter().skip(CLIP_KEEP) {
+        // Hosts import completed clips asynchronously; keep bursts until they can own a copy.
+        if modified.elapsed().unwrap_or_default() >= Duration::from_secs(300) {
+            let _ = fs::remove_file(p);
+        }
     }
 }
 
@@ -857,6 +899,55 @@ mod tests {
         assert_eq!(phone.call(&json!({"op": "forget", "id": id}))["ok"], true);
         drop(mac);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn occupied_ipv4_port_never_produces_a_shadow_ipv6_listener() {
+        let ipv4 = TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = ipv4.local_addr().unwrap().port();
+        let listener = bind(port).unwrap();
+        assert_ne!(listener.local_addr().unwrap().port(), port);
+        let client = TcpStream::connect(("127.0.0.1", listener.local_addr().unwrap().port())).unwrap();
+        assert!(listener.accept().is_ok());
+        drop(client);
+    }
+
+    #[test]
+    fn ipv6_direct_pair_custom_inbox_and_media_clips() {
+        let dir = std::env::temp_dir().join(format!("weave-link-v6-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mac = Link::start(cfg("mac", &dir)).unwrap();
+        let phone = Link::start(cfg("android", &dir)).unwrap();
+        let info = mac.call(&json!({"op":"info"}));
+        let endpoint = format!("[::1]:{}", info["port"]);
+        let pairing = mac.call(&json!({"op":"openPairing", "addrs":[endpoint]}));
+        assert_eq!(pairing["addrs"][0], endpoint);
+        assert!(pairing["uri"].as_str().unwrap().contains("%5B"));
+        phone.call(&json!({"op":"pair", "addrs":[endpoint], "code":pairing["code"]}));
+        wait(&phone, "paired"); wait(&mac, "paired");
+        assert_eq!(phone.call(&json!({"op":"discovered", "id":info["id"], "name":"Mac", "platform":"mac", "addrs":[endpoint]}))["ok"], true);
+        assert_eq!(phone.call(&json!({"op":"peers"}))["trusted"][0]["nearby"], true);
+        assert_eq!(phone.call(&json!({"op":"discovered", "id":"invalid", "addrs":[endpoint]}))["ok"], false);
+        let inbox = dir.join("custom-downloads");
+        assert_eq!(phone.call(&json!({"op":"setInbox", "path":inbox}))["ok"], true);
+        assert_eq!(phone.call(&json!({"op":"setInbox", "path":"relative"}))["ok"], false);
+        let src = dir.join("content.bin");
+        let body: Vec<u8> = (0..170_000).map(|n| (n % 253) as u8).collect();
+        fs::write(&src, &body).unwrap();
+        for (clip, mime, name) in [(false,"application/pdf","report.pdf"), (true,"image/png","photo.png"), (true,"application/octet-stream","archive.bin")] {
+            assert_eq!(mac.call(&json!({"op":"sendFile", "path":src, "clip":clip, "mime":mime, "name":name}))["ok"], true);
+            let done = wait(&phone, "fileDone");
+            assert_eq!(done["clip"], clip); assert_eq!(done["mime"], mime);
+            let got = PathBuf::from(done["path"].as_str().unwrap());
+            assert!(got.starts_with(if clip {dir.join("android/state/clip")} else {inbox.clone()}));
+            assert_eq!(fs::read(got).unwrap(), body);
+        }
+        assert_eq!(phone.call(&json!({"op":"sendFile", "path":src, "name":"return.bin", "clip":true}))["ok"], true);
+        let done = loop { let event = wait(&mac, "fileDone"); if event["incoming"] == true { break event; } };
+        assert_eq!(fs::read(done["path"].as_str().unwrap()).unwrap(), body);
+        phone.call(&json!({"op":"discoveryLost", "id":info["id"]}));
+        assert_eq!(phone.call(&json!({"op":"peers"}))["trusted"][0]["nearby"], false);
+        drop(phone); drop(mac); let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

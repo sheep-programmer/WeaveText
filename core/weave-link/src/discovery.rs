@@ -79,8 +79,8 @@ impl Discovery {
 
 fn usable(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v) => !v.is_loopback() && !v.is_link_local(),
-        IpAddr::V6(v) => !v.is_loopback() && (v.segments()[0] & 0xffc0) != 0xfe80,
+        IpAddr::V4(v) => !v.is_loopback() && !v.is_link_local() && !v.is_unspecified() && !v.is_multicast(),
+        IpAddr::V6(v) => !v.is_loopback() && !v.is_unspecified() && !v.is_multicast() && (v.segments()[0] & 0xffc0) != 0xfe80,
     }
 }
 
@@ -91,8 +91,9 @@ pub fn local_addrs() -> Vec<IpAddr> {
         .into_iter()
         .filter(|i| !i.is_loopback())
         .map(|i| i.ip())
-        .filter(|ip| ip.is_ipv4() && usable(ip))
+        .filter(usable)
         .collect();
+    v.sort_by_key(|ip| (!ip.is_ipv4(), *ip));
     v.dedup();
     v
 }

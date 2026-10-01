@@ -125,13 +125,15 @@ public struct LinkPeer: Equatable, Identifiable, Sendable {
     public var platform: String
     public var connected: Bool
     public var nearby: Bool
+    public var addrs: [String] = []
 
-    public init(id: String, name: String, platform: String, connected: Bool, nearby: Bool) {
+    public init(id: String, name: String, platform: String, connected: Bool, nearby: Bool, addrs: [String] = []) {
         self.id = id
         self.name = name
         self.platform = platform
         self.connected = connected
         self.nearby = nearby
+        self.addrs = addrs
     }
 
     public var displayName: String { name.isEmpty ? LinkText.platform(platform) : name }
@@ -221,6 +223,7 @@ public enum LinkEffect: Equatable, Sendable {
     case receivedText(text: String, clip: Bool, from: String)
     /// 收到的剪贴板图片。 A received clipboard image.
     case receivedClipImage(path: String)
+    case receivedClipFile(path: String, name: String, mime: String)
     case receivedFile(path: String, name: String, from: String)
     /// 本机发出的一个文件结束了（成功或失败），发送队列可以继续。 An outgoing file finished; the queue may go on.
     case outgoingFinished(id: String, ok: Bool)
@@ -246,7 +249,7 @@ public struct LinkState: Equatable, Sendable {
     public mutating func setPeers(json o: [String: Any]) {
         trusted = o.objects("trusted").map {
             LinkPeer(id: $0.str("id"), name: $0.str("name"), platform: $0.str("platform"),
-                     connected: $0.bool("connected"), nearby: $0.bool("nearby"))
+                     connected: $0.bool("connected"), nearby: $0.bool("nearby"), addrs: $0.strings("addrs"))
         }
         nearby = o.objects("nearby").map { LinkNearby(id: $0.str("id"), name: $0.str("name"), platform: $0.str("platform")) }
     }
@@ -302,6 +305,7 @@ public struct LinkState: Equatable, Sendable {
             guard incoming else { return [.outgoingFinished(id: id, ok: true)] }
             guard let path else { return [] }
             if clip && mime.hasPrefix("image/") { return [.receivedClipImage(path: path)] }
+            if clip { return [.receivedClipFile(path: path, name: name, mime: mime)] }
             return [.receivedFile(path: path, name: name, from: from)]
         case .fileFailed(let id, let incoming, _):
             clipTransfers.remove(id)

@@ -28,13 +28,14 @@ import kotlin.math.max
  * and quick phrases.
  */
 class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
-    val history = ClipHistory(File(ctx.filesDir, HISTORY_FILE))
+    val history = com.weavetext.ime.link.LinkContent.history(ctx)
     val phrases: ClipHistory
     private val cm = ctx.getSystemService(ClipboardManager::class.java)
     private val listeners = ArrayList<() -> Unit>()
     private var lastSeen: String? = null
 
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { onClip(fresh = true) }
+    private val historyListener: () -> Unit = { kb.view.post { notifyChanged() } }
 
     init {
         val pf = File(ctx.filesDir, "clipboard/phrases.json")
@@ -45,6 +46,7 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
             for (s in DEFAULT_PHRASES.reversed()) phrases.add(s, t++)
         }
         runCatching { cm?.addPrimaryClipChangedListener(clipListener) }
+        history.observe(historyListener)
     }
 
     fun addListener(l: () -> Unit) { listeners += l }
@@ -55,9 +57,8 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
     /** 刚同意记录时把当前剪贴板也记下。 Record the current clip right after the user opts in. */
     fun recordCurrent() {
         if (!recording || kb.controller.isSensitiveField) return
-        val text = currentClip() ?: return
-        lastSeen = text
-        if (history.add(text, System.currentTimeMillis())) notifyChanged()
+        lastSeen = null
+        onClip(fresh = false)
     }
 
     /** 清空全部历史（含已固定）。 Clear all history, pinned included. */
@@ -68,7 +69,7 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
 
     /** 当前系统剪贴板文本（记录关闭时面板只显示它）。 Current system clip text. */
     fun currentClip(): String? = runCatching {
-        cm?.primaryClip?.takeIf { it.itemCount > 0 && !isSensitive(it) }?.getItemAt(0)?.coerceToText(ctx)?.toString()
+        cm?.primaryClip?.takeIf { it.itemCount > 0 && !isSensitive(it) }?.getItemAt(0)?.let { if (it.uri == null) it.text?.toString() else null }
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
     /** 键盘显示时补查一次（进程未存活期间的复制）。 Re-check on show. */
@@ -77,7 +78,21 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
     private fun onClip(fresh: Boolean) {
         val clip = runCatching { cm?.primaryClip }.getOrNull() ?: return
         if (clip.itemCount == 0 || isSensitive(clip) || kb.controller.isSensitiveField) return
-        val text = runCatching { clip.getItemAt(0).coerceToText(ctx)?.toString() }.getOrNull()
+        val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+        if (uris.isNotEmpty()) {
+            val key = uris.joinToString("|")
+            if (key == lastSeen) return
+            lastSeen = key
+            val recent = fresh || System.currentTimeMillis() - clip.description.timestamp < 30_000
+            uris.forEach { uri ->
+                if (recording) com.weavetext.ime.link.LinkContent.io.execute {
+                    if (recording && !com.weavetext.ime.ime.ClipPrivacy.privateField) runCatching { com.weavetext.ime.link.LinkContent.import(ctx, uri) }
+                }
+                if (recent) com.weavetext.ime.link.LinkManager.get(ctx).onLocalMedia(uri)
+            }
+            notifyChanged(); return
+        }
+        val text = clip.getItemAt(0).text?.toString()
         if (text.isNullOrBlank() || text == lastSeen) return
         lastSeen = text
         val now = System.currentTimeMillis()
@@ -99,7 +114,15 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
         return extras.getBoolean(EXTRA_IS_SENSITIVE) || extras.getBoolean("android.content.extra.IS_SENSITIVE")
     }
 
-    fun release() { runCatching { cm?.removePrimaryClipChangedListener(clipListener) } }
+    fun release() { history.unobserve(historyListener); runCatching { cm?.removePrimaryClipChangedListener(clipListener) } }
+
+    fun currentItem(): ClipItem? {
+        val clip = runCatching { cm?.primaryClip }.getOrNull()?.takeIf { it.itemCount > 0 && !isSensitive(it) } ?: return null
+        val item = clip.getItemAt(0)
+        val uri = item.uri ?: return currentClip()?.let { ClipItem(-1, it, System.currentTimeMillis()) }
+        val mime = clip.description.getMimeType(0)
+        return ClipItem(-1, if (mime.startsWith("image/")) "图片" else "文件", System.currentTimeMillis(), uri = uri.toString(), mime = mime)
+    }
 
     fun changed() = notifyChanged()
 
@@ -164,7 +187,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         val now = System.currentTimeMillis()
         items = when {
             privateField || asking -> emptyList()
-            mode == Mode.CLIPBOARD && !repo.recording -> repo.currentClip()?.let { listOf(ClipItem(-1, it, now)) } ?: emptyList()
+            mode == Mode.CLIPBOARD && !repo.recording -> repo.currentItem()?.let { listOf(it) } ?: emptyList()
             pinnedOnly -> store.list(now).filter { it.pinned }
             else -> store.list(now)
         }
@@ -180,8 +203,26 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     }
 
     private fun commit(item: ClipItem) {
+        if (item.media) {
+            if (!kb.controller.onContent(android.net.Uri.parse(item.uri), item.mime ?: "application/octet-stream", item.text)) {
+                share(item)
+                kb.topBar.showAction("此输入框不支持文件粘贴，可选择应用转发", null, 2500, null)
+            }
+            return
+        }
         kb.controller.onText(item.text)
         if (mode == Mode.PHRASES) kb.closePanel()
+    }
+
+    private fun share(item: ClipItem) {
+        val uri = android.net.Uri.parse(item.uri)
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = item.mime ?: "application/octet-stream"
+            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newUri(kb.ctx.contentResolver, item.text, uri)
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        kb.ctx.startActivity(android.content.Intent.createChooser(send, "转发 · ${item.text}").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     private fun addPhrase() {
@@ -334,6 +375,23 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     private inner class Cards(c: Context) : ScrollGridView(c) {
         private val rects = ArrayList<RectF>()
         private val layouts = ArrayList<StaticLayout>()
+        private val thumbnails = HashMap<String, android.graphics.Bitmap?>()
+        private val loading = HashSet<String>()
+        private fun thumbnail(item: ClipItem) {
+            val uri = item.uri ?: return
+            if (item.mime?.startsWith("image/") != true || thumbnails.containsKey(uri) || !loading.add(uri)) return
+            com.weavetext.ime.link.LinkContent.io.execute {
+                val bitmap = runCatching {
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    kb.ctx.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                    var sample = 1
+                    while (max(bounds.outWidth, bounds.outHeight) / sample > 256) sample *= 2
+                    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    kb.ctx.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { android.graphics.BitmapFactory.decodeStream(it, null, options) }
+                }.getOrNull()
+                post { thumbnails[uri] = bitmap; loading.remove(uri); invalidate() }
+            }
+        }
         private val body = TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
         private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private val small = Paint(Paint.ANTI_ALIAS_FLAG).zh()
@@ -385,7 +443,8 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                     // 已固定项右上角留出图钉位置。 Leave room for the pin icon.
                     val lay = layoutFor(items[i].text, (cw - m.dp(20f) - if (items[i].pinned) m.dp(14f) else 0f).toInt())
                     layouts += lay
-                    rowH = max(rowH, m.dp(10f) + lay.height + m.dp(6f) + m.dp(14f) + m.dp(10f))
+                    if (items[i].media) thumbnail(items[i])
+                    rowH = max(rowH, m.dp(10f) + lay.height + m.dp(6f) + m.dp(14f) + m.dp(10f) + if (items[i].media) m.dp(64f) else 0f)
                     i++
                 }
                 for (j in start until i) {
@@ -449,7 +508,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                 actionFor = -1
                 when (index - ACTION_BASE) {
                     0 -> store.setPinned(item.id, !item.pinned)
-                    1 -> { kb.controller.onText(item.text); kb.closePanel(); return }
+                    1 -> { if (item.media) share(item) else { kb.controller.onText(item.text); kb.closePanel() }; return }
                     2 -> store.delete(listOf(item.id))
                 }
                 reload()
@@ -495,7 +554,20 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                 }
                 body.color = pal.label
                 c.save()
-                c.translate(rc.left + m.dp(10f), rc.top + m.dp(10f))
+                if (item.media) {
+                    val bitmap = thumbnails[item.uri]
+                    if (bitmap != null) {
+                        val target = RectF(rc.left + m.dp(10f), rc.top + m.dp(8f), rc.right - m.dp(10f), rc.top + m.dp(66f))
+                        val scale = minOf(target.width() / bitmap.width, target.height() / bitmap.height)
+                        val w = bitmap.width * scale; val h = bitmap.height * scale
+                        target.set(target.centerX() - w / 2, target.centerY() - h / 2, target.centerX() + w / 2, target.centerY() + h / 2)
+                        c.drawBitmap(bitmap, null, target, p)
+                    } else {
+                        small.textSize = m.dp(14f); small.color = pal.labelSecondary; small.textAlign = Paint.Align.CENTER
+                        c.drawText(if (item.mime?.startsWith("image/") == true) "图片" else "文件", rc.centerX(), rc.top + m.dp(38f), small)
+                    }
+                }
+                c.translate(rc.left + m.dp(10f), rc.top + m.dp(10f) + if (item.media) m.dp(64f) else 0f)
                 layouts[i].draw(c)
                 c.restore()
                 small.textSize = m.dp(11f)
@@ -526,7 +598,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
             val h = (rc.height() - m.dp(16f)).coerceAtMost(m.dp(56f))
             val top = rc.centerY() - h / 2
             val icons = intArrayOf(R.drawable.ic_pin, R.drawable.ic_edit, R.drawable.ic_delete)
-            val labels = arrayOf(if (item.pinned) "取消固定" else "固定", "编辑上屏", "删除")
+            val labels = arrayOf(if (item.pinned) "取消固定" else "固定", if (item.media) "转发" else "编辑上屏", "删除")
             small.textAlign = Paint.Align.CENTER
             small.textSize = m.dp(11f)
             for (a in 0..2) {
@@ -598,6 +670,6 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     companion object {
         private const val ACTION_BASE = 100_000
         private const val PROMPT_BASE = 200_000
-        private const val PROMPT = "是否记录剪贴板历史？\n复制的文字会在本机保存 24 小时，密码框中不记录。"
+        private const val PROMPT = "是否记录剪贴板历史？\n复制的文字、图片和文件在本机保存 24 小时，密码框中不记录。"
     }
 }

@@ -41,6 +41,11 @@ public struct ClipboardGuard: Sendable {
         return shouldSendKey("image:" + imageDigest)
     }
 
+    public mutating func shouldSend(filesKey: String, types: [String]) -> Bool {
+        guard !types.contains(where: Self.skippedTypes.contains) else { return false }
+        return shouldSendKey("files:" + filesKey)
+    }
+
     private mutating func shouldSendKey(_ key: String) -> Bool {
         guard key != lastRemote, key != lastSent else { return false }
         lastSent = key

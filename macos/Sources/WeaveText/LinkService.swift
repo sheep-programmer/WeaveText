@@ -17,6 +17,16 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     @Published private(set) var startFailed = false
 
     private let prefs = Preferences.shared
+    @Published private(set) var scanning = false
+    @Published private(set) var discoveryError: String?
+    @Published private(set) var serviceError: String?
+    @Published var selectedTarget = ""
+    private let bonjour = LinkBonjour()
+    private var appliedInbox: String?
+    private var queueTarget: String?
+    private var queuedTargets: [String] = []
+    private var queuedClips: [Bool] = []
+    private var queueClip = false
     private var handle: LinkHandle?
     private var pollerDone: DispatchSemaphore?
     private var clipTimer: Timer?
@@ -30,8 +40,8 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     static var stateDir: URL { EngineHost.userDirectory().appendingPathComponent("link", isDirectory: true) }
 
     static var inboxDir: URL {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WeaveText", isDirectory: true)
+        let selected = Preferences.shared.linkReceiveDirectory
+        return selected.isEmpty ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0] : URL(fileURLWithPath: selected, isDirectory: true)
     }
 
     /// 手机上看到的名字。 The name phones see.
@@ -61,6 +71,11 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
                 h.call(["op": "rename", "name": displayName])
                 appliedName = displayName
                 state.info.name = displayName
+                bonjour.start(info: state.info)
+            }
+            if let h = handle, appliedInbox != Self.inboxDir.path {
+                let result = h.call(["op": "setInbox", "path": Self.inboxDir.path])
+                if result.bool("ok") { appliedInbox = Self.inboxDir.path } else { serviceError = "接收目录不可写：" + result.str("error") }
             }
         } else {
             shutdown()
@@ -74,7 +89,7 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
         guard handle == nil else { return }
         let config: [String: Any] = [
             "name": displayName, "platform": "mac", "stateDir": Self.stateDir.path, "inboxDir": Self.inboxDir.path,
-            "mdns": true,
+            "mdns": false,
         ]
         guard let h = LinkHandle(config: config) else {
             startFailed = true
@@ -85,6 +100,10 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
         appliedName = displayName
         state.running = true
         state.info = LinkInfo(json: h.call(["op": "info"]))
+        appliedInbox = Self.inboxDir.path
+        bonjour.command = { [weak self] command in self?.handle?.call(command) }
+        bonjour.status = { [weak self] scanning, error in self?.scanning = scanning; self?.discoveryError = error }
+        bonjour.start(info: state.info)
         refreshPeers()
         let done = DispatchSemaphore(value: 0)
         pollerDone = done
@@ -103,12 +122,13 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     /// 关掉内核（关开关、退出时）。 Stop the core (switch off, quit).
     func shutdown() {
         guard let h = handle else { return }
+        bonjour.stop()
         handle = nil
         h.stop()
         _ = pollerDone?.wait(timeout: .now() + 2)
         pollerDone = nil
         state.stopped()
-        queue.cancelAll()
+        queue.cancelAll(); queuedTargets = []; queuedClips = []
         for url in tempFiles.values { try? FileManager.default.removeItem(at: url) }
         tempFiles = [:]
         updateClipTimer()
@@ -117,6 +137,7 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     private func refreshPeers() {
         guard let h = handle else { return }
         state.setPeers(json: h.call(["op": "peers"]))
+        if !state.connected.contains(where: { $0.id == selectedTarget }) { selectedTarget = state.connected.first?.id ?? "" }
         updateClipTimer()
     }
 
@@ -124,7 +145,9 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     private func receive(_ e: LinkEvent, from h: LinkHandle) {
         guard h === handle else { return }
-        if case .error(let m) = e { NSLog("WeaveLink: %@", m) }
+        if case .error(let m) = e { serviceError = m }
+        if case .pairFailed(let reason) = e { serviceError = "配对失败：" + reason }
+        if case .fileFailed(_, _, let reason) = e { serviceError = "传输失败：" + reason }
         for effect in state.apply(e) { perform(effect) }
         // 配对成功：显示一下结果后自动关闭配对窗口。 Paired: show the result briefly, then close the sheet.
         if case .paired = e, state.pairing?.pairedWith != nil {
@@ -160,8 +183,14 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
             pb.clearContents()
             pb.writeObjects([image])
             clip.wroteRemote(imageDigest: Self.pasteboardPNG(pb)?.digest ?? "", changeCount: pb.changeCount)
+        case .receivedClipFile(let path, _, _):
+            guard prefs.linkClipSync else { return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects([URL(fileURLWithPath: path) as NSURL])
+            clip.wroteRemote(changeCount: pb.changeCount)
         case .receivedFile(let path, let name, let from):
-            let where_ = "已保存到 下载/WeaveText"
+            let where_ = "已保存到 " + URL(fileURLWithPath: path).deletingLastPathComponent().path
             notify(title: "收到文件：\(name)", body: from.isEmpty ? where_ : "来自 \(from) · \(where_)", path: path)
         case .outgoingFinished(let id, let ok):
             if let url = tempFiles.removeValue(forKey: id) { try? FileManager.default.removeItem(at: url) }
@@ -184,8 +213,10 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     func openPairing() {
         guard let h = handle else { return }
-        let r = h.call(["op": "openPairing"])
-        guard !r.isEmpty, r["code"] is String else { return }
+        var command: [String: Any] = ["op": "openPairing"]
+        if !prefs.linkPublicAddress.trimmingCharacters(in: .whitespaces).isEmpty { command["addrs"] = [Self.endpoint(prefs.linkPublicAddress)] }
+        let r = h.call(command)
+        guard !r.isEmpty, r["code"] is String else { serviceError = "本机公网地址无效，请使用 IPv4:端口 或 [IPv6]:端口"; return }
         state.pairing = LinkPairing(json: r)
     }
 
@@ -197,6 +228,34 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     func forget(_ peer: LinkPeer) {
         handle?.call(["op": "forget", "id": peer.id])
         refreshPeers()
+    }
+
+    static func endpoint(_ input: String) -> String {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("[") { return value.hasSuffix("]") ? value + ":47811" : value }
+        if value.filter({ $0 == ":" }).count > 1 { return "[" + value + "]:47811" }
+        return value.contains(":") ? value : value + ":47811"
+    }
+    func rescan() { bonjour.start(info: state.info) }
+    func connect(_ peer: LinkPeer, address: String) {
+        let addrs = address.isEmpty ? peer.addrs : [Self.endpoint(address)]
+        let r = handle?.call(["op": "connect", "id": peer.id, "addrs": addrs]) ?? [:]
+        if !r.bool("ok") { serviceError = "地址无效，请检查 IPv4:端口 或 [IPv6]:端口" }
+    }
+    func pair(address: String, code: String) {
+        let result = handle?.call(["op": "pair", "addrs": [Self.endpoint(address)], "code": code]) ?? [:]
+        if !result.bool("ok") { serviceError = "地址或配对码无效" }
+    }
+    func chooseInbox() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.prompt = "选择接收目录"
+        if panel.runModal() == .OK, let url = panel.url { prefs.linkReceiveDirectory = url.path }
+    }
+    func sendText(_ text: String, clipboard: Bool = false) {
+        guard canSend else { return }
+        let r = handle?.call(["op": "sendText", "to": selectedTarget, "text": text, "clip": clipboard]) ?? [:]
+        if !r.bool("ok") { serviceError = "发送失败，请检查接收设备连接" }
     }
 
     func revealInbox() {
@@ -216,24 +275,24 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     func sendClipboard() {
         guard let h = handle, canSend else { return }
         let pb = NSPasteboard.general
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
-           !urls.isEmpty {
-            sendFiles(urls)
-        } else if let text = pb.string(forType: .string), !text.isEmpty {
-            h.call(["op": "sendText", "text": text, "clip": false])
-        } else if let png = Self.pasteboardPNG(pb), png.data.count <= ClipboardGuard.maxImageBytes,
-                  let url = writeTemp(png.data, name: "剪贴板图片.png") {
-            let r = h.call(["op": "sendFile", "path": url.path, "name": "剪贴板图片.png", "mime": "image/png", "clip": false])
-            if r.bool("ok") { tempFiles[r.str("id")] = url } else { try? FileManager.default.removeItem(at: url) }
-        } else {
-            NSSound.beep()
+        let types = pb.types?.map(\.rawValue) ?? []
+        guard !types.contains(where: ClipboardGuard.skippedTypes.contains) else { serviceError = "此剪贴板内容被标记为敏感"; return }
+        switch LinkClipboard.read(pb) {
+        case .files(let urls): sendFiles(urls, clip: true)
+        case .image(let data):
+            guard let url = writeTemp(data, name: "剪贴板图片.png") else { serviceError = "无法读取剪贴板图片"; return }
+            let r = h.call(["op": "sendFile", "to": selectedTarget, "path": url.path, "name": "剪贴板图片.png", "mime": "image/png", "clip": true])
+            if r.bool("ok") { tempFiles[r.str("id")] = url } else { try? FileManager.default.removeItem(at: url); serviceError = "图片发送失败" }
+        case .text(let text): sendText(text, clipboard: true)
+        case .empty: serviceError = "剪贴板为空或格式无法读取"
         }
     }
 
     /// 「发送文件…」 "Send files…"
-    func chooseFiles() {
+    func chooseFiles(imagesOnly: Bool = false) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
+        if imagesOnly { panel.allowedContentTypes = [.image] }
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.prompt = "发送"
@@ -243,13 +302,15 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     }
 
     /// 排队逐个发送。 Queue the files and send them one by one.
-    func sendFiles(_ urls: [URL]) {
+    func sendFiles(_ urls: [URL], to: String? = nil, clip: Bool = false) {
         guard canSend else { return }
         let files = urls.filter { url in
             var dir: ObjCBool = false
             return FileManager.default.fileExists(atPath: url.path, isDirectory: &dir) && !dir.boolValue
         }
         guard !files.isEmpty else { return }
+        queuedTargets += Array(repeating: to ?? selectedTarget, count: files.count)
+        queuedClips += Array(repeating: clip, count: files.count)
         queue.add(files.map(\.path))
         sendNext()
     }
@@ -260,9 +321,11 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
             return
         }
         while let path = queue.next() {
+            queueTarget = queuedTargets.isEmpty ? selectedTarget : queuedTargets.removeFirst()
+            queueClip = queuedClips.isEmpty ? false : queuedClips.removeFirst()
             let url = URL(fileURLWithPath: path)
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            let r = h.call(["op": "sendFile", "path": path, "name": url.lastPathComponent, "mime": mime, "clip": false])
+            let r = h.call(["op": "sendFile", "to": queueTarget ?? selectedTarget, "path": path, "name": url.lastPathComponent, "mime": mime, "clip": queueClip])
             if r.bool("ok") {
                 queue.currentId = r.str("id")
                 return
@@ -297,17 +360,27 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
         let pb = NSPasteboard.general
         guard let h = handle, clip.changed(pb.changeCount) else { return }
         let types = pb.types?.map(\.rawValue) ?? []
-        // 访达里复制的文件带着文件名与图标，不当作剪贴板内容。 Files copied in Finder carry a name and an icon; skip.
-        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) { return }
-        if let text = pb.string(forType: .string) {
+        switch LinkClipboard.read(pb) {
+        case .files(let urls):
+            let key = urls.map { url in
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                return url.path + ":" + String(describing: attributes?[.size]) + ":" + String(describing: attributes?[.modificationDate])
+            }.joined(separator: "|")
+            if clip.shouldSend(filesKey: key, types: types) {
+                for peer in state.connected { sendFiles(urls, to: peer.id, clip: true) }
+            }
+        case .image(let data):
+            let digest = SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
+            guard clip.shouldSend(imageDigest: digest, bytes: data.count, types: types) else { return }
+            for peer in state.connected {
+                guard let url = writeTemp(data, name: "clipboard.png") else { continue }
+                let r = h.call(["op": "sendFile", "to": peer.id, "path": url.path, "name": "clipboard.png", "mime": "image/png", "clip": true])
+                if r.bool("ok") { tempFiles[r.str("id")] = url } else { try? FileManager.default.removeItem(at: url) }
+            }
+        case .text(let text):
             if clip.shouldSend(text: text, types: types) { h.call(["op": "sendText", "text": text, "clip": true]) }
-            return
+        case .empty: break
         }
-        guard let png = Self.pasteboardPNG(pb),
-              clip.shouldSend(imageDigest: png.digest, bytes: png.data.count, types: types),
-              let url = writeTemp(png.data, name: "clipboard.png") else { return }
-        let r = h.call(["op": "sendFile", "path": url.path, "name": "clipboard.png", "mime": "image/png", "clip": true])
-        if r.bool("ok") { tempFiles[r.str("id")] = url } else { try? FileManager.default.removeItem(at: url) }
     }
 
     /// 剪贴板里的图片（PNG 或 TIFF）转成 PNG 与它的摘要。 The pasteboard image (PNG or TIFF) as PNG plus its digest.

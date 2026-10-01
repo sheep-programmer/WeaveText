@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">织文输入法</string>
     <string name="ime_name">织文输入法</string>
-    <string name="send_to_computer">发送到电脑</string>
+    <string name="send_to_computer">WeaveText · 发送到设备</string>
     <string name="subtype_zh">中文（织文）</string>
 </resources>

@@ -46,6 +46,18 @@ data class ImeState(
  * only commitText. This sidesteps composing-text quirks in chat apps, WebViews, etc.
  */
 class InputController(private val icProvider: () -> InputConnection?) {
+    fun onContent(uri: android.net.Uri, mime: String, name: String): Boolean {
+        val editor = editorInfo ?: return false
+        if (isSensitiveField) return false
+        val supported = androidx.core.view.inputmethod.EditorInfoCompat.getContentMimeTypes(editor)
+        if (!supported.any { android.content.ClipDescription.compareMimeTypes(mime, it) }) return false
+        commitRawIfComposing()
+        return runCatching {
+            androidx.core.view.inputmethod.InputConnectionCompat.commitContent(icProvider() ?: return false, editor,
+                androidx.core.view.inputmethod.InputContentInfoCompat(uri, android.content.ClipDescription(name, arrayOf(mime)), null),
+                androidx.core.view.inputmethod.InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION, null)
+        }.getOrDefault(false)
+    }
 
     /**
      * 内核。读取时先交回还在后台识别的手写结果，所以任何内核操作看到的都是最新的笔画与候选。
@@ -158,6 +170,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             pendingKeys.clear()
         }
         applyEditorInfo(info, restarting)
+        ClipPrivacy.privateField = isSensitiveField
         refresh()
     }
 
@@ -174,6 +187,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         ) return
         editorInfo = info
         applyEditorInfo(info, keepMode = true)
+        ClipPrivacy.privateField = isSensitiveField
         refresh()
     }
 
@@ -235,6 +249,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         pendingKeys.clear()
         autoSpaceStamp = -1
         lastSpaceAt = 0L
+        ClipPrivacy.privateField = false
         refresh()
     }
 

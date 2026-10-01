@@ -81,6 +81,8 @@ import Testing
         let img = s.apply(.fileDone(id: "c", name: "clip.png", incoming: true, path: "/tmp/c.png", mime: "image/png",
                                     clip: true, from: "Pixel"))
         #expect(img == [.receivedClipImage(path: "/tmp/c.png")])
+        let generic = s.apply(.fileDone(id: "d", name: "report.pdf", incoming: true, path: "/tmp/report.pdf", mime: "application/pdf", clip: true, from: "Pixel"))
+        #expect(generic == [.receivedClipFile(path: "/tmp/report.pdf", name: "report.pdf", mime: "application/pdf")])
     }
 
     @Test func outgoingFailuresReleaseTheQueue() {

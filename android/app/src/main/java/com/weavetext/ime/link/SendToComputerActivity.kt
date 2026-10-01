@@ -1,145 +1,128 @@
 package com.weavetext.ime.link
 
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.weavetext.ime.settings.SettingsActivity
 import com.weavetext.ime.settings.WeaveSettingsTheme
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/** 要发送的内容。 What is being sent. */
 sealed class Outgoing {
-    data class Text(val text: String) : Outgoing()
-    data class Files(val uris: List<Uri>) : Outgoing()
-
+    data class Text(val text: String, val clip: Boolean = false) : Outgoing()
+    data class Files(val uris: List<Uri>, val clip: Boolean = false) : Outgoing()
     companion object {
+        @Suppress("DEPRECATION")
         fun from(i: Intent): Outgoing? {
             val streams: List<Uri> = when (i.action) {
-                Intent.ACTION_SEND -> listOfNotNull(stream(i))
-                Intent.ACTION_SEND_MULTIPLE -> streams(i)
+                Intent.ACTION_SEND -> listOfNotNull(if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) else i.getParcelableExtra(Intent.EXTRA_STREAM))
+                Intent.ACTION_SEND_MULTIPLE -> (if (Build.VERSION.SDK_INT >= 33) i.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) else i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)).orEmpty()
                 else -> emptyList()
             }
-            if (streams.isNotEmpty()) return Files(streams)
-            val text = i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { it.isNotBlank() } ?: return null
-            return Text(text)
+            val uris = streams.ifEmpty {
+                if (i.action == Intent.ACTION_SEND || i.action == Intent.ACTION_SEND_MULTIPLE) {
+                    val clip = i.clipData
+                    if (clip == null) emptyList() else (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                } else emptyList()
+            }
+            if (uris.isNotEmpty()) return Files(uris)
+            return i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { it.isNotBlank() }?.let { Text(it) }
         }
-
-        @Suppress("DEPRECATION")
-        private fun stream(i: Intent): Uri? =
-            if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) else i.getParcelableExtra(Intent.EXTRA_STREAM)
-
-        @Suppress("DEPRECATION")
-        private fun streams(i: Intent): List<Uri> =
-            (if (Build.VERSION.SDK_INT >= 33) i.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) else i.getParcelableArrayListExtra(Intent.EXTRA_STREAM)).orEmpty()
     }
 }
 
-/**
- * 系统分享的目标「发送到电脑」：把文字、照片或文件发给已连接的电脑。
- * The share target "send to computer": sends text, photos or files to a connected computer.
- */
+/** System share target and standalone sender use the same composer. */
 class SendToComputerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val what = Outgoing.from(intent)
-        if (what == null) { finish(); return }
-        val link = LinkManager.get(this)
-        link.ensureRunning()
-        val dark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        setContent { WeaveSettingsTheme(dark) { SendDialog(link, what, onDone = ::finish, onOpenSettings = ::openSettings) { to -> send(link, to, what) } } }
-    }
-
-    private fun openSettings() {
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("weavetext://settings/link"), this, SettingsActivity::class.java))
-        finish()
-    }
-
-    private fun send(link: LinkController, to: String, what: Outgoing): Boolean = when (what) {
-        is Outgoing.Text -> link.sendText(to, what.text, clip = false)
-        is Outgoing.Files -> what.uris.map { u ->
-            val (name, mime) = describe(u)
-            val fd = runCatching { contentResolver.openFileDescriptor(u, "r")?.detachFd() }.getOrNull()
-            fd != null && link.sendFd(to, fd, name, mime)
-        }.all { it }
-    }
-
-    private fun describe(u: Uri): Pair<String, String> {
-        val mime = contentResolver.getType(u) ?: "application/octet-stream"
-        val name = runCatching {
-            contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        }.getOrNull() ?: u.lastPathSegment?.substringAfterLast('/') ?: "file"
-        return name to mime
+        val link = LinkManager.get(this); link.ensureRunning()
+        val dark = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        setContent { WeaveSettingsTheme(dark) {
+            SendComposer(link, Outgoing.from(intent), ::finish, {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("weavetext://settings/link"), this, SettingsActivity::class.java)); finish()
+            }) { to, what, done ->
+                lifecycleScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            when (what) {
+                                is Outgoing.Text -> link.sendText(to, what.text, what.clip)
+                                is Outgoing.Files -> what.uris.map { LinkContent.send(this@SendToComputerActivity, link, to, it, what.clip) }.all { it }
+                            }
+                        }
+                    }
+                    done(result.fold({ if (it) "传输已开始，请在互联页查看完成状态" else "发送失败，请检查设备连接后重试" }, { it.message ?: "文件授权失效，请重新分享" }))
+                }
+            }
+        } }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SendDialog(link: LinkController, what: Outgoing, onDone: () -> Unit, onOpenSettings: () -> Unit, send: (String) -> Boolean) {
+private fun SendComposer(link: LinkController, incoming: Outgoing?, close: () -> Unit, settings: () -> Unit,
+    send: (String, Outgoing, (String) -> Unit) -> Unit) {
     val s by link.state.collectAsState()
-    var waited by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    var mode by remember { mutableStateOf(if (incoming is Outgoing.Files) "文件" else "文字") }
+    var text by remember { mutableStateOf((incoming as? Outgoing.Text)?.text.orEmpty()) }
+    var uris by remember { mutableStateOf((incoming as? Outgoing.Files)?.uris.orEmpty()) }
+    var target by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
-    // 刚启动时给连接几秒时间。 Give a fresh start a few seconds to connect.
-    LaunchedEffect(Unit) { delay(4000); waited = true }
-    val connected = s.connected
-    val label = when (what) {
-        is Outgoing.Text -> "这段文字"
-        is Outgoing.Files -> if (what.uris.size == 1) "这个文件" else "${what.uris.size} 个文件"
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris = it; result = null }
+    fun readClipboard() {
+        val clip = ctx.getSystemService(ClipboardManager::class.java)?.primaryClip
+        if (clip?.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE") == true) { result = "此剪贴板内容被标记为敏感"; text = ""; uris = emptyList(); return }
+        if (clip == null || clip.itemCount == 0) { result = "剪贴板为空"; text = ""; uris = emptyList(); return }
+        uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+        text = if (uris.isEmpty()) clip.getItemAt(0).text?.toString().orEmpty() else ""
+        result = null
     }
-    LaunchedEffect(connected.size, result) {
-        if (result == null && connected.size == 1) {
-            val p = connected.first()
-            result = if (send(p.id)) "已发送到「${p.name}」" else "发送失败"
-        }
-    }
-    LaunchedEffect(result) { if (result?.startsWith("已发送") == true) { delay(1200); onDone() } }
-
-    AlertDialog(
-        onDismissRequest = onDone,
-        title = { Text("发送到电脑") },
-        text = {
-            Column {
-                when {
-                    result != null -> Text(result!!)
-                    !s.enabled -> Text("织文互联还没有开启。开启并配对电脑后，就能把$label 发过去。")
-                    connected.size > 1 -> {
-                        Text("选择要发送$label 的设备：")
-                        connected.forEach { p ->
-                            Text(
-                                p.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.fillMaxWidth().clickable { result = if (send(p.id)) "已发送到「${p.name}」" else "发送失败" }.padding(vertical = 12.dp),
-                            )
-                        }
-                    }
-                    !waited -> androidx.compose.foundation.layout.Row { CircularProgressIndicator(Modifier.padding(end = 12.dp)); Text("正在连接电脑…") }
-                    else -> Text(if (s.trusted.isEmpty()) "还没有配对的电脑。" else "已配对的电脑不在线：请在电脑上打开织文，并连接同一个 Wi-Fi。")
-                }
+    LaunchedEffect(s.connected.map { it.id }) { if (s.connected.none { it.id == target }) target = s.connected.firstOrNull()?.id.orEmpty() }
+    AlertDialog(onDismissRequest = { if (!busy) close() }, title = { Text("WeaveText · 发送到设备") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (!s.enabled) Text("先开启互联并配对设备")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("文字", "剪贴板", "图片", "文件").forEach { label -> FilterChip(selected = mode == label, onClick = { mode = label; result = null; if (label == "剪贴板") readClipboard() }, label = { Text(label) }, enabled = !busy) }
             }
-        },
-        confirmButton = {
-            if (result == null && (!s.enabled || (waited && connected.isEmpty()))) TextButton(onClick = onOpenSettings) { Text("打开互联设置") }
-        },
-        dismissButton = { TextButton(onClick = onDone) { Text(if (result != null) "完成" else "取消") } },
-    )
+            if (mode == "剪贴板") {
+                TextButton(enabled = !busy, onClick = { readClipboard() }) { Text("刷新剪贴板") }
+                Text(if (uris.isNotEmpty()) "当前剪贴板：${uris.size} 个图片或文件" else text.ifEmpty { "剪贴板为空" }, maxLines = 4)
+            }
+            if (mode == "文字") OutlinedTextField(text, { text = it; result = null }, label = { Text("要发送的文字") }, modifier = Modifier.fillMaxWidth(), enabled = !busy, maxLines = 5)
+            else if (mode != "剪贴板") {
+                TextButton(enabled = !busy, onClick = { picker.launch(arrayOf(if (mode == "图片") "image/*" else "*/*")) }) { Text(if (mode == "图片") "选择图片…" else "选择文件…") }
+                Text(if (uris.isEmpty()) "还未选择内容" else "已选择 ${uris.size} 项", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("接收设备")
+            s.connected.forEach { p -> FilterChip(selected = target == p.id, onClick = { target = p.id }, label = { Text(p.name) }, enabled = !busy) }
+            if (s.connected.isEmpty()) Text("没有已连接设备，可在设置中配对或用直接地址连接")
+            if (busy) Row { CircularProgressIndicator(Modifier.size(20.dp)); Text(" 正在读取并发送…") }
+            result?.let { Text(it) }
+        }
+    }, confirmButton = {
+        TextButton(enabled = !busy && target.isNotEmpty() && (if (mode == "文字" || mode == "剪贴板" && uris.isEmpty()) text.isNotBlank() else uris.isNotEmpty()), onClick = {
+            busy = true; result = null
+            send(target, if (mode == "文字" || mode == "剪贴板" && uris.isEmpty()) Outgoing.Text(text, mode == "剪贴板") else Outgoing.Files(uris, mode == "剪贴板")) { result = it; busy = false }
+        }) { Text("发送") }
+    }, dismissButton = {
+        Row { if (!s.enabled || s.connected.isEmpty()) TextButton(onClick = settings) { Text("互联设置") }; TextButton(enabled = !busy, onClick = close) { Text("关闭") } }
+    })
 }

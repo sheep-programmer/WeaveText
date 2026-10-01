@@ -1,6 +1,8 @@
 package com.weavetext.ime.settings
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -69,6 +71,14 @@ fun LinkScreen() {
     var renaming by remember { mutableStateOf(false) }
     var peerMenu by remember { mutableStateOf<LinkPeer?>(null) }
     val notifyPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val nearbyPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) link.rescan() }
+    val directory = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) runCatching {
+            ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            link.setReceiveDirectory(uri.toString())
+        }
+    }
+    var reconnect by remember { mutableStateOf<LinkPeer?>(null) }
 
     // 扫码进来：弹出确认。 Opened from a scanned QR code: confirm first.
     LaunchedEffect(s.pendingPair) { s.pendingPair?.let { target = PairTarget(it.name, it.addrs, it.code) } }
@@ -77,13 +87,14 @@ fun LinkScreen() {
     SubPage("互联") {
         GroupCard(Modifier.padding(top = 8.dp)) {
             SwitchRow(
-                "织文互联", "与同一 Wi-Fi 下的电脑互传文字、图片和文件，端到端加密，不经过任何服务器",
+                "织文互联", "设备间直传文字、图片和文件，支持局域网及可直连的远程地址，端到端加密",
                 checked = s.enabled, icon = R.drawable.ic_devices, subtitleMaxLines = 3,
             ) { on ->
                 if (on && Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                     notifyPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
                 link.setEnabled(on)
+                if (on && Build.VERSION.SDK_INT == 36 && ctx.checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) nearbyPerm.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
         }
         if (!s.enabled) {
@@ -96,8 +107,22 @@ fun LinkScreen() {
         GroupCard {
             SettingRow("名称", s.fingerprint.takeIf { it.isNotEmpty() }?.let { "安全码 $it" }, onClick = { renaming = true }) { ValueChevron(s.name) }
             RowDivider(false)
-            SwitchRow("同步剪贴板", "在手机上复制的文字自动出现在电脑上，反之亦然", checked = s.clipSync, subtitleMaxLines = 2) { link.setClipSync(it) }
+            SwitchRow("同步剪贴板", "同步文字、图片和文件。手机端在输入法可读取剪贴板时检测复制内容", checked = s.clipSync, subtitleMaxLines = 3) { link.setClipSync(it) }
+            RowDivider(false)
+            SettingRow("系统授权", "管理附近设备和通知权限；文件目录通过选择器单独授权", subtitleMaxLines = 2, onClick = { ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName))) }) { Chevron() }
+            RowDivider(false)
+            SettingRow("接收目录", if (s.receiveDirectory.isEmpty()) "下载目录（默认）" else Uri.decode(s.receiveDirectory.substringAfterLast('/')), onClick = { directory.launch(s.receiveDirectory.takeIf { it.isNotEmpty() }?.let(Uri::parse)) }) { Chevron() }
+            if (s.receiveDirectory.isNotEmpty()) SettingRow("恢复默认下载目录", onClick = { link.setReceiveDirectory("") }) { Chevron() }
         }
+
+        GroupTitle("发送与接收")
+        GroupCard {
+            SettingRow("发送内容", "选择文字、剪贴板、图片或文件，再选择接收设备", subtitleMaxLines = 2, onClick = { ctx.startActivity(Intent(ctx, com.weavetext.ime.link.SendToComputerActivity::class.java)) }) { Chevron() }
+            RowDivider(false)
+            SettingRow("生成本机配对码", "让另一台设备输入本机地址和此配对码", onClick = { link.openPairing() }) { Chevron() }
+        }
+        if (s.pairingCode.isNotEmpty()) Hint("配对码 ${s.pairingCode}（2 分钟有效）\n本机地址：${s.addrs.joinToString(" · ")}")
+        s.serviceError?.let { Hint(it) }
 
         GroupTitle("我的设备")
         GroupCard {
@@ -118,8 +143,8 @@ fun LinkScreen() {
         GroupTitle("附近的设备")
         GroupCard {
             if (nearby.isEmpty()) {
-                SettingRow("正在查找…", "电脑需要打开织文并连接同一个 Wi-Fi", subtitleMaxLines = 2) {
-                    CircularProgressIndicator(Modifier.padding(4.dp).height(20.dp), strokeWidth = 2.dp)
+                SettingRow(if (s.discovery == "searching") "正在查找…" else "未发现附近设备", s.discoveryError ?: "两端需开启互联；访客 Wi-Fi 或路由器的设备隔离可能阻止发现", subtitleMaxLines = 3) {
+                    if (s.discovery == "searching") CircularProgressIndicator(Modifier.padding(4.dp).height(20.dp), strokeWidth = 2.dp)
                 }
             }
             nearby.forEachIndexed { i, n: LinkNearby ->
@@ -129,14 +154,16 @@ fun LinkScreen() {
                 }
             }
             RowDivider(false)
-            SettingRow("用地址配对", "找不到设备时（例如公司网络），输入电脑上显示的地址和配对码", subtitleMaxLines = 2, onClick = { manual = true }) { Chevron() }
+            SettingRow("重新扫描", onClick = { link.rescan() }) { Chevron() }
+            RowDivider(false)
+            SettingRow("用地址配对", "支持 IPv4:端口 或 [IPv6]:端口，也可输入远程直接地址", subtitleMaxLines = 2, onClick = { manual = true }) { Chevron() }
         }
 
         if (s.transfers.isNotEmpty()) {
             GroupTitle("最近传输")
-            GroupCard { s.transfers.take(6).forEachIndexed { i, t -> if (i > 0) RowDivider(false); TransferRow(t) } }
+            GroupCard { s.transfers.take(6).forEachIndexed { i, t -> if (i > 0) RowDivider(false); TransferRow(t, link) } }
         }
-        Hint("收到的文件保存在「下载/WeaveText」。在其他应用里选「分享 › 织文 发送到电脑」即可把照片和文件发到电脑。")
+        Hint("长按图片或文件后选择系统「分享 › WeaveText · 发送到设备」。无需授予所有文件访问权限。远程直传需要公网 IPv6、IPv4 端口映射或直连 VPN；两端都在运营商 NAT 后时，无法保证无服务器直连。")
     }
 
     target?.let { t ->
@@ -148,10 +175,19 @@ fun LinkScreen() {
         AlertDialog(
             onDismissRequest = { peerMenu = null },
             title = { Text(p.name.ifEmpty { platformName(p.platform) }) },
-            text = { Text(if (p.connected) "已连接。可以从键盘工具栏或任意应用的「分享」把内容发给它。" else "暂时不在线。电脑打开织文并连上同一个 Wi-Fi 后会自动重连。") },
-            confirmButton = { TextButton(onClick = { peerMenu = null; link.forget(p.id) }) { Text("取消配对", color = MaterialTheme.colorScheme.error) } },
+            text = { Text(if (p.connected) "已连接。可以从收发页面或任意应用的「分享」发送内容。" else "暂时不在线。可以更新直接地址并重新连接。") },
+            confirmButton = { TextButton(onClick = { peerMenu = null; reconnect = p }) { Text("直接地址重连") } },
             dismissButton = { TextButton(onClick = { peerMenu = null }) { Text("关闭") } },
         )
+    }
+    reconnect?.let { p ->
+        var addr by remember(p.id) { mutableStateOf(p.addrs.firstOrNull().orEmpty()) }
+        AlertDialog(onDismissRequest = { reconnect = null }, title = { Text("连接 ${p.name}") }, text = {
+            Column {
+                OutlinedTextField(addr, { addr = it }, label = { Text("IPv4:端口 或 [IPv6]:端口") }, singleLine = true)
+                TextButton(onClick = { link.forget(p.id); reconnect = null }) { Text("取消配对", color = MaterialTheme.colorScheme.error) }
+            }
+        }, confirmButton = { TextButton(onClick = { link.connect(p.id, listOf(com.weavetext.ime.link.LinkAddress.normalize(addr))); reconnect = null }) { Text("连接") } }, dismissButton = { TextButton(onClick = { reconnect = null }) { Text("取消") } })
     }
 }
 
@@ -164,7 +200,8 @@ private fun Hint(text: String) {
 }
 
 @Composable
-private fun TransferRow(t: LinkTransfer) {
+private fun TransferRow(t: LinkTransfer, link: LinkController) {
+    val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         Text(t.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
         val dir = if (t.incoming) "收到" else "发送"
@@ -177,6 +214,18 @@ private fun TransferRow(t: LinkTransfer) {
         if (t.state == LinkTransfer.State.RUNNING) {
             Spacer(Modifier.height(6.dp))
             LinearProgressIndicator(progress = { t.fraction }, modifier = Modifier.fillMaxWidth())
+        }
+        if (t.incoming && t.path != null) {
+            if (t.state == LinkTransfer.State.FAILED) TextButton(onClick = { link.retrySave(t.id) }) { Text("重新保存") }
+            TextButton(onClick = {
+                val uri = if (t.path.startsWith('/')) androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", java.io.File(t.path)) else Uri.parse(t.path)
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = t.mime; putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = android.content.ClipData.newUri(ctx.contentResolver, t.name, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                ctx.startActivity(Intent.createChooser(intent, "转发 ${t.name}"))
+            }) { Text("打开分享") }
         }
     }
 }
@@ -223,13 +272,13 @@ private fun PairDialog(name: String, preset: String, state: PairState, onDismiss
 private fun ManualPairDialog(state: PairState, onDismiss: () -> Unit, onPair: (String, String) -> Unit) {
     var addr by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
-    val full = if (addr.contains(':')) addr.trim() else addr.trim() + ":" + com.weavetext.ime.link.LinkPorts.DEFAULT
+    val full = com.weavetext.ime.link.LinkAddress.normalize(addr)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("用地址配对") },
         text = {
             Column {
-                Text("电脑上的配对窗口会显示地址（如 192.168.1.8）和配对码。", style = MaterialTheme.typography.bodyMedium)
+                Text("输入对方显示的地址及配对码。远程地址必须允许直连其监听端口。", style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(addr, { addr = it.trim() }, singleLine = true, label = { Text("地址") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
                 Spacer(Modifier.height(8.dp))

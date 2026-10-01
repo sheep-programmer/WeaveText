@@ -40,6 +40,7 @@ class ClipboardPrivacyTest {
         WeavePrefs.of(app).edit().clear().commit()
         // 上一个测试的剪贴板写入可能还在后台排队。 A previous test's clip writes may still be queued.
         com.weavetext.ime.ime.ClipHistory.awaitIo()
+        com.weavetext.ime.ime.ClipHistory.resetShared()
         File(app.filesDir, "clipboard").deleteRecursively()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         controller = InputController { null }

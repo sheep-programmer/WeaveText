@@ -67,6 +67,9 @@ public final class Preferences: ObservableObject {
     /// 手机上看到的本机名称；空为系统的电脑名称。 This Mac's name as phones see it; empty = the system computer name.
     @Published public var linkName: String { didSet { save(linkName, "linkName") } }
 
+    @Published public var linkReceiveDirectory: String { didSet { save(linkReceiveDirectory, "linkReceiveDirectory") } }
+    @Published public var linkPublicAddress: String { didSet { save(linkPublicAddress, "linkPublicAddress") } }
+
     public init(defaults: UserDefaults) {
         d = defaults
         schema = InputScheme.named(defaults.string(forKey: "schema") ?? "").id
@@ -83,6 +86,8 @@ public final class Preferences: ObservableObject {
         linkEnabled = defaults.bool(forKey: "linkEnabled")
         linkClipSync = defaults.object(forKey: "linkClipSync") as? Bool ?? true
         linkName = defaults.string(forKey: "linkName") ?? ""
+        linkReceiveDirectory = defaults.string(forKey: "linkReceiveDirectory") ?? ""
+        linkPublicAddress = defaults.string(forKey: "linkPublicAddress") ?? ""
     }
 
     public func isFuzzy(_ key: String) -> Bool { fuzzy.contains(key) }

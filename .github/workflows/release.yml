@@ -98,5 +98,16 @@ jobs:
           pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease";; esac
           notes="docs/releases/$GITHUB_REF_NAME.md"
           test -f "$notes" || notes=/dev/null
+          # A validated local release may already contain the full Android set.
+          # Keep those APKs and their matching checksums together on a rerun.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/weave-release-draft" 2>/dev/null; then
+            test "$(cat "$RUNNER_TEMP/weave-release-draft")" = false || { echo "existing release is a draft"; exit 1; }
+            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/weave-release-assets"
+            for name in "WeaveText-$VERSION-arm64-lite.apk" "WeaveText-$VERSION-arm64-voice.apk" SHA256SUMS.txt; do
+              grep -Fxq "$name" "$RUNNER_TEMP/weave-release-assets" || { echo "existing release is incomplete: $name"; exit 1; }
+            done
+            echo "Complete public Android release already present"
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag $pre \
             --title "织文输入法 $VERSION" --notes-file "$notes"

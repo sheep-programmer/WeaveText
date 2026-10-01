@@ -55,7 +55,7 @@ object LinkNotifications {
     fun received(ctx: Context, name: String, mime: String, from: String, uri: Uri) {
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         val pi = PendingIntent.getActivity(ctx, nextId, view, PendingIntent.FLAG_IMMUTABLE)
-        val n = builder(ctx, CH_RECEIVED).setContentTitle("收到文件：$name").setContentText(if (from.isEmpty()) "已保存到 下载/WeaveText" else "来自 $from · 已保存到 下载/WeaveText")
+        val n = builder(ctx, CH_RECEIVED).setContentTitle("收到文件：$name").setContentText(if (from.isEmpty()) "已保存到接收目录" else "来自 $from · 已保存到接收目录")
             .setAutoCancel(true).setContentIntent(pi).build()
         runCatching { channels(ctx)?.notify(nextId++, n) }
     }

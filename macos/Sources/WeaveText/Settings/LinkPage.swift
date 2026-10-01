@@ -5,6 +5,11 @@ import WeaveCore
 final class LinkPageModel: ObservableObject {
     @Published var nameDraft = ""
     @Published var confirmForget: LinkPeer?
+    @Published var type = "文字"
+    @Published var text = ""
+    @Published var address = ""
+    @Published var code = ""
+    @Published var reconnectAddress = ""
 }
 
 /// 互联：与同一局域网内的手机配对，互传文字、剪贴板、图片与文件。
@@ -22,7 +27,7 @@ struct LinkPage: View {
                 Toggle(isOn: $prefs.linkEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("织文互联")
-                        Text("与同一 Wi-Fi 下的手机互传文字、图片和文件，端到端加密，不经过任何服务器")
+                        Text("设备间直传文字、图片和文件，支持局域网及可直连的远程地址，端到端加密")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -78,10 +83,35 @@ struct LinkPage: View {
             Toggle(isOn: $prefs.linkClipSync) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("同步剪贴板")
-                    Text("在 Mac 上复制的文字和图片自动出现在手机上，反之亦然").font(.callout).foregroundStyle(.secondary)
+                    Text("在 Mac 上复制的文字、图片和文件自动出现在手机上，反之亦然").font(.callout).foregroundStyle(.secondary)
                 }
             }
             .toggleStyle(.switch)
+            LabeledContent("接收目录") {
+                Text(LinkService.inboxDir.path).lineLimit(2).textSelection(.enabled)
+                Button("选择…") { link.chooseInbox() }
+                if !prefs.linkReceiveDirectory.isEmpty { Button("默认下载目录") { prefs.linkReceiveDirectory = "" } }
+            }
+        }
+        Section("发送内容") {
+            Picker("接收设备", selection: $link.selectedTarget) {
+                Text("选择设备").tag("")
+                ForEach(s.connected) { peer in Text(peer.displayName).tag(peer.id) }
+            }
+            Picker("类型", selection: $model.type) {
+                ForEach(["文字", "剪贴板", "图片", "文件"], id: \.self) { Text($0).tag($0) }
+            }.pickerStyle(.segmented)
+            if model.type == "文字" { TextEditor(text: $model.text).frame(minHeight: 70, maxHeight: 120) }
+            Button(model.type == "图片" || model.type == "文件" ? "选择并发送…" : "发送") {
+                switch model.type {
+                case "文字": link.sendText(model.text)
+                case "剪贴板": link.sendClipboard()
+                case "图片": link.chooseFiles(imagesOnly: true)
+                default: link.chooseFiles()
+                }
+            }.disabled(!link.canSend || (model.type == "文字" && model.text.isEmpty))
+            if let progress = link.queueTitle { Text(progress).foregroundStyle(.secondary) }
+            if let error = link.serviceError { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
         }
         Section {
             if s.trusted.isEmpty {
@@ -94,6 +124,7 @@ struct LinkPage: View {
                         .frame(width: 22)
                     Row(title: p.displayName, subtitle: LinkText.peerStatus(p))
                     Spacer()
+                    if !p.connected { Button("重连") { link.connect(p, address: model.reconnectAddress) } }
                     Button("取消配对…") { model.confirmForget = p }
                 }
             }
@@ -109,8 +140,8 @@ struct LinkPage: View {
         Section {
             if s.nearby.isEmpty {
                 HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Row(title: "正在查找…", subtitle: "手机需要打开织文互联并连接同一个 Wi-Fi")
+                    if link.scanning { ProgressView().controlSize(.small) }
+                    Row(title: link.scanning ? "正在查找…" : "未发现附近设备", subtitle: link.discoveryError ?? "两端需开启互联；访客 Wi-Fi 或设备隔离可能阻止发现")
                 }
             }
             ForEach(s.nearby) { n in
@@ -120,8 +151,19 @@ struct LinkPage: View {
                     Button("配对") { link.openPairing() }
                 }
             }
+            Button("重新扫描") { link.rescan() }
         } header: {
             Text("附近的设备")
+        }
+        Section("直接地址与远程连接") {
+            TextField("对方 IPv4:端口 或 [IPv6]:端口", text: $model.address)
+            TextField("对方的 6 位配对码", text: $model.code)
+            Button("用地址配对") { link.pair(address: model.address, code: model.code) }
+                .disabled(model.address.isEmpty || model.code.count != 6)
+            TextField("已配对设备的新地址（重连时使用）", text: $model.reconnectAddress)
+            TextField("本机公网地址（用于配对二维码，可留空）", text: $prefs.linkPublicAddress)
+            Text("本机监听端口 \(s.info.port)。远程直传需公网 IPv6、IPv4 端口映射或直连 VPN。两端都在运营商 NAT 后时，无法保证无服务器直连。")
+                .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
         }
         if !s.transfers.isEmpty {
             Section("最近传输") {
@@ -130,7 +172,7 @@ struct LinkPage: View {
         }
         Section {
             HStack(alignment: .top) {
-                Text("收到的文件保存在「下载/WeaveText」。在菜单栏的织文图标里选「发送到手机」，或把文件拖到图标上，即可发给手机。")
+                Text("在此页面选择发送类型和接收设备。手机上长按图片或文件后选「分享 › WeaveText · 发送到设备」。接收文件默认存入下载目录。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -192,7 +234,7 @@ struct PairingSheet: View {
                         .font(.system(size: 56))
                         .foregroundStyle(Theme.accent)
                     Text("已与「\(name)」配对").font(.title3.weight(.semibold))
-                    Text("之后在同一个 Wi-Fi 下会自动连接。").foregroundStyle(.secondary)
+                    Text("之后发现对方或直接地址可达时会自动连接。").foregroundStyle(.secondary)
                 } else {
                     open(p)
                 }
