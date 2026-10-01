@@ -53,7 +53,6 @@ public final class Preferences: ObservableObject {
     @Published public var toggleKey: ToggleKey { didSet { save(toggleKey.rawValue, "toggleKey") } }
     @Published public var pageSize: Int { didSet { save(pageSize, "pageSize") } }
     @Published public var pageKeys: PageKeys { didSet { save(pageKeys.rawValue, "pageKeys") } }
-    @Published public var showStatusItem: Bool { didSet { save(showStatusItem, "showStatusItem") } }
     @Published public var traditional: Bool { didSet { save(traditional, "traditional") } }
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
     /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
@@ -74,7 +73,6 @@ public final class Preferences: ObservableObject {
         toggleKey = defaults.string(forKey: "toggleKey").flatMap(ToggleKey.init) ?? .shift
         pageSize = Self.clamp(defaults.object(forKey: "pageSize") as? Int ?? 7, Self.pageSizes)
         pageKeys = defaults.string(forKey: "pageKeys").flatMap(PageKeys.init) ?? .both
-        showStatusItem = defaults.object(forKey: "showStatusItem") as? Bool ?? true
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
         prediction = defaults.object(forKey: "prediction") as? Bool ?? true

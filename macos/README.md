@@ -36,8 +36,8 @@
 - 候选窗：跟随光标、到屏幕底边自动翻到上方、多屏正确；横排 / 竖排、字号、深浅色可调；可用鼠标点选。
   *Candidate window: follows the caret, flips above at the screen bottom, correct on multiple screens; horizontal or
   vertical, font size and light/dark are adjustable; click to pick.*
-- 菜单栏图标：左键打开快捷菜单（中英、输入方案、繁体、设置、关于、退出），右键直接打开设置；可在设置里隐藏。
-  *Menu bar item: left click for a quick menu, right click opens Settings; can be hidden.*
+- 系统输入法菜单：切换到织文后，从系统输入法图标的「织文键盘设置…」打开设置；中英、输入方案、繁体和互联操作也在同一菜单里，不再增加独立菜单栏图标。
+  *Settings, schemes, Chinese/English, traditional output and phone commands live in the system input-source menu; no separate menu bar icon.*
 - 专业词库：「词库 › 专业词库」里按需下载医学、法律、IT、地名等领域词表（从织文的 GitHub 发布页下载，直连不通时依次换用与
   Android 相同的下载镜像，都校验大小与 SHA-256），装上立即生效，删除同样即时；这些词不会排到常用词前面，选过一次后自动靠前。
   文件在但没能载入（例如损坏）时显示「重试」。
@@ -74,10 +74,8 @@ end-to-end encrypted, no server involved, off by default.*
   *Clipboard sync (on by default): text (up to 20,000 characters) and images (PNG/TIFF, up to 20 MB) copied on the Mac
   appear on the phone and vice versa; content marked concealed/transient by password managers and files copied in
   Finder are skipped, and what just arrived from the phone is never sent back.*
-- 发送：菜单栏图标 → 发送到手机 → 发送剪贴板 / 发送文件…（可多选），或直接把文件拖到菜单栏图标上；菜单里显示进度，
-  如「正在发送 3/5 · 42%」。手机连着时图标右下角有个小圆点。
-  *Send: menu bar icon → 发送到手机 → 发送剪贴板 / 发送文件… (multiple allowed), or drop files on the menu bar icon;
-  the menu shows progress such as 正在发送 3/5 · 42%. A small dot on the icon means a phone is connected.*
+- 发送：切换到织文后，在系统输入法菜单里选「发送剪贴板到手机」或「发送文件到手机…」（可多选）；连接状态与发送进度在同一菜单里显示，也可在「织文互联…」里查看。
+  *Send clipboard or files from the system input-source menu; connection and queue status appear there and in Link settings.*
 - 接收：手机主动发来的文字放进剪贴板并发通知；文件存进 `~/Downloads/WeaveText`，点通知在访达中显示。
   *Receive: text sent from the phone goes to the clipboard with a notification; files land in `~/Downloads/WeaveText`,
   and clicking the notification reveals them in Finder.*

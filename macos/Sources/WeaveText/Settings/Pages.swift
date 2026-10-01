@@ -32,12 +32,11 @@ struct GeneralPage: View {
         Form {
             Section {
                 Toggle("登录时启动", isOn: Binding(get: { login.enabled }, set: { login.set($0) }))
-                Toggle("在菜单栏显示图标", isOn: $prefs.showStatusItem)
             } header: {
-                Text("启动与菜单栏")
+                Text("启动")
             } footer: {
                 if let error = login.error { Footnote(error) } else {
-                    Footnote("隐藏图标后，可从系统输入法菜单里的「设置…」回到这里。")
+                    Footnote("切换到织文后，从系统输入法菜单里的「织文键盘设置…」打开设置。")
                 }
             }
             Section("中英切换") {

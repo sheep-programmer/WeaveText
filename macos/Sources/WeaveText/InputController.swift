@@ -367,23 +367,10 @@ final class WeaveInputController: IMKInputController {
     // MARK: - 输入法菜单 / Input menu
 
     override func menu() -> NSMenu! {
-        let menu = NSMenu()
-        menu.addItem(withTitle: "设置…", action: #selector(openSettings(_:)), keyEquivalent: "").target = self
-        menu.addItem(.separator())
-        for (i, s) in InputScheme.all.enumerated() {
-            let item = NSMenuItem(title: s.name, action: #selector(selectScheme(_:)), keyEquivalent: "")
-            item.tag = i
-            item.target = self
-            item.state = s.id == prefs.schema ? .on : .off
-            if host.engine?.hasSchema(s.id) == false { item.action = nil }
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        let trad = NSMenuItem(title: "繁体输出", action: #selector(toggleTraditional(_:)), keyEquivalent: "")
-        trad.target = self
-        trad.state = prefs.traditional ? .on : .off
-        menu.addItem(trad)
-        return menu
+        let link = LinkService.shared
+        return InputMenu.make(target: self, schema: prefs.schema, chinese: host.chinese, traditional: prefs.traditional,
+                              hasSchema: { self.host.engine?.hasSchema($0) ?? false },
+                              phones: link.state.connected.map(\.displayName), canSend: link.canSend, progress: link.queueTitle)
     }
 
     /// IMK 把菜单项放在字典里传来。 IMK passes the menu item inside a dictionary.
@@ -392,8 +379,16 @@ final class WeaveInputController: IMKInputController {
         return (sender as? NSDictionary)?[kIMKCommandMenuItemName] as? NSMenuItem
     }
 
-    @objc func openSettings(_ sender: Any?) {
+    override func showPreferences(_ sender: Any!) {
         SettingsWindow.shared.show()
+    }
+
+    @objc func toggleMode(_ sender: Any?) { host.toggleChinese() }
+    @objc func openLink(_ sender: Any?) { SettingsWindow.shared.show(page: .link) }
+    @objc func openAbout(_ sender: Any?) { SettingsWindow.shared.show(page: .about) }
+    @objc func sendClipboard(_ sender: Any?) { LinkService.shared.sendClipboard() }
+    @objc func sendFiles(_ sender: Any?) {
+        DispatchQueue.main.async { LinkService.shared.chooseFiles() }
     }
 
     @objc func selectScheme(_ sender: Any?) {

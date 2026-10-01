@@ -53,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
         EngineHost.shared.startBackground()
         LinkService.shared.start()
-        StatusBar.shared.start()
         // 安装包更新前用 TERM 请旧副本退出：照常走退出流程，先写回用户词。
         // The package asks the old copy to quit with TERM before updating: go through the normal termination so the
         // user words are written back first.
