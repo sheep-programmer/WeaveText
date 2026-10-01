@@ -18,8 +18,11 @@ def main():
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--native", action="store_true", help="Test the lite APK's downloaded C runtime")
     parser.add_argument("--runtime", type=Path)
+    parser.add_argument("--repeat", type=int, default=1, help="Reopen each model this many times")
     parser.add_argument("--only", action="append", choices=["stream-small", "stream-large", "final-small", "sense-voice", "paraformer", "punctuation"])
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be positive")
     adb = [args.adb, "-s", args.serial]
 
     def command(*words):
@@ -85,8 +88,12 @@ def main():
             command("push", str(sample), remote + "/sample.wav")
             options["wav"] = remote + "/sample.wav"
         print("Testing " + name, flush=True)
-        run(**options)
-        passed += 1
+        # Nonempty gibberish is insufficient: the sample's words must survive decoding.
+        options["expect"] = "对我做了介绍" if index < 3 else ["九点", "唱首歌", "你好，"][index - 3]
+        for iteration in range(args.repeat):
+            print(f"  Recognition {iteration + 1}/{args.repeat}", flush=True)
+            run(**options)
+            passed += 1
         command("shell", "rm", "-rf", remote)
     print(f"PASS: {passed} release speech cases", flush=True)
 

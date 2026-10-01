@@ -86,13 +86,23 @@ cd android
 adb -s <serial> install -r <voice-release.apk>
 adb -s <serial> install -r -t voice-smoke/build/outputs/apk/release/voice-smoke-release.apk
 cd ..
-python3 tools/voice-smoke.py <serial> .ref/sherpa
+python3 tools/voice-smoke.py <serial> .ref/sherpa --repeat 2
 # 已安装 lite 正式包时，另外指定从运行库包解出的 Android arm64 .so 目录：
-python3 tools/voice-smoke.py <serial> .ref/sherpa --native --runtime <runtime-lib-dir>
+python3 tools/voice-smoke.py <serial> .ref/sherpa --native --runtime <runtime-lib-dir> --repeat 2
 ```
 
 测试依次加载实时小模型、实时大模型、终稿小模型、SenseVoice、Paraformer 和智能标点，
-识别模型均输入实际录音并要求非空识别结果。模型、录音和运行库仅放在独立测试目录里。
+识别模型均输入实际录音并检查样本中的词句；`--repeat` 每次重新打开模型，验证释放后能再次使用。
+模型、录音和运行库仅放在独立测试目录里。
+
+测试 APK 还提供普通输入框，可从已安装的正式输入法界面验证麦克风开始、停止、上滑取消与重开：
+
+```sh
+adb -s <serial> shell am start -n com.weavetext.ime.voicesmoke/.SpeechEditorActivity
+```
+
+这类录音生命周期检查与向模型输入 WAV 的测试不同，模拟器通过也不能代替不同手机上的真人录音、
+麦克风权限、音源处理和第三方输入框兼容性验证。
 
 轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与识别模型（实时模型，或只装终稿模型时整句识别；§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
 两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
