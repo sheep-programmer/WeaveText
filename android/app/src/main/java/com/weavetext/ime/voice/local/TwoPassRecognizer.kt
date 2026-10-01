@@ -141,10 +141,10 @@ class TwoPassRecognizer(
         streaming?.reset()
         vad.reset()
         // 太短且首遍没识别出东西、或一直没出声：视为噪声。 Too short with nothing heard, or silent: noise.
-        if (quick.isEmpty() && (samples.size < sampleRate / 2 || !heard)) return
+        if (quick.isEmpty() && (samples.size < sampleRate / 8 || !heard)) return
         var text = quick
         val second = offline
-        if (second != null && samples.size >= sampleRate / 4) {
+        if (second != null && samples.size >= sampleRate / 8) {
             val t = clean(runCatching { second.decode(samples) }.getOrElse {
                 if (quick.isEmpty()) throw it else quick
             })
@@ -183,6 +183,11 @@ class TwoPassRecognizer(
 
         /** 去掉中文之间的空格与首尾空白。 Drop spaces next to CJK and trim. */
         fun clean(s: String): String = s.replace(CJK_SPACE, "").trim()
+
+        fun continuation(previous: Char?, next: String): String {
+            fun ascii(c: Char?) = c != null && (c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9')
+            return if (ascii(previous) && ascii(next.firstOrNull())) " $next" else next
+        }
 
         private fun hasPunctuation(s: String) = s.any { it in "，。？！、；：,.?!" }
 

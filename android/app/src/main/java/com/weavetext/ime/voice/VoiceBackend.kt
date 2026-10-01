@@ -24,23 +24,41 @@ internal object VoiceBackend {
 
 private const val TAG = "WeaveVoice"
 internal const val LOCAL_ENGINE_ID = "weave.local"
-internal fun isBuiltinEngine(id: String) = id == LOCAL_ENGINE_ID
+internal fun isBuiltinEngine(id: String) = id == LOCAL_ENGINE_ID || id.startsWith("asr-")
 
-/** Old system/cloud selections are intentionally ignored; installed plugins stay on disk. */
-private class OfflineEngines(ctx: Context) : VoiceEngines {
-    val local = LocalAsrEngine(ctx)
-    override fun list(): List<VoicePlugin> = if (local.isAvailable) listOf(
-        VoicePlugin(LOCAL_ENGINE_ID, "离线语音", "下载模型后在手机上识别，语音不离开设备。", "", null, local.fields()),
-    ) else emptyList()
+/** Every installed recognizer is a selectable engine; all selected engines share PCM. */
+private class OfflineEngines(private val ctx: Context) : VoiceEngines {
+    private val models = com.weavetext.ime.models.ModelManager.get(ctx)
+    private val selected = com.weavetext.ime.voice.local.OfflineModelSelection(ctx, models)
+    private val instances = java.util.concurrent.ConcurrentHashMap<String, LocalAsrEngine>()
+    fun local(id: String) = instances.getOrPut(id) { LocalAsrEngine(ctx, id) }
+    override fun list(): List<VoicePlugin> = if (!com.weavetext.ime.models.AsrRuntime.ready(models)) emptyList() else selected.available().map { model ->
+        VoicePlugin(model.id, model.name, com.weavetext.ime.voice.local.OfflineModelSelection.language(model) + " · " + model.description,
+            "", null, listOf(ConfigField("punctuation", "智能标点", "switch", defaultValue = "true")))
+    }
     override var activeId: String?
-        get() = list().firstOrNull()?.id
-        set(@Suppress("UNUSED_PARAMETER") value) {}
-    override fun install(xipkPath: String): Result<VoicePlugin> =
-        Result.failure(UnsupportedOperationException("请在「语音包」下载离线模型"))
-    override fun uninstall(id: String): Result<Unit> =
-        Result.failure(UnsupportedOperationException("请在「语音包」卸载模型"))
-    override fun getConfig(id: String, key: String): String? = if (id == LOCAL_ENGINE_ID) local.getConfig(key) else null
-    override fun setConfig(id: String, key: String, value: String) { if (id == LOCAL_ENGINE_ID) local.setConfig(key, value) }
+        get() = selected.ids().firstOrNull()
+        set(value) {
+            val id = if (value == LOCAL_ENGINE_ID) selected.ids().firstOrNull() else value
+            if (id != null) selected.select(listOf(id))
+        }
+    override var extraIds: Set<String>
+        get() = selected.ids().drop(1).toSet()
+        set(value) { selected.select(listOfNotNull(activeId) + value) }
+    override fun setSelection(ids: List<String>) { selected.select(ids) }
+    override fun selection(): List<VoicePlugin> {
+        val installed = list().associateBy { it.id }
+        return selected.ids().mapNotNull { installed[it] }
+    }
+    fun preload() {
+        val ids = selection().map { it.id }.toSet()
+        for ((id, engine) in instances) if (id !in ids) engine.releaseIdle()
+        for (id in ids) local(id).preload()
+    }
+    override fun install(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException("请在「语音包」下载离线模型"))
+    override fun uninstall(id: String): Result<Unit> = Result.failure(UnsupportedOperationException("请在「语音包」卸载模型"))
+    override fun getConfig(id: String, key: String): String? = if (id in list().map { it.id }) local(id).getConfig(key) else null
+    override fun setConfig(id: String, key: String, value: String) { if (id in list().map { it.id }) local(id).setConfig(key, value) }
 }
 
 /** Capture and decode have separate lifetimes: a sentence endpoint never closes the microphone. */
@@ -50,7 +68,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
     @Volatile private var recording = false
     @Volatile private var generation = 0
     private var listener: VoiceListener? = null
-    private var session: LocalAsrEngine.Session? = null
+    private var runs: List<EngineRun> = emptyList()
     private var stopping = false
     private var captureQueued = false
     override val isRunning: Boolean get() = listener != null
@@ -92,39 +110,57 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
         if (android.os.Build.VERSION.SDK_INT >= 26) runCatching { audioManager?.abandonAudioFocusRequest(req) }
     }
 
+    private inner class EngineRun(val plugin: VoicePlugin, val gen: Int, val multi: Boolean) {
+        var session: LocalAsrEngine.Session? = null
+        var ended = false
+        private fun emit(action: (VoiceListener) -> Unit) = post(gen) { if (!ended) action(it) }
+        fun partial(text: String) = emit { if (multi) (it as MultiVoiceListener).onEnginePartial(plugin.id, text) else it.onPartial(text) }
+        fun final(text: String) = emit { if (multi) (it as MultiVoiceListener).onEngineFinal(plugin.id, text) else it.onFinal(text) }
+        fun error(message: String) = post(gen) {
+            if (ended) return@post
+            if (multi) (it as MultiVoiceListener).onEngineError(plugin.id, message) else it.onError(message)
+            session?.cancel()
+            end()
+        }
+        fun end() {
+            if (gen != generation || ended) return
+            ended = true
+            if (multi) (listener as? MultiVoiceListener)?.onEngineEnd(plugin.id)
+            if (runs.all { it.ended }) endSession()
+        }
+    }
+
     override fun start(listener: VoiceListener): Boolean {
         cancel()
-        if (!hasEngine()) {
-            listener.onError("请先下载离线语音包")
-            listener.onEnd()
-            return false
-        }
+        if (!hasEngine()) { listener.onError("请先下载离线语音包"); listener.onEnd(); return false }
         if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            listener.onError("需要麦克风权限")
-            listener.onEnd()
-            return false
+            listener.onError("需要麦克风权限"); listener.onEnd(); return false
         }
         this.listener = listener
         stopping = false
         val gen = ++generation
-        session = engines.local.Session(
-            listener = object : TwoPassListener {
-                override fun onPartial(text: String) = post(gen) { it.onPartial(text) }
-                override fun onFinal(text: String) = post(gen) { it.onFinal(text) }
-            },
-            onReady = {
-                main.post {
-                    if (gen != generation || listener !== this.listener || stopping) return@post
-                    val captureSession = session ?: return@post
-                    requestFocus()
-                    startRecording(gen, sink = { b, n -> captureSession.feed(b, n) }, onFail = {
-                        main.post { if (gen == generation) { session?.cancel(); endSession() } }
-                    })
-                }
-            },
-            onEnd = { main.post { if (gen == generation) endSession() } },
-            onError = { message -> post(gen) { it.onError(message); session?.cancel(); endSession() } },
-        )
+        val selection = engines.selection().let { if (listener is MultiVoiceListener) it.take(3) else it.take(1) }
+        val multi = selection.size > 1
+        if (multi) (listener as MultiVoiceListener).onEngines(selection)
+        val started = selection.map { EngineRun(it, gen, multi) }
+        runs = started
+        for (run in started) {
+            run.session = engines.local(run.plugin.id).Session(
+                listener = object : TwoPassListener {
+                    override fun onPartial(text: String) = run.partial(text)
+                    override fun onFinal(text: String) = run.final(text)
+                },
+                onReady = {},
+                onEnd = { main.post { run.end() } },
+                onError = { run.error(it) },
+            )
+        }
+        requestFocus()
+        // Capture immediately, including cold starts and a hold released before loading finishes.
+        // Each model's ordered worker buffers its PCM behind the load and then finishes it.
+        startRecording(gen, sink = { b, n -> for (run in started) run.session?.feed(b, n) }, onFail = {
+            main.post { if (gen == generation) { for (run in started) run.session?.cancel(); endSession() } }
+        })
         return true
     }
 
@@ -132,7 +168,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
         main.post {
             if (gen != generation) return@post
             captureQueued = false
-            if (stopping) session?.stop()
+            if (stopping) for (run in runs) run.session?.stop()
         }
     }
 
@@ -141,7 +177,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
         abandonFocus()
         val l = listener
         listener = null
-        session = null
+        runs = emptyList()
         l?.onEnd()
     }
 
@@ -252,15 +288,15 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
 
     private fun rms(b: ByteArray, len: Int): Float = VoiceLevel.fromPcm16(b, len)
 
-    override fun hasEngine(): Boolean = runCatching { engines.local.isAvailable }.getOrDefault(false)
-    override fun warmUp() { if (hasEngine()) engines.local.preload() }
+    override fun hasEngine(): Boolean = runCatching { engines.selection().isNotEmpty() }.getOrDefault(false)
+    override fun warmUp() { if (hasEngine()) engines.preload() }
 
     override fun stop() {
         if (listener == null || stopping) return
         stopping = true
         recording = false
         // The capture thread sends its last samples before finishing the decoder.
-        if (!captureQueued) session?.stop()
+        if (!captureQueued) for (run in runs) run.session?.stop()
     }
 
     override fun cancel() {
@@ -270,8 +306,8 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
         stopping = false
         val l = listener
         listener = null
-        session?.cancel()
-        session = null
+        for (run in runs) run.session?.cancel()
+        runs = emptyList()
         abandonFocus()
         l?.onEnd()
     }

@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "mirrors": [
     {
       "id": "github",
@@ -97,8 +97,8 @@
       "kind": "asr-streaming",
       "arch": "zipformer2-ctc",
       "name": "实时识别 · 小",
-      "description": "下载后边说边出字，适合多数手机。安装约 26 MB；推荐先下载它。",
-      "descriptionLite": "下载后边说边出字，适合多数手机。安装约 26 MB；推荐先下载它。",
+      "description": "轻量中文实时识别，边说边出字；中英混说请选择标准或增强档。",
+      "descriptionLite": "轻量中文实时识别，边说边出字，安装约 26 MB；中英混说请选择标准或增强档。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
       "builtin": false,
       "archive": {
@@ -125,6 +125,82 @@
         "rtf": 0.09
       },
       "hf": "csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01"
+    },
+    {
+      "id": "asr-stream-mixed-high",
+      "kind": "asr-streaming",
+      "arch": "zipformer-transducer",
+      "name": "中英实时 · 增强",
+      "description": "专门训练中文与英语的双语流式 Zipformer，支持中英混说并实时出字。使用较大模型，可配合 SenseVoice 比较结果。",
+      "license": "Apache-2.0（k2-fsa/sherpa-onnx）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-mobile.tar.bz2",
+        "size": 346965352,
+        "sha256": "45b8d04fe8faf5146397ff2e71d90ca8effdfcbe9adc30fdce769e92cabd6b03"
+      },
+      "files": [
+        {
+          "name": "encoder-epoch-99-avg-1.int8.onnx",
+          "size": 105276499,
+          "sha256": "f559f422d970323e0c266aaa3c56cf6d1a3a4bc0c0822124727686c1e43e9447"
+        },
+        {
+          "name": "decoder-epoch-99-avg-1.onnx",
+          "size": 13876452,
+          "sha256": "2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d"
+        },
+        {
+          "name": "joiner-epoch-99-avg-1.int8.onnx",
+          "size": 3228404,
+          "sha256": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 56317,
+          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3"
+        }
+      ],
+      "installedSize": 122437672,
+      "bench": null
+    },
+    {
+      "id": "asr-stream-mixed-medium",
+      "kind": "asr-streaming",
+      "arch": "zipformer-transducer",
+      "name": "中英实时 · 标准",
+      "description": "专门训练中文与英语的双语流式 Zipformer，支持中英混说并实时出字。标准档默认模型。",
+      "license": "Apache-2.0（k2-fsa/sherpa-onnx）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile.tar.bz2",
+        "size": 357630934,
+        "sha256": "fcb4d28973a13d8b32bb363df56e3b15b173c64c00837139b9ea3f212659d14c"
+      },
+      "files": [
+        {
+          "name": "encoder-epoch-99-avg-1.int8.onnx",
+          "size": 32631819,
+          "sha256": "ed2932a455d69fb6555ee6a1badcc4b765bef60e426796b62fca18b36328b941"
+        },
+        {
+          "name": "decoder-epoch-99-avg-1.onnx",
+          "size": 13877276,
+          "sha256": "89be509a83175261695bdef5fd1c7b9ab1129a663d1284e7ba9f8507b21e0906"
+        },
+        {
+          "name": "joiner-epoch-99-avg-1.int8.onnx",
+          "size": 3228485,
+          "sha256": "bdda356d6f9b8c2d7cee9ee0e26075fa537490f7fd06520be408d287073667b9"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 56317,
+          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3"
+        }
+      ],
+      "installedSize": 49793897,
+      "bench": null
     },
     {
       "id": "asr-final-small",
@@ -197,8 +273,8 @@
       "id": "asr-sensevoice",
       "kind": "asr-offline",
       "arch": "sense-voice",
-      "name": "SenseVoice 多语种",
-      "description": "普通话、粤语、英语、日语、韩语，自带标点与数字规整，约 237 MB。",
+      "name": "SenseVoice · 中英标准",
+      "description": "中文、英语与中英混说，也支持粤语、日语、韩语。自带标点与数字规整。",
       "license": "FunASR Model License（需署名）",
       "builtin": false,
       "archive": {
@@ -341,6 +417,34 @@
         }
       ],
       "installedSize": 341057591,
+      "bench": null
+    },
+    {
+      "id": "asr-wenet-mixed",
+      "kind": "asr-offline",
+      "arch": "wenet-ctc",
+      "name": "WeNet · 中英粤语",
+      "description": "支持中文、英语与粤语的 CTC 整句识别；可与 SenseVoice 同时识别并比较结果。",
+      "license": "Apache-2.0（WeNet、ASLP-lab/WSYue-ASR）",
+      "builtin": false,
+      "archive": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-wenetspeech-yue-u2pp-conformer-ctc-zh-en-cantonese-int8-2025-09-10.tar.bz2",
+        "sha256": "8636295785a43538a1b4620f167bcb89c10ce5ebdcee61c72a388738b783f992",
+        "size": 117203117
+      },
+      "files": [
+        {
+          "name": "model.int8.onnx",
+          "size": 134698500,
+          "sha256": "201bfd9e12ec4ac9ee3b23c5e071d9fa2381a8b21df317e2e08a170d6f1f55d3"
+        },
+        {
+          "name": "tokens.txt",
+          "size": 85361,
+          "sha256": "c7750677a1183606d2fd6f16d792e06e70d9843dba8a0c6e23a9dec78e06977a"
+        }
+      ],
+      "installedSize": 134783861,
       "bench": null
     },
     {

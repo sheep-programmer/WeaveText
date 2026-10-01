@@ -42,6 +42,9 @@ internal object NativeAsrModels {
         }
     }
 
+    fun streamingTransducer(encoder: String, decoder: String, joiner: String, tokens: String): StreamingAsr =
+        streaming("zipformer-transducer", org.json.JSONArray(listOf(encoder, decoder, joiner)).toString(), tokens)
+
     /** 非流式识别器（终稿）。 Offline recognizer for the final pass. */
     fun offline(arch: String, model: String, tokens: String): OfflineAsr {
         val h = NativeAsr.nativeOfflineCreate(arch, model, tokens, THREADS)

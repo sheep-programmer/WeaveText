@@ -14,7 +14,7 @@ internal object VoiceLevel {
             energy += v * v
         }
         val rms = sqrt(energy / n) / 32768.0
-        if (rms <= 0.001) return 0f
-        return ((20 * log10(rms) + 60) / 48).coerceIn(0.0, 1.0).toFloat()
+        if (rms <= 1.0 / 32768.0) return 0f
+        return ((20 * log10(rms) + 90) / 90).coerceIn(0.0, 1.0).toFloat()
     }
 }

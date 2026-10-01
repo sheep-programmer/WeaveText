@@ -25,6 +25,50 @@ class NativeAsrTest {
     private val models = File(System.getProperty("weave.models"))
     private val wav = File(System.getProperty("weave.testWavs"), "0.wav")
 
+    @Test fun bilingualStreamingModelsKeepActualWordsAcrossLanguages() {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val names = listOf("sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile", "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-mobile")
+        val fixture = root.resolve(names[0]).resolve("test_wavs/4.wav")
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").exists() && names.all { root.resolve(it).resolve("encoder-epoch-99-avg-1.int8.onnx").isFile } && fixture.isFile)
+        NativeAsrModels.load(runtime)
+        val audio = samples(fixture)
+        for (name in names) {
+            val dir = root.resolve(name)
+            val stream = NativeAsrModels.streamingTransducer("$dir/encoder-epoch-99-avg-1.int8.onnx", "$dir/decoder-epoch-99-avg-1.onnx", "$dir/joiner-epoch-99-avg-1.int8.onnx", "$dir/tokens.txt")
+            val finals = mutableListOf<String>()
+            val rec = TwoPassRecognizer(stream, null, null, object : TwoPassListener {
+                override fun onPartial(text: String) {}
+                override fun onFinal(text: String) { finals += text }
+            })
+            try {
+                for (i in audio.indices step 640) rec.feed(audio.copyOfRange(i, minOf(i + 640, audio.size)))
+                rec.finish()
+                val text = finals.joinToString(" ")
+                println("bilingual $name: $text")
+                assertTrue(text, text.contains("准时"))
+                assertTrue(text, text.lowercase().contains("on time") && text.lowercase().contains("in time"))
+            } finally { rec.release() }
+        }
+    }
+
+    @Test fun mixedModelsRecognizeChineseAndEnglishInOneRecording() {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val wenet = root.resolve("sherpa-onnx-wenetspeech-yue-u2pp-conformer-ctc-zh-en-cantonese-int8-2025-09-10")
+        val sense = root.resolve("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09")
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").exists() && wenet.resolve("model.int8.onnx").isFile && sense.resolve("model.int8.onnx").isFile)
+        NativeAsrModels.load(runtime)
+        val audio = samples(sense.resolve("test_wavs/zh.wav")) + FloatArray(3200) + samples(sense.resolve("test_wavs/en.wav"))
+        for ((arch, dir) in listOf("sense-voice" to sense, "wenet-ctc" to wenet)) {
+            val model = NativeAsrModels.offline(arch, "$dir/model.int8.onnx", "$dir/tokens.txt")
+            try {
+                val text = TwoPassRecognizer.clean(model.decode(audio))
+                println("mixed $arch: $text")
+                assertTrue("Chinese words survive: $text", text.any { it in '\u4e00'..'\u9fff' })
+                assertTrue("English words survive: $text", Regex("[A-Za-z]{3,}").containsMatchIn(text))
+            } finally { model.release() }
+        }
+    }
+
     @Test fun additionalChineseModelsDecodeRealSpeech() {
         assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").exists())
         val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")

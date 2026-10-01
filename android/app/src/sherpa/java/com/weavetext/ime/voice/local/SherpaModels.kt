@@ -5,6 +5,7 @@ import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineDolphinModelConfig
+import com.k2fsa.sherpa.onnx.OfflineWenetCtcModelConfig
 import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig
 import com.k2fsa.sherpa.onnx.OfflinePunctuation
 import com.k2fsa.sherpa.onnx.OfflinePunctuationConfig
@@ -14,6 +15,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.OfflineZipformerCtcModelConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
@@ -35,15 +37,17 @@ internal object SherpaModels {
     fun prepare(runtimeDir: File?) {}
 
     fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr {
-        require(spec.arch == "zipformer2-ctc") { "unsupported streaming arch ${spec.arch}" }
+        require(spec.arch in setOf("zipformer2-ctc", "zipformer-transducer")) { "unsupported streaming arch ${spec.arch}" }
+        val model = if (spec.arch == "zipformer-transducer") OnlineModelConfig(
+            transducer = OnlineTransducerModelConfig(
+                encoder = loc.path(spec.files.first { it.name.startsWith("encoder") }.name),
+                decoder = loc.path(spec.files.first { it.name.startsWith("decoder") }.name),
+                joiner = loc.path(spec.files.first { it.name.startsWith("joiner") }.name),
+            ), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false,
+        ) else OnlineModelConfig(zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = loc.path("model.int8.onnx")), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
         val config = OnlineRecognizerConfig(
             featConfig = FEATURES,
-            modelConfig = OnlineModelConfig(
-                zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = loc.path("model.int8.onnx")),
-                tokens = loc.path("tokens.txt"),
-                numThreads = THREADS,
-                debug = false,
-            ),
+            modelConfig = model,
             // 句尾判定：说过话后静音 1.6 秒分句；无说话 4 秒；单句最长 30 秒。
             // Endpoints: 1.6 s silence after speech, 4 s with no speech, 30 s max.
             endpointConfig = EndpointConfig(
@@ -87,6 +91,7 @@ internal object SherpaModels {
             "paraformer" -> OfflineModelConfig(paraformer = OfflineParaformerModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
             "dolphin" -> OfflineModelConfig(dolphin = OfflineDolphinModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
             "telespeech-ctc" -> OfflineModelConfig(teleSpeech = model, tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
+            "wenet-ctc" -> OfflineModelConfig(wenetCtc = OfflineWenetCtcModelConfig(model = model), tokens = loc.path("tokens.txt"), numThreads = THREADS, debug = false)
             else -> throw IllegalArgumentException("unsupported offline arch ${spec.arch}")
         }
         val rec = OfflineRecognizer(loc.assets, OfflineRecognizerConfig(featConfig = FEATURES, modelConfig = modelConfig))

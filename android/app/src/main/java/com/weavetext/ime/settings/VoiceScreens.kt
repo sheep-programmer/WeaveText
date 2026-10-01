@@ -113,11 +113,11 @@ fun VoiceListScreen() {
         } else {
             GroupTitle("识别设置")
             GroupCard {
-                SettingRow("实时文字、终稿与标点", "选择已下载的模型", onClick = { nav.push(Route.VoiceDetail(engine.id)) }) { Chevron() }
+                SettingRow("模型设置与标点", "语音页下拉多选已下载模型，最多三个", onClick = { nav.push(Route.VoiceDetail(engine.id)) }) { Chevron() }
             }
         }
         Text(
-            "点按开始，再点结束；停顿不会结束录音。按住模式在松手后结束。波纹随麦克风音量跳动，识别文字会直接显示在输入框中。",
+            "点按开始、再点结束；长按空格松手后结束。可多选三个离线模型，同一次录音分别识别，最后点一行上屏。中文专用与中英混说模型已在列表中标明。波纹跟随实际收音音量。",
             Modifier.padding(24.dp), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

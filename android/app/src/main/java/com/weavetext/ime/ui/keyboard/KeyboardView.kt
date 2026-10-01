@@ -897,15 +897,25 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 // 上滑要明显朝上、够长，快速连打时的手指拖动不会把字母变成数字。
                 // Swipe-up needs a clearly vertical, long movement so fast typing never turns letters into digits.
                 val swipeMin = max(m.dp(SWIPE_MIN_DP), m.keyHeight * SWIPE_MIN_KEY)
-                if (k.code == KeyCode.SPACE && abs(dx) > slop && abs(dx) > abs(dy) && host?.cursorDragAllowed() != false) {
+                val spaceSlop = max(slop * 2, m.dp(18f))
+                if (k.code == KeyCode.SPACE && abs(dx) > spaceSlop && abs(dx) > abs(dy) && host?.cursorDragAllowed() != false) {
                     removeCallbacks(p.longPress)
                     p.mode = M_CURSOR
-                    p.cursorAnchor = x
+                    p.cursorAnchor = p.downX + if (dx > 0) spaceSlop else -spaceSlop
                     p.cursorSteps = 0
                     p.lastMoveT = t; p.lastMoveX = x
+                    val initialSteps = ((x - p.cursorAnchor) / m.dp(12f)).toInt()
+                    if (initialSteps != 0) {
+                        p.cursorAnchor += initialSteps * m.dp(12f)
+                        p.cursorSteps = initialSteps
+                        host?.feedback?.tick(this)
+                        host?.onCursorSteps(initialSteps)
+                    }
                     invalidate()
                     return
                 }
+                // A resting thumb naturally drifts. Preserve the hold timer until a deliberate slide.
+                if (k.code == KeyCode.SPACE && abs(dx) <= spaceSlop && abs(dy) <= spaceSlop) return
                 if (k.code == KeyCode.DELETE) {
                     // 只有还没开始连发时，移动才取消连发；连发中手指缓慢漂移很正常，只有左滑清空或抬手结束连发。
                     // Movement only cancels a repeat that hasn't started: once repeating, a slow drift of the thumb is

@@ -136,7 +136,7 @@ class VoiceSession(
             fun live() = (my == token && (active || state == State.CHOOSING)).also { if (it) lastActivity = clock() }
             override fun onEngines(engines: List<VoicePlugin>) {
                 if (!live() || engines.size < 2) return
-                results = MultiEngineResults(engines.map { it.id to it.name }, engines.first().id, timeoutMs)
+                results = MultiEngineResults(engines.take(3).map { it.id to it.name }, engines.first().id, timeoutMs)
             }
             override fun onEnginePartial(id: String, text: String) {
                 val res = results ?: return
@@ -168,14 +168,15 @@ class VoiceSession(
             override fun onPartial(text: String) {
                 if (!live()) return
                 enterListening()
-                partial = text
-                controller.voicePartial(text)
+                partial = com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(committed.lastOrNull(), text)
+                controller.voicePartial(partial)
                 changed()
             }
             override fun onFinal(text: String) {
                 if (!live()) return
-                controller.voiceFinal(text)
-                committed.append(text)
+                val segment = com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(committed.lastOrNull(), text)
+                controller.voiceFinal(segment)
+                committed.append(segment)
                 partial = ""
                 changed()
             }
@@ -334,8 +335,7 @@ class VoiceSession(
         if (state != State.CHOOSING) { partial = res.primaryText(); changed(); return }
         if (res.settled) {
             main.removeCallbacks(timeoutCheck)
-            val same = res.unanimous()
-            if (same != null) { commitText(same); return }
+            // Even matching models remain separate rows: the user explicitly chooses one.
             if (detached) { val i = res.defaultIndex(); if (i >= 0) choose(i) else discard(); return }
             // 超时后不再等剩下的引擎。 Stop waiting for engines that timed out.
             if (rec?.isRunning == true) { token++; rec?.cancel() }

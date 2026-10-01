@@ -445,7 +445,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
         private fun choosing() = session.state == VoiceSession.State.CHOOSING && session.results != null
 
-        private fun rowH() = kb.metrics.dp(50f)
+        private fun rowH(): Float {
+            val n = session.results?.rows()?.size?.coerceIn(1, 3) ?: 3
+            return min(kb.metrics.dp(50f), (listArea.height() - (n - 1) * rowGap()) / n).coerceAtLeast(kb.metrics.dp(27f))
+        }
         private fun rowGap() = kb.metrics.dp(6f)
 
         private fun resultsGeometry() {
@@ -493,10 +496,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 }
                 val bad = r.status == com.weavetext.ime.voice.MultiEngineResults.Status.ERROR ||
                     r.status == com.weavetext.ime.voice.MultiEngineResults.Status.TIMEOUT
-                text.textSize = m.dp(12f); text.typeface = Typeface.DEFAULT
+                text.textSize = if (rowH() < m.dp(40f)) m.dp(10f) else m.dp(12f); text.typeface = Typeface.DEFAULT
                 text.textAlign = Paint.Align.RIGHT
                 text.color = if (bad) pal.danger else pal.labelHint
-                val line1 = top + m.dp(17f)
+                val line1 = top + min(m.dp(17f), rowH() * 0.38f)
                 c.drawText(status, right, line1, text)
                 val statusW = text.measureText(status) + m.dp(8f)
                 text.textAlign = Paint.Align.LEFT
@@ -505,10 +508,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 val name = (if (r.id == res.primaryId) "★ " else "") + r.name
                 c.drawText(android.text.TextUtils.ellipsize(name, text, right - left - statusW, android.text.TextUtils.TruncateAt.END).toString(), left, line1, text)
                 // 第二行：识别文字 / line 2: transcript
-                text.typeface = Typeface.DEFAULT; text.textSize = m.dp(16f)
+                text.typeface = Typeface.DEFAULT; text.textSize = if (rowH() < m.dp(40f)) m.dp(13f) else m.dp(16f)
                 val body = r.text.ifEmpty { if (r.pending) "…" else "" }
                 text.color = if (r.selectable) pal.label else pal.labelSecondary
-                c.drawText(android.text.TextUtils.ellipsize(body, text, right - left, android.text.TextUtils.TruncateAt.START).toString(), left, top + m.dp(40f), text)
+                c.drawText(android.text.TextUtils.ellipsize(body, text, right - left, android.text.TextUtils.TruncateAt.START).toString(), left, top + min(m.dp(40f), rowH() * 0.82f), text)
             }
             c.restore()
             // 底部操作 / bottom actions

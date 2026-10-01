@@ -4,11 +4,19 @@
 
 语音只使用设备上的离线模型。Android 系统 SpeechRecognizer 与云端语音插件不再作为输入后端；旧插件文件和配置保留在应用私有目录，不参与录音。
 
-两个安装包都需先下载识别模型：轻量版一键安装运行库、实时小模型与 Silero 人声检测，下载约 33 MB；语音版已带运行库，一键安装约 24 MB。运行库、模型和人声检测均按目录中的 SHA-256 与大小验证。模型可以分别卸载、重装和切换，只有运行库或只有标点模型均不能开始识别。
+两个安装包都需先下载识别模型。顶部档位对应真实模型：
 
-推荐先用实时小模型；可选终稿小模型、SenseVoice、Paraformer、Dolphin 轻量/增强、TeleSpeech 中文方言与智能标点。在设置中关闭实时模型可单独使用终稿模型，此时 Silero 检测人声并分句。旧安装未下载 Silero 时保留音量分句兼容路径。Dolphin 与 TeleSpeech 的 Sherpa 导出使用 CTC 分支，不能等同于原项目完整模型的评测效果。目录里的历史字错率来自合成样本相对比较，新增模型没有填入未经测量的分数。
+| 档位 | 模型 | 下载与安装 |
+|---|---|---|
+| 轻量中文 | 实时识别 · 小 | 语音版约 24 MB；Lite 加运行库约 33 MB |
+| 中英标准 | 双语 Zipformer 标准 | 官方压缩包约 358 MB，所选模型文件约 50 MB |
+| 中英增强 | 双语 Zipformer 增强 + SenseVoice | 双语压缩包约 347 MB，所选文件约 122 MB；另下载 SenseVoice |
 
-点按模式第二次点击结束，按住模式松手结束；静音不会关闭麦克风。分句静音延长至 1.6 秒，长句约 28 秒分段并补齐末尾解码后继续收音。模型加载和麦克风启动都完成后才显示正在聆听；录音音量采用对数刻度，面板和浮动条显示最近的实际采样音量。停止会先送完录音线程最后一块 PCM，再解码终稿。
+标准与增强双语压缩包含浮点和多种上下文版本，所以下载量大于安装后的模型大小；界面显示实际下载量。Lite 另下载运行库，各档都安装 Silero 人声检测。文件按目录中的 SHA-256 和大小校验。新增 WeNet 中英粤语可单独下载，Dolphin、TeleSpeech、Paraformer 等中文模型继续保留；结构支持不能替代实际识别准确率测量。
+
+语音面板的模型下拉列表只显示已装好的识别模型，可勾选 1–3 个。一份 PCM 同时交给各模型独立识别，停止后显示最多三行结果，点击一行上屏；相同文本也保留各自结果。未选中的模型缓存会释放，选中的模型处理过慢时给出错误。只有运行库、人声检测或标点时不能开始识别。
+
+点按模式第二次点击结束，按住模式松手结束；空格长按同样可说话，允许小幅手指漂移。麦克风立即采集，首次模型加载期间缓存音频，松手后仍处理已经收到的语音。静音不会关闭麦克风，分句等待 1.6 秒，长句约 28 秒分段并补齐末尾。声波取最近的真实 PCM 音量，轻声可见，响声保留变化，数字静音保持平直。停止前送完最后一块 PCM，再完成各模型的解码。
 
 语音版仅内置 Sherpa 运行库；轻量版不含 Sherpa 库，下载后由 Rust 动态加载 C API。两版模型均按需下载，构建无需预装识别模型。发布继续保留 R8/JNI 字段检查。
 
@@ -69,7 +77,7 @@ python3 tools/voice-ime-e2e.py <serial> <sample.wav> \
   --expect '我想说的是' --report <report-directory>/microphone-e2e.json
 ```
 
-JSON 报告保存输入框中的实际文字和删除后的状态，旁边的 PNG 保存删除前的实测截图。
+JSON 报告保存输入框中的实际文字和删除后的状态，旁边的 PNG 保存删除前的实测截图。多模型验证可加 `--choose X Y` 指定结果行；先等待该行识别完成，默认覆盖 60 秒的离线兜底，可用 `--choose-wait-seconds` 调整。
 
 Lite 界面测试需要在独立 AVD 里准备已安装的语音包。可用
 `-Pweave.voiceSmokePack=<local-assets-directory>` 给测试 APK 临时加入
@@ -77,35 +85,18 @@ Lite 界面测试需要在独立 AVD 里准备已安装的语音包。可用
 随后运行 `VoiceSmoke` 的 `stage-lite-pack` 用例（`-e pack assets`），它会先按照公开 APK 的模型目录
 核对大小和 SHA-256，再复制到该测试实例的私有模型目录。测试代码与这些文件均不会进入产品 APK。
 
-轻量版不带 sherpa-onnx 运行时（约 27 MB）与模型；在「语音包」里装好运行库与识别模型（实时模型，或只装终稿模型时整句识别；§4.1）之前「本地离线识别」不会出现，语音输入可用系统识别、手机上其他的语音输入法（一键切换）或插件。
-两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1），装机占用约等于 APK 大小。
-*Lite drops the sherpa-onnx runtime (~27 MB) and models; until the runtime and a streaming model are installed from the
-voice-pack list (§4.1) the on-device engine is hidden and voice uses the system recognizer, another voice IME on the phone
-(one-tap switch) or plugins. Both builds read dictionaries straight from the APK, so the footprint is about the APK size.*
+轻量版不带 Sherpa 运行库与识别模型；从语音包页面下载后使用 Rust 动态加载 C API，识别参数与离线语音版一致。两版均只使用设备上的离线模型。两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1）。
 
 正式版只含 arm64-v8a；调试版额外含 x86_64 以便模拟器。`-Pweave.abis=arm64-v8a,x86_64` 可覆盖。
 *Release builds are arm64-v8a only; debug adds x86_64 for emulators; override with `-Pweave.abis`.*
 
 ### 4.1 轻量版语音包 / Lite voice pack
 
-中文：
-- 「设置 → 语音引擎 → 语音包」是逐项列表，每一项单独安装、卸载（语音面板里的「安装离线语音」也会打开这里）。轻量版顶部另有推荐组合一键安装两样：
-  **识别运行库** `asr-runtime`（sherpa-onnx 1.13.8 的 C 接口库与 onnxruntime，arm64-v8a，官方文件原样，解开后约 27 MB）
-  和 **实时识别 · 小** `asr-stream-small`，合计下载约 30 MB，合并显示进度、可取消，计流量网络下先询问。
-- 运行库按目录里的 `archives` 顺序取：先试织文发布页 `asr-runtime-v1.13.8` 上只含 arm64 的小包（约 9 MB），404 或失败再退到 sherpa-onnx 官方的
-  多架构 Android 包（约 46 MB），只解出 `arm64-v8a/` 下的两个文件；两条都走同一组 GitHub 镜像，每个文件按 SHA-256 校验。
-- 安装后运行库文件设为只读（Android 14 起动态载入的代码必须不可写），再由 Rust 内核按绝对路径载入并核对版本号
-  （`core/weave-ffi/src/asr.rs`）。识别参数（端点规则、线程数、两遍识别）与离线语音版一致，所以识别效果相同。
-- 装好后自动选中「本地离线识别」；终稿识别与智能标点在同一列表里按需安装。单独安装模型时若还没有运行库会一起装上；卸载运行库不会连带删除模型。不必重装 APK。
-- 运行库只在不随包的构建里、且设备主 ABI 相符时才列出；否则此页退回「安装完整离线语音版」（覆盖安装 APK）。
-
-English: the lite build downloads a ~30 MB voice pack — the unmodified sherpa-onnx 1.13.8 C API + onnxruntime
-libraries (arm64-v8a) and the small streaming model — with combined progress, cancel and a metered-network prompt. The
-runtime tries a small arm64-only pack first and falls back to the official multi-ABI archive, keeping only
-`arm64-v8a/`; files are SHA-256 verified, made read-only (Android 14 dynamic-code rule) and loaded by the Rust core with a
-version check. Settings match the offline-voice build, so recognition quality is the same. The local engine is selected
-automatically; final-pass and punctuation models remain optional. Without a matching ABI the page falls back to the
-full offline-voice APK upgrade.
+- 「设置 → 语音引擎 → 语音包」可选轻量中文、中英标准、中英增强，一键安装相应模型、人声检测与缺少的运行库；也可逐项下载、卸载。
+- 运行库先尝试织文发布页 `asr-runtime-v1.13.8` 的 arm64 小包（约 9 MB），失败时退到 Sherpa 官方多架构包（约 46 MB），只取 `arm64-v8a/`。每个文件按 SHA-256 校验。
+- 库设为只读后按绝对路径载入并核对版本。安装某个模型时一并补齐缺少的运行库和人声检测；卸载运行库不会删除模型。
+- 安装档位后选中相应模型。下载器合并进度，可取消，计流量网络先提示。语音面板里再按需多选最多三个已下载模型。
+- ABI 不符时提供完整离线语音版安装入口；完整包也仍需下载识别模型。
 
 ## 5. 测试 / Tests
 

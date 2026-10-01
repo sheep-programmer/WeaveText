@@ -299,6 +299,36 @@ class TypingFeelTest {
 
     // ------------------------------------------------------------ space bar
 
+    @Test fun spaceHoldSurvivesThumbDriftAndFinishesRecognizedTextOnRelease() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
+        val previousEngines = com.weavetext.ime.ui.VoiceAccess.enginesProvider
+        val previousRecognizer = com.weavetext.ime.ui.VoiceAccess.recognizerProvider
+        val engines = com.weavetext.ime.testing.FakeEngines()
+        val rec = com.weavetext.ime.testing.ScriptedRecognizer(engines)
+        com.weavetext.ime.ui.VoiceAccess.enginesProvider = { engines }
+        com.weavetext.ime.ui.VoiceAccess.recognizerProvider = { rec }
+        try {
+            press(0, key(KeyCode.SPACE))
+            move(0, dp(10f), dp(6f))
+            hold(550)
+            assertTrue("long press starts microphone despite thumb drift", rec.isRunning)
+            rec.listener!!.onReady(false)
+            rec.listener!!.onLevel(0.5f)
+            rec.listener!!.onPartial("hello下午见")
+            idle()
+            assertTrue("waveform receives microphone levels", kb.voiceSession.level > 0f)
+            release(0)
+            assertEquals(1, rec.stops)
+            rec.listener!!.onFinal("hello下午见")
+            rec.endAll()
+            assertEquals("hello下午见", ic.text)
+            assertEquals(com.weavetext.ime.ui.keyboard.VoiceSession.State.IDLE, kb.voiceSession.state)
+        } finally {
+            com.weavetext.ime.ui.VoiceAccess.enginesProvider = previousEngines
+            com.weavetext.ime.ui.VoiceAccess.recognizerProvider = previousRecognizer
+        }
+    }
+
     @Test fun shortSpaceSlideStillTypesASpace() {
         ic.commitText("a", 1)
         press(0, key(KeyCode.SPACE))

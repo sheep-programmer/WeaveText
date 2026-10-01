@@ -3,11 +3,13 @@ package com.weavetext.ime.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -17,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,6 +31,7 @@ import com.weavetext.ime.R
 import com.weavetext.ime.models.AsrRuntime
 import com.weavetext.ime.models.ModelRepository
 import com.weavetext.ime.models.VoicePack
+import com.weavetext.ime.models.VoiceProfiles
 import com.weavetext.ime.voice.LOCAL_ENGINE_ID
 import com.weavetext.ime.voice.VoiceHelp
 import com.weavetext.ime.voice.VoiceUpgrade
@@ -52,23 +56,28 @@ fun VoiceUpgradeScreen() {
 @Composable
 internal fun VoicePackHeader(repo: ModelRepository) {
     val deps = LocalDeps.current
-    val pack = remember(repo) { VoicePack(repo) }
+    var profileIndex by remember { mutableIntStateOf(1) }
+    val profile = VoiceProfiles.ALL[profileIndex]
+    val pack = remember(repo, profileIndex) { VoicePack(repo, modelIds = profile.modelIds) }
     if (!pack.supported) return
     val tick = rememberModelTick(repo)
-    val state = remember(tick) { pack.state() }
-    if (state == VoicePack.State.Ready) return
+    val state = remember(tick, profileIndex) { pack.state() }
     var confirmMetered by remember { mutableStateOf(false) }
     // 装好后自动选中本地离线识别。 Select the local engine once installed.
     val start: (Boolean) -> Unit = { metered ->
-        pack.start(allowMetered = metered) { runCatching { deps.engines().activeId = LOCAL_ENGINE_ID } }
+        pack.start(allowMetered = metered) { runCatching { deps.engines().setSelection(profile.modelIds) } }
     }
     val onDownload = { if (repo.wifiOnly && repo.isMetered()) confirmMetered = true else start(!repo.wifiOnly) }
     GroupCard(Modifier.padding(top = 8.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("推荐：一键装好离线识别", style = MaterialTheme.typography.titleMedium)
+            Text("离线语音档位", style = MaterialTheme.typography.titleMedium)
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                VoiceProfiles.ALL.forEachIndexed { i, entry ->
+                    FilterChip(selected = i == profileIndex, onClick = { profileIndex = i }, label = { Text(entry.name) })
+                }
+            }
             Text(
-                "下载实时模型与人声检测即可开始；轻量版会同时下载运行库。之后所有识别都在手机上完成。" +
-                    "下面的列表可以逐项安装或卸载更准的模型。建议在 Wi-Fi 下下载。",
+                profile.description + " 下载所需模型与人声检测；轻量版同时下载运行库。可在语音页下拉多选，最多三个。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -104,7 +113,7 @@ internal fun VoicePackHeader(repo: ModelRepository) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("正在解压与校验…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                VoicePack.State.Ready -> {}
+                VoicePack.State.Ready -> Button(onClick = { deps.engines().setSelection(profile.modelIds) }, Modifier.fillMaxWidth()) { Text("已安装 · 选用此档") }
             }
         }
     }
@@ -150,7 +159,7 @@ private fun FullBuildRow() {
     when (state) {
         VoiceUpgrade.State.Idle, is VoiceUpgrade.State.Failed -> SettingRow(
             "安装完整离线语音版",
-            (state as? VoiceUpgrade.State.Failed)?.message ?: "约 140 MB，覆盖安装，设置和词库都保留",
+            (state as? VoiceUpgrade.State.Failed)?.message ?: "覆盖安装，设置和词库都保留；语音模型需另行下载",
             onClick = { VoiceUpgrade.start(ctx) },
         ) { Chevron() }
         else -> Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -211,7 +220,7 @@ private fun FullBuildPage() = SubPage("安装离线语音") {
             Text("在手机上直接识别语音", style = MaterialTheme.typography.titleMedium)
             Text(
                 "当前是轻量版，不含离线语音识别。安装「离线语音版」后即可语音输入：识别全部在手机上完成，不联网、语音不离开设备。" +
-                    "它会覆盖安装当前应用，设置、词库和学过的词都保留。安装包约 140 MB，建议在 Wi-Fi 下下载。",
+                    "它会覆盖安装当前应用，设置、词库和学过的词都保留。语音模型需另行下载，建议在 Wi-Fi 下下载。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

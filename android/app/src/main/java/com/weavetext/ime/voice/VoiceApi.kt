@@ -97,6 +97,13 @@ interface VoiceEngines {
         get() = emptySet()
         set(@Suppress("UNUSED_PARAMETER") value) {}
 
+    /** Select installed models together. The UI keeps one to three selected. */
+    fun setSelection(ids: List<String>) {
+        val chosen = ids.distinct().take(3)
+        activeId = chosen.firstOrNull()
+        extraIds = chosen.drop(1).toSet()
+    }
+
     /**
      * 能否与其它引擎共用一次录音。 Whether the engine can share one recording.
      */
@@ -107,7 +114,7 @@ interface VoiceEngines {
         val primary = active() ?: return emptyList()
         if (!canCombine(primary.id)) return listOf(primary)
         val extra = extraIds
-        return listOf(primary) + list().filter { it.id != primary.id && it.id in extra && canCombine(it.id) }
+        return (listOf(primary) + list().filter { it.id != primary.id && it.id in extra && canCombine(it.id) }).take(3)
     }
     fun recheck() {}
 

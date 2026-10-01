@@ -38,6 +38,25 @@ class ModelsTest {
     private val models = File(System.getProperty("weave.models"))
     private val cache = File(System.getProperty("weave.cache"))
 
+    @Test fun bilingualArchivesKeepTheVerifiedRootModels() {
+        val cat = ModelCatalog.parse(File("../app/src/main/assets/models/catalog.json").readText())
+        for (id in listOf("asr-stream-mixed-medium", "asr-stream-mixed-high")) {
+            val spec = cat.find(id)!!
+            val archive = File(cache, spec.archiveUrl.substringAfterLast('/'))
+            assumeTrue("Optional official model fixture: $archive", archive.isFile)
+            val dest = Files.createTempDirectory("weave-bilingual-archive").toFile()
+            try {
+                assertEquals(null, NativeArchive.nativeExtractTarBz2(archive.path, dest.path, spec.fileNames().joinToString("\n")))
+                for (entry in spec.files) {
+                    val file = File(dest, entry.name)
+                    assertEquals(entry.size, file.length())
+                    assertEquals(entry.sha256, Downloader.sha256Of(file))
+                }
+                assertTrue("Alternative context exports must not replace root models", !File(dest, "64").exists() && !File(dest, "96").exists())
+            } finally { dest.deleteRecursively() }
+        }
+    }
+
     // ------------------------------------------------------------ catalog
 
     @Test

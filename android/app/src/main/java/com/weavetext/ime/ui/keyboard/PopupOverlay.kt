@@ -489,7 +489,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         while (start < stripText.length && text.measureText(stripText, start, stripText.length) > avail) start++
         canvas.drawText(stripText, start, stripText.length, left, cy - (text.ascent() + text.descent()) / 2, text)
         text.textAlign = Paint.Align.CENTER
-        if (stripLive) postInvalidateOnAnimation()
+        // Microphone callbacks redraw at 25 Hz, including silence. No independent fake animation.
     }
 
     private fun animScale(): Float = android.provider.Settings.Global.getFloat(

@@ -31,7 +31,9 @@ text and source link; a self-built table is planned.*
 |---|---|---|---|
 | sherpa-onnx（Android AAR 与桌面 JNI，含 onnxruntime） | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | Apache-2.0（onnxruntime：MIT） | 构建时下载，不入库 |
 | 识别运行库（语音包）：`libsherpa-onnx-c-api.so` 与 `libonnxruntime.so` v1.13.8，arm64-v8a | sherpa-onnx 官方 Android 发布包，原样取出 | Apache-2.0（onnxruntime：MIT） | 不随轻量版 APK 分发；用户在应用内下载后按 SHA-256 校验、设为只读再载入 / not in the lite APK; downloaded in-app, SHA-256 verified, made read-only, then loaded |
-| Zipformer 中文模型（内置实时/终稿、可下载高精度实时） | k2-fsa，随 sherpa-onnx 发布 | Apache-2.0（模型卡未单独声明） | 详见 `docs/models.md` |
+| Zipformer 中文模型（实时/终稿按需下载） | k2-fsa，随 sherpa-onnx 发布 | Apache-2.0（模型卡未单独声明） | 详见 `docs/models.md` |
+| Zipformer 中英双语 transducer 标准/增强 | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) 官方双语 mobile 导出 | Apache-2.0 | 编码器、解码器、连接器与词表按需下载，详见模型目录 |
+| WeNet 中英粤语 CTC | [ASLP-lab/WSYue-ASR](https://huggingface.co/ASLP-lab/WSYue-ASR)，Sherpa ONNX 导出 | Apache-2.0 | 模型卡声明许可；按需下载，不随 APK 分发 |
 | SenseVoice / Paraformer / CT-Transformer 标点 | [FunASR](https://github.com/modelscope/FunASR) 模型经 sherpa-onnx 转换 | FunASR Model License（需署名） | 仅按需下载，不随 APK 分发 |
 
 ## 2. Rust crates

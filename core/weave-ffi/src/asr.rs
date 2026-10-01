@@ -475,17 +475,25 @@ impl Online {
         ep: Endpoint,
     ) -> Result<Online, String> {
         let api = api()?;
-        if arch != "zipformer2-ctc" {
+        if arch != "zipformer2-ctc" && arch != "zipformer-transducer" {
             return Err(format!("unsupported streaming arch {arch}"));
         }
-        let (model, tokens) = (cstr(model)?, cstr(tokens)?);
+        let paths = if arch == "zipformer-transducer" {
+            let paths: Vec<String> = serde_json::from_str(model).map_err(|e| format!("invalid transducer files: {e}"))?;
+            if paths.len() != 3 { return Err("transducer requires encoder, decoder and joiner".into()); }
+            paths
+        } else { vec![model.to_string()] };
+        let models = paths.iter().map(|p| cstr(p)).collect::<Result<Vec<_>, _>>()?;
+        let tokens = cstr(tokens)?;
         let (cpu, greedy) = (cstr("cpu")?, cstr("greedy_search")?);
         let mut c: OnlineRecognizerConfig = zeroed();
         c.feat_config = FeatureConfig {
             sample_rate: 16000,
             feature_dim: 80,
         };
-        c.model_config.zipformer2_ctc.model = model.as_ptr();
+        if arch == "zipformer-transducer" {
+            c.model_config.transducer = Three { a: models[0].as_ptr(), b: models[1].as_ptr(), c: models[2].as_ptr() };
+        } else { c.model_config.zipformer2_ctc.model = models[0].as_ptr(); }
         c.model_config.tokens = tokens.as_ptr();
         c.model_config.num_threads = threads.max(1);
         c.model_config.provider = cpu.as_ptr();
@@ -582,6 +590,7 @@ impl Offline {
             "paraformer" => c.model_config.paraformer.model = model.as_ptr(),
             "dolphin" => c.model_config.dolphin.model = model.as_ptr(),
             "telespeech-ctc" => c.model_config.telespeech_ctc = model.as_ptr(),
+            "wenet-ctc" => c.model_config.wenet_ctc.model = model.as_ptr(),
             "sense-voice" => {
                 c.model_config.sense_voice.model = model.as_ptr();
                 c.model_config.sense_voice.language = auto.as_ptr();

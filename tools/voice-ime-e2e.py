@@ -31,11 +31,16 @@ def main():
     parser.add_argument("--expect", required=True, help="Words spoken in the recording")
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--mode", choices=("hold", "tap"), default="hold")
+    parser.add_argument("--choose", type=int, nargs=2, metavar=("X", "Y"),
+                        help="Tap this result row after stopping a multi-model recording")
+    parser.add_argument("--choose-wait-seconds", type=float, default=60,
+                        help="Wait for the selected row to finish (default covers the offline timeout)")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--pause-seconds", type=float, default=8)
     parser.add_argument("--wave-snapshots", action="store_true", help="Capture speaking and pause frames")
     args = parser.parse_args()
-    if args.repeat < 1 or args.pause_seconds < 0: parser.error("Invalid repetition or pause")
+    if args.repeat < 1 or args.pause_seconds < 0 or args.choose_wait_seconds < 0:
+        parser.error("Invalid repetition, pause or result wait")
     if not args.serial.startswith("emulator-"):
         parser.error("This microphone injection test requires a dedicated emulator")
 
@@ -54,7 +59,10 @@ def main():
         return texts[0]
 
     def capturing():
-        pid = shell("pidof", "com.weavetext.ime").strip().split()[0]
+        process = subprocess.run(adb + ["shell", "pidof", "com.weavetext.ime"], capture_output=True, text=True)
+        pids = process.stdout.split()
+        if not pids: return False
+        pid = pids[0]
         capture = shell("dumpsys", "media.audio_flinger")
         return bool(re.search(r"^\s*yes\s+\d+\s+" + pid + r"(?:/|\s)", capture, re.M))
 
@@ -75,6 +83,9 @@ def main():
         for offset in range(0, len(data), 1280):
             yield pb.AudioPacket(format=fmt, audio=data[offset:offset + 1280])
 
+    current_ime = shell("settings", "get", "secure", "default_input_method").strip()
+    if current_ime != "com.weavetext.ime/.ime.WeaveImeService":
+        raise AssertionError("Select the installed WeaveText IME first: " + current_ime)
     if editor_text():
         raise AssertionError("Start with an empty editor to prove text came from speech")
     if capturing():
@@ -120,6 +131,16 @@ def main():
     while capturing():
         if time.monotonic() > stopped_deadline: raise AssertionError("The stop button did not stop the microphone")
         time.sleep(0.1)
+    empty_before_choice = None
+    if args.choose:
+        # The recognizers must not commit before the user selects one of their rows.
+        time.sleep(args.choose_wait_seconds)
+        empty_before_choice = editor_text()
+        if empty_before_choice:
+            raise AssertionError("Multi-model results committed without a choice: " + repr(empty_before_choice))
+        with args.report.with_name(args.report.stem + "-results.png").open("wb") as out:
+            subprocess.run(adb + ["exec-out", "screencap", "-p"], stdout=out, check=True)
+        shell("input", "tap", *args.choose)
     deadline = time.monotonic() + 60
     while True:
         text = editor_text()
@@ -138,6 +159,8 @@ def main():
         raise AssertionError("Recognized text could not be deleted completely: " + repr(after))
     report = {"input": "emulated microphone PCM", "wav": str(args.wav), "text": text,
               "mode": args.mode, "repetitions": args.repeat, "pause_seconds": args.pause_seconds,
+              "chosen_row": args.choose, "editor_before_choice": empty_before_choice,
+              "choose_wait_seconds": args.choose_wait_seconds if args.choose else None,
               "wave_frames": wave_frames,
               "after_keyboard_deletion": after, "package": "com.weavetext.ime"}
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2))

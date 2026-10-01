@@ -87,7 +87,7 @@ class MultiVoiceSessionTest {
         // 插件 B 一直不回。 Plugin B never answers.
         assertEquals(Status.LOADING, session.results!!.rows()[2].status)
         assertEquals(1, session.defaultRow)
-        ShadowLooper.idleMainLooper(8_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        ShadowLooper.idleMainLooper(com.weavetext.ime.voice.MultiEngineResults.DEFAULT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         assertEquals(Status.TIMEOUT, session.results!!.rows()[2].status)
         // 超时后取消仍在运行的引擎。 Remaining engines are cancelled after the timeout.
         assertEquals(1, rec.cancels)
@@ -95,12 +95,16 @@ class MultiVoiceSessionTest {
         assertEquals(1, session.defaultRow)
     }
 
-    @Test fun identicalResultsCommitDirectly() {
+    @Test fun identicalResultsStillRequireChoosingARow() {
         session.start()
         val m = rec.multi
         for (id in listOf(local.id, a.id, b.id)) m.onEngineFinal(id, "好的")
         session.stop()
         for (id in listOf(local.id, a.id, b.id)) m.onEngineEnd(id)
+        assertEquals("", edit.text.toString())
+        assertEquals(VoiceSession.State.CHOOSING, session.state)
+        assertEquals(3, session.results!!.rows().size)
+        session.choose(2)
         assertEquals("好的", edit.text.toString())
         assertEquals(VoiceSession.State.IDLE, session.state)
     }

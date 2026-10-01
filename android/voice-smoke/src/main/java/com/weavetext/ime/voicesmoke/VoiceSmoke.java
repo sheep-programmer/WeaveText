@@ -80,33 +80,35 @@ public final class VoiceSmoke extends Instrumentation {
             for (int j = 0; j < files.length(); j++) {
                 JSONObject spec = files.getJSONObject(j);
                 String name = spec.getString("name");
-                byte[] bytes;
-                if (assetPack) {
-                    try (java.io.InputStream input = getContext().getAssets().open("voice-ui-pack/" + new File(name).getName())) {
-                        java.io.ByteArrayOutputStream data = new java.io.ByteArrayOutputStream();
-                        byte[] buffer = new byte[8192];
-                        int size;
-                        while ((size = input.read(buffer)) >= 0) data.write(buffer, 0, size);
-                        bytes = data.toByteArray();
-                    }
-                } else {
-                    File source = new File(args.getString(id.equals("asr-runtime") ? "runtime" : id.equals("vad-silero") ? "vad" : "model"));
-                    bytes = Files.readAllBytes(new File(source, new File(name).getName()).toPath());
-                }
-                StringBuilder hash = new StringBuilder();
-                for (byte value : MessageDigest.getInstance("SHA-256").digest(bytes)) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-                if (bytes.length != spec.getLong("size") || !hash.toString().equals(spec.getString("sha256"))) {
-                    throw new AssertionError("The test pack does not match the published catalog: " + name);
-                }
                 File output = new File(destination, name);
                 Files.createDirectories(output.getParentFile().toPath());
                 if (output.exists() && !output.setWritable(true, true)) throw new IllegalStateException("Cannot replace " + output);
-                Files.write(output.toPath(), bytes);
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                long length = 0;
+                java.io.InputStream source;
+                if (assetPack) source = getContext().getAssets().open("voice-ui-pack/" + new File(name).getName());
+                else {
+                    File dir = new File(args.getString(id, args.getString(id.equals("asr-runtime") ? "runtime" : id.equals("vad-silero") ? "vad" : "model")));
+                    source = Files.newInputStream(new File(dir, new File(name).getName()).toPath());
+                }
+                try (java.io.InputStream input = source; java.io.OutputStream out = Files.newOutputStream(output.toPath())) {
+                    byte[] chunk = new byte[65536];
+                    int size;
+                    while ((size = input.read(chunk)) != -1) { digest.update(chunk, 0, size); out.write(chunk, 0, size); length += size; }
+                }
+                StringBuilder hash = new StringBuilder();
+                for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+                if (length != spec.getLong("size") || !hash.toString().equals(spec.getString("sha256"))) {
+                    throw new AssertionError("The test pack does not match the published catalog: " + name);
+                }
                 if (name.endsWith(".so") && !output.setReadOnly()) throw new IllegalStateException("Cannot protect " + output);
                 copied++;
             }
         }
         if (copied < 2) throw new AssertionError("Expected model files");
+        String selected = args.getString("selected", "");
+        if (!selected.isEmpty()) getTargetContext().getSharedPreferences("weave_local_asr", 0).edit()
+            .putString("selected_models", new org.json.JSONArray(Arrays.asList(selected.split(","))).toString()).commit();
         return copied + " catalog-verified test files staged";
     }
 
@@ -178,6 +180,7 @@ public final class VoiceSmoke extends Instrumentation {
             case "sense-voice" -> "senseVoice";
             case "paraformer" -> "paraformer";
             case "dolphin" -> "dolphin";
+            case "wenet-ctc" -> "wenetCtc";
             case "telespeech-ctc" -> "teleSpeech";
             default -> throw new IllegalArgumentException(arch);
         };

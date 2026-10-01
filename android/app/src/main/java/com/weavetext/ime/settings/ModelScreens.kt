@@ -126,7 +126,7 @@ fun ModelsScreen() {
     }
     val lite = !AsrRuntime.bundled
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val choice = remember(repo) { com.weavetext.ime.voice.local.LocalAsrChoice(ctx, repo) }
+    val choice = remember(repo) { com.weavetext.ime.voice.local.OfflineModelSelection(ctx, repo) }
     var useTick by remember { mutableIntStateOf(0) }
 
     SubPage("语音包") {

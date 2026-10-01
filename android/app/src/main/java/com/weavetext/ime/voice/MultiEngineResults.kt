@@ -35,7 +35,7 @@ class MultiEngineResults(
         var status = Status.LISTENING
         var error: String? = null
         var latency: Long? = null
-        fun full() = text.toString() + partial
+        fun full() = text.toString() + com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(text.lastOrNull(), partial)
     }
 
     private val acc = LinkedHashMap<String, Acc>().apply { for ((id, name) in engines) put(id, Acc(id, name)) }
@@ -52,7 +52,7 @@ class MultiEngineResults(
     fun final(id: String, text: String) {
         val a = acc[id] ?: return
         if (!a.pending) return
-        a.text.append(text)
+        a.text.append(com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(a.text.lastOrNull(), text))
         a.partial = ""
     }
 
@@ -74,7 +74,7 @@ class MultiEngineResults(
     fun end(id: String, now: Long) {
         val a = acc[id] ?: return
         if (!a.pending) return
-        if (a.partial.isNotEmpty()) { a.text.append(a.partial); a.partial = "" }
+        if (a.partial.isNotEmpty()) { a.text.append(com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(a.text.lastOrNull(), a.partial)); a.partial = "" }
         if (a.text.isBlank()) { a.status = Status.ERROR; a.error = NO_SPEECH } else a.status = Status.DONE
         a.latency = (now - (stoppedAt ?: now)).coerceAtLeast(0)
     }
@@ -92,7 +92,7 @@ class MultiEngineResults(
         if (now - start < timeoutMs) return false
         var changed = false
         for (a in acc.values) if (a.pending) {
-            if (a.partial.isNotEmpty()) { a.text.append(a.partial); a.partial = "" }
+            if (a.partial.isNotEmpty()) { a.text.append(com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(a.text.lastOrNull(), a.partial)); a.partial = "" }
             a.status = Status.TIMEOUT
             a.error = TIMEOUT
             a.latency = now - start
@@ -129,7 +129,7 @@ class MultiEngineResults(
     }
 
     companion object {
-        const val DEFAULT_TIMEOUT_MS = 8_000L
+        const val DEFAULT_TIMEOUT_MS = 60_000L
         const val NO_SPEECH = "没有识别到内容"
         const val TIMEOUT = "超时"
     }

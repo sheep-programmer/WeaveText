@@ -8,7 +8,8 @@ package com.weavetext.ime.models
  * together with one combined progress. Once both are installed the onReady given to [start] runs (used to
  * select the local engine). Final-pass and punctuation models stay optional downloads on the models page.
  */
-class VoicePack(private val repo: ModelRepository, private val bundledRuntime: Boolean = AsrRuntime.bundled) {
+class VoicePack(private val repo: ModelRepository, private val bundledRuntime: Boolean = AsrRuntime.bundled,
+    private val modelIds: List<String> = listOf("asr-stream-small")) {
     sealed interface State {
         /** 尚未下载；[bytes] 为还需下载的大小。 Not downloaded; [bytes] still to download. */
         data class Idle(val bytes: Long) : State
@@ -20,10 +21,10 @@ class VoicePack(private val repo: ModelRepository, private val bundledRuntime: B
     }
 
     /** 语音包的组成（按目录顺序）。 The pack's parts. */
-    val parts: List<ModelSpec> = PART_IDS.mapNotNull { repo.catalog.find(it) }
+    val parts: List<ModelSpec> = (listOf(AsrRuntime.ID, "vad-silero") + modelIds).distinct().mapNotNull { repo.catalog.find(it) }
 
     /** 目录里两样都有（运行库只在轻量版、且架构相符时才列出）。 Both parts listed for this build and ABI. */
-    val supported: Boolean get() = parts.any { it.id == "asr-stream-small" } &&
+    val supported: Boolean get() = modelIds.isNotEmpty() && modelIds.all { id -> parts.any { it.id == id } } &&
         (parts.any { it.id == AsrRuntime.ID } || bundledRuntime)
 
     fun state(): State {

@@ -24,7 +24,13 @@ internal object SherpaModels {
     }
 
     fun streaming(spec: ModelSpec, loc: ModelLocation): StreamingAsr =
-        files(loc).let { NativeAsrModels.streaming(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }
+        files(loc).let {
+            if (spec.arch == "zipformer-transducer") NativeAsrModels.streamingTransducer(
+                it.path(spec.files.first { f -> f.name.startsWith("encoder") }.name),
+                it.path(spec.files.first { f -> f.name.startsWith("decoder") }.name),
+                it.path(spec.files.first { f -> f.name.startsWith("joiner") }.name), it.path("tokens.txt"),
+            ) else NativeAsrModels.streaming(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt"))
+        }
 
     fun offline(spec: ModelSpec, loc: ModelLocation): OfflineAsr =
         files(loc).let { NativeAsrModels.offline(spec.arch, it.path("model.int8.onnx"), it.path("tokens.txt")) }

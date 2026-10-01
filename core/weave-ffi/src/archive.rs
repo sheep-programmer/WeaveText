@@ -44,11 +44,14 @@ pub fn extract_tar_bz2(archive: &Path, dest: &Path, keep: &[String]) -> Result<V
             // arm64-v8a/libfoo.so (to pick one ABI out of a multi-ABI archive); it is also the output path.
             let target = if keep.is_empty() {
                 rel.clone()
-            } else if let Some(k) = keep.iter().find(|k| rel_str == **k || rel_str.ends_with(&format!("/{k}"))) {
+            } else if let Some(k) = keep.iter().find(|k| rel_str == **k || (k.contains('/') && rel_str.ends_with(&format!("/{k}")))) {
                 PathBuf::from(k)
             } else {
                 continue;
             };
+            if written.iter().any(|w| w == &target.to_string_lossy()) {
+                return Err(format!("archive has duplicate requested file: {}", target.display()));
+            }
             if entry.header().size().unwrap_or(0) > MAX_FILE {
                 return Err(format!("file too large: {name}"));
             }
@@ -149,6 +152,8 @@ mod tests {
         fs::write(src.join("model.int8.onnx"), b"onnx").unwrap();
         fs::write(src.join("tokens.txt"), b"a 1\n").unwrap();
         fs::write(src.join("test_wavs/0.wav"), b"wav").unwrap();
+        fs::create_dir_all(src.join("64")).unwrap();
+        fs::write(src.join("64/model.int8.onnx"), b"wrong chunk variant").unwrap();
         let archive = root.join("m.tar.bz2");
         let ok = std::process::Command::new("tar")
             .args(["cjf", archive.to_str().unwrap(), "-C", root.join("src").to_str().unwrap(), "model-dir"])
@@ -161,6 +166,7 @@ mod tests {
         let got = extract_tar_bz2(&archive, &dest, &keep).unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(fs::read(dest.join("tokens.txt")).unwrap(), b"a 1\n");
+        assert_eq!(fs::read(dest.join("model.int8.onnx")).unwrap(), b"onnx");
         assert!(!dest.join("test_wavs").exists());
         let missing = extract_tar_bz2(&archive, &root.join("out2"), &["nope.onnx".to_string()]);
         assert!(missing.unwrap_err().contains("missing"));

@@ -22,6 +22,9 @@ class VoiceLevelTest {
         val loud = VoiceLevel.fromPcm16(tone(24000))
         assertTrue("quiet speech must move the waveform", quiet > 0.15f)
         assertTrue(normal > quiet && loud > normal)
-        assertTrue(loud <= 1f)
+        assertTrue("normal speech must not saturate the waveform", loud < 1f)
+        assertTrue("loud speech must retain visible volume changes",
+            VoiceLevel.fromPcm16(tone(8000)) < VoiceLevel.fromPcm16(tone(16000)))
+        assertTrue("low-gain microphones must show received audio", VoiceLevel.fromPcm16(tone(8)) > 0.1f)
     }
 }

@@ -127,7 +127,7 @@ class ModelsScreenshotTest {
     @Test fun deleteConfirm() {
         val models = FakeModels(mapOf("asr-stream-large" to ModelState.Installed))
         open(models)
-        compose.onNodeWithText("卸载").performClick()
+        compose.onNodeWithText("卸载").performScrollTo().performClick()
         compose.waitForIdle()
         captureScreenRoboImage(File(dir, "models_delete_confirm.png").path)
         compose.onAllNodesWithText("卸载").let { it[it.fetchSemanticsNodes().size - 1] }.performClick()

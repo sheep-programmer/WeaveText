@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
  * On-device two-pass recognition (live + final models) with optional punctuation. Models load on first
  * use and are released after 3 idle minutes (~100 MB for the two built-in models).
  */
-internal class LocalAsrEngine(private val ctx: Context) {
+internal class LocalAsrEngine(private val ctx: Context, private val modelId: String? = null) {
     private val models = ModelManager.get(ctx)
     private val prefs = ctx.getSharedPreferences(LocalAsrChoice.PREFS, Context.MODE_PRIVATE)
     private val choice = LocalAsrChoice(ctx, models)
@@ -26,6 +26,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     private var idleRelease: ScheduledFuture<*>? = null
     /** 正在进行的会话数（>0 时不因内存压力释放）。 Active sessions; no pressure release while > 0. */
     private val activeSessions = java.util.concurrent.atomic.AtomicInteger()
+    private val sessions = java.util.concurrent.ConcurrentHashMap.newKeySet<Session>()
 
     init {
         // 模型被删除/替换前先释放。 Release before a model is deleted or replaced.
@@ -33,7 +34,10 @@ internal class LocalAsrEngine(private val ctx: Context) {
             val latch = java.util.concurrent.CountDownLatch(1)
             worker.execute {
                 // 删除运行库时也释放全部识别器。 Deleting the runtime releases everything too.
-                if (id == AsrRuntime.ID || loaded?.key?.split('|')?.contains(id) == true) { loaded?.release(); loaded = null }
+                if (id == AsrRuntime.ID || loaded?.key?.split('|')?.contains(id) == true) {
+                    for (session in sessions.toList()) session.modelRemoved()
+                    loaded?.release(); loaded = null
+                }
                 latch.countDown()
             }
             latch.await(3, TimeUnit.SECONDS)
@@ -66,8 +70,10 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
     private fun streamingModels() = choice.streamingModels()
     private fun offlineModels() = choice.offlineModels()
-    private fun streamId(): String? = choice.streamId()
-    private fun finalId(): String? = choice.finalId()
+    private fun streamId(): String? = if (modelId == null) choice.streamId() else
+        modelId.takeIf { models.catalog.find(it)?.kind == ModelKind.ASR_STREAMING && models.isAvailable(it) }
+    private fun finalId(): String? = if (modelId == null) choice.finalId() else
+        modelId.takeIf { models.catalog.find(it)?.kind == ModelKind.ASR_OFFLINE && models.isAvailable(it) }
 
     private fun punctuationOn(): Boolean =
         prefs.getBoolean(KEY_PUNCT, true) && models.isAvailable(PUNCT_ID)
@@ -85,7 +91,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
     fun fields(): List<ConfigField> {
         val punctInstalled = models.isAvailable(PUNCT_ID)
         val stream = streamingModels()
-        return listOfNotNull(
+        val fields = listOfNotNull(
             ConfigField(
                 KEY_STREAM, "实时模型", "select", section = "模型",
                 options = stream.map { it.name } + if (offlineModels().isNotEmpty()) listOf(NONE_LABEL) else emptyList(),
@@ -106,6 +112,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
                 helpText = if (punctInstalled) "为识别结果补全标点" else "需先在「离线模型」中下载「智能标点」",
             ),
         )
+        return if (modelId == null) fields else fields.filter { it.key == KEY_PUNCT }
     }
 
     fun getConfig(key: String): String? = when (key) {
@@ -141,7 +148,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
         private val counted = java.util.concurrent.atomic.AtomicBoolean(true)
 
         private fun uncount() {
-            if (counted.compareAndSet(true, false)) activeSessions.updateAndGet { maxOf(0, it - 1) }
+            if (counted.compareAndSet(true, false)) { sessions.remove(this); activeSessions.updateAndGet { maxOf(0, it - 1) } }
         }
 
         /** 停止后到的录音丢掉（录音线程可能还在交最后一块）。 Audio arriving after stop is dropped. */
@@ -150,6 +157,7 @@ internal class LocalAsrEngine(private val ctx: Context) {
 
         init {
             activeSessions.incrementAndGet()
+            sessions.add(this)
             worker.execute {
                 idleRelease?.cancel(false)
                 if (cancelled) { uncount(); scheduleIdleRelease(); return@execute }
@@ -217,6 +225,13 @@ internal class LocalAsrEngine(private val ctx: Context) {
                 uncount()
                 scheduleIdleRelease()
             }
+        }
+
+        fun modelRemoved() {
+            cancelled = true
+            stopped = true
+            uncount()
+            onError("模型已被卸载或更新，请重新选择模型")
         }
     }
 
@@ -291,6 +306,12 @@ internal class LocalAsrEngine(private val ctx: Context) {
     private fun scheduleIdleRelease() {
         idleRelease?.cancel(false)
         idleRelease = worker.schedule({ if (activeSessions.get() == 0) { loaded?.release(); loaded = null } }, IDLE_RELEASE_MINUTES, TimeUnit.MINUTES)
+    }
+
+    fun releaseIdle() {
+        worker.execute {
+            if (activeSessions.get() == 0) { idleRelease?.cancel(false); loaded?.release(); loaded = null }
+        }
     }
 
     companion object {

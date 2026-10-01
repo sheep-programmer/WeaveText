@@ -9,6 +9,15 @@ import org.junit.Test
 
 /** 多引擎结果汇总：累积、结束、超时、默认行、一致即上屏。 Multi-engine result aggregation. */
 class MultiEngineResultsTest {
+    @Test fun englishSegmentsKeepSpacesAndChineseDoesNotAcquireSpaces() {
+        val r = res()
+        r.final("local", "hello")
+        r.partial("local", "world")
+        assertEquals("hello world", r.primaryText())
+        r.final("local", "world")
+        r.final("local", "下午见")
+        assertEquals("hello world下午见", r.primaryText())
+    }
     private fun res(timeout: Long = 8_000) =
         MultiEngineResults(listOf("local" to "本地", "a" to "插件 A", "b" to "插件 B"), primaryId = "local", timeoutMs = timeout)
 

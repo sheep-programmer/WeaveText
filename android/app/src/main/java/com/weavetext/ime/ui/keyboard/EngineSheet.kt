@@ -29,13 +29,12 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
     private var plugins: List<VoicePlugin> = emptyList()
     private val icons = ArrayList<PluginIcon>()
-    private var activeId: String? = null
+    private var selectedIds: List<String> = emptyList()
+    private var selectionHint: String? = null
     private val sheet = RectF()
     private val list = RectF()
     private val manage = RectF()
     private val install = RectF()
-    /** 轻量版还没装好离线识别：底栏右侧给出「安装离线语音」。 Lite without offline voice: offer to install it. */
-    private var offerInstall = false
     private val tmp = RectF()
     private var scroll = 0f
     private var pressed = NONE
@@ -51,11 +50,8 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     fun show() {
         val e = runCatching { VoiceAccess.engines(context) }.getOrNull()
         plugins = e?.list().orEmpty()
-        activeId = e?.active()?.id
-        offerInstall = runCatching {
-            com.weavetext.ime.voice.VoiceHelp.canOfferOfflineBuild &&
-                !com.weavetext.ime.models.AsrRuntime.engineReady(com.weavetext.ime.models.ModelManager.get(context))
-        }.getOrDefault(false)
+        selectedIds = e?.selection()?.map { it.id }.orEmpty()
+        selectionHint = null
         while (icons.size < plugins.size) icons += PluginIcon()
         plugins.forEachIndexed { i, p -> icons[i].bind(p) }
         scroll = 0f
@@ -90,14 +86,8 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         val top = max(m.dp(8f), height - want)
         sheet.set(0f, top, width.toFloat(), height.toFloat() + m.dp(16f))
         list.set(m.dp(12f), top + head, width - m.dp(12f), height - foot)
-        // 整条底栏都可点（文字仍靠左）；有「安装离线语音」时左右各占一半。 Whole footer tappable; split when offering install.
-        if (offerInstall) {
-            manage.set(0f, height - foot, width / 2f, height.toFloat())
-            install.set(width / 2f, height - foot, width.toFloat(), height.toFloat())
-        } else {
-            manage.set(0f, height - foot, width.toFloat(), height.toFloat())
-            install.setEmpty()
-        }
+        manage.set(0f, height - foot, width / 2f, height.toFloat())
+        install.set(width / 2f, height - foot, width.toFloat(), height.toFloat())
     }
 
     private fun maxScroll() = max(0f, plugins.size * rowH() - list.height())
@@ -115,7 +105,7 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         tmp.set(width / 2f - m.dp(16f), sheet.top + m.dp(8f), width / 2f + m.dp(16f), sheet.top + m.dp(12f))
         c.drawRoundRect(tmp, m.dp(2f), m.dp(2f), fill)
         text.typeface = medium; text.textSize = m.dp(15f); text.color = pal.label; text.textAlign = Paint.Align.LEFT
-        c.drawText("选择语音引擎", m.dp(16f), sheet.top + m.dp(16f) + m.dp(18f) - (text.ascent() + text.descent()) / 2, text)
+        c.drawText(selectionHint ?: "离线模型 · 可同时选 1–3 个", m.dp(16f), sheet.top + m.dp(16f) + m.dp(18f) - (text.ascent() + text.descent()) / 2, text)
         // 行卡片 / rows card
         fill.color = pal.card
         tmp.set(list.left, list.top, list.right, list.top + (plugins.size * rowH()).coerceAtMost(list.height()))
@@ -142,11 +132,11 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
             c.drawText(titles[i], 0, titles[i].length, tmp.right + m.dp(12f), top + m.dp(24f), text)
             text.textSize = m.dp(12f); text.color = pal.labelSecondary
             c.drawText(descs[i], 0, descs[i].length, tmp.right + m.dp(12f), top + m.dp(43f), text)
-            // 单选 / radio
+            // 多选 / checkboxes
             val cx = list.right - m.dp(26f); val cy = top + rowH() / 2
-            val on = p.id == activeId
+            val on = p.id in selectedIds
             fill.style = Paint.Style.STROKE; fill.strokeWidth = m.dp(2f); fill.color = if (on) pal.keyAccent else pal.labelHint
-            c.drawCircle(cx, cy, m.dp(9f), fill)
+            c.drawRoundRect(cx - m.dp(9f), cy - m.dp(9f), cx + m.dp(9f), cy + m.dp(9f), m.dp(3f), m.dp(3f), fill)
             fill.style = Paint.Style.FILL
             if (on) { fill.color = pal.keyAccent; c.drawCircle(cx, cy, m.dp(5f), fill) }
             if (i > 0) {
@@ -156,12 +146,10 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
         }
         c.restore()
         text.typeface = medium; text.textSize = m.dp(14f); text.color = pal.candidateFirst; text.textAlign = Paint.Align.LEFT
-        c.drawText("管理语音引擎 ›", m.dp(16f), manage.centerY() - (text.ascent() + text.descent()) / 2, text)
-        if (offerInstall) {
-            text.textAlign = Paint.Align.RIGHT
-            c.drawText("安装离线语音 ›", width - m.dp(16f), install.centerY() - (text.ascent() + text.descent()) / 2, text)
-            text.textAlign = Paint.Align.LEFT
-        }
+        c.drawText("下载 / 管理模型 ›", m.dp(16f), manage.centerY() - (text.ascent() + text.descent()) / 2, text)
+        text.textAlign = Paint.Align.RIGHT
+        c.drawText("完成（${selectedIds.size}/3）", width - m.dp(16f), install.centerY() - (text.ascent() + text.descent()) / 2, text)
+        text.textAlign = Paint.Align.LEFT
     }
 
     private fun buildTexts() {
@@ -212,8 +200,8 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
                 pressed = NONE
                 if (!dragging) when {
                     p == SCRIM -> hide()
-                    p == MANAGE -> { hide(); kb.openSettings("voice") }
-                    p == INSTALL -> { hide(); kb.openSettings("voice/upgrade") }
+                    p == MANAGE -> { hide(); kb.openSettings("models") }
+                    p == INSTALL -> hide()
                     p >= 0 -> choose(plugins[p])
                 }
                 invalidate()
@@ -224,12 +212,15 @@ class EngineSheet(ctx: Context, private val kb: WeaveKeyboard) : View(ctx) {
     }
 
     private fun choose(p: VoicePlugin) {
+        val ids = selectedIds
+        if (p.id in ids && ids.size == 1) { selectionHint = "至少保留一个模型"; invalidate(); return }
+        if (p.id !in ids && ids.size >= 3) { selectionHint = "最多同时使用三个模型"; invalidate(); return }
         kb.stopVoice()
-        runCatching { VoiceAccess.engines(context).activeId = p.id }
-        activeId = p.id
-        invalidate()
+        selectedIds = if (p.id in ids) ids - p.id else ids + p.id
+        selectionHint = null
+        runCatching { VoiceAccess.engines(context).setSelection(selectedIds) }
         kb.onEngineChanged()
-        hide()
+        invalidate()
     }
 
     companion object {
