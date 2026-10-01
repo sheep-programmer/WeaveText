@@ -18,7 +18,15 @@ fn main() {
         let net = HandNet::from_bytes(&bytes).unwrap();
         let templates = args.get(3).map(|p| Recognizer::from_bytes(&std::fs::read(p).unwrap()).unwrap());
         let models = weave_dict::handnet::HandModels { templates, net: Some(net) };
-        Box::new(move |s| models.recognize(s, 10))
+        let plain = args.iter().any(|s| s == "--plain");
+        Box::new(move |s| {
+            if !plain { return models.recognize(s, 10) }
+            let net = models.net.as_ref().unwrap().recognize(s, 30);
+            let tmpl = models.templates.as_ref().map(|t| t.recognize(s, 30)).unwrap_or_default();
+            weave_dict::handnet::fuse(&net, &tmpl,
+                |c| models.templates.as_ref().map_or(0.0, |t| t.prior_of(c)),
+                |c| models.templates.as_ref().is_some_and(|t| t.contains(c)), 10)
+        })
     } else {
         let rec = Recognizer::from_bytes(&bytes).unwrap();
         Box::new(move |s| rec.recognize(s, 10).into_iter().map(|c| c.0).collect())

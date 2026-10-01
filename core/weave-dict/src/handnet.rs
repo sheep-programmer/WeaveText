@@ -186,6 +186,27 @@ impl HandNet {
         idx.into_iter().map(|i| (self.classes[i], (logits[i] - max).exp() / sum)).collect()
     }
 
+    /// 犹豫时同时看略宽、略高的写法，缓解手机上写扁/写长的比例偏差；明确的结果只推理一次。
+    /// For uncertain ink, average slightly wider/taller views; confident ink needs only one inference.
+    pub fn recognize_robust(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
+        let original = self.recognize(strokes, top);
+        if original.is_empty() || original[0].1 >= 0.6 {
+            return original;
+        }
+        let mut probabilities = std::collections::HashMap::new();
+        for &(ch, p) in &original { probabilities.insert(ch, p * 0.75); }
+        for (sx, sy) in [(1.15, 1.0), (1.0, 1.15)] {
+            let view: Vec<Stroke> = strokes.iter().map(|s| s.iter().map(|&(x,y)| (x * sx, y * sy)).collect()).collect();
+            for (ch, p) in self.recognize(&view, top) {
+                *probabilities.entry(ch).or_insert(0.0) += p * 0.125;
+            }
+        }
+        let mut probabilities: Vec<_> = probabilities.into_iter().collect();
+        probabilities.sort_by(|a,b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        probabilities.truncate(top);
+        probabilities
+    }
+
     /// 网络输出（未归一化的对数概率）；没有笔迹时为 `None`。 Raw logits; `None` without ink.
     pub fn logits(&self, strokes: &[Stroke]) -> Option<Vec<f32>> {
         let img = raster(strokes, self.size, self.margin, self.radius)?;
@@ -255,7 +276,7 @@ impl HandModels {
         let Some(net) = &self.net else {
             return tmpl.into_iter().take(top).map(|c| c.0).collect();
         };
-        let probs = net.recognize(strokes, FUSE_POOL.max(top));
+        let probs = net.recognize_robust(strokes, FUSE_POOL.max(top));
         if probs.is_empty() {
             return Vec::new();
         }

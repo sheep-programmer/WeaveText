@@ -578,7 +578,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Handwriting: after each stroke the engine gets all strokes of the char; candidates follow via the snapshot.
      */
     fun onHandStrokes(strokes: List<FloatArray>) {
-        val e = engine ?: return
+        // 新笔画会取代旧任务，不在这里等待上一轮识别；选词、退格等操作仍通过 engine 等待最新任务。
+        // New ink supersedes the old job without waiting for it; selections/backspace still settle the latest job.
+        val e = engineRef ?: return
         lastSpaceAt = 0L
         val worker = handWorker
         if (worker == null) {
@@ -591,6 +593,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // Recognise in the background so the main thread only draws ink and the next stroke never stutters. A
         // result is dropped if newer strokes arrived meanwhile.
         val copy = strokes.map { it.copyOf() }
+        handJob?.result?.cancel(false)
         val job = HandJob(e, copy, worker.submit(java.util.concurrent.Callable { e.handRecognize(copy) }))
         handJob = job
         // 单线程执行器：这一步排在识别之后。 Single-thread executor: this runs after the recognition.

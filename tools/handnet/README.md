@@ -33,3 +33,13 @@ python export.py r4.pt ../../data/hand/hand_net.wvn
 
 Optional: point `HANDNET_EVAL` at real ink in the `handeval` format to report accuracy every 1000 steps;
 `cargo run --release --example handeval -p weave-dict -- <model> <samples>` evaluates templates or the network alone.
+
+## 识别时的比例变体 / Aspect variants at inference
+
+网络首选概率低于 0.6 时，再看横向和纵向各拉宽 15% 的两个视图，原笔迹占 75%、两个变体各占 12.5%，
+然后与模板结果融合。高置信度笔迹只推理一次；模型大小与文件格式不变。
+在本地外部笔迹评测文件的前 2000 条上，首选 66.0% → 67.0%，前五 83.5% → 84.1%。
+这不是所有用户或设备的准确率保证。额外推理有 CPU 代价，Android 将它放在后台，并跳过被新笔画取代的旧任务。
+
+`handeval NET SAMPLES LIMIT TEMPLATES --plain` 可比较原单视图；`handvariants NET TEMPLATES SAMPLES LIMIT [SKIP]`
+可在另一段评测数据上检查融合权重。评测笔迹不随仓库或应用发布。
