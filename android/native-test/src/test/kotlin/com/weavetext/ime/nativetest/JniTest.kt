@@ -26,6 +26,24 @@ class JniTest {
 
     private fun NativeEngine.type(s: String) = s.forEach { inputChar(it.code) }
 
+    @Test fun everydayChatPhrasesAreSelectableWithoutAutocorrection() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            for (pair in listOf("z_zh", "c_ch", "s_sh", "n_l", "an_ang", "en_eng", "in_ing")) {
+                assertTrue(e.setOption("fuzzy.$pair", true))
+            }
+            for ((input, expected) in listOf("en" to "嗯", "enen" to "嗯嗯", "en'en" to "嗯嗯", "xiuba" to "修吧", "xiu'ba" to "修吧")) {
+                e.clear(); e.setContext(null); e.type(input)
+                val snapshot = e.snapshot()
+                val index = snapshot.candidates.indexOfFirst { it.text == expected }
+                assertTrue("$input: ${snapshot.candidates.map { it.text }}", index in 0..2)
+                assertTrue("valid chat input should not lose letters", snapshot.marks.isEmpty())
+                assertTrue(e.select(index))
+                assertEquals(expected, e.snapshot().commit)
+            }
+        }
+    }
+
     @Test
     fun pinyinSentenceAndCommit() {
         engine().use { e ->

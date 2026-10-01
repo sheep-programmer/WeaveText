@@ -124,6 +124,16 @@ impl SyllableGraph {
         }
     }
 
+    /// 只保留实际打出的完整音节，给补全/纠错候选保留原拼写的选择。
+    /// Only fully typed syllables, used to keep the literal reading available beside completion/correction.
+    pub fn full_reading(&self) -> Self {
+        let mut graph = self.clone();
+        for list in &mut graph.out {
+            list.retain(|edge| edge.kind == EdgeKind::Full);
+        }
+        graph
+    }
+
     pub fn push(&mut self, e: Edge) {
         // 同一 (start,end,syls) 只保留惩罚最小的。 Keep the cheapest duplicate.
         let list = &mut self.out[e.start];

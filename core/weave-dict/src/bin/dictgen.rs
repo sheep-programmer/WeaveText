@@ -27,7 +27,7 @@ use weave_dict::syllable;
 
 /// 去掉声调、把 ü 写成 v（万象等数据用带调拼音）。 Strip tone marks; ü → v.
 fn strip_tones(s: &str) -> String {
-    s.chars()
+    let plain: String = s.chars()
         .map(|c| match c {
             'ā' | 'á' | 'ǎ' | 'à' => 'a',
             'ō' | 'ó' | 'ǒ' | 'ò' => 'o',
@@ -39,7 +39,10 @@ fn strip_tones(s: &str) -> String {
             'ḿ' => 'm',
             c => c.to_ascii_lowercase(),
         })
-        .collect()
+        .collect();
+    // 嗯的音节鼻音在源词库里写作 n/ng（含声调）；用常见输入 en 收录，避免整条词被跳过。
+    // Syllabic n/ng (including tones) are commonly typed as en; retain these interjections in the dictionary.
+    plain.split_whitespace().map(|part| if matches!(part, "n" | "ng") { "en" } else { part }).collect::<Vec<_>>().join(" ")
 }
 
 struct Row {
@@ -260,4 +263,19 @@ fn main() -> ExitCode {
     let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
     eprintln!("wrote {out:?} ({:.1} MiB)", size as f64 / 1048576.0);
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syllabic_nasals_are_compiled_as_typable_interjections() {
+        for input in ["ǹ", "ń", "ň", "ǹg", "ng"] {
+            assert_eq!(syllable::parse_seq(&strip_tones(input)), syllable::parse_seq("en"));
+        }
+        assert_eq!(strip_tones("ng ng"), "en en");
+        assert_eq!(strip_tones("xiū ba"), "xiu ba");
+        assert_eq!(strip_tones("nǐ hǎo"), "ni hao");
+    }
 }

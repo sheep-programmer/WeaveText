@@ -7,6 +7,24 @@ private let dataDir = URL(fileURLWithPath: #filePath)
 
 @Suite(.serialized) struct EngineSmokeTests {
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func everydayChatPhrasesUseTheSameEngineOnMac() throws {
+        let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-chat-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("pinyin")
+        for option in ["z_zh", "c_ch", "s_sh", "n_l", "an_ang", "en_eng", "in_ing"] { e.setOption("fuzzy.\(option)", true) }
+        for (input, expected) in [("en", "嗯"), ("enen", "嗯嗯"), ("xiuba", "修吧")] {
+            e.clear()
+            input.forEach { _ = e.input($0) }
+            let snapshot = e.snapshot()
+            let index = try #require(snapshot.candidates.firstIndex { $0.text == expected })
+            #expect(index < 3)
+            #expect(snapshot.marks.isEmpty)
+            e.select(index)
+            #expect(e.snapshot().commit == expected)
+        }
+    }
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func typesNihao() throws {
         let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-\(getpid())")
         try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)

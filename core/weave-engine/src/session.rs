@@ -1556,6 +1556,14 @@ impl Engine {
         if !keys.iter().any(|b| b"aeiouv".contains(b)) {
             return None;
         }
+        // 整段已是完整词条时不靠删字改成另一个词（enen 的「嗯嗯」即使后文偏好「嫩」也不能吞首字母）。
+        // A fully spelled dictionary word is deliberate; do not delete letters to turn it into another word.
+        if lat.best.len() == 1 {
+            let span = &lat.spans[lat.best[0].0];
+            if !span.raw && span.penalty == 0 && span.start == 0 && span.end == keys.len() {
+                return None;
+            }
+        }
         let spans = || lat.best.iter().map(|(si, _)| &lat.spans[*si]);
         if lat.best.is_empty() || spans().any(|sp| sp.raw || (sp.end < keys.len() && sp.penalty >= graph::penalty::ABBREV as u32)) {
             return Some(TYPO_MARGIN);
@@ -1624,7 +1632,31 @@ impl Engine {
         let (g, keys, lat) = chosen.unwrap_or((g1, keys1, lat1));
         let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
         let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&keys[s..e]).into_owned();
-        let cands = dec.candidates(&lat, &raw_text, self.cand_cap);
+        let mut cands = dec.candidates(&lat, &raw_text, self.cand_cap);
+        // 补全或纠错胜出时，仍保留完整原拼写组出的词句（xiuba 不能只剩 xiuban 的「休班」）。
+        // Keep literal full-spelling sentences when completion/correction wins (xiuba must still offer 修吧).
+        if lat.best.iter().any(|(index, _)| lat.spans[*index].penalty > 0) {
+            let full = g.full_reading();
+            let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin,
+                graph: &full, context, lm };
+            let literal = plain.decode();
+            if !literal.best.is_empty() {
+                let alternatives = plain.candidates(&literal, &raw_text, 3).into_iter()
+                    .filter(|c| c.end == full.len && c.kind != CandKind::Raw);
+                // 保留原首选，原拼写放在紧随其后的候选，用户可以直接选整句。
+                // Keep the existing top choice and put full literal readings directly after it.
+                let mut at = 1.min(cands.len());
+                for candidate in alternatives.take(2) {
+                    if cands.first().is_some_and(|first| first.text == candidate.text) {
+                        continue;
+                    }
+                    cands.retain(|existing| existing.text != candidate.text);
+                    cands.insert(at.min(cands.len()), candidate);
+                    at += 1;
+                }
+                cands.truncate(self.cand_cap);
+            }
+        }
         self.cands_more = cands.len() >= self.cand_cap.min(crate::decoder::MAX_CANDIDATES);
         let (rest, marks) = self.display_rest(&lat, &keys);
         let at = selected.chars().count();
@@ -2362,6 +2394,47 @@ mod typo_tests {
         let s = typing(&mut e, "xainzai");
         assert!(s.marks.is_empty());
         assert_ne!(s.preedit, "xian'zai");
+    }
+
+    #[test]
+    fn complete_chat_syllables_survive_a_cheaper_completion() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        for (py, text, cost) in [("xiu", "修", 9000), ("ba", "吧", 6000), ("xiu ban", "休班", 10),
+            ("en", "嗯", 100), ("en en", "嗯嗯", 300), ("nen", "嫩", 10)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        for input in ["xiuba", "xiu'ba"] {
+            let snapshot = typing(&mut e, input);
+            let i = snapshot.candidates.iter().position(|c| c.text == "修吧").expect("literal chat phrase must be offered");
+            assert!(i < 3, "literal phrase must stay in the visible row");
+            assert!(e.select(i));
+            assert_eq!(e.snapshot().commit, "修吧");
+        }
+        let snapshot = typing(&mut e, "enen");
+        assert_eq!(snapshot.candidates[0].text, "嗯嗯");
+        assert!(snapshot.marks.is_empty());
+        // A learned word and a rare but valid literal word must not trigger a deletion correction.
+        e.user_pinyin.learn(&key("nen"), "嫩");
+        assert_eq!(typing(&mut e, "enen").candidates[0].text, "嗯嗯");
+    }
+
+    #[test]
+    fn a_valid_dictionary_word_is_not_corrected_into_a_frequent_other_word() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("en"), "嗯", 10000);
+        b.insert(&key("en en"), "嗯嗯", 12000);
+        b.insert(&key("nen"), "嫩", 1);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        e.user_pinyin.learn(&key("nen"), "嫩");
+        let snapshot = typing(&mut e, "enen");
+        assert_eq!(snapshot.candidates[0].text, "嗯嗯");
+        assert_eq!(snapshot.preedit, "en'en");
+        assert!(snapshot.marks.is_empty(), "the valid spelling must not lose its first e");
     }
 
     #[test]

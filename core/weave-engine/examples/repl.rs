@@ -26,6 +26,15 @@ fn main() {
             e.set_schema(Schema::from_key(s).expect("schema"));
             continue;
         }
+        if let Some(opt) = line.strip_prefix(":opt ") {
+            let (key, value) = opt.split_once('=').expect("option=value");
+            assert!(e.options.set_flag(key, value == "true"), "unknown option");
+            continue;
+        }
+        if let Some(weight) = line.strip_prefix(":lm ") {
+            e.options.lm_weight = weight.parse().expect("language-model weight");
+            continue;
+        }
         if let Some(n) = line.strip_prefix(":sel ") {
             e.select(n.parse().unwrap());
         } else if line == ":trad" {

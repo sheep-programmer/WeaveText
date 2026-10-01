@@ -38,6 +38,8 @@ check() { # name keys expected [inputType]
 }
 echo "== 输入 / typing"
 check "全拼 nihao"        "nihao{space}"                        "你好"
+check "语气词嗯嗯"        "enen{sel:0}"                         "嗯嗯"
+check "短句修吧"          "xiuba{sel:0}"                        "修吧"
 check "整句"              "woshizhongguoren{space}"             "我是中国人"
 check "标点"              "nihao,"                              "你好，"
 check "退格"              "nihaoa{bs}{space}"                   "你好"
