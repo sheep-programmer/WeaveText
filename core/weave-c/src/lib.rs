@@ -317,6 +317,12 @@ pub extern "C" fn weave_clear_user_words(h: *mut WeaveEngine) -> bool {
     with(h, false, |e| e.clear_user_words())
 }
 
+#[no_mangle]
+pub extern "C" fn weave_import_user_words(h: *mut WeaveEngine, text: *const c_char) -> u32 {
+    let Some(text) = str_arg(text) else { return 0 };
+    with(h, 0, |e| e.import_user_words(text) as u32)
+}
+
 // ------------------------------------------------------------------ 织文互联 / WeaveLink
 
 /// 互联句柄。 WeaveLink handle.

@@ -7,6 +7,28 @@ private let dataDir = URL(fileURLWithPath: #filePath)
 
 @Suite(.serialized) struct EngineSmokeTests {
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func chosenSinglesPersistAndEnglishWordsCommitWithoutSpaces() throws {
+        let user = try tempDir("personal")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.importUserWords("是\tshi\t100000\n时\tshi\t90000\n")
+        e.setOption("candidates.prediction", false)
+        for _ in 0..<5 {
+            e.clear(); e.setContext(nil)
+            for c in "shi" { _ = e.input(c) }
+            let i = try #require(e.candidates(offset: 0, limit: 800).firstIndex { $0.text == "嗜" })
+            #expect(e.select(i)); #expect(e.snapshot().commit == "嗜")
+        }
+        let other = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        for c in "shi" { _ = other.input(c) }
+        #expect(other.snapshot().candidates.first?.text == "嗜")
+        e.setSchema("english")
+        for c in "hel" { _ = e.input(c) }
+        let hello = try #require(e.candidates(offset: 0, limit: 100).firstIndex { $0.text == "hello" })
+        #expect(e.select(hello)); #expect(e.snapshot().commit == "hello")
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func everydayChatPhrasesUseTheSameEngineOnMac() throws {
         let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-chat-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: user) }

@@ -109,7 +109,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private var capsCached = false
     private var capsVersion = -1
     /** [stamp] 等于它时，光标前的空格是选英文词后自动补的。 While equal to [stamp], the space before the cursor was auto-added. */
-    private var autoSpaceStamp = -1
 
     /**
      * 内核还没加载完时按下的键（冷启动时进程刚被拉起）：先记下，内核就绪后按原顺序重放，不把拼音字母直接上屏。
@@ -247,7 +246,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onFinishInput() {
         engine?.let { it.clear(); it.flush() }
         pendingKeys.clear()
-        autoSpaceStamp = -1
         lastSpaceAt = 0L
         ClipPrivacy.privateField = false
         refresh()
@@ -263,7 +261,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onChar(codePoint: Int, near: Int = 0, closeness: Float = 0f) {
         if (keep(PendingKey(PendingKey.CHAR, codePoint, near, closeness))) return
         val e = engine
-        val afterAutoSpace = autoSpaceStamp == stamp
         lastSpaceAt = 0L
         // 中文方案，或普通文本框里的英文联想，都交给内核组合。 Chinese, or English with suggestions.
         if (e != null && (state.chinese || englishSuggest) &&
@@ -279,7 +276,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
         refresh()
         val raw = String(Character.toChars(codePoint))
         val text = if (state.chinese && codePoint < 0x10000) chinesePunct(codePoint.toChar()) ?: raw else raw
-        if (afterAutoSpace) dropAutoSpace(text)
         commit(text)
         markUndo(text)
     }
@@ -297,24 +293,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
         return full
     }
 
-    /**
-     * 选英文词后自动补了空格、紧接着打标点：先删掉那个空格（"hello," 而不是 "hello ,"）。
-     * A punctuation mark right after the auto-added space of an English word: delete that space first.
-     */
-    private fun dropAutoSpace(text: String) {
-        autoSpaceStamp = -1
-        if (state.chinese || text.length != 1 || text[0] !in AUTO_SPACE_PUNCT) return
-        val ic = ic(modeled = true) ?: return
-        if ((editor.textBefore(1) ?: ic.getTextBeforeCursor(1, 0)?.toString()) != " ") return
-        ic.deleteSurroundingText(1, 0)
-        editor.onDeleteBefore(1)
-    }
-
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
     fun onText(text: String) {
         if (keep(PendingKey(PendingKey.TEXT, text = text))) return
         val e = engine
-        val afterAutoSpace = autoSpaceStamp == stamp
         // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串；字母（实体键盘的大写字母）不进。
         // Pinyin v mode: digits and operators keep composing; letters (uppercase from a physical keyboard) don't.
         if (e != null && text.length == 1 && !text[0].isLetter() && state.chinese && state.schema == "pinyin" && e.isComposing() &&
@@ -328,7 +310,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
         e?.commitFirst()
         refresh()
         if (text.length == 1 && pairText(text[0])) return
-        if (afterAutoSpace) dropAutoSpace(text)
         commit(text)
         markUndo(text)
         if (text == "=" || text == "＝") offerCalc()
@@ -535,8 +516,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (e != null && e.isComposing()) {
             e.select(0)
             refresh()
-            // 英文：上屏单词后补一个空格。 English: a space follows the committed word.
-            if (!state.chinese) commitSpaceAfterWord()
+            // This separator was explicitly pressed; choosing a candidate never inserts one.
+            if (!state.chinese) {
+                commit(" ")
+                lastSpaceAt = if (periodShortcut && periodAllowed) android.os.SystemClock.uptimeMillis() else 0L
+            }
             return
         }
         val now = android.os.SystemClock.uptimeMillis()
@@ -546,12 +530,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         commit(" ")
         lastSpaceAt = if (periodShortcut && periodAllowed) now else 0L
-    }
-
-    private fun commitSpaceAfterWord() {
-        commit(" ")
-        autoSpaceStamp = stamp
-        lastSpaceAt = android.os.SystemClock.uptimeMillis()
     }
 
     /** 这个输入框可以用双击空格打句号（英文、非密码 / 网址 / 邮箱 / 终端）。 The double-space period applies here. */
@@ -584,8 +562,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onCandidate(index: Int) {
         engine?.select(index)
         refresh()
-        // 英文：选词上屏后补空格。 English: a space follows a chosen suggestion.
-        if (!state.chinese && !state.composing) commitSpaceAfterWord()
     }
 
     /**
@@ -879,7 +855,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
         ic.commitText(". ", 1)
         editor.onCommit(". ")
         ic.endBatchEdit()
-        autoSpaceStamp = -1
         return true
     }
 
@@ -1121,8 +1096,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
         private const val MAX_PENDING = 64
         /** 移动光标时最多读取的字符数。 Most chars read for one cursor move. */
         private const val MAX_MOVE_READ = 1024
-        /** 自动补的空格之后打这些标点时先删掉空格。 Punctuation that swallows a preceding auto-added space. */
-        private const val AUTO_SPACE_PUNCT = ".,?!:;)"
         private val WEB_VARIATIONS = setOf(
             InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,

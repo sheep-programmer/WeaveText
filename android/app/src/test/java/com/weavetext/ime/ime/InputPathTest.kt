@@ -272,12 +272,12 @@ class InputPathTest {
         assertEquals("ab  ", ic.text)
     }
 
-    @Test fun punctuationSwallowsTheAutoSpace() {
+    @Test fun englishCandidateCommitsExactlyTheWordAndKeepsManualSpaces() {
         start()
         controller.toggleChinese()
         type("hello")
         controller.onCandidate(0)
-        assertEquals("hello ", ic.text)
+        assertEquals("hello", ic.text)
         controller.onChar(','.code)
         assertEquals("hello,", ic.text)
         // 用户自己打的空格保留。 A space the user typed stays.

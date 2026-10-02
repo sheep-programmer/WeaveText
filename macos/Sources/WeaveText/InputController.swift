@@ -30,7 +30,7 @@ final class WeaveInputController: IMKInputController {
         host.activeController = self
         host.engine?.clear()
         // 换了输入框：上一次上屏与这里无关。 A new field: the previous commit has nothing to do with it.
-        host.engine?.breakChain()
+        host.engine?.setContext(nil)
         punctuation.reset()
         afterDigit = false
         preedit = ""
@@ -76,7 +76,7 @@ final class WeaveInputController: IMKInputController {
         case .leftMouseDown:
             dismissPredictions()
             // 光标挪了：之后的退格删的不是刚上屏的词。 The caret moved: a later backspace isn't deleting that commit.
-            host.engine?.breakChain()
+            host.engine?.setContext(nil)
             return false
         default:
             return false
@@ -123,7 +123,7 @@ final class WeaveInputController: IMKInputController {
             }
         }
         let composing = engine.isComposing
-        let ctx = KeyContext(composing: composing, chinese: host.chinese, pageSize: prefs.pageSize,
+        let ctx = KeyContext(composing: composing, chinese: host.chinese && host.scheme.isChinese, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
                              vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id))
         let action = KeyMapper.action(for: key, in: ctx)
@@ -135,6 +135,7 @@ final class WeaveInputController: IMKInputController {
 
         switch action {
         case .pass:
+            if ctx.composing && !ctx.chinese { engine.commitRaw(); refresh(client) }
             afterDigit = !ctx.composing && key.character?.isNumber == true && key.character?.isASCII == true
             if !ctx.composing { passIdle(key, engine) }
             return false
@@ -154,10 +155,10 @@ final class WeaveInputController: IMKInputController {
                     refresh(client)
                     return true
                 }
-                commitHighlighted(engine, all: true)
+                if ctx.chinese { commitHighlighted(engine, all: true) } else { engine.select(0) }
                 refresh(client)
             }
-            guard host.scheme.isChinese else {
+            guard ctx.chinese else {
                 if ctx.composing {
                     insert(String(c), client)
                 } else {
@@ -175,6 +176,16 @@ final class WeaveInputController: IMKInputController {
             engine.commitRaw()
         case .commitHighlighted:
             commitHighlighted(engine)
+        case .commitEnglishWord:
+            engine.select(pager.highlightedIndex)
+            refresh(client)
+            insert(" ", client)
+            return true
+        case .finishEnglishAndPass:
+            engine.commitRaw()
+            refresh(client)
+            passIdle(key, engine)
+            return false
         case .select(let n):
             guard n < pager.page.count else { return true }
             engine.select(pager.offset + n)

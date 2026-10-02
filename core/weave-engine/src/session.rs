@@ -271,6 +271,7 @@ struct Selection {
     text: String,
     words: Vec<(Vec<SyllableId>, String)>,
     consumed_before: usize,
+    intentional: bool,
 }
 
 /// 资源位置：普通文件，或 APK 内的一段区间（见 [`Source`]）。
@@ -373,6 +374,7 @@ pub struct Engine {
     wubi: Option<Lexicon>,
     english: Option<Lexicon>,
     user_pinyin: UserDict,
+    user_english: UserDict,
     schema: Schema,
     pub options: Options,
 
@@ -424,8 +426,10 @@ pub struct Engine {
 
 /// 一次上屏的学习记录。 What one commit learned.
 struct Learned {
-    words: Vec<(Vec<SyllableId>, String)>,
-    bigrams: Vec<(String, String)>,
+    english: bool,
+    words: Vec<(Vec<SyllableId>, String, Option<crate::userdict::UserEntry>)>,
+    bigrams: Vec<(String, String, Option<crate::userdict::BigramStat>)>,
+    choices: Vec<(Vec<SyllableId>, Option<crate::userdict::RecentChoice>)>,
     at: std::time::Instant,
     hand_correction: bool,
 }
@@ -457,6 +461,7 @@ impl Engine {
             .as_ref()
             .and_then(|d| UserDict::open(&d.join("pinyin.userdb")).ok())
             .unwrap_or_default();
+        let user_english = paths.user_dir.as_ref().and_then(|d| UserDict::open(&d.join("english.userdb")).ok()).unwrap_or_default();
         let mut packs = Vec::new();
         let mut pack_ids = Vec::new();
         for (id, src) in paths.packs.iter().take(crate::decoder::MAX_LEX - 1) {
@@ -472,6 +477,7 @@ impl Engine {
             wubi: open_lex(&paths.wubi_lexicon),
             english: open_lex(&paths.english_lexicon),
             user_pinyin,
+            user_english,
             schema: Schema::Pinyin,
             options: Options::default(),
             raw: String::new(),
@@ -728,12 +734,14 @@ impl Engine {
         if s != self.schema {
             self.clear();
             self.schema = s;
+            self.reset_context();
         }
     }
 
     /// 关闭学习（密码框、无痕模式）。 Disable learning (password fields, incognito).
     pub fn set_learning(&mut self, on: bool) {
         self.user_pinyin.learning = on;
+        self.user_english.learning = on;
         if let Some(hand) = &self.hand { hand.set_personal_enabled(on); }
     }
 
@@ -742,6 +750,7 @@ impl Engine {
         self.last_word = None;
         self.recent.clear();
         self.drop_predictions();
+        self.break_chain();
     }
 
     /// 光标前的上文（宿主告知）：换了位置就不再沿用旧联想。 The text before the cursor, from the host.
@@ -762,12 +771,15 @@ impl Engine {
             return;
         }
         if l.hand_correction { if let Some(models) = &self.hand { models.undo_correction(); } }
-        for (k, w) in &l.words {
-            self.user_pinyin.unlearn(k, w);
+        let user = if l.english { &mut self.user_english } else { &mut self.user_pinyin };
+        for (k, w, previous) in l.words.into_iter().rev() {
+            user.restore_entry(&k, &w, previous);
         }
-        for (p, n) in &l.bigrams {
-            self.user_pinyin.unlearn_bigram(p, n);
+        for (p, n, previous) in l.bigrams.into_iter().rev() {
+            user.restore_bigram(&p, &n, previous);
         }
+        for (key, previous) in l.choices.into_iter().rev() { user.restore_choice(&key, previous); }
+        user.flush();
     }
 
     /// 宿主直接往编辑器写了别的东西（标点、空格、符号）：之后的退格不再撤销学习，也不和前面连成新词。
@@ -794,6 +806,11 @@ impl Engine {
     /// 上屏后按上文给出联想词（关闭、密码框或没有词库时什么都不做）。
     /// After a commit, offer predictions from the context (no-op when off, learning is off, or there's no lexicon).
     fn predict_next(&mut self, committed: &str) {
+        if self.schema == Schema::English {
+            self.drop_predictions();
+            self.refresh_english_predictions();
+            return;
+        }
         self.recent.push_str(committed);
         let n = self.recent.chars().count();
         if n > 8 {
@@ -978,15 +995,25 @@ impl Engine {
 
     /// 选第 i 个候选。 Select the i-th candidate.
     pub fn select(&mut self, index: usize) -> bool {
+        self.select_with_intent(index, true)
+    }
+
+    fn select_with_intent(&mut self, index: usize, intentional: bool) -> bool {
         let Some(c) = self.cands.get(index).cloned() else {
             return false;
         };
         if self.predicting {
             // 选了联想词：上屏、记住这对搭配，再接着联想。 A prediction: commit it, learn the pair, predict again.
             let Action::Table { text } = c.action else { return false };
+            if self.schema == Schema::English { self.commit_english(&text, intentional); return true; }
+            let mut learned = Learned { english: false, hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
             if let Some(prev) = self.last_word.clone() {
+                let old = self.user_pinyin.bigram(&prev, &text);
                 self.user_pinyin.learn_bigram(&prev, &text);
+                learned.bigrams.push((prev, text.clone(), old));
             }
+            self.last_learned = self.user_pinyin.learning.then_some(learned);
+            self.user_pinyin.flush();
             self.predicting = false;
             self.cands.clear();
             let out = self.out(&text);
@@ -997,6 +1024,7 @@ impl Engine {
         }
         match c.action {
             Action::Table { text } => {
+                if self.schema == Schema::English { self.commit_english(&text, intentional); return true; }
                 let hand_corrected = self.schema == Schema::Hand && index > 0 && self.user_pinyin.learning;
                 if hand_corrected {
                     if let Some(ch) = text.chars().next().filter(|_| text.chars().count() == 1) {
@@ -1010,7 +1038,7 @@ impl Engine {
                 self.commit.push_str(&out);
                 self.finish_composition();
                 if hand_corrected {
-                    self.last_learned = Some(Learned { words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
+                    self.last_learned = Some(Learned { english: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
                 }
                 if self.schema == Schema::Hand {
                     self.last_word = Some(text.clone());
@@ -1023,6 +1051,7 @@ impl Engine {
                     text: cand.text.clone(),
                     words: cand.words.clone(),
                     consumed_before: self.consumed,
+                    intentional,
                 };
                 if cand.end >= total {
                     self.selected.push(sel);
@@ -1049,7 +1078,7 @@ impl Engine {
                 self.commit_raw();
                 return;
             }
-            self.select(0);
+            self.select_with_intent(0, false);
         }
         // 接下来是标点或直接上屏的文字：之后的词不再和前面连成新词。 Punctuation follows: break the chain.
         self.break_chain();
@@ -1126,12 +1155,27 @@ impl Engine {
             // 联想词来自用户二元组，不是词条：删掉这条搭配，再按同样的上文重算。
             // A prediction comes from a user bigram, not a word entry: drop the pair and recompute from the same context.
             Action::Table { text } => {
+                if self.schema == Schema::English {
+                    if self.predicting {
+                        let Some(prev) = self.last_word.as_deref() else { return false };
+                        self.user_english.forget_bigram(prev, &text);
+                        self.drop_predictions(); self.refresh_english_predictions();
+                    } else {
+                        let word = text.to_ascii_lowercase();
+                        let keys: Vec<_> = self.user_english.all_entries().into_iter().filter(|(_, e)| e.text == word).map(|(k, _)| k).collect();
+                        for key in keys { self.user_english.forget(&key, &word); }
+                        self.refresh();
+                    }
+                    self.user_english.flush();
+                    return true;
+                }
                 if !self.predicting { return false }
                 let Some(prev) = self.last_word.as_deref() else { return false };
                 self.user_pinyin.forget_bigram(prev, &text);
                 self.refresh_predictions();
             }
         }
+        self.user_pinyin.flush();
         true
     }
 
@@ -1213,6 +1257,7 @@ impl Engine {
         };
         let had = self.user_pinyin.get(&key, text).is_some();
         self.user_pinyin.forget(&key, text);
+        self.user_pinyin.flush();
         had
     }
 
@@ -1252,12 +1297,15 @@ impl Engine {
     }
 
     pub fn clear_user_words(&mut self) -> bool {
-        self.user_pinyin.clear().is_ok()
+        let pinyin = self.user_pinyin.clear().is_ok();
+        let english = self.user_english.clear().is_ok();
+        pinyin && english
     }
 
     /// 持久化用户数据。 Flush user data to disk.
     pub fn flush(&mut self) {
         self.user_pinyin.flush();
+        self.user_english.flush();
     }
 
     // ------------------------------------------------------------ output
@@ -1350,20 +1398,33 @@ impl Engine {
             words.extend(s.words.iter().cloned());
         }
         let mut prev = self.last_word.clone();
-        let mut learned = Learned { hand_correction: false, words: Vec::new(), bigrams: Vec::new(), at: std::time::Instant::now() };
+        let mut learned = Learned { english: false, hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
         for (k, w) in &words {
+            let old = self.user_pinyin.get(k, w).cloned();
             self.user_pinyin.learn(k, w);
-            learned.words.push((k.clone(), w.clone()));
+            learned.words.push((k.clone(), w.clone(), old));
             if let Some(p) = &prev {
+                let old = self.user_pinyin.bigram(p, w);
                 self.user_pinyin.learn_bigram(p, w);
-                learned.bigrams.push((p.clone(), w.clone()));
+                learned.bigrams.push((p.clone(), w.clone(), old));
             }
             prev = Some(w.clone());
         }
         let key: Vec<SyllableId> = words.iter().flat_map(|(k, _)| k.iter().copied()).collect();
-        if sels.len() >= 2 && key.len() <= 8 && text.chars().all(is_cjk) {
+        if words.len() >= 2 && key.len() <= 8 && text.chars().all(is_cjk) {
+            let old = self.user_pinyin.get(&key, &text).cloned();
             self.user_pinyin.learn(&key, &text);
-            learned.words.push((key.clone(), text.clone()));
+            learned.words.push((key.clone(), text.clone(), old));
+        }
+        if self.user_pinyin.learning {
+            for selection in sels.iter().filter(|s| s.intentional) {
+                let choice_key: Vec<_> = selection.words.iter().flat_map(|(k, _)| k.iter().copied()).collect();
+                if !choice_key.is_empty() && choice_key.len() <= 8 && selection.text.chars().all(is_cjk) {
+                    let previous = self.user_pinyin.choice(&choice_key).cloned();
+                    self.user_pinyin.select(&choice_key, &selection.text);
+                    learned.choices.push((choice_key, previous));
+                }
+            }
         }
         // 紧接着上一次上屏：两段合起来可能是一个新词（第二次这样打时才记住）。
         // Right after the previous commit: the two may form a new word, learned the second time it happens.
@@ -1376,7 +1437,9 @@ impl Engine {
                     *seen += 1;
                     if *seen >= 2 {
                         let pkey: Vec<SyllableId> = pk.iter().chain(key.iter()).copied().collect();
+                        let old = self.user_pinyin.get(&pkey, &phrase).cloned();
                         self.user_pinyin.learn(&pkey, &phrase);
+                        learned.words.push((pkey, phrase.clone(), old));
                         self.provisional.remove(&phrase);
                     } else if self.provisional.len() > 500 {
                         self.provisional.clear();
@@ -1385,7 +1448,9 @@ impl Engine {
             }
             self.prev_commit = Some((key, text.clone(), std::time::Instant::now()));
         }
-        self.last_learned = Some(learned);
+        self.last_learned = self.user_pinyin.learning.then_some(learned);
+        // Only commits/undo write to the log; per-key decoding stays in memory.
+        self.user_pinyin.flush();
         self.last_word = words.last().map(|(_, w)| w.clone());
         let out = self.out(&text);
         self.commit.push_str(&out);
@@ -1911,14 +1976,27 @@ impl Engine {
                 text: typed.clone(),
             },
         });
-        let Some(lex) = &self.english else { return };
         let lower = typed.to_ascii_lowercase().replace('\'', "");
-        let mut found = table::lookup(lex, &lower, 30);
+        let mut found = self.english.as_ref().map(|lex| table::lookup(lex, &lower, 80)).unwrap_or_default();
+        let key = table::code_key(&lower).unwrap_or_default();
+        if self.user_english.learning {
+            for entry in self.user_english.prefix_entries(&key, 200) {
+                if !entry.text.replace('\'', "").starts_with(&lower) || found.iter().any(|c| c.text == entry.text) { continue; }
+                found.push(table::TableCand { text: entry.text.clone(), comment: String::new(), cost: 10_000, exact: entry.text.replace('\'', "") == lower });
+            }
+            for c in &mut found {
+                let full = table::code_key(&c.text.replace('\'', "")).unwrap_or_default();
+                if let Some(entry) = self.user_english.get(&full, &c.text) {
+                    c.cost = crate::decoder::learn_cost::promoted(c.cost, 6000, self.user_english.tick(), entry);
+                }
+            }
+        }
         // 频率为主、补全长度为辅：每多一个字母约等于频率低 e^0.35 倍。
         // Frequency first, completion length second (each extra letter ≈ e^0.35 less likely).
         found.sort_by_key(|c| {
             (
                 !c.exact,
+                !self.user_english.preferred(&key, &c.text),
                 c.cost + 350 * c.text.len().saturating_sub(lower.len()) as u32,
             )
         });
@@ -1937,11 +2015,68 @@ impl Engine {
                 view: CandidateView {
                     text: text.clone(),
                     comment: String::new(),
-                    user: false,
+                    user: self.user_english.learning && self.user_english.get(&table::code_key(&c.text.replace('\'', "")).unwrap_or_default(), &c.text).is_some(),
                 },
                 action: Action::Table { text },
             });
         }
+    }
+
+    fn commit_english(&mut self, text: &str, intentional: bool) {
+        let word = text.to_ascii_lowercase();
+        let valid = !word.is_empty() && word.len() <= 64 && word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'');
+        let mut learned = Learned { english: true, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: false };
+        if valid && self.user_english.learning {
+            let full = table::code_key(&word.replace('\'', "")).unwrap_or_default();
+            let typed = table::code_key(&self.raw.to_ascii_lowercase().replace('\'', "")).unwrap_or_default();
+            let mut keys = vec![full];
+            if !typed.is_empty() && keys[0] != typed { keys.push(typed); }
+            for key in keys {
+                let old = self.user_english.get(&key, &word).cloned();
+                self.user_english.learn(&key, &word);
+                learned.words.push((key.clone(), word.clone(), old));
+                if intentional {
+                    let old = self.user_english.choice(&key).cloned();
+                    self.user_english.select(&key, &word);
+                    learned.choices.push((key, old));
+                }
+            }
+            if let Some(prev) = self.last_word.as_ref().filter(|w| w.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')) {
+                let old = self.user_english.bigram(prev, &word);
+                self.user_english.learn_bigram(prev, &word);
+                learned.bigrams.push((prev.clone(), word.clone(), old));
+            }
+            self.user_english.flush();
+        }
+        self.commit.push_str(text);
+        self.clear();
+        self.last_word = valid.then_some(word);
+        self.last_learned = (valid && self.user_english.learning).then_some(learned);
+        self.refresh_english_predictions();
+    }
+
+    fn refresh_english_predictions(&mut self) {
+        if !self.options.prediction || !self.user_english.learning { return; }
+        let Some(word) = self.last_word.as_deref() else { return };
+        let mut history = self.user_english.bigrams_after(word);
+        history.sort_by(|a,b| crate::userdict::decayed(b.1.count, self.user_english.tick().saturating_sub(b.1.last))
+            .total_cmp(&crate::userdict::decayed(a.1.count, self.user_english.tick().saturating_sub(a.1.last)))
+            .then_with(|| b.1.last.cmp(&a.1.last)).then_with(|| a.0.cmp(&b.0)));
+        let common: &[&str] = match word {
+            "hello" => &["world", "there"], "thank" => &["you"], "thanks" => &["for"],
+            "how" => &["are", "do", "to"], "good" => &["morning", "night", "luck"],
+            "see" => &["you"], "nice" => &["to"], "looking" => &["forward"],
+            "please" => &["let", "check"], "let" => &["me", "us"], "i" => &["am", "have", "will"],
+            "we" => &["are", "can", "will"], "you" => &["are", "can", "have"],
+            _ => &[],
+        };
+        let mut seen = std::collections::HashSet::new();
+        for (text, user) in history.into_iter().map(|(t,_)|(t,true)).chain(common.iter().map(|t|(t.to_string(),false))) {
+            if !seen.insert(text.clone()) { continue; }
+            self.cands.push(Cand { view: CandidateView { text: text.clone(), comment: String::new(), user }, action: Action::Table { text } });
+            if self.cands.len() >= 8 { break; }
+        }
+        self.predicting = !self.cands.is_empty();
     }
 }
 

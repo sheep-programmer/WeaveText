@@ -26,6 +26,37 @@ class JniTest {
 
     private fun NativeEngine.type(s: String) = s.forEach { inputChar(it.code) }
 
+    @Test fun repeatedChineseChoicesAndEnglishCompletionPersistThroughJni() {
+        val user = Files.createTempDirectory("weave-learn-jni").toFile()
+        try {
+            NativeEngine.create(data, user.path)!!.use { e ->
+                e.setSchema("pinyin"); e.setOption("candidates.prediction", false)
+                e.importUserWords("是\tshi\t100000\n时\tshi\t90000\n")
+                repeat(5) {
+                    e.clear(); e.setContext(null); e.type("shi")
+                    val i = e.candidates(0, 800).indexOfFirst { it.text == "嗜" }
+                    assertTrue(i >= 0); assertTrue(e.select(i)); assertEquals("嗜", e.snapshot().commit)
+                }
+                // No explicit flush and no closing of the original handle before the independent reload.
+                NativeEngine.create(data, user.path)!!.use { other ->
+                    other.type("shi"); assertEquals("嗜", other.snapshot().candidates.first().text)
+                }
+                e.setSchema("english"); e.type("hel")
+                val c = e.candidates(0, 100)
+                assertEquals("hel", c.first().text)
+                val hello = c.indexOfFirst { it.text == "hello" }
+                assertTrue(c.map { it.text }.toString(), hello > 0)
+                assertTrue(e.select(hello)); assertEquals("hello", e.snapshot().commit)
+                e.clear(); e.setContext(null); e.type("weavecodexword"); e.select(0)
+                assertEquals("weavecodexword", e.snapshot().commit)
+                NativeEngine.create(data, user.path)!!.use { other ->
+                    other.setSchema("english"); other.type("weavecode")
+                    assertTrue(other.candidates(0, 100).any { it.text == "weavecodexword" })
+                }
+            }
+        } finally { user.deleteRecursively() }
+    }
+
     @Test fun everydayChatPhrasesAreSelectableWithoutAutocorrection() {
         engine().use { e ->
             assertTrue(e.setSchema("pinyin"))

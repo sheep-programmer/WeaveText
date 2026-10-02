@@ -18,7 +18,7 @@ final class EngineHost {
     let cloud: CloudWords
     private var cloudTimer: Timer?
 
-    /// 中文模式；false 时按键直通。 Chinese mode; keys pass through when false.
+    /// 中文模式；false 时启用英文补全。 Chinese mode; false enables English completion.
     private(set) var chinese = true
 
     private init() {
@@ -84,7 +84,7 @@ final class EngineHost {
         if appliedSchema != prefs.schema {
             if engine.hasSchema(prefs.schema) {
                 activeController?.finishComposition()
-                engine.setSchema(prefs.schema)
+                engine.setSchema(chinese ? prefs.schema : "english")
                 appliedSchema = prefs.schema
             } else {
                 NSLog("WeaveText: scheme %@ has no dictionary, keeping %@", prefs.schema, appliedSchema ?? "-")
@@ -106,6 +106,7 @@ final class EngineHost {
         guard on != chinese else { return }
         activeController?.finishComposition()
         chinese = on
+        engine?.setSchema(on ? (appliedSchema ?? prefs.schema) : "english")
         NotificationCenter.default.post(name: Self.modeDidChange, object: self)
     }
 

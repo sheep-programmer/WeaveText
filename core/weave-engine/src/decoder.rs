@@ -578,10 +578,18 @@ impl<'a> Decoder<'a> {
                 });
             }
         }
+        // A repeated intentional choice can beat old accumulated counts for the same reading.
+        // Keep correction penalties outside this promotion so a familiar typo cannot win by history alone.
+        let best = out.iter().map(|w| w.cost).min().unwrap_or(0);
+        if span.penalty == 0 {
+            for w in &mut out {
+                if self.user.preferred(&span.key, &w.text) { w.cost = best.saturating_sub(1200); }
+            }
+        }
         for s in &mut out {
             s.cost += span.penalty;
         }
-        out.sort_by_key(|s| s.cost);
+        out.sort_by_key(|s| (s.cost, !self.user.preferred(&span.key, &s.text)));
         out.truncate(limit);
         out
     }
@@ -751,6 +759,24 @@ impl<'a> Decoder<'a> {
         let mut out: Vec<Candidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = Default::default();
 
+        // Complete, literal learned choices may lead the list; a partial single character never
+        // displaces a longer input's sentence. This also keeps a user-created phrase above a guess.
+        let mut preferred = Vec::new();
+        for &si in &lat.by_start[0] {
+            let span = &lat.spans[si];
+            if span.end != n || span.raw || span.penalty != 0 { continue; }
+            if let Some(choice) = self.user.choice(&span.key).filter(|c| self.user.preferred(&span.key, &c.text)) {
+                preferred.push((choice, span));
+            }
+        }
+        preferred.sort_by_key(|(c, span)| (std::cmp::Reverse(c.last), std::cmp::Reverse(c.repeats), span.key.len()));
+        for (choice, span) in preferred {
+            if out.len() >= cap { return out; }
+            if !seen.insert(choice.text.clone()) { continue; }
+            out.push(Candidate { text: choice.text.clone(), comment: String::new(), end: n, key: span.key.clone(),
+                kind: CandKind::Word, origin: Origin::User, words: vec![(span.key.clone(), choice.text.clone())], cost: 0 });
+        }
+
         // 1. 整句（及接近的次优整句）。 Sentence, plus a close runner-up.
         let sentence = |path: &[(usize, String)], cost: u32| {
             let mut text = String::new();
@@ -782,8 +808,7 @@ impl<'a> Decoder<'a> {
         };
         if lat.best.len() >= 2 {
             let c = sentence(&lat.best, lat.best_cost);
-            seen.insert(c.text.clone());
-            out.push(c);
+            if seen.insert(c.text.clone()) && out.len() < cap { out.push(c); }
         }
         // 次优整句总是放在第 2 位（最优是单个词时，它排在那个词之后）。
         // The runner-up always goes second, also when the best result is a single word.

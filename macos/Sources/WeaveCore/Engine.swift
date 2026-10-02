@@ -100,6 +100,9 @@ public final class WeaveSession {
     public func deleteUserWord(_ w: UserWord) -> Bool { weave_delete_user_word(handle, w.pinyin, w.text) }
 
     @discardableResult
+    public func importUserWords(_ text: String) -> Int { Int(weave_import_user_words(handle, text)) }
+
+    @discardableResult
     public func clearUserWords() -> Bool { weave_clear_user_words(handle) }
 
     private func take(_ p: UnsafeMutablePointer<CChar>?) -> String? {

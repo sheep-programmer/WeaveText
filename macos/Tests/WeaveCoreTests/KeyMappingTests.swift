@@ -16,14 +16,20 @@ private let busy = KeyContext(composing: true)
         #expect(KeyMapper.action(for: key("h"), in: busy) == .letter("h"))
     }
 
-    @Test func shortcutsAndEnglishPassThrough() {
+    @Test func shortcutsPassAndEnglishLettersOfferCompletions() {
         #expect(KeyMapper.action(for: key("c", command: true), in: busy) == .pass)
         #expect(KeyMapper.action(for: key("a", control: true), in: idle) == .pass)
         #expect(KeyMapper.action(for: key("å", option: true), in: idle) == .pass)
         var en = idle
         en.chinese = false
-        #expect(KeyMapper.action(for: key("n"), in: en) == .pass)
+        #expect(KeyMapper.action(for: key("n"), in: en) == .letter("n"))
         #expect(KeyMapper.action(for: key(","), in: en) == .pass)
+        en.composing = true
+        #expect(KeyMapper.action(for: key(" ", code: KeyCode.space), in: en) == .commitEnglishWord)
+        #expect(KeyMapper.action(for: key(","), in: en) == .punctuation(","))
+        #expect(KeyMapper.action(for: key("1"), in: en) == .punctuation("1"))
+        #expect(KeyMapper.action(for: key("H", shift: true), in: en) == .letter("H"))
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left), in: en) == .finishEnglishAndPass)
     }
 
     @Test func capsLockAndShiftTypeCapitals() {

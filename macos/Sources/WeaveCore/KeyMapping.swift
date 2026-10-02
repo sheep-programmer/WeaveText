@@ -45,7 +45,7 @@ public enum KeyCode {
 /// 按键时的输入法状态。 IME state when a key arrives.
 public struct KeyContext: Equatable, Sendable {
     public var composing: Bool
-    /// 中文模式（false 为英文直通）。 Chinese mode; false = English pass-through.
+    /// 中文模式；false 为英文单词补全。 Chinese mode; false = English word completion.
     public var chinese: Bool
     public var pageSize: Int
     public var pageKeys: PageKeys
@@ -80,6 +80,9 @@ public enum KeyAction: Equatable, Sendable {
     case commitRaw
     /// 空格：上屏高亮候选。 Space: commit the highlighted candidate.
     case commitHighlighted
+    /// English space accepts the word and inserts the separator explicitly pressed by the user.
+    case commitEnglishWord
+    case finishEnglishAndPass
     /// 选当前页第 n 个（从 0 起）。 Pick the n-th candidate of the page (0-based).
     case select(Int)
     case pagePrevious
@@ -138,7 +141,7 @@ public enum KeyMapper {
     public static func action(for key: KeyInput, in ctx: KeyContext) -> KeyAction {
         // 快捷键一律放行。 Shortcuts always go to the app.
         if key.command || key.control || key.option { return .pass }
-        if !ctx.chinese { return .pass }
+        if !ctx.chinese { return englishAction(key, ctx) }
         if ctx.composing { return composingAction(key, ctx) }
         // 大写锁定：直通输入大写。 Caps Lock: pass through, the app types capitals.
         if key.capsLock { return .pass }
@@ -149,6 +152,23 @@ public enum KeyMapper {
         }
         if Punctuation.isMapped(c) { return .punctuation(c) }
         return .pass
+    }
+
+    private static func englishAction(_ key: KeyInput, _ ctx: KeyContext) -> KeyAction {
+        if let c = key.character, c.isASCII, c.isLetter { return .letter(c) }
+        guard ctx.composing else { return .pass }
+        switch key.keyCode {
+        case KeyCode.space: return .commitEnglishWord
+        case KeyCode.returnKey, KeyCode.keypadEnter: return .commitRaw
+        case KeyCode.delete: return .backspace
+        case KeyCode.escape: return .clear
+        case KeyCode.tab, KeyCode.down: return .highlightNext
+        case KeyCode.up: return .highlightPrevious
+        case KeyCode.left, KeyCode.right, KeyCode.home, KeyCode.end, KeyCode.forwardDelete: return .finishEnglishAndPass
+        default: break
+        }
+        if let c = key.character, c.isASCII, !c.isWhitespace { return .punctuation(c) }
+        return .finishEnglishAndPass
     }
 
     private static func composingAction(_ key: KeyInput, _ ctx: KeyContext) -> KeyAction {

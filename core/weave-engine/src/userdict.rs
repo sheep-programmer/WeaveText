@@ -11,6 +11,7 @@
 //! W  <sym.sym.sym>  <text>  <count>  <tick>     词条（绝对值，后写覆盖前写）
 //! D  <sym.sym.sym>  <text>                      删除
 //! B  <prev>  <next>  <count>  <tick>            二元组
+//! P  <sym.sym.sym>  <text>  <repeats> <tick>    近期明确选词（次数 0 = 撤销）
 //! ```
 
 use std::collections::HashMap;
@@ -26,10 +27,21 @@ pub struct UserEntry {
     pub last: u64,
 }
 
+/// One recent intentional choice per reading. Lifetime frequency alone cannot express a changed habit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentChoice {
+    pub text: String,
+    pub repeats: u32,
+    pub last: u64,
+}
+
+const CHOICE_WINDOW: u64 = 2_000;
+
 #[derive(Clone, Debug, Default)]
 struct UNode {
     children: Vec<(u16, u32)>,
     entries: Vec<UserEntry>,
+    choice: Option<RecentChoice>,
 }
 
 pub type UNodeId = u32;
@@ -144,6 +156,13 @@ impl UserDict {
                     self.remove_entry(&k, text);
                 }
             }
+            ["P", key, text, repeats, tick] => {
+                if let (Some(k), Ok(repeats), Ok(last)) = (parse_key(key), repeats.parse::<u32>(), tick.parse::<u64>()) {
+                    let n = self.node_for(&k);
+                    self.nodes[n as usize].choice = (repeats > 0 && clean(text)).then(|| RecentChoice { text: (*text).into(), repeats, last });
+                    self.tick = self.tick.max(last);
+                }
+            }
             ["B", prev, next, count, tick] => {
                 if let (Ok(c), Ok(t)) = (count.parse::<u32>(), tick.parse()) {
                     let k = (prev.to_string(), next.to_string());
@@ -198,6 +217,10 @@ impl UserDict {
                     )?;
                     lines += 1;
                 }
+                if let Some(c) = &self.nodes[n as usize].choice {
+                    writeln!(w, "P\t{}\t{}\t{}\t{}", key_str(&key), c.text, c.repeats, c.last)?;
+                    lines += 1;
+                }
                 for &(sym, c) in &self.nodes[n as usize].children {
                     let mut k = key.clone();
                     k.push(sym);
@@ -227,6 +250,9 @@ impl UserDict {
         let stale = |c: u32, last: u64| decayed(c, tick.saturating_sub(last)) < 0.25;
         for n in &mut self.nodes {
             n.entries.retain(|e| !stale(e.count, e.last));
+            if n.choice.as_ref().is_some_and(|c| tick.saturating_sub(c.last) > CHOICE_WINDOW || !n.entries.iter().any(|e| e.text == c.text)) {
+                n.choice = None;
+            }
         }
         self.bigrams.retain(|_, s| !stale(s.count, s.last));
         let words = self.entry_count();
@@ -236,6 +262,7 @@ impl UserDict {
             let cut = all[MAX_WORDS - 1];
             for n in &mut self.nodes {
                 n.entries.retain(|e| decayed(e.count, tick.saturating_sub(e.last)) >= cut);
+                if n.choice.as_ref().is_some_and(|c| !n.entries.iter().any(|e| e.text == c.text)) { n.choice = None; }
             }
         }
         if self.bigrams.len() > MAX_BIGRAMS {
@@ -285,7 +312,9 @@ impl UserDict {
 
     fn remove_entry(&mut self, key: &[u16], text: &str) -> bool {
         if let Some(n) = self.find(key) {
-            let entries = &mut self.nodes[n as usize].entries;
+            let node = &mut self.nodes[n as usize];
+            if node.choice.as_ref().is_some_and(|c| c.text == text) { node.choice = None; }
+            let entries = &mut node.entries;
             let before = entries.len();
             entries.retain(|e| e.text != text);
             return entries.len() != before;
@@ -314,6 +343,50 @@ impl UserDict {
             count,
             tick
         ));
+    }
+
+    pub fn choice(&self, key: &[u16]) -> Option<&RecentChoice> {
+        self.find(key).and_then(|n| self.nodes[n as usize].choice.as_ref())
+    }
+
+    pub fn preferred(&self, key: &[u16], text: &str) -> bool {
+        self.learning && self.choice(key).is_some_and(|c| c.text == text && c.repeats >= 2 && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
+    }
+
+    /// Called only for a chosen candidate; generated sentence components just receive normal counts.
+    pub fn select(&mut self, key: &[u16], text: &str) {
+        if !self.learning || key.is_empty() || self.get(key, text).is_none() { return; }
+        let repeats = self.choice(key).filter(|c| c.text == text && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
+            .map_or(1, |c| c.repeats.saturating_add(1));
+        self.restore_choice(key, Some(RecentChoice { text: text.into(), repeats, last: self.tick }));
+    }
+
+    pub fn restore_choice(&mut self, key: &[u16], choice: Option<RecentChoice>) {
+        let n = self.node_for(key);
+        let line = match &choice {
+            Some(c) => format!("P\t{}\t{}\t{}\t{}", key_str(key), c.text, c.repeats, c.last),
+            None => format!("P\t{}\t\t0\t{}", key_str(key), self.tick),
+        };
+        self.nodes[n as usize].choice = choice;
+        self.write_line(line);
+    }
+
+    /// Restore the complete pre-commit state, including recency, rather than decrementing a fresh timestamp.
+    pub fn restore_entry(&mut self, key: &[u16], text: &str, previous: Option<UserEntry>) {
+        match previous {
+            Some(e) => {
+                self.set_entry(key, text, e.count, e.last);
+                self.write_line(format!("W\t{}\t{}\t{}\t{}", key_str(key), text, e.count, e.last));
+            }
+            None => self.forget(key, text),
+        }
+    }
+
+    pub fn restore_bigram(&mut self, prev: &str, next: &str, previous: Option<BigramStat>) {
+        let key = (prev.to_string(), next.to_string());
+        let stat = previous.unwrap_or_default();
+        if previous.is_some() { self.bigrams.insert(key, stat); } else { self.bigrams.remove(&key); }
+        self.write_line(format!("B\t{prev}\t{next}\t{}\t{}", stat.count, stat.last));
     }
 
     /// 学习相邻两个词的搭配。 Learn that `next` followed `prev`.
@@ -401,6 +474,23 @@ impl UserDict {
 
     pub fn entries(&self, n: UNodeId) -> &[UserEntry] {
         &self.nodes[n as usize].entries
+    }
+
+    /// Prefix completions stay on the trie path; no full user-dictionary scan per keystroke.
+    pub fn prefix_entries(&self, key: &[u16], limit: usize) -> Vec<&UserEntry> {
+        let Some(start) = self.find(key) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut pending = vec![start];
+        let mut budget = 2048;
+        while let Some(n) = pending.pop() {
+            if budget == 0 { break; }
+            budget -= 1;
+            out.extend(self.entries(n));
+            pending.extend(self.children(n).iter().map(|(_, child)| *child));
+        }
+        out.sort_by_key(|e| std::cmp::Reverse(e.last));
+        out.truncate(limit);
+        out
     }
 
     pub fn find(&self, key: &[u16]) -> Option<UNodeId> {
@@ -496,5 +586,27 @@ mod tests {
         assert_eq!(d.bigrams_after("织文").len(), 1);
         assert_eq!(d.tick(), 5);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preferences_survive_compaction_and_expire_without_changing_frequency() {
+        let dir = std::env::temp_dir().join(format!("weave-ud-choice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("user.log");
+        let mut d = UserDict::open(&path).unwrap();
+        for _ in 0..5 { d.learn(&[1], "嗜"); d.select(&[1], "嗜"); }
+        assert!(d.preferred(&[1], "嗜"));
+        d.compact().unwrap();
+        let mut reloaded = UserDict::open(&path).unwrap();
+        assert!(reloaded.preferred(&[1], "嗜"));
+        assert_eq!(reloaded.get(&[1], "嗜").unwrap().count, 5);
+        reloaded.learning = false;
+        assert!(!reloaded.preferred(&[1], "嗜"));
+        reloaded.learning = true;
+        reloaded.tick += CHOICE_WINDOW + 1;
+        assert!(!reloaded.preferred(&[1], "嗜"));
+        reloaded.forget(&[1], "嗜"); reloaded.flush();
+        assert!(UserDict::open(&path).unwrap().choice(&[1]).is_none());
+        drop(reloaded); drop(d); let _ = std::fs::remove_dir_all(dir);
     }
 }

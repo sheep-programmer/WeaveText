@@ -307,7 +307,13 @@ fn bind(port: u16) -> Result<TcpListener, String> {
     let want = if port == 0 { DEFAULT_PORT } else { port };
     // Darwin can allow a reusable IPv6 listener beside an existing IPv4 listener;
     // IPv4 clients would then reach the other process. Check IPv4 ownership first.
-    let want = if TcpListener::bind(("0.0.0.0", want)).is_ok() { want } else { 0 };
+    let available = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+        .and_then(|probe| {
+            probe.set_reuse_address(true)?;
+            probe.bind(&SocketAddr::from(([0, 0, 0, 0], want)).into())?;
+            probe.listen(1)
+        }).is_ok();
+    let want = if available { want } else { 0 };
     for port in [want, 0] {
         if let Ok(socket) = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, Some(socket2::Protocol::TCP)) {
             let _ = socket.set_reuse_address(true);
