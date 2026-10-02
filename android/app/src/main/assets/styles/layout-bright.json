@@ -66,6 +66,7 @@
       "emoji",
       "voice",
       "clipboard",
+      "stickers",
       "hide"
     ],
     "align": "edges",

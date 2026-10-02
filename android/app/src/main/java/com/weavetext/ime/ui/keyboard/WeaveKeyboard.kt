@@ -899,6 +899,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             5 -> host.hideKeyboard()
             ToolIds.EMOJI -> if (panel is SymbolPanel) closePanel() else { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji() }
             ToolIds.SETTINGS -> openSettings(null)
+            ToolIds.STICKERS -> togglePanel("stickers")
         }
     }
 
@@ -989,6 +990,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         "symbol" -> SymbolPanel(this)
         "cursor" -> CursorPanel(this)
         "clipboard" -> ClipboardPanel(this, ClipboardPanel.Mode.CLIPBOARD)
+        "stickers" -> StickerPanel(this)
         "phrases" -> ClipboardPanel(this, ClipboardPanel.Mode.PHRASES)
         "toolbox" -> ToolboxPanel(this)
         "height" -> HeightPanel(this)
@@ -1373,6 +1375,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
      * app rewrote the text): keep the number layout, caps lock and the open panel; only re-check sentence caps.
      */
     override fun onShown(restarting: Boolean) {
+        com.weavetext.ime.stickers.StickerSending.activate(controller)
+        root.post {val loc=IntArray(2);card.getLocationOnScreen(loc);if(card.height>0)com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(loc[1])}
         // 每次弹出都按当前边衬校一遍（导航方式、横竖屏可能已变）。 Re-check insets on every show.
         root.rootWindowInsets?.let(::applyInsets)
         root.requestApplyInsets()
@@ -1389,9 +1393,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         afterKey()
         updateCandidates(null)
         clipboard.onShown()
+        (panel as? StickerPanel)?.onShow()
     }
 
     override fun onHidden() {
+        com.weavetext.ime.stickers.StickerSending.deactivate(controller)
+        com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(null)
         keyboardView.cancelTouch()
         popup.hideAll()
         voiceStrip?.end(true)
@@ -1410,6 +1417,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     val clipboard: ClipboardRepo by clipboardLazy
 
     override fun dispose() {
+        com.weavetext.ime.stickers.StickerSending.deactivate(controller)
+        com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(null)
         root.removeCallbacks(navigationLayout)
         Choreographer.getInstance().removeFrameCallback(frameRender)
         renderPending = false

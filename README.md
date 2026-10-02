@@ -30,6 +30,7 @@
   用户词写只追加日志。
   *Zero deployment and small: precompiled, block-compressed dictionaries are read straight from the APK and decoded
   on demand — about 24 MB for all data, nothing extracted. User words go to an append-only log.*
+- **表情收纳袋**：工具栏收纳图片，支持相册／文件／系统分享／兼容来源的拖入；原 GIF、WebP 保留，分组、标签、收藏、最近使用及 Android／Mac 备份互导。可选悬浮窗，Mac 从系统输入法菜单打开；插入与发送仍依赖目标 App 的支持。
 - **键盘**：主流输入法式布局、亮/暗主题、候选展开、符号、光标编辑、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想；
   可拖动、可缩放的悬浮键盘，宽屏（横屏、平板、折叠屏）自动分体，可选数字行布局；多指快速输入不丢键，字符按下即出。
   *mainstream-IME-style layout, light/dark, candidate grid, symbols, cursor panel, clipboard (off by default),

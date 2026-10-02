@@ -14,6 +14,9 @@ if args.count > 1 {
         exit(MainActor.assumeIsolated { Registration.disable() } ? 0 : 1)
     case "--selftest":
         exit(DevTools.selfTest() ? 0 : 1)
+    case "--snapshot-stickers" where args.count>3:
+        do {try DevTools.snapshotStickers(into:URL(fileURLWithPath:args[2]),fixtures:URL(fileURLWithPath:args[3]));exit(0)}
+        catch {fputs("sticker snapshot failed: \(error)\n",stderr);exit(1)}
     case "--snapshot" where args.count > 2:
         do {
             try DevTools.snapshot(into: URL(fileURLWithPath: args[2]))

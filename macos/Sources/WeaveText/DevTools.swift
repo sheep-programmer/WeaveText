@@ -4,6 +4,21 @@ import WeaveCore
 
 /// 构建脚本用的自检与截图（不启动输入法服务）。 Self-test and snapshots for the build script (no IME server).
 enum DevTools {
+    static func snapshotStickers(into dir:URL,fixtures:URL) throws {
+        _ = NSApplication.shared
+        try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+        let temporary=FileManager.default.temporaryDirectory.appendingPathComponent("weave-sticker-snapshot-\(UUID().uuidString)")
+        defer {try? FileManager.default.removeItem(at:temporary)}
+        let store=try StickerStore(directory:temporary)
+        for (name,title) in [("sample.png","开心"),("animated.gif","晚安"),("animated.webp","收到")] {
+            let (item,_)=try store.importFile(fixtures.appendingPathComponent(name),name:title)
+            try store.edit(item.id,name:title,group:"日常",tags:["常用"],favorite:name=="sample.png")
+        }
+        let model=StickerCollectionModel(directory:temporary)
+        for dark in [false,true] {
+            try render(StickerCollectionView(model:model),size:NSSize(width:620,height:510),dark:dark,to:dir.appendingPathComponent("stickers-\(dark ? "dark" : "light").png"))
+        }
+    }
     /// 用包内词库打「nihao」，首选应为「你好」；上屏「今天」后有联想。 Type "nihao" with the bundled data; the top pick
     /// must be 你好, and committing 今天 must offer predictions.
     static func selfTest() -> Bool {

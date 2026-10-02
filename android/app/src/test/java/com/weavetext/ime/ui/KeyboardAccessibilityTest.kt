@@ -148,7 +148,7 @@ class KeyboardAccessibilityTest {
     }
 
     @Test fun toolbarLabels() {
-        assertEquals(listOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "收起键盘"), labels(kb.topBar))
+        assertEquals(listOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "表情收纳袋", "收起键盘"), labels(kb.topBar))
     }
 
     @Test fun liftDuringTouchExplorationActivatesKey() {

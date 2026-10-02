@@ -311,6 +311,7 @@ final class WeaveInputController: IMKInputController {
         refresh(client)
     }
 
+    @objc func openStickers(_ sender:Any?) {StickerWindow.shared.show(owner:self)}
     @objc func openHandwriting(_ sender:Any?) {HandwritingWindow.shared.show(owner:self)}
     func commitHandCandidate(_ index:Int) {
         guard let engine=host.engine,let client=client() else{return}

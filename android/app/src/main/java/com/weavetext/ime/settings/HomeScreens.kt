@@ -245,6 +245,8 @@ fun HomeScreen(statusVersion: Int) {
                     RowDivider()
                     SettingRow("词库", words?.let { "%,d 个用户词".format(it) } ?: "用户词与学习记录", R.drawable.ic_book, onClick = { nav.push(Route.Dictionary) }) { Chevron() }
                     RowDivider()
+                    SettingRow("表情收纳袋", "收藏原图与动图 · 标签、分组和快捷分享", R.drawable.ic_sticker_bag, onClick = {ctx.startActivity(Intent(ctx,com.weavetext.ime.stickers.StickerActivity::class.java))}) {Chevron()}
+                    RowDivider()
                     SettingRow("互联", linkSummary(p), R.drawable.ic_devices, onClick = { nav.push(Route.Link) }) { Chevron() }
                 }
                 Spacer(Modifier.height(GroupGap))

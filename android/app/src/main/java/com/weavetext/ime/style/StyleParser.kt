@@ -452,5 +452,5 @@ object StyleParser {
     )
     val DEFAULT_T9_RIGHT = listOf(KeyToken("delete"), KeyToken("reset"), KeyToken("enter", span = 2))
     val DEFAULT_T9_BOTTOM = listOf(KeyToken("symbol"), KeyToken("number"), KeyToken("space"), KeyToken("lang"))
-    val DEFAULT_TOOLS = listOf("menu", "keyboard", "voice", "cursor", "clipboard", "hide")
+    val DEFAULT_TOOLS = listOf("menu", "keyboard", "voice", "cursor", "clipboard", "stickers", "hide")
 }

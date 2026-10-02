@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="com.weavetext.ime.stickers.StickerShareSourceActivity" android:exported="true" android:noHistory="true" />
+        <provider android:name="com.weavetext.ime.stickers.StickerSourceProvider" android:authorities="com.weavetext.ime.test.stickers" android:exported="false" android:grantUriPermissions="true" />
+    </application>
+</manifest>

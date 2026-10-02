@@ -11,6 +11,9 @@ import WeaveCore
         #expect(menu.items[0].title == "织文键盘设置…")
         #expect(menu.items[0].action == #selector(WeaveInputController.showPreferences(_:)))
         #expect(menu.items[0].target === target)
+        let stickers = try! #require(menu.items.first { $0.title == "表情收纳袋…" })
+        #expect(stickers.action == #selector(WeaveInputController.openStickers(_:)))
+        #expect(stickers.target === target)
         let schemes = menu.items.filter { $0.action == #selector(WeaveInputController.selectScheme(_:)) }
         #expect(schemes.contains { $0.title == InputScheme.named("pinyin").name && $0.state == .on })
         #expect(menu.items.first { $0.title == InputScheme.named("wubi86").name }?.action == nil)

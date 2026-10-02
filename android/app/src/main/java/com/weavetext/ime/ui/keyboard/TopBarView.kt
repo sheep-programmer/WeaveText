@@ -57,8 +57,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var layout: LayoutStyle = Layouts.DEFAULT
 
     // 工具栏 / toolbar：[tools] 为各格的功能编号（ToolIds），[toolIcons] 为对应图标。
-    private var tools = intArrayOf(ToolIds.MENU, ToolIds.KEYBOARD, ToolIds.VOICE, ToolIds.CURSOR, ToolIds.CLIPBOARD, ToolIds.HIDE)
-    private var toolIcons = IntArray(6) { OUTLINE_ICONS.getValue(tools[it]) }
+    private var tools = intArrayOf(ToolIds.MENU, ToolIds.KEYBOARD, ToolIds.VOICE, ToolIds.CURSOR, ToolIds.CLIPBOARD, ToolIds.STICKERS, ToolIds.HIDE)
+    private var toolIcons = IntArray(7) { OUTLINE_ICONS.getValue(tools[it]) }
     /** 当前打开的面板对应的工具编号（高亮）。 Tool id of the open panel (highlighted). */
     var activeTool = -1
         set(v) { field = v; invalidate() }
@@ -890,18 +890,18 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     }
 
     companion object {
-        private val TOOL_NAMES = arrayOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "收起键盘", "表情", "设置")
+        private val TOOL_NAMES = arrayOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "收起键盘", "表情", "设置", "表情收纳袋")
         /** 三格建议条中第 i 名所在的格。 Slot of the i-th suggestion in the strip. */
         private val STRIP_SLOTS = intArrayOf(1, 0, 2)
         private val OUTLINE_ICONS = mapOf(
             ToolIds.MENU to R.drawable.ic_logo, ToolIds.KEYBOARD to R.drawable.ic_keyboard, ToolIds.VOICE to R.drawable.ic_mic,
             ToolIds.CURSOR to R.drawable.ic_cursor, ToolIds.CLIPBOARD to R.drawable.ic_clipboard, ToolIds.HIDE to R.drawable.ic_chevron_down,
-            ToolIds.EMOJI to R.drawable.ic_emoji, ToolIds.SETTINGS to R.drawable.ic_settings,
+            ToolIds.EMOJI to R.drawable.ic_emoji, ToolIds.SETTINGS to R.drawable.ic_settings, ToolIds.STICKERS to R.drawable.ic_sticker_bag,
         )
         private val FILLED_ICONS = mapOf(
             ToolIds.MENU to R.drawable.ic_logo_filled, ToolIds.KEYBOARD to R.drawable.ic_keyboard_filled, ToolIds.VOICE to R.drawable.ic_mic_filled,
             ToolIds.CURSOR to R.drawable.ic_cursor_filled, ToolIds.CLIPBOARD to R.drawable.ic_clipboard_filled, ToolIds.HIDE to R.drawable.ic_chevron_down_filled,
-            ToolIds.EMOJI to R.drawable.ic_emoji_filled, ToolIds.SETTINGS to R.drawable.ic_settings_filled,
+            ToolIds.EMOJI to R.drawable.ic_emoji_filled, ToolIds.SETTINGS to R.drawable.ic_settings_filled, ToolIds.STICKERS to R.drawable.ic_sticker_bag,
         )
         private const val CHIP = 10
         private const val PREEDIT = 11

@@ -143,8 +143,9 @@ object ToolIds {
     const val HIDE = 5
     const val EMOJI = 6
     const val SETTINGS = 7
+    const val STICKERS = 8
     val NAMES = mapOf(
         "menu" to MENU, "keyboard" to KEYBOARD, "voice" to VOICE, "cursor" to CURSOR,
-        "clipboard" to CLIPBOARD, "hide" to HIDE, "emoji" to EMOJI, "settings" to SETTINGS,
+        "clipboard" to CLIPBOARD, "hide" to HIDE, "emoji" to EMOJI, "settings" to SETTINGS, "stickers" to STICKERS,
     )
 }

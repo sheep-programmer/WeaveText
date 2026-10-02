@@ -62,6 +62,7 @@
     "items": [
       "menu",
       "clipboard",
+      "stickers",
       "hide"
     ],
     "align": "edges",
