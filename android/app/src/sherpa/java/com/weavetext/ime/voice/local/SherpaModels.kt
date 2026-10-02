@@ -37,14 +37,14 @@ internal object SherpaModels {
     @Suppress("UNUSED_PARAMETER")
     fun prepare(runtimeDir: File?) {}
 
-    fun streaming(spec: ModelSpec, loc: ModelLocation, threads: Int = THREADS): StreamingAsr {
+    fun streaming(spec: ModelSpec, loc: ModelLocation, threads: Int = THREADS, hotwords:HotwordConfig? = null): StreamingAsr {
         require(spec.arch in setOf("zipformer2-ctc", "zipformer-transducer")) { "unsupported streaming arch ${spec.arch}" }
         val model = if (spec.arch == "zipformer-transducer") OnlineModelConfig(
             transducer = OnlineTransducerModelConfig(
                 encoder = loc.path(spec.files.first { it.name.startsWith("encoder") }.name),
                 decoder = loc.path(spec.files.first { it.name.startsWith("decoder") }.name),
                 joiner = loc.path(spec.files.first { it.name.startsWith("joiner") }.name),
-            ), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false,
+            ), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false, modelingUnit=hotwords?.unit.orEmpty(), bpeVocab=hotwords?.vocabulary.orEmpty(),
         ) else OnlineModelConfig(zipformer2Ctc = OnlineZipformer2CtcModelConfig(model = loc.path("model.int8.onnx")), tokens = loc.path("tokens.txt"), numThreads = threads, debug = false)
         val config = OnlineRecognizerConfig(
             featConfig = FEATURES,
@@ -59,12 +59,14 @@ internal object SherpaModels {
             enableEndpoint = true,
             decodingMethod = if (spec.arch == "zipformer-transducer") "modified_beam_search" else "greedy_search",
             maxActivePaths = 4,
+            hotwordsScore=2f,
         )
         val rec = OnlineRecognizer(loc.assets, config)
+        fun newStream()=rec.createStream(hotwords?.file?.let {File(it).readLines().joinToString("/")}.orEmpty())
         return object : StreamingAsr {
-            private var stream: OnlineStream = rec.createStream()
+            private var stream: OnlineStream = newStream()
             override fun startSession() {
-                val next = rec.createStream()
+                val next = newStream()
                 stream.release()
                 stream = next
             }

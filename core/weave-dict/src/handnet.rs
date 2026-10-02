@@ -259,6 +259,7 @@ pub struct HandModels {
     pub net: Option<HandNet>,
     corrections: std::sync::Mutex<Corrections>,
     personal_enabled: std::sync::atomic::AtomicBool,
+    line_mode: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -270,11 +271,62 @@ struct Corrections {
 
 impl HandModels {
     pub fn new(templates: Option<crate::hand::Recognizer>, net: Option<HandNet>) -> Self {
-        Self { templates, net, corrections: std::sync::Mutex::new(Corrections::default()), personal_enabled: std::sync::atomic::AtomicBool::new(true) }
+        Self { templates, net, corrections: std::sync::Mutex::new(Corrections::default()), personal_enabled: std::sync::atomic::AtomicBool::new(true), line_mode: std::sync::atomic::AtomicBool::new(false) }
     }
 
     pub fn set_personal_enabled(&self, enabled: bool) {
         self.personal_enabled.store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn samples(&self)->Vec<(char,Vec<Stroke>)> {
+        self.corrections.lock().unwrap_or_else(|e|e.into_inner()).examples.clone()
+    }
+    pub fn set_line_mode(&self,on:bool){self.line_mode.store(on,std::sync::atomic::Ordering::Release);}
+    /// Separate characters by genuine horizontal whitespace, keeping close radicals together.
+    pub fn line_groups(strokes:&[Stroke])->Vec<Vec<Stroke>> {
+        let mut bounds:Vec<_>=strokes.iter().enumerate().filter(|(_,s)|!s.is_empty()).map(|(i,s)| {
+            let left=s.iter().map(|p|p.0).fold(f32::INFINITY,f32::min);
+            let right=s.iter().map(|p|p.0).fold(f32::NEG_INFINITY,f32::max);(left,right,i)
+        }).collect();
+        bounds.sort_by(|a,b|a.0.total_cmp(&b.0));
+        let top=strokes.iter().flatten().map(|p|p.1).fold(f32::INFINITY,f32::min);
+        let bottom=strokes.iter().flatten().map(|p|p.1).fold(f32::NEG_INFINITY,f32::max);
+        let threshold=(bottom-top).max(0.01)*0.23;
+        let mut groups:Vec<Vec<Stroke>>=Vec::new();let mut edge=f32::NEG_INFINITY;
+        for (left,right,i) in bounds {
+            if groups.is_empty() || left-edge>threshold {groups.push(Vec::new());}
+            groups.last_mut().unwrap().push(strokes[i].clone());edge=edge.max(right);
+        }
+        if groups.len()>4{vec![strokes.to_vec()]}else{groups}
+    }
+    pub fn recognize_input(&self,strokes:&[Stroke],top:usize)->Vec<char> {
+        if !self.line_mode.load(std::sync::atomic::Ordering::Acquire){return self.recognize(strokes,top);}
+        let groups=Self::line_groups(strokes);
+        if groups.len()<2{return self.recognize(strokes,top);}
+        let choices:Vec<_>=groups.iter().map(|g|self.recognize(g,3)).collect();
+        if choices.iter().any(Vec::is_empty){return Vec::new();}
+        let first:String=choices.iter().map(|c|c[0]).collect();let mut words=vec![first.clone()];
+        for (i,list) in choices.iter().enumerate(){for &ch in list.iter().skip(1){
+            let mut word:Vec<_>=first.chars().collect();word[i]=ch;words.push(word.into_iter().collect());
+        }}
+        let mut result=Vec::new();for word in words.into_iter().take(top){result.extend(word.chars());result.push('\0');}result
+    }
+    pub fn correct_line(&self,text:&str,strokes:&[Stroke])->bool {
+        let groups=Self::line_groups(strokes);let chars:Vec<_>=text.chars().collect();
+        if chars.len()!=groups.len() || groups.len()<2{return false;}
+        let before=self.samples();let mut changed=false;
+        for (ch,ink) in chars.into_iter().zip(&groups){
+            if self.recognize(ink,1).first().copied()!=Some(ch){self.correct(ch,ink);changed=true;}
+        }
+        if changed {self.corrections.lock().unwrap_or_else(|e|e.into_inner()).undo=Some(before);}
+        changed
+    }
+    pub fn restore_samples(&self,samples:Vec<(char,Vec<Stroke>)>)->bool {
+        if samples.len()>96 || samples.iter().any(|(_,ink)|ink.is_empty() || ink.len()>64 || ink.iter().any(|s|s.len()>64 || s.iter().any(|&(x,y)|!x.is_finite() || !y.is_finite() || x.abs()>100_000.0 || y.abs()>100_000.0))){return false;}
+        let mut c=self.corrections.lock().unwrap_or_else(|e|e.into_inner());
+        let mut builder=crate::hand::Builder::default();
+        for (ch,ink) in &samples{builder.push(*ch,0,ink);}
+        c.recognizer=crate::hand::Recognizer::from_bytes(&builder.build()).ok();c.examples=samples;c.undo=None;true
     }
 
     /// Only explicit candidate corrections teach personal shapes; bounded to this engine process.

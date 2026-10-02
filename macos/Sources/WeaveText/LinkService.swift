@@ -20,6 +20,7 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     @Published private(set) var scanning = false
     @Published private(set) var discoveryError: String?
     @Published private(set) var serviceError: String?
+    @Published private(set) var personalProfiles:[String]=[]
     @Published var selectedTarget = ""
     private let bonjour = LinkBonjour()
     private var appliedInbox: String?
@@ -189,6 +190,9 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
             pb.clearContents()
             pb.writeObjects([URL(fileURLWithPath: path) as NSURL])
             clip.wroteRemote(changeCount: pb.changeCount)
+        case .receivedPersonal(let path, let from):
+            personalProfiles.insert(path,at:0)
+            notify(title:"收到个人词库",body:"来自 " + from + "，请在互联页面合并")
         case .receivedFile(let path, let name, let from):
             let where_ = "已保存到 " + URL(fileURLWithPath: path).deletingLastPathComponent().path
             notify(title: "收到文件：\(name)", body: from.isEmpty ? where_ : "来自 \(from) · \(where_)", path: path)
@@ -245,6 +249,28 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     func pair(address: String, code: String) {
         let result = handle?.call(["op": "pair", "addrs": [Self.endpoint(address)], "code": code]) ?? [:]
         if !result.bool("ok") { serviceError = "地址或配对码无效" }
+    }
+    func sendPersonal() {
+        guard let h=handle, canSend,let engine=EngineHost.shared.engine,
+              let text=engine.features(["op":"exportPersonal"])["data"] as? String,
+              let url=writeTemp(Data(text.utf8),name:"个人资料.weaveprofile") else{return}
+        let result=h.call(["op":"sendFile","to":selectedTarget,"path":url.path,"name":"WeaveText个人资料.weaveprofile","mime":"application/x-weavetext-personal"])
+        if result.bool("ok") {tempFiles[result.str("id")]=url} else {try? FileManager.default.removeItem(at:url);serviceError="设备不在线"}
+    }
+    func importPersonal(_ path:String) {
+        guard let engine=EngineHost.shared.engine else{return}
+        DispatchQueue.global(qos:.userInitiated).async { [weak self] in
+            let data=(try? Data(contentsOf:URL(fileURLWithPath:path))) ?? Data()
+            let result=data.count<=8*1024*1024 ? engine.features(["op":"importPersonal","data":String(data:data,encoding:.utf8) ?? ""]) : [:]
+            DispatchQueue.main.async {
+                if result.bool("ok") {
+                    self?.personalProfiles.removeAll {$0==path}
+                    try? FileManager.default.removeItem(atPath:path)
+                    self?.state.transfers=self?.state.transfers.map {t in var t=t;if t.path==path {t.path=nil};return t} ?? []
+                    self?.serviceError="个人词库与偏好已合并"
+                } else {self?.serviceError=result.str("error").isEmpty ? "个人资料格式不正确" : result.str("error")}
+            }
+        }
     }
     func chooseInbox() {
         let panel = NSOpenPanel()

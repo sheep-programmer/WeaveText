@@ -61,6 +61,13 @@ fn get_string(env: &mut JNIEnv, s: &JString) -> Option<String> {
     env.get_string(s).ok().map(|s| s.into())
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeFeatures(mut env:JNIEnv,_c:JClass,h:jlong,command:JString)->jni::sys::jstring {
+    let result=get_string(&mut env,&command).and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())
+        .map(|cmd|with_engine(h,serde_json::json!({"ok":false}),|e|e.features(&cmd))).unwrap_or(serde_json::json!({"ok":false}));
+    env.new_string(result.to_string()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 struct Enc(Vec<u8>);
 
 impl Enc {
@@ -406,7 +413,7 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandRecogn
     let Some(strokes) = read_strokes(&env, &xy, &lens) else { return std::ptr::null_mut() };
     // SAFETY: m 来自 nativeHandModels，从不释放。 m comes from nativeHandModels and is never freed.
     let models = unsafe { &*(m as *const std::sync::Arc<weave_dict::handnet::HandModels>) };
-    let Ok(cands) = catch_unwind(AssertUnwindSafe(|| models.recognize(&strokes, weave_engine::session::HAND_CANDIDATES))) else {
+    let Ok(cands) = catch_unwind(AssertUnwindSafe(|| models.recognize_input(&strokes, weave_engine::session::HAND_CANDIDATES))) else {
         return std::ptr::null_mut();
     };
     let cps: Vec<jint> = cands.into_iter().map(|c| c as jint).collect();

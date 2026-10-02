@@ -110,6 +110,9 @@ struct LinkPage: View {
                 default: link.chooseFiles()
                 }
             }.disabled(!link.canSend || (model.type == "文字" && model.text.isEmpty))
+            Button("发送个人词库与偏好") {link.sendPersonal()}.disabled(!link.canSend)
+            ForEach(link.personalProfiles,id: \.self) {path in Button("合并收到的个人词库") {link.importPersonal(path)} }
+            Text("个人资料包含常用词、候选偏好和快捷短语，由接收方手动合并，重复导入不增加次数。").font(.callout).foregroundStyle(.secondary)
             if let progress = link.queueTitle { Text(progress).foregroundStyle(.secondary) }
             if let error = link.serviceError { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
         }

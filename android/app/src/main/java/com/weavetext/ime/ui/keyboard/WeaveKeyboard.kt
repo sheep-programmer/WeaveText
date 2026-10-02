@@ -288,7 +288,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         feedback.soundVolume = WeavePrefs.soundVolume(prefs)
         previewEnabled = WeavePrefs.keyPreview(prefs)
         keyboardView.splitWide = WeavePrefs.splitWide(prefs)
-        keyboardView.handPauseMs = WeavePrefs.handPauseMs(prefs)
+        keyboardView.handPauseMs = if(prefs.getBoolean(WeavePrefs.HAND_LINE,false)) Long.MAX_VALUE else WeavePrefs.handPauseMs(prefs)
         applyTheme()
         applyEngineOptions()
         applySchemaPref()
@@ -443,7 +443,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             }
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
-            WeavePrefs.HAND_PAUSE -> keyboardView.handPauseMs = WeavePrefs.handPauseMs(p)
+            WeavePrefs.HAND_PAUSE, WeavePrefs.HAND_LINE -> {
+                keyboardView.handPauseMs=if(p.getBoolean(WeavePrefs.HAND_LINE,false)) Long.MAX_VALUE else WeavePrefs.handPauseMs(p)
+                controller.reset();applyEngineOptions()
+            }
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
             WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.AUTOCORRECT, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
@@ -462,6 +465,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.setOption("output.traditional", WeavePrefs.traditional(prefs))
         controller.setOption("candidates.prediction", WeavePrefs.prediction(prefs))
         controller.setOption("input.autocorrect", WeavePrefs.autocorrect(prefs))
+        controller.feature(org.json.JSONObject().put("op","setHandLine").put("on",prefs.getBoolean(WeavePrefs.HAND_LINE,false)))
         controller.autoPair = WeavePrefs.autoPair(prefs)
     }
 
@@ -925,11 +929,27 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         // A local list (9-key punctuation, a calculator result) isn't the engine's: its index can't delete a user word.
         if (localCands != null) return false
         val c = state.candidates.getOrNull(index) ?: return false
-        if (!c.isUser) return false
+        if (controller.isSensitiveField) return false
         feedback.haptic(topBar)
-        topBar.showAction("删除用户词「${c.text}」", "删除", 4000) {
-            controller.onForgetCandidate(index)
+        val mode=controller.candidatePolicy(index,c.text)
+        val content=android.widget.LinearLayout(ctx).apply {
+            orientation=android.widget.LinearLayout.VERTICAL
+            setPadding(20,12,20,12);setBackgroundColor(palette.card)
         }
+        val popup=android.widget.PopupWindow(content,metrics.dp(240f).toInt(),android.view.ViewGroup.LayoutParams.WRAP_CONTENT,true).apply {
+            inputMethodMode=android.widget.PopupWindow.INPUT_METHOD_NOT_NEEDED
+            isOutsideTouchable=true;elevation=metrics.dp(8f)
+        }
+        fun action(label:String,operation:()->Unit) {
+            content.addView(android.widget.TextView(ctx).apply {
+                text=label;textSize=16f;setTextColor(palette.label);setPadding(12,20,12,20)
+                setOnClickListener{popup.dismiss();operation()}
+            })
+        }
+        action(if(mode=="pin") "取消固定「${c.text}」" else "固定「${c.text}」为首选") {controller.candidatePolicy(index,c.text,if(mode=="pin") "" else "pin")}
+        action(if(mode=="down") "恢复正常排序" else "降低优先级") {controller.candidatePolicy(index,c.text,if(mode=="down") "" else "down")}
+        if(c.isUser) action("删除学习记录") {if(controller.loadCandidates(index,1).firstOrNull()?.text==c.text)controller.onForgetCandidate(index)}
+        popup.showAtLocation(view,android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL,0,metrics.dp(90f).toInt())
         return true
     }
 

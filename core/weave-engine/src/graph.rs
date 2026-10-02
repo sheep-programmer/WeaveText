@@ -169,7 +169,7 @@ impl SyllableGraph {
         // (same benchmark accuracy, ~5× less CPU).
         for list in &mut self.out {
             list.retain(|e| {
-                !(e.kind == EdgeKind::Abbrev && e.end < n && (inside[e.start] || longer_full[e.start]))
+                !(e.kind == EdgeKind::Abbrev && (inside[e.start] || (e.end < n && longer_full[e.start])))
             });
         }
     }
@@ -437,6 +437,7 @@ impl Letters {
                     keys.push(b);
                     boundary.push(false);
                 }
+                b'A'..=b'Z' => {keys.push(b.to_ascii_lowercase());boundary.push(false);}
                 b'\'' => {
                     if let Some(last) = boundary.last_mut() {
                         *last = true;

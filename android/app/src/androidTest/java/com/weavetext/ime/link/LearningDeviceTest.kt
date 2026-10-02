@@ -63,4 +63,54 @@ class LearningDeviceTest {
             }
         } finally { engine.close(); user.deleteRecursively() }
     }
+    @Test fun selectionReconversionAndRealDictionaryFeaturesPreserveSurroundingText() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val ctx=instrumentation.targetContext
+        val user=File(ctx.cacheDir,"features-device-${UUID.randomUUID()}")
+        val spec=DataInstaller.sourceSpec(ctx)
+        NativeEngine.createFromSpec(spec,user.path,DataInstaller.cacheKb(ctx))!!.use {engine ->
+            ActivityScenario.launch(SmokeActivity::class.java).use {scenario -> scenario.onActivity {activity ->
+                val editor=activity.findViewById<android.widget.EditText>(android.R.id.edit)
+                editor.setText("甲时乙时丙");editor.setSelection(1,2)
+                val info=EditorInfo().apply {inputType=InputType.TYPE_CLASS_TEXT;initialSelStart=1;initialSelEnd=2}
+                val connection=editor.onCreateInputConnection(info)
+                val controller=InputController {connection}
+                controller.onStartInput(info,false);controller.attachEngine(engine)
+                controller.setOption("candidates.prediction",false)
+                assertTrue(controller.reselect())
+                val i=controller.loadCandidates(0,200).indexOfFirst {it.text=="是"}
+                assertTrue(i>=0);controller.onCandidate(i)
+                assertEquals("甲是乙时丙",editor.text.toString())
+                // Same selected text at a different location must cancel, never replace the new range.
+                editor.setText("甲时乙时丙");editor.setSelection(1,2);controller.onSelectionUpdate(1,2,-1,-1)
+                assertTrue(controller.reselect())
+                val stale=controller.loadCandidates(0,200).indexOfFirst {it.text=="是"}
+                editor.setSelection(3,4);controller.onSelectionUpdate(3,4,-1,-1);controller.onCandidate(stale)
+                assertEquals("甲时乙时丙",editor.text.toString())
+                controller.reset();editor.setText("");editor.setSelection(0);controller.onSelectionUpdate(0,0,-1,-1)
+                "ken".forEach {controller.onChar(it.code)}
+                assertEquals("ken",controller.state.preedit);assertEquals("肯",controller.state.candidates.first().text)
+                val pin=controller.loadCandidates(0,200).indexOfFirst {it.text=="啃"};assertTrue(pin>=0)
+                controller.candidatePolicy(pin,"啃","pin")
+                assertEquals("啃",controller.state.candidates.first().text)
+                controller.reset()
+                "jintianreviewzhegePR".forEach {controller.onChar(it.code)}
+                assertEquals("今天review这个PR",controller.state.candidates.first().text)
+                controller.onCandidate(0);assertEquals("今天review这个PR",editor.text.toString())
+                controller.toggleChinese()
+                "recieve".forEach {controller.onChar(it.code)}
+                assertEquals("recieve",controller.state.candidates.first().text)
+                val correction=controller.loadCandidates(0,100).indexOfFirst {it.text=="receive"}
+                assertTrue(correction>0);controller.onCandidate(correction)
+                assertEquals("今天review这个PRreceive",editor.text.toString())
+                controller.onFinishInput()
+            }}
+        }
+        NativeEngine.createFromSpec(spec,user.path,DataInstaller.cacheKb(ctx))!!.use {other ->
+            "ken".forEach {other.inputChar(it.code)}
+            assertEquals("啃",other.snapshot().candidates.first().text)
+        }
+        user.deleteRecursively()
+    }
+
 }

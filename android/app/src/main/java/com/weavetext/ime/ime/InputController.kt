@@ -46,6 +46,24 @@ data class ImeState(
  * only commitText. This sidesteps composing-text quirks in chat apps, WebViews, etc.
  */
 class InputController(private val icProvider: () -> InputConnection?) {
+    private var reconversion: Triple<String,Int,Int>? = null
+    private var reconversionSchema = "pinyin"
+    fun feature(command: org.json.JSONObject): org.json.JSONObject = runCatching { org.json.JSONObject(engine?.features(command.toString()) ?: "{}") }.getOrDefault(org.json.JSONObject())
+    fun reselect(): Boolean {
+        if (isSensitiveField || state.composing) return false
+        val text=icProvider()?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() } ?: return false
+        reconversionSchema=if(state.chinese) chineseSchema else "english"
+        if (!feature(org.json.JSONObject().put("op","reconvert").put("text",text)).optBoolean("ok")) return false
+        reconversion=Triple(text,editor.selStart,editor.selEnd)
+        refresh(); return true
+    }
+    fun candidatePolicy(index: Int, text: String, mode: String? = null): String {
+        val command=org.json.JSONObject().put("op","policy").put("index",index).put("text",text)
+        if (mode!=null) command.put("mode",mode)
+        val result=feature(command)
+        if (mode!=null) refresh()
+        return result.optString("mode")
+    }
     fun onContent(uri: android.net.Uri, mime: String, name: String): Boolean {
         val editor = editorInfo ?: return false
         if (isSensitiveField) return false
@@ -159,6 +177,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     // ---------------------------------------------------------------- lifecycle
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        reconversion = null
         editorInfo = info
         engine?.let(::syncClock)
         editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
@@ -244,6 +263,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onFinishInput() {
+        if(reconversion!=null){engine?.setSchema(reconversionSchema);reconversion=null}
         engine?.let { it.clear(); it.flush() }
         pendingKeys.clear()
         lastSpaceAt = 0L
@@ -259,6 +279,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * (0 = none), used by the engine to fix taps on the neighbouring key.
      */
     fun onChar(codePoint: Int, near: Int = 0, closeness: Float = 0f) {
+        if (reconversion!=null) {engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh()}
         if (keep(PendingKey(PendingKey.CHAR, codePoint, near, closeness))) return
         val e = engine
         lastSpaceAt = 0L
@@ -295,8 +316,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 直接上屏一段文字（符号面板、表情、剪贴板）。 Commit literal text (symbols, emoji, clips). */
     fun onText(text: String) {
+        if(reconversion!=null){engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh()}
         if (keep(PendingKey(PendingKey.TEXT, text = text))) return
         val e = engine
+        if (text.length==1 && text[0].isUpperCase() && state.chinese && state.schema=="pinyin" && e?.isComposing()==true && e.inputChar(text[0].code)) {refresh();return}
         // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串；字母（实体键盘的大写字母）不进。
         // Pinyin v mode: digits and operators keep composing; letters (uppercase from a physical keyboard) don't.
         if (e != null && text.length == 1 && !text[0].isLetter() && state.chinese && state.schema == "pinyin" && e.isComposing() &&
@@ -510,6 +533,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * off, e.g. on a physical keyboard).
      */
     fun onSpace(periodShortcut: Boolean = true) {
+        if(reconversion!=null){onCandidate(0);return}
         if (keep(PendingKey(PendingKey.SPACE))) return
         val e = engine
         dismissPredictions()
@@ -536,6 +560,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private val periodAllowed get() = !state.chinese && !state.passwordField && !latinField && !keyEventsOnly
 
     fun onEnter() {
+        if(reconversion!=null){onCandidate(0);return}
         if (keep(PendingKey(PendingKey.ENTER))) return
         val e = engine
         lastSpaceAt = 0L
@@ -560,7 +585,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onCandidate(index: Int) {
+        reconversion?.let { old ->
+            if (icProvider()?.getSelectedText(0)?.toString()!=old.first || (old.second>=0 && editor.selectionKnown && (editor.selStart!=old.second || editor.selEnd!=old.third))) {
+                engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh();return
+            }
+        }
         engine?.select(index)
+        if(reconversion!=null) engine?.setSchema(reconversionSchema)
+        reconversion=null
         refresh()
     }
 
@@ -741,6 +773,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
     fun reset() {
+        if(reconversion!=null){engine?.setSchema(reconversionSchema);reconversion=null}
         engine?.clear()
         pendingKeys.clear()
         refresh()

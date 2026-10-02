@@ -118,6 +118,7 @@ fn main() {
     }
     let paths = Paths {
         pinyin_lexicon: opt("pinyin.wvl"),
+        english_lexicon: opt("english.wvl"),
         gram_model: arg(&args, "--gram").map(|g| Source::file(PathBuf::from(g))),
         ..Default::default()
     };

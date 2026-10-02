@@ -2,6 +2,7 @@ package com.weavetext.ime.nativetest
 
 import com.weavetext.ime.voice.local.NativeAsr
 import com.weavetext.ime.voice.local.NativeAsrModels
+import com.weavetext.ime.voice.local.HotwordConfig
 import com.weavetext.ime.voice.local.TwoPassListener
 import com.weavetext.ime.voice.local.TwoPassRecognizer
 import org.junit.Assert.assertEquals
@@ -66,6 +67,34 @@ class NativeAsrTest {
                 assertTrue(rec.text(), rec.text().lowercase().contains("in time"))
             } finally { rec.release() }
         }
+    }
+
+    @Test fun personalChineseAndEnglishHotwordsDecodeUsingTheOriginalTokenizer() {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val dir=root.resolve("sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile")
+        assumeTrue(File(runtime,"libsherpa-onnx-c-api.dylib").isFile && dir.resolve("encoder-epoch-99-avg-1.int8.onnx").isFile)
+        val vocabulary=File(System.getProperty("weave.data")).parentFile.parentFile.resolve("android/app/src/main/assets/models/vocab-mixed-standard.txt")
+        assumeTrue(vocabulary.isFile)
+        NativeAsrModels.load(runtime)
+        val hotwords=File.createTempFile("weave-voice-words",".txt").apply {writeText("准时\nON TIME\nIN TIME\n")}
+        val stream=NativeAsrModels.streamingTransducer("$dir/encoder-epoch-99-avg-1.int8.onnx","$dir/decoder-epoch-99-avg-1.onnx","$dir/joiner-epoch-99-avg-1.int8.onnx","$dir/tokens.txt",hotwords=HotwordConfig(hotwords.path,"cjkchar+bpe",vocabulary.path))
+        val final=mutableListOf<String>()
+        val recognizer=TwoPassRecognizer(stream,null,null,object:TwoPassListener {
+            override fun onPartial(text:String){}
+            override fun onFinal(text:String){final+=text}
+        })
+        try {
+            val pcm=samples(dir.resolve("test_wavs/4.wav"))
+            repeat(2) { recording ->
+                if(recording==1) hotwords.writeText("准时\nON TIME\nIN TIME\n今天\n")
+                final.clear()
+                stream.startSession()
+                for(i in pcm.indices step 640)recognizer.feed(pcm.copyOfRange(i,minOf(i+640,pcm.size)))
+                recognizer.finish()
+                val text=final.joinToString(" ");println("personal hotwords recording $recording: $text")
+                assertTrue(text,text.contains("准时"));assertTrue(text,text.lowercase().contains("in time"));assertTrue(text,text.lowercase().contains("on time"))
+            }
+        } finally {recognizer.release();hotwords.delete()}
     }
 
     @Test fun bilingualStreamingModelsKeepActualWordsAcrossLanguages() {

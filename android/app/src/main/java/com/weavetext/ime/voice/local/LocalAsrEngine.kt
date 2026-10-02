@@ -112,13 +112,19 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
                 helpText = if (punctInstalled) "为识别结果补全标点" else "需先在「离线模型」中下载「智能标点」",
             ),
         )
-        return if (modelId == null) fields else fields.filter { it.key == KEY_PUNCT }
+        val vocabularyFields=listOf(
+            ConfigField(VoiceHotwords.ENABLED,"个人语音热词","switch",section="词汇",defaultValue="false",helpText="仅支持实时中英 Zipformer：中文热词可用，标准中英模型同时支持英文热词；其他模型保持原识别"),
+            ConfigField(VoiceHotwords.TEXT,"自定义人名和术语","text",section="词汇",helpText="逗号或换行分隔；也会读取本机常用词，全程不上传")
+        )
+        return (if (modelId == null) fields else fields.filter { it.key == KEY_PUNCT }) + vocabularyFields
     }
 
     fun getConfig(key: String): String? = when (key) {
         KEY_STREAM -> streamId()?.let { id -> models.catalog.find(id)?.name } ?: NONE_LABEL
         KEY_FINAL -> finalId()?.let { id -> models.catalog.find(id)?.name } ?: NONE_LABEL
         KEY_PUNCT -> prefs.getBoolean(KEY_PUNCT, true).toString()
+        VoiceHotwords.ENABLED -> prefs.getBoolean(VoiceHotwords.ENABLED,false).toString()
+        VoiceHotwords.TEXT -> prefs.getString(VoiceHotwords.TEXT, "")
         else -> null
     }
 
@@ -129,6 +135,8 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
             KEY_FINAL -> if (value == NONE_LABEL) choice.setFinal(null)
                 else offlineModels().firstOrNull { it.name == value }?.let { choice.setFinal(it.id) }
             KEY_PUNCT -> prefs.edit().putBoolean(KEY_PUNCT, value == "true").apply()
+            VoiceHotwords.ENABLED -> prefs.edit().putBoolean(VoiceHotwords.ENABLED,value=="true").apply()
+            VoiceHotwords.TEXT -> prefs.edit().putString(VoiceHotwords.TEXT,value.take(8000)).apply()
         }
     }
 
@@ -248,7 +256,8 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
         if (sid == null && fid == null) error("没有可用的识别模型")
         var punct = punctuationOn()
         val detectorId = VAD_ID.takeIf { models.isAvailable(VAD_ID) }
-        val requestKey = "$sid|$fid|${if (punct) PUNCT_ID else null}|$detectorId"
+        val hotwords=VoiceHotwords.prepare(ctx,sid?.let {models.catalog.find(it)},sid?.let {models.location(it)})
+        val requestKey = "$sid|$fid|${if (punct) PUNCT_ID else null}|$detectorId|${hotwords?.key}"
         loaded?.let { if (it.requestKey == requestKey) return it }
         val budget = memoryBudget()
         val size = { id: String? -> id?.let { models.catalog.find(it)?.installedSize } ?: 0L }
@@ -273,7 +282,7 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
                 val reserve = if (fid?.let { models.catalog.find(it)?.arch } == "whisper") speechBytes * 3 / 2 + 64L * 1024 * 1024
                     else speechBytes * 6 / 5 + 32L * 1024 * 1024
                 if (reserve > memoryBudget()) error("当前内存不足，请减少同时使用的模型或选择较小的模型")
-                streaming = sid?.let { id -> SherpaModels.streaming(models.catalog.find(id)!!, models.location(id)!!, threads) }
+                streaming = sid?.let { id -> SherpaModels.streaming(models.catalog.find(id)!!, models.location(id)!!, threads, hotwords) }
                 offline = fid?.let { id -> SherpaModels.offline(models.catalog.find(id)!!, models.location(id)!!, threads) }
                 detector = detectorId?.let { models.location(it)?.let(SherpaModels::detector) }
                 p = if (punct) models.location(PUNCT_ID)?.let { SherpaModels.punctuator(it) } else null

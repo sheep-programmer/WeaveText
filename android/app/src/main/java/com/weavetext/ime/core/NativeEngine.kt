@@ -6,6 +6,7 @@ import java.nio.ByteBuffer
  * 输入控制器用到的内核接口（测试里可用假实现替换）。 The engine surface the input controller uses (fakeable in tests).
  */
 interface KeyEngine {
+    fun features(command: String): String = "{}"
     fun setSchema(key: String): Boolean
     fun setOption(key: String, value: Boolean): Boolean
     fun inputChar(codePoint: Int): Boolean
@@ -53,6 +54,7 @@ interface KeyEngine {
  * Thin JNI wrapper over the Rust engine. Call from a single thread (the IME main thread).
  */
 class NativeEngine private constructor(private var handle: Long) : KeyEngine, AutoCloseable {
+    override fun features(command: String): String = nativeFeatures(handle, command).orEmpty()
 
     val isValid: Boolean get() = handle != 0L
 
@@ -184,6 +186,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         }
 
         @JvmStatic private external fun nativeCreate(dataDir: String, userDir: String): Long
+        @JvmStatic private external fun nativeFeatures(h: Long, command: String): String?
         @JvmStatic private external fun nativeCreateFromSpec(spec: String, userDir: String, cacheKb: Int): Long
         @JvmStatic private external fun nativeTrim(h: Long)
         @JvmStatic private external fun nativeDestroy(h: Long)

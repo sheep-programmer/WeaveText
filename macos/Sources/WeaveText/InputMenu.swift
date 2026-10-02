@@ -24,6 +24,8 @@ enum InputMenu {
         }
         menu.addItem(.separator())
         add("繁体输出", #selector(WeaveInputController.toggleTraditional(_:))).state = traditional ? .on : .off
+        add("打开手写窗口…", #selector(WeaveInputController.openHandwriting(_:)))
+        add("重新转换所选文字", #selector(WeaveInputController.reconvertSelection(_:)))
         add("织文互联…", #selector(WeaveInputController.openLink(_:)))
         if !phones.isEmpty {
             let status = NSMenuItem(title: "已连接 " + phones.joined(separator: "、"), action: nil, keyEquivalent: "")

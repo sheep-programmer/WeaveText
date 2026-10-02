@@ -123,6 +123,10 @@ fun LinkScreen() {
         }
         if (s.pairingCode.isNotEmpty()) Hint("配对码 ${s.pairingCode}（2 分钟有效）\n本机地址：${s.addrs.joinToString(" · ")}")
         s.serviceError?.let { Hint(it) }
+        s.syncMessage?.let { Hint(it) }
+        if (s.connected.isNotEmpty()) GroupCard {
+            s.connected.forEach {peer->SettingRow("发送个人词库到 ${peer.name}","包含常用词、候选偏好与快捷短语；对方接收后手动合并",subtitleMaxLines=2,onClick={link.sendPersonal(peer.id)}) {Chevron()} }
+        }
 
         GroupTitle("我的设备")
         GroupCard {
@@ -216,6 +220,10 @@ private fun TransferRow(t: LinkTransfer, link: LinkController) {
             LinearProgressIndicator(progress = { t.fraction }, modifier = Modifier.fillMaxWidth())
         }
         if (t.incoming && t.path != null) {
+            if (t.mime==com.weavetext.ime.link.LinkManager.PERSONAL_MIME) {
+                TextButton(onClick={link.importPersonal(t.id)}) {Text("合并个人资料")}
+                return@Column
+            }
             if (t.state == LinkTransfer.State.FAILED) TextButton(onClick = { link.retrySave(t.id) }) { Text("重新保存") }
             TextButton(onClick = {
                 val uri = if (t.path.startsWith('/')) androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", java.io.File(t.path)) else Uri.parse(t.path)

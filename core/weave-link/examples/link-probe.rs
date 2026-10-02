@@ -11,12 +11,17 @@ fn main() {
     // A real, decodable 1x1 PNG and arbitrary bytes.
     let png: Vec<u8> = vec![137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,120,156,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130];
     let binary: Vec<u8> = (0..90_000).map(|n|(n%253) as u8).collect();
+    let profile=json!({"format":"weavetext-personal-1","personal":{"device":"test-mac","clock":1000,"records":{
+        "snippet:pc":{"clock":999,"device":"test-mac","value":"电脑 {date}"},
+        "pin:pinyin:shi":{"clock":1000,"device":"test-mac","value":"嗜"}
+    }}});
+    fs::write(dir.join("personal.weaveprofile"),profile.to_string()).unwrap();
     fs::write(dir.join("photo.png"), png).unwrap(); fs::write(dir.join("payload.bin"), binary).unwrap();
     loop {
         if let Some(event) = link.poll(Duration::from_secs(1)) {
             if event["type"] != "idle" { println!("{event}"); }
             if event["type"] == "text" && event["text"] == "device-ready" {
-                for (name,mime,clip) in [("photo.png","image/png",true),("payload.bin","application/octet-stream",true),("payload.bin","application/octet-stream",false)] {
+                for (name,mime,clip) in [("photo.png","image/png",true),("payload.bin","application/octet-stream",true),("payload.bin","application/octet-stream",false),("personal.weaveprofile","application/x-weavetext-personal",false)] {
                     link.call(&json!({"op":"sendFile","path":dir.join(name),"name":name,"mime":mime,"clip":clip}));
                 }
             }

@@ -7,6 +7,7 @@ final class UserWordsModel: ObservableObject {
     @Published private(set) var words: [UserWord] = []
     @Published private(set) var count = 0
     @Published var confirmClear = false
+    @Published var confirmHandClear = false
 
     private var engine: WeaveSession? { EngineHost.shared.engine }
 
@@ -42,6 +43,7 @@ struct DictionaryPage: View {
                     } label: {
                         LabeledContent("用户词", value: "\(model.count) 个")
                     }
+                    NavigationLink("快捷短语与模板") {ShortcutsPage()}
                     LabeledContent("系统词库", value: "随应用内置")
                     NavigationLink {
                         DictPacksPage(store: packs)
@@ -56,6 +58,10 @@ struct DictionaryPage: View {
                     }
                 }
                 CloudWordsSection(cloud: cloud)
+                Section("手写学习") {
+                    Button("清空个人手写字形…",role:.destructive) {model.confirmHandClear=true}
+                    Text("清空后恢复内置识别，也取消手写候选的固定与降权。")
+                }
                 Section {
                     HStack {
                         Spacer()
@@ -69,6 +75,10 @@ struct DictionaryPage: View {
             .formStyle(.grouped)
         }
         .onAppear { model.reload() }
+        .alert("清空个人手写字形？",isPresented:$model.confirmHandClear) {
+            Button("清空",role:.destructive) {EngineHost.shared.engine?.features(["op":"clearHand"])}
+            Button("取消",role:.cancel) {}
+        }
         .alert("清空全部用户词？", isPresented: $model.confirmClear) {
             Button("清空", role: .destructive) {
                 model.clearAll()
@@ -249,5 +259,38 @@ struct PackRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+final class ShortcutsModel: ObservableObject {
+    @Published var code=""
+    @Published var text=""
+    @Published var message=""
+    @Published var items:[(String,String)]=[]
+    func reload() {
+        items=(EngineHost.shared.engine?.features(["op":"snippets"]).objects("items") ?? []).map {($0.str("code"),$0.str("text"))}
+    }
+    func save() {
+        let ok=EngineHost.shared.engine?.features(["op":"setSnippet","code":code,"text":text]).bool("ok") ?? false
+        message=ok ? "已保存" : "输入码只支持 1–24 个字母";reload()
+    }
+}
+struct ShortcutsPage: View {
+    @StateObject private var model=ShortcutsModel()
+    var body: some View {
+        Form {
+            Section("已有短语") {
+                ForEach(Array(model.items.enumerated()),id:\.offset) { _,item in
+                    Button(item.0+" · "+String(item.1.prefix(40))) {model.code=item.0;model.text=item.1}
+                }
+            }
+            Section("新增或修改") {
+                TextField("输入码，例如 dz",text:$model.code)
+                TextEditor(text:$model.text).frame(minHeight:100)
+                Text("{date} 自动填日期；清空内容并保存即可删除。点击候选只插入内容，不添加空格。")
+                Button("保存") {model.save()}
+                if !model.message.isEmpty {Text(model.message)}
+            }
+        }.formStyle(.grouped).navigationTitle("快捷短语与模板").onAppear {model.reload()}
     }
 }

@@ -73,6 +73,7 @@ char *weave_user_words_json(WeaveEngine *h, const char *query, uint32_t offset, 
 bool weave_delete_user_word(WeaveEngine *h, const char *pinyin, const char *text);
 bool weave_clear_user_words(WeaveEngine *h);
 uint32_t weave_import_user_words(WeaveEngine *h, const char *text);
+char *weave_features_json(WeaveEngine *h, const char *command);
 
 /* ---- 织文互联 / WeaveLink（命令与事件见 core/weave-link/src/lib.rs） ---- */
 typedef struct WeaveLink WeaveLink;

@@ -6,6 +6,33 @@ private let dataDir = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().appendingPathComponent("../../../data/build").standardized.path
 
 @Suite(.serialized) struct EngineSmokeTests {
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func mixedInputPinningReconversionAndIndependentHandRecognition() throws {
+        let user=try tempDir("features")
+        defer {try? FileManager.default.removeItem(at:user)}
+        let e=try #require(WeaveSession(dataDir:dataDir,userDir:user.path))
+        for c in "ken" {_ = e.input(c)}
+        #expect(e.snapshot().preedit=="ken")
+        let i=try #require(e.candidates(offset:0,limit:200).firstIndex {$0.text=="啃"})
+        #expect(e.features(["op":"policy","index":i,"text":"啃","mode":"pin"]).bool("ok"))
+        #expect(e.candidates(offset:0,limit:1).first?.text=="啃")
+        e.clear()
+        for c in "jintianreviewzhegePR" {_ = e.input(c)}
+        #expect(e.snapshot().candidates.first?.text=="今天review这个PR")
+        let before=e.snapshot()
+        let ink:[[[Float]]]=[[[100,200],[300,200]],[[200,100],[200,300]]]
+        let recognition=e.features(["op":"handRecognize","strokes":ink])
+        #expect(recognition.bool("ok"))
+        #expect(e.snapshot().preedit==before.preedit)
+        #expect(!e.features(["op":"handApply","strokes":ink,"codes":recognition["codes"] ?? []]).bool("ok"))
+        e.clear()
+        #expect(e.features(["op":"reconvert","text":"时"]).bool("ok"))
+        #expect(e.candidates(offset:0,limit:100).contains {$0.text=="是"})
+        e.setSchema("english")
+        for c in "recieve" {_ = e.input(c)}
+        #expect(e.snapshot().candidates.contains {$0.text=="receive"})
+    }
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func chosenSinglesPersistAndEnglishWordsCommitWithoutSpaces() throws {
         let user = try tempDir("personal")

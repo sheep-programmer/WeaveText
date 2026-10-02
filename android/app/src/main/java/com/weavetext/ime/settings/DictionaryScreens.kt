@@ -104,6 +104,7 @@ fun DictionaryScreen() {
             ) { ValueChevron(if (installed.isEmpty()) "" else "${installed.size} 个") }
         }
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
+        GroupCard { PersonalShortcutsRow() }
         CloudWordsCard()
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard {

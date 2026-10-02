@@ -5,6 +5,8 @@
 //! The UI feeds keys to [`Engine`] and reads back a [`Snapshot`] (commit text, preedit,
 //! candidates).
 
+mod features;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -375,6 +377,7 @@ pub struct Engine {
     english: Option<Lexicon>,
     user_pinyin: UserDict,
     user_english: UserDict,
+    personal: crate::personal::Personal,
     schema: Schema,
     pub options: Options,
 
@@ -401,6 +404,7 @@ pub struct Engine {
     hand: Option<std::sync::Arc<weave_dict::handnet::HandModels>>,
     /// 当前笔画的候选字，以及是按几笔识别出来的。 Candidates of the current strokes and the stroke count they are for.
     hand_cands: (Vec<char>, usize),
+    hand_words: Vec<String>,
     /// 当前这个字已写的笔画。 Strokes of the character being written.
     hand_strokes: Vec<weave_dict::hand::Stroke>,
     /// 本次刷新最多生成的候选数。 Candidate budget for the current refresh.
@@ -427,6 +431,7 @@ pub struct Engine {
 /// 一次上屏的学习记录。 What one commit learned.
 struct Learned {
     english: bool,
+    extra_english: Vec<(Vec<SyllableId>,String,Option<crate::userdict::UserEntry>)>,
     words: Vec<(Vec<SyllableId>, String, Option<crate::userdict::UserEntry>)>,
     bigrams: Vec<(String, String, Option<crate::userdict::BigramStat>)>,
     choices: Vec<(Vec<SyllableId>, Option<crate::userdict::RecentChoice>)>,
@@ -478,6 +483,7 @@ impl Engine {
             english: open_lex(&paths.english_lexicon),
             user_pinyin,
             user_english,
+            personal: crate::personal::Personal::open(paths.user_dir.as_deref()),
             schema: Schema::Pinyin,
             options: Options::default(),
             raw: String::new(),
@@ -498,6 +504,7 @@ impl Engine {
             hand_src: (paths.hand.clone(), paths.hand_net.clone()),
             hand: None,
             hand_cands: (Vec::new(), 0),
+            hand_words: Vec::new(),
             hand_strokes: Vec::new(),
             cand_cap: CAND_FIRST,
             cands_more: false,
@@ -771,6 +778,7 @@ impl Engine {
             return;
         }
         if l.hand_correction { if let Some(models) = &self.hand { models.undo_correction(); } }
+        if l.hand_correction {self.save_hand_samples();}
         let user = if l.english { &mut self.user_english } else { &mut self.user_pinyin };
         for (k, w, previous) in l.words.into_iter().rev() {
             user.restore_entry(&k, &w, previous);
@@ -780,6 +788,8 @@ impl Engine {
         }
         for (key, previous) in l.choices.into_iter().rev() { user.restore_choice(&key, previous); }
         user.flush();
+        for (key,text,old) in l.extra_english.into_iter().rev(){self.user_english.restore_entry(&key,&text,old);}
+        self.user_english.flush();
     }
 
     /// 宿主直接往编辑器写了别的东西（标点、空格、符号）：之后的退格不再撤销学习，也不和前面连成新词。
@@ -873,8 +883,7 @@ impl Engine {
                     self.refresh();
                     return true;
                 }
-                let c = c.to_ascii_lowercase();
-                if c.is_ascii_lowercase() || (c == '\'' && !self.rest_raw().is_empty()) {
+                if c.is_ascii_alphabetic() || (c == '\'' && !self.rest_raw().is_empty()) {
                     if c == '\'' && self.raw.ends_with('\'') {
                         return true;
                     }
@@ -1006,7 +1015,7 @@ impl Engine {
             // 选了联想词：上屏、记住这对搭配，再接着联想。 A prediction: commit it, learn the pair, predict again.
             let Action::Table { text } = c.action else { return false };
             if self.schema == Schema::English { self.commit_english(&text, intentional); return true; }
-            let mut learned = Learned { english: false, hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
+            let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
             if let Some(prev) = self.last_word.clone() {
                 let old = self.user_pinyin.bigram(&prev, &text);
                 self.user_pinyin.learn_bigram(&prev, &text);
@@ -1025,11 +1034,13 @@ impl Engine {
         match c.action {
             Action::Table { text } => {
                 if self.schema == Schema::English { self.commit_english(&text, intentional); return true; }
-                let hand_corrected = self.schema == Schema::Hand && index > 0 && self.user_pinyin.learning;
-                if hand_corrected {
-                    if let Some(ch) = text.chars().next().filter(|_| text.chars().count() == 1) {
-                        if let Some(models) = self.hand_models() { models.correct(ch, &self.hand_strokes); }
+                let mut hand_corrected=false;
+                if self.schema==Schema::Hand && index>0 && self.user_pinyin.learning {
+                    if let Some(models)=self.hand_models() {
+                        if text.chars().count()==1 {models.correct(text.chars().next().unwrap(),&self.hand_strokes);hand_corrected=true;}
+                        else {hand_corrected=models.correct_line(&text,&self.hand_strokes);}
                     }
+                    if hand_corrected {self.save_hand_samples();}
                 }
                 // 已部分选定的字词先上屏。 Earlier partial selections go first.
                 let mut all: String = self.selected.iter().map(|s| s.text.as_str()).collect();
@@ -1038,7 +1049,7 @@ impl Engine {
                 self.commit.push_str(&out);
                 self.finish_composition();
                 if hand_corrected {
-                    self.last_learned = Some(Learned { english: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
+                    self.last_learned = Some(Learned { english: false, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
                 }
                 if self.schema == Schema::Hand {
                     self.last_word = Some(text.clone());
@@ -1212,6 +1223,7 @@ impl Engine {
         self.predicting = false;
         self.hand_strokes.clear();
         self.hand_cands = (Vec::new(), 0);
+        self.hand_words.clear();
         self.raw.clear();
         self.near.clear();
         self.t9_units.clear();
@@ -1362,7 +1374,7 @@ impl Engine {
         }
         let mut out = Vec::with_capacity(self.raw.len() - start);
         for (i, b) in self.raw.bytes().enumerate().skip(start) {
-            if b.is_ascii_lowercase() {
+            if b.is_ascii_alphabetic() {
                 out.push(self.near.get(i).copied().unwrap_or(Near::NONE));
             }
         }
@@ -1398,8 +1410,16 @@ impl Engine {
             words.extend(s.words.iter().cloned());
         }
         let mut prev = self.last_word.clone();
-        let mut learned = Learned { english: false, hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
+        let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
         for (k, w) in &words {
+            if k.is_empty() && w.chars().all(|c|c.is_ascii_alphabetic() || c=='\'') {
+                let text=w.to_ascii_lowercase();
+                if let Some(code)=table::code_key(&text.replace('\'',"")) {
+                    let old=self.user_english.get(&code,&text).cloned();self.user_english.learn(&code,&text);
+                    learned.extra_english.push((code,text,old));
+                }
+                prev=None;continue;
+            }
             let old = self.user_pinyin.get(k, w).cloned();
             self.user_pinyin.learn(k, w);
             learned.words.push((k.clone(), w.clone(), old));
@@ -1450,7 +1470,7 @@ impl Engine {
         }
         self.last_learned = self.user_pinyin.learning.then_some(learned);
         // Only commits/undo write to the log; per-key decoding stays in memory.
-        self.user_pinyin.flush();
+        self.user_pinyin.flush();self.user_english.flush();
         self.last_word = words.last().map(|(_, w)| w.clone());
         let out = self.out(&text);
         self.commit.push_str(&out);
@@ -1543,6 +1563,7 @@ impl Engine {
             _ => {}
         }
         self.decorate();
+        self.apply_personal_policies();
     }
 
     /// 手写：给出当前这个字的全部笔画（每笔是 y 向下的点列），识别并刷新候选；返回是否有候选。
@@ -1552,7 +1573,7 @@ impl Engine {
         if self.schema != Schema::Hand {
             return false;
         }
-        let cands = self.hand_models().map(|m| m.recognize(&strokes, HAND_CANDIDATES)).unwrap_or_default();
+        let cands = self.hand_models().map(|m| m.recognize_input(&strokes, HAND_CANDIDATES)).unwrap_or_default();
         self.hand_apply(strokes, cands)
     }
 
@@ -1564,6 +1585,8 @@ impl Engine {
             let templates = self.hand_src.0.as_ref().and_then(|s| weave_dict::hand::Recognizer::open(s).ok());
             let net = self.hand_src.1.as_ref().and_then(|s| weave_dict::handnet::HandNet::open(s).ok());
             let m = weave_dict::handnet::HandModels::new(templates, net);
+            m.set_line_mode(self.personal.get("hand-line")=="true");
+            if let Ok(samples)=serde_json::from_str(self.personal.get("hand-samples")){m.restore_samples(samples);}
             m.set_personal_enabled(self.user_pinyin.learning);
             if m.is_empty() {
                 return None;
@@ -1582,6 +1605,7 @@ impl Engine {
         // 开始写下一个字：收起上一个字的联想词。 Writing the next char dismisses the previous char's predictions.
         self.drop_predictions();
         self.hand_cands = (cands, strokes.len());
+        self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
         self.hand_strokes = strokes;
         self.refresh();
         !self.cands.is_empty()
@@ -1593,8 +1617,13 @@ impl Engine {
         }
         // 笔画变了（退一笔）而结果还是旧的：当场重新识别。 Strokes changed (undo) since the result: recognise again.
         if self.hand_cands.1 != self.hand_strokes.len() {
-            let cands = self.hand_models().map(|m| m.recognize(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
+            let cands = self.hand_models().map(|m| m.recognize_input(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
             self.hand_cands = (cands, self.hand_strokes.len());
+        }
+        self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
+        if !self.hand_words.is_empty(){
+            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
+            return;
         }
         for &c in &self.hand_cands.0 {
             let text = c.to_string();
@@ -1691,8 +1720,10 @@ impl Engine {
             weight: self.options.lm_weight,
             baseline: self.options.lm_baseline,
         });
+        let original:Vec<u8>=self.rest_raw().bytes().filter(u8::is_ascii_alphabetic).collect();
         let decode = |graph: &SyllableGraph| {
-            Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm }.decode()
+            let d=Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm };
+            if self.schema==Schema::Pinyin {d.decode_with_latin(self.english.as_ref(),&original,self.rest_raw(),self.user_english.learning.then_some(&self.user_english))} else {d.decode()}
         };
         let lat1 = decode(&g1);
         // 加上纠错再解一次，明显更好才采用；正常读法要靠句中简拼或原样按键才读得通、而输入里又有韵母时多半是打错了，
@@ -1709,7 +1740,7 @@ impl Engine {
         }
         let (g, keys, lat) = chosen.unwrap_or((g1, keys1, lat1));
         let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
-        let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&keys[s..e]).into_owned();
+        let raw_text = |s: usize, e: usize| String::from_utf8_lossy(if self.schema==Schema::Pinyin {&original[s..e]}else{&keys[s..e]}).into_owned();
         let mut cands = dec.candidates(&lat, &raw_text, self.cand_cap);
         // 补全或纠错胜出时，仍保留完整原拼写组出的词句（xiuba 不能只剩 xiuban 的「休班」）。
         // Keep literal full-spelling sentences when completion/correction wins (xiuba must still offer 修吧).
@@ -1733,6 +1764,21 @@ impl Engine {
                     at += 1;
                 }
                 cands.truncate(self.cand_cap);
+            }
+        }
+        if self.user_pinyin.learning && self.personal.records.range("pin:pinyin:".to_string()..)
+            .take_while(|(k,_)|k.starts_with("pin:pinyin:")).any(|(_,r)|!r.value.is_empty()) {
+            for &si in &lat.by_start[0] {
+                let span=&lat.spans[si];
+                if span.raw || span.key.is_empty() || (span.cut_short && span.end<g.len) {continue;}
+                let text=self.personal.get(&format!("pin:pinyin:{}",spell_key(&span.key)));
+                if text.is_empty() || cands.iter().any(|c|c.text==text) {continue;}
+                let user=self.user_pinyin.get(&span.key,text);
+                let system=self.pinyin.as_ref().and_then(|lex|lex.find(&span.key).and_then(|n|lex.find_entry(n,&span.key,text)));
+                if user.is_none() && system.is_none() {continue;}
+                cands.push(crate::decoder::Candidate {text:text.into(),comment:String::new(),end:span.end,key:span.key.clone(),
+                    kind:CandKind::Word,origin:if user.is_some(){crate::decoder::Origin::User}else{crate::decoder::Origin::System},
+                    words:vec![(span.key.clone(),text.into())],cost:system.map_or(32000,|entry|entry.cost as u32)});
             }
         }
         self.cands_more = cands.len() >= self.cand_cap.min(crate::decoder::MAX_CANDIDATES);
@@ -1842,7 +1888,7 @@ impl Engine {
             for (i, &cut) in span.cuts.iter().enumerate() {
                 let piece = match self.schema {
                     Schema::Pinyin => {
-                        let typed = String::from_utf8_lossy(&keys[s..cut]).into_owned();
+                        let typed = span.literal.as_ref().map(|(text,_)|text.clone()).unwrap_or_else(||String::from_utf8_lossy(&keys[s..cut]).into_owned());
                         // 打错被纠正（xhong → zhong、xain → xian、zhog → zhong）时显示纠正后的拼写并标出改动；
                         // 模糊音等本身合法的拼写、简拼和没打完的音节保持原样。
                         // Show the corrected spelling for a fixed typo (xhong → zhong, xain → xian, zhog → zhong) and
@@ -1978,6 +2024,7 @@ impl Engine {
         });
         let lower = typed.to_ascii_lowercase().replace('\'', "");
         let mut found = self.english.as_ref().map(|lex| table::lookup(lex, &lower, 80)).unwrap_or_default();
+        if found.is_empty(){if let Some(lex)=&self.english {found.extend(table::corrections(lex,&lower,12));}}
         let key = table::code_key(&lower).unwrap_or_default();
         if self.user_english.learning {
             for entry in self.user_english.prefix_entries(&key, 200) {
@@ -2014,7 +2061,7 @@ impl Engine {
             self.cands.push(Cand {
                 view: CandidateView {
                     text: text.clone(),
-                    comment: String::new(),
+                    comment: c.comment,
                     user: self.user_english.learning && self.user_english.get(&table::code_key(&c.text.replace('\'', "")).unwrap_or_default(), &c.text).is_some(),
                 },
                 action: Action::Table { text },
@@ -2025,7 +2072,7 @@ impl Engine {
     fn commit_english(&mut self, text: &str, intentional: bool) {
         let word = text.to_ascii_lowercase();
         let valid = !word.is_empty() && word.len() <= 64 && word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'');
-        let mut learned = Learned { english: true, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: false };
+        let mut learned = Learned { english: true, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: false };
         if valid && self.user_english.learning {
             let full = table::code_key(&word.replace('\'', "")).unwrap_or_default();
             let typed = table::code_key(&self.raw.to_ascii_lowercase().replace('\'', "")).unwrap_or_default();

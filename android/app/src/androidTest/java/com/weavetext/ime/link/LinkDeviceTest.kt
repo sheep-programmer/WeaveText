@@ -73,10 +73,32 @@ class LinkDeviceTest {
                 val sink = AndroidLinkSink(ctx)
                 val expected = ByteArray(90_000) { (it % 253).toByte() }
                 var returned = false
-                repeat(3) {
+                var personalReturn: String? = null
+                var personalReturned = false
+                repeat(4) {
                     var e = await(phone,"fileDone")
-                    while (!e.optBoolean("incoming")) e = await(phone,"fileDone")
+                    while (!e.optBoolean("incoming")) {
+                        if(e.optString("id")==personalReturn)personalReturned=true
+                        e = await(phone,"fileDone")
+                    }
                     val file = File(e.getString("path")); val mime = e.getString("mime")
+                    if(mime=="application/x-weavetext-personal") {
+                        assertEquals("personal-inbox",file.parentFile!!.name)
+                        val user=File(ctx.cacheDir,"profile-peer-${UUID.randomUUID()}")
+                        com.weavetext.ime.core.NativeEngine.createFromSpec(com.weavetext.ime.core.DataInstaller.sourceSpec(ctx),user.path,com.weavetext.ime.core.DataInstaller.cacheKb(ctx))!!.use {engine ->
+                            val command=JSONObject().put("op","importPersonal").put("data",file.readText()).toString()
+                            repeat(2) {assertTrue(JSONObject(engine.features(command)).getBoolean("ok"))}
+                            "shi".forEach {engine.inputChar(it.code)}
+                            assertEquals("嗜",engine.snapshot().candidates.first().text);engine.clear()
+                            assertTrue(JSONObject(engine.features("""{"op":"setSnippet","code":"phone","text":"来自手机"}""")).getBoolean("ok"))
+                            val data=JSONObject(engine.features("""{"op":"exportPersonal"}""")).getString("data")
+                            val back=File(user,"phone-personal.weaveprofile").apply {writeText(data)}
+                            val sent=JSONObject(phone.call(JSONObject().put("op","sendFile").put("path",back.path).put("name",back.name).put("mime",mime).toString()))
+                            assertTrue(sent.optBoolean("ok"));personalReturn=sent.getString("id")
+                        }
+                        user.deleteRecursively()
+                        return@repeat
+                    }
                     val complete = CountDownLatch(1)
                     var destination: String? = null; var failure: String? = null
                     instrumentation.runOnMainSync {
@@ -102,6 +124,7 @@ class LinkDeviceTest {
                         }
                     }
                 }
+                while(!personalReturned) {val event=await(phone,"fileDone");if(event.optString("id")==personalReturn)personalReturned=true}
                 ClipHistory.awaitIo(); ClipHistory.resetShared()
                 val history = LinkContent.history(ctx).list(System.currentTimeMillis())
                 assertTrue(history.any { it.mime == "image/png" }); assertTrue(history.any { it.mime == "application/octet-stream" })

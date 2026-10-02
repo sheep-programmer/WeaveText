@@ -27,12 +27,19 @@ with tempfile.TemporaryDirectory(prefix="weave-link-device-") as folder:
             "com.weavetext.ime.test/androidx.test.runner.AndroidJUnitRunner"], capture_output=True, text=True, timeout=150)
         print(result.stdout)
         if result.returncode or "FAILURES" in result.stdout or "OK (2 tests)" not in result.stdout:
-            raise RuntimeError("Android device checks failed")
+            log.flush(); print((directory / "peer.log").read_text()); raise RuntimeError("Android device checks failed")
         deadline = time.monotonic() + 10
         while not (directory / "inbox/phone-return.bin").exists() and time.monotonic() < deadline:
             time.sleep(.05)
         received = (directory / "inbox/phone-return.bin").read_bytes()
         assert received == bytes(i % 253 for i in range(90_000)), "Return transfer byte mismatch"
+        profile=directory / "state/personal-inbox/phone-personal.weaveprofile"
+        deadline=time.monotonic()+10
+        while not profile.exists() and time.monotonic()<deadline:time.sleep(.05)
+        records=json.loads(profile.read_text())["personal"]["records"]
+        assert records["snippet:phone"]["value"]=="来自手机"
+        assert records["pin:pinyin:shi"]["value"]=="嗜"
+        print("PASS: private personal profile roundtrip, merged preferences and phone shortcut")
         print("PASS: system NSD + Mac/Android image/file bytes + clipboard/history + Downloads + return transfer")
     finally:
         peer.terminate()

@@ -13,6 +13,7 @@ pub mod convert;
 pub mod decoder;
 pub mod graph;
 pub mod predict;
+pub mod personal;
 pub mod session;
 pub mod shuangpin;
 pub mod special;

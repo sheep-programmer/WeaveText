@@ -65,6 +65,10 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         keys.first { it.id == COPY }.disabled = !has
         keys.first { it.id == CUT }.disabled = !has
         pad.invalidate()
+        if(has) kb.topBar.showAction("已选中文字", "重新选词", 30000) {
+            if(kb.controller.reselect()) kb.closePanel()
+            else kb.topBar.showAction("请选择一个可读取的中文词或英文词",null,2500,null)
+        }
     }
 
     private fun onKey(id: Int) {

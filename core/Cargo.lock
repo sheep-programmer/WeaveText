@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "weave-c"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "serde_json",
  "weave-dict",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "weave-dict"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -1576,15 +1576,17 @@ dependencies = [
 
 [[package]]
 name = "weave-engine"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "ed25519-dalek",
+ "serde",
+ "serde_json",
  "weave-dict",
 ]
 
 [[package]]
 name = "weave-ffi"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "bzip2",
  "jni",
@@ -1599,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "weave-link"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "getrandom 0.2.17",
  "if-addrs",
@@ -1614,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "weave-plugin"
-version = "0.1.0-beta.12"
+version = "0.1.0-beta.13"
 dependencies = [
  "aes",
  "base64 0.22.1",

@@ -34,6 +34,7 @@ public final class VoiceSmoke extends Instrumentation {
             String text;
             if (kind.equals("prepare")) text = root.getPath();
             else if (kind.equals("stage-lite-pack")) text = stageLitePack();
+            else if (kind.equals("personal-hotwords")) text = personalHotwords();
             else if (args.getString("backend", "bundled").equals("native")) text = nativeRecognize(kind);
             else if (kind.equals("vad")) text = vad(false);
             else if (kind.startsWith("online")) text = online(kind.equals("online-bundled"));
@@ -215,19 +216,83 @@ public final class VoiceSmoke extends Instrumentation {
         } finally { call(rec, "release"); }
     }
 
+    private String personalHotwords() throws Exception {
+        boolean nativeBackend=args.getString("backend","bundled").equals("native");
+        String dir=args.getString("model");
+        String[] names={"encoder-epoch-99-avg-1.int8.onnx","decoder-epoch-99-avg-1.onnx","joiner-epoch-99-avg-1.int8.onnx"};
+        File vocabulary=new File(getTargetContext().getCacheDir(),"voice-smoke-original.vocab");
+        try(java.io.InputStream input=getTargetContext().getAssets().open("models/vocab-mixed-standard.txt")) {
+            Files.copy(input,vocabulary.toPath(),StandardCopyOption.REPLACE_EXISTING);
+        }
+        File hotwords=new File(getTargetContext().getCacheDir(),"voice-smoke-hotwords.txt");
+        Files.write(hotwords.toPath(),"准时\nON TIME\nIN TIME\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Object rec=null;Object stream=null;long handle=0;
+        Class<?> bridge=nativeBackend ? target("com.weavetext.ime.voice.local.NativeAsr") : null;
+        StringBuilder output=new StringBuilder();
+        try {
+            if(nativeBackend) {
+                loadNativeRuntime(bridge);
+                JSONObject config=new JSONObject().put("files",new org.json.JSONArray(Arrays.stream(names).map(n->dir+"/"+n).toArray()))
+                    .put("beam_paths",4).put("hotwords_file",hotwords.getPath()).put("modeling_unit","cjkchar+bpe").put("bpe_vocab",vocabulary.getPath());
+                handle=(Long)bridge.getMethod("nativeOnlineCreate",String.class,String.class,String.class,int.class,float.class,float.class,float.class)
+                    .invoke(null,"zipformer-transducer",config.toString(),dir+"/tokens.txt",2,4f,1.6f,30f);
+                if(handle==0)throw new IllegalStateException("Create failed: "+bridge.getMethod("nativeLastError").invoke(null));
+            } else {
+                Object config=config("OnlineRecognizerConfig");Object model=field(config,"modelConfig");Object transducer=field(model,"transducer");
+                set(transducer,"encoder",dir+"/"+names[0]);set(transducer,"decoder",dir+"/"+names[1]);set(transducer,"joiner",dir+"/"+names[2]);
+                set(model,"tokens",dir+"/tokens.txt");set(model,"numThreads",2);set(model,"modelingUnit","cjkchar+bpe");set(model,"bpeVocab",vocabulary.getPath());
+                set(config,"decodingMethod","modified_beam_search");set(config,"maxActivePaths",4);set(config,"hotwordsScore",2f);
+                rec=recognizer("OnlineRecognizer",config,false);
+            }
+            float[] pcm=wav(args.getString("wav"));
+            for(int recording=0;recording<2;recording++) {
+                if(recording==1)Files.write(hotwords.toPath(),"准时\nON TIME\nIN TIME\n今天\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                if(nativeBackend) {
+                    Object error=bridge.getMethod("nativeOnlineNewStream",long.class).invoke(null,handle);
+                    if(error!=null)throw new IllegalStateException(error.toString());
+                } else stream=call(rec,"createStream",new Class<?>[]{String.class},new String(Files.readAllBytes(hotwords.toPath()),java.nio.charset.StandardCharsets.UTF_8).trim().replace("\n","/"));
+                for(int i=0;i<pcm.length;i+=640) {
+                    float[] chunk=Arrays.copyOfRange(pcm,i,Math.min(i+640,pcm.length));
+                    if(nativeBackend)bridge.getMethod("nativeOnlineAccept",long.class,float[].class,int.class).invoke(null,handle,chunk,chunk.length);
+                    else {call(stream,"acceptWaveform",new Class<?>[]{float[].class,int.class},chunk,16000);decodeOnline(rec,stream);}
+                }
+                String text;
+                if(nativeBackend) {
+                    bridge.getMethod("nativeOnlineFinish",long.class).invoke(null,handle);
+                    text=(String)bridge.getMethod("nativeOnlineText",long.class).invoke(null,handle);
+                } else {
+                    call(stream,"acceptWaveform",new Class<?>[]{float[].class,int.class},new float[8000],16000);decodeOnline(rec,stream);
+                    text=(String)call(call(rec,"getResult",new Class<?>[]{stream.getClass()},stream),"getText");
+                    call(stream,"release");stream=null;
+                }
+                String lower=text.toLowerCase(java.util.Locale.ROOT);
+                if(!text.contains("准时") || !lower.contains("on time") || !lower.contains("in time"))throw new AssertionError(text);
+                output.append("recording ").append(recording).append(": ").append(text).append("\n");
+            }
+            return output.toString();
+        } finally {
+            if(handle!=0)bridge.getMethod("nativeOnlineDestroy",long.class).invoke(null,handle);
+            if(stream!=null)call(stream,"release");if(rec!=null)call(rec,"release");
+            hotwords.delete();vocabulary.delete();
+        }
+    }
+
+    private void loadNativeRuntime(Class<?> bridge) throws Exception {
+        File runtime=new File(getTargetContext().getFilesDir(),"voice-smoke-runtime");
+        Files.createDirectories(runtime.toPath());
+        for(String name:new String[]{"libonnxruntime.so","libsherpa-onnx-c-api.so"}) {
+            File dest=new File(runtime,name);
+            if(dest.exists() && !dest.setWritable(true,true))throw new IllegalStateException("Cannot replace "+dest);
+            Files.copy(new File(args.getString("runtime"),name).toPath(),dest.toPath(),StandardCopyOption.REPLACE_EXISTING);
+            if(!dest.setReadOnly())throw new IllegalStateException("Cannot protect "+dest);
+        }
+        Object error=bridge.getMethod("nativeLoad",String.class).invoke(null,runtime.getPath());
+        if(error!=null)throw new IllegalStateException(error.toString());
+    }
+
     private String nativeRecognize(String kind) throws Exception {
         Class<?> bridge = target("com.weavetext.ime.voice.local.NativeAsr");
-        // Downloaded runtime libraries normally live in private storage, with read-only permissions.
-        File runtime = new File(getTargetContext().getFilesDir(), "voice-smoke-runtime");
-        Files.createDirectories(runtime.toPath());
-        for (String name : new String[]{"libonnxruntime.so", "libsherpa-onnx-c-api.so"}) {
-            File dest = new File(runtime, name);
-            if (dest.exists() && !dest.setWritable(true, true)) throw new IllegalStateException("Cannot replace " + dest);
-            Files.copy(new File(args.getString("runtime"), name).toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            if (!dest.setReadOnly()) throw new IllegalStateException("Cannot protect " + dest);
-        }
-        Object error = bridge.getMethod("nativeLoad", String.class).invoke(null, runtime.getPath());
-        if (error != null) throw new IllegalStateException(error.toString());
+        loadNativeRuntime(bridge);
         if (kind.equals("vad")) return vad(true);
         String dir = args.getString("model");
         boolean online = kind.startsWith("online");

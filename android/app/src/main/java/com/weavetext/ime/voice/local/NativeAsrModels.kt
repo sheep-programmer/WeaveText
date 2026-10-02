@@ -9,6 +9,8 @@ import java.io.File
  * Recognizers over [NativeAsr] (the downloaded runtime) with the same settings as the offline-voice build's
  * sherpa-onnx adapters, so both builds recognise identically. File paths only, no Android: desktop tests use it.
  */
+data class HotwordConfig(val file:String,val unit:String,val vocabulary:String="",val key:String=file)
+
 internal object NativeAsrModels {
     private const val THREADS = 2
 
@@ -46,9 +48,9 @@ internal object NativeAsrModels {
     }
 
     fun streamingTransducer(encoder: String, decoder: String, joiner: String, tokens: String,
-        threads: Int = THREADS, beamPaths: Int = 4): StreamingAsr =
+        threads: Int = THREADS, beamPaths: Int = 4, hotwords:HotwordConfig? = null): StreamingAsr =
         streaming("zipformer-transducer", org.json.JSONObject().put("files", org.json.JSONArray(listOf(encoder, decoder, joiner)))
-            .put("beam_paths", beamPaths).toString(), tokens, threads)
+            .put("beam_paths", beamPaths).put("hotwords_file",hotwords?.file.orEmpty()).put("modeling_unit",hotwords?.unit.orEmpty()).put("bpe_vocab",hotwords?.vocabulary.orEmpty()).toString(), tokens, threads)
 
     /** 非流式识别器（终稿）。 Offline recognizer for the final pass. */
     fun offline(arch: String, model: String, tokens: String, threads: Int = THREADS): OfflineAsr {

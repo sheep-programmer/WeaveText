@@ -225,6 +225,7 @@ public enum LinkEffect: Equatable, Sendable {
     case receivedClipImage(path: String)
     case receivedClipFile(path: String, name: String, mime: String)
     case receivedFile(path: String, name: String, from: String)
+    case receivedPersonal(path: String, from: String)
     /// 本机发出的一个文件结束了（成功或失败），发送队列可以继续。 An outgoing file finished; the queue may go on.
     case outgoingFinished(id: String, ok: Bool)
 }
@@ -304,6 +305,7 @@ public struct LinkState: Equatable, Sendable {
             }
             guard incoming else { return [.outgoingFinished(id: id, ok: true)] }
             guard let path else { return [] }
+            if mime=="application/x-weavetext-personal" {return [.receivedPersonal(path:path,from:from)]}
             if clip && mime.hasPrefix("image/") { return [.receivedClipImage(path: path)] }
             if clip { return [.receivedClipFile(path: path, name: name, mime: mime)] }
             return [.receivedFile(path: path, name: name, from: from)]

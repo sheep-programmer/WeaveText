@@ -92,6 +92,12 @@ public final class WeaveSession {
 
     public var userWordCount: Int { Int(weave_user_word_count(handle)) }
 
+    public func features(_ command: [String: Any]) -> [String: Any] {
+        guard let bytes=try? JSONSerialization.data(withJSONObject:command),let text=String(data:bytes,encoding:.utf8),
+              let response=take(weave_features_json(handle,text)),let data=response.data(using:.utf8) else{return [:]}
+        return (try? JSONSerialization.jsonObject(with:data)) as? [String:Any] ?? [:]
+    }
+
     public func userWords(query: String, offset: Int = 0, limit: Int = 500) -> [UserWord] {
         decode([UserWord].self, weave_user_words_json(handle, query, UInt32(offset), UInt32(limit))) ?? []
     }

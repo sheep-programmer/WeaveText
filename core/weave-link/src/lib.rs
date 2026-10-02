@@ -615,7 +615,7 @@ fn handle(inner: &Inner, conn: &Conn, m: Message) -> Result<(), String> {
             let id = m.header["id"].as_str().ok_or("offer id")?.to_string();
             let name = safe_name(m.header["name"].as_str().unwrap_or("file"));
             let clip = m.header["clip"].as_bool().unwrap_or(false);
-            let dir = if clip { inner.state_dir.join("clip") } else { inner.inbox.lock().unwrap().clone() };
+            let dir = if m.header["mime"]=="application/x-weavetext-personal" {inner.state_dir.join("personal-inbox")} else if clip { inner.state_dir.join("clip") } else { inner.inbox.lock().unwrap().clone() };
             fs::create_dir_all(&dir).map_err(err)?;
             let part = dir.join(format!(".{id}.part"));
             let file = File::create(&part).map_err(err)?;

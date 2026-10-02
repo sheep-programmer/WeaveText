@@ -78,6 +78,8 @@ pub struct Span {
     pub usr: Option<UNodeId>,
     /// 原样输出的按键。 Raw keys (no syllable).
     pub raw: bool,
+    /// Protected Latin fragment participating in the same sentence lattice as Chinese words.
+    pub literal: Option<(String,u32)>,
     /// 最后一个音节是句中简拼，且同一位置本可以读成更长的完整音节（如 lvse 里的 s）。
     /// 这种跨度只用于组句，不单独列为候选。
     /// Last syllable is a mid-input abbreviation although a longer full syllable starts at the
@@ -353,6 +355,53 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    pub fn decode_with_latin(&self,english:Option<&Lexicon>,original:&[u8],raw_input:&str,english_user:Option<&UserDict>)->Lattice {
+        let mut lat=self.decode();
+        if original.len()!=self.graph.len{return lat;}
+        if !original.iter().any(u8::is_ascii_uppercase) {
+            let mut full=vec![false;self.graph.len+1];full[0]=true;
+            for at in 0..self.graph.len {
+                if full[at] {for edge in &self.graph.out[at] {if edge.kind==EdgeKind::Full {full[edge.end]=true;}}}
+            }
+            if full[self.graph.len] {return lat;}
+        }
+        let english_user=english_user.filter(|u|u.entry_count()>0);
+        let before=lat.spans.len();
+        let positions:Vec<_>=raw_input.bytes().enumerate().filter(|(_,b)|b.is_ascii_alphabetic()).map(|(i,_)|i).collect();
+        for start in 0..original.len() {
+            let mut node=Some(ROOT);
+            // Latin homographs of complete Chinese readings must not steal ordinary Chinese input.
+            let mut chinese=vec![false;original.len()+1];chinese[start]=true;
+            for at in start..(start+32).min(original.len()) {
+                if chinese[at] {for edge in &self.graph.out[at] {
+                    if edge.kind==crate::graph::EdgeKind::Full {chinese[edge.end]=true;}
+                }}
+            }
+            for end in start+1..=(start+32).min(original.len()) {
+                let b=original[end-1];
+                if !b.is_ascii_alphabetic(){break;}
+                node=node.and_then(|n|english.and_then(|lex|lex.child(n,weave_dict::lexicon::letter_sym(b.to_ascii_lowercase())?)));
+                let slice=&original[start..end];
+                let capitals=slice.iter().all(u8::is_ascii_uppercase);
+                if node.is_none() && english_user.is_none() && !capitals {break;}
+                if !capitals && chinese[end] {continue;}
+                let spelling=String::from_utf8_lossy(slice).to_ascii_lowercase();
+                let known=node.and_then(|n|english.and_then(|lex|lex.entries(n).next())).filter(|e|end-start>=3 && e.cost<=13_000
+                    && weave_dict::syllable::id_of(&spelling).is_none());
+                let learned=english_user.is_some_and(|u|crate::table::code_key(&spelling).is_some_and(|key|u.get(&key,&spelling).is_some()));
+                if !capitals && known.is_none() && !learned {continue;}
+                let text=if positions.len()==original.len(){raw_input[positions[start]..positions[end-1]+1].to_string()}else{String::from_utf8_lossy(slice).into_owned()};
+                let si=lat.spans.len();
+                lat.spans.push(Span{start,end,key:Vec::new(),cuts:vec![end],penalty:0,sys:Nodes::EMPTY,usr:None,raw:true,
+                    literal:Some((text,if capitals{3500}else{6200})),cut_short:false});
+                lat.by_start[start].push(si);
+            }
+        }
+        if lat.spans.len()==before{return lat;}
+        let ((best,cost),(alt,alt_cost))=self.beam(&lat.spans,&lat.by_start);
+        lat.best=best;lat.best_cost=cost;lat.alt=alt;lat.alt_cost=alt_cost;lat
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn dfs(
         &self,
@@ -382,6 +431,7 @@ impl<'a> Decoder<'a> {
                             sys: Nodes::EMPTY,
                             usr: None,
                             raw: true,
+                            literal: None,
                             cut_short: false,
                         });
                     }
@@ -490,6 +540,7 @@ impl<'a> Decoder<'a> {
                                 sys: with_entries,
                                 usr: nu.filter(|_| has_usr),
                                 raw: false,
+                                literal: None,
                                 cut_short,
                             });
                         }
@@ -515,6 +566,7 @@ impl<'a> Decoder<'a> {
         limit: usize,
         raw_text: &dyn Fn(usize, usize) -> String,
     ) -> Vec<Scored> {
+        if let Some((text,cost))=&span.literal{return vec![Scored{text:text.clone(),cost:*cost,origin:Origin::Raw}];}
         if span.raw {
             return vec![Scored {
                 text: raw_text(span.start, span.end),
@@ -649,7 +701,7 @@ impl<'a> Decoder<'a> {
                 let span = &spans[si];
                 let words = words_cache.entry(si).or_insert_with(|| {
                     let mut w = self.span_words(span, SPAN_TOP, &no_raw);
-                    if span.raw {
+                    if span.raw && span.literal.is_none() {
                         w[0].text = String::new();
                     }
                     w.into_iter()
@@ -675,7 +727,9 @@ impl<'a> Decoder<'a> {
                         }
                         let tail = match &self.lm {
                             Some(lm) => {
-                                if clean && prev.clean {
+                                if span.literal.is_some() || (prev.span!=usize::MAX && spans[prev.span].literal.is_some()) {
+                                    // The Chinese LM has no useful probability for an English boundary.
+                                } else if clean && prev.clean {
                                     cost += *lm_cache
                                         .entry((prev.tail, ids.head))
                                         .or_insert_with(|| lm.boundary(prev.tail, ids.head));
@@ -784,14 +838,14 @@ impl<'a> Decoder<'a> {
             let mut words = Vec::new();
             for (si, w) in path {
                 let span = &lat.spans[*si];
-                let t = if span.raw {
+                let t = if let Some((text,_))=&span.literal {text.clone()} else if span.raw {
                     raw_text(span.start, span.end)
                 } else {
                     w.clone()
                 };
                 text.push_str(&t);
                 key.extend_from_slice(&span.key);
-                if !span.raw {
+                if !span.raw || span.literal.is_some() {
                     words.push((span.key.clone(), t));
                 }
             }

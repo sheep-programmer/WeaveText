@@ -51,6 +51,7 @@ data class LinkUiState(
     val discoveryError: String? = null,
     val receiveDirectory: String = "",
     val serviceError: String? = null,
+    val syncMessage: String? = null,
     val addrs: List<String> = emptyList(),
     val pairingCode: String = "",
     val pairingUri: String = "",
@@ -80,6 +81,8 @@ interface LinkController {
     fun setReceiveDirectory(uri: String) {}
     fun openPairing(addrs: List<String> = emptyList()) {}
     fun retrySave(id: String) {}
+    fun sendPersonal(id: String) {}
+    fun importPersonal(id: String) {}
     fun sendFd(to: String?, fd: Int, name: String, mime: String, clip: Boolean): Boolean = sendFd(to, fd, name, mime)
 }
 
@@ -201,6 +204,10 @@ class LinkManager internal constructor(
         transfer(id) { it.copy(state = LinkTransfer.State.DONE, done = maxOf(it.done, it.size), path = path) }
         if (!incoming || path == null) return
         val mime = o.optString("mime", "application/octet-stream")
+        if (mime==PERSONAL_MIME) {
+            update {it.copy(syncMessage="收到来自 ${o.optString("fromName")} 的个人词库，请在最近传输中点「合并个人资料」")}
+            return
+        }
         if (o.optBoolean("clip")) {
             if (_state.value.clipSync) sink.setClipboardFileAt(File(path), mime, o.optString("name")) { uri, error ->
                 main.post {
@@ -313,6 +320,34 @@ class LinkManager internal constructor(
         } }
     }
 
+    override fun sendPersonal(id: String) {
+        LinkContent.io.execute {
+            runCatching {
+                val engine=com.weavetext.ime.core.EngineHolder.getBlocking(ctx) ?: error("输入引擎未就绪")
+                val result=JSONObject(engine.features("""{"op":"exportPersonal"}"""))
+                val file=File(ctx.cacheDir,"link-outgoing/personal-${System.nanoTime()}.json").apply {parentFile!!.mkdirs();writeText(result.getString("data"))}
+                try {
+                    val fd=android.os.ParcelFileDescriptor.open(file,android.os.ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
+                    check(sendFd(id,fd,"WeaveText个人资料.weaveprofile",PERSONAL_MIME)) {"设备不在线"}
+                } finally {file.delete()}
+            }.fold({main.post {update {it.copy(syncMessage="已开始向设备发送个人词、候选偏好与快捷短语")}}}, {e->main.post {update {it.copy(serviceError=e.message)}}})
+        }
+    }
+    override fun importPersonal(id: String) {
+        val item=_state.value.transfers.firstOrNull {it.id==id && it.incoming && it.mime==PERSONAL_MIME} ?: return
+        val path=item.path ?: return
+        LinkContent.io.execute {
+            runCatching {
+                val file=File(path);require(file.length()<=8*1024*1024) {"个人资料文件过大"}
+                val engine=com.weavetext.ime.core.EngineHolder.getBlocking(ctx) ?: error("输入引擎未就绪")
+                val result=JSONObject(engine.features(JSONObject().put("op","importPersonal").put("data",file.readText()).toString()))
+                check(result.optBoolean("ok")) {result.optString("error","无法合并个人资料")};file.delete()
+            }.fold({main.post {
+                transfer(id) {it.copy(path=null)};update {it.copy(syncMessage="个人词库与偏好已合并，重复导入不会增加词频",serviceError=null)}
+            }}, {e->main.post {update {it.copy(serviceError=e.message)}}})
+        }
+    }
+
     fun onLocalMedia(uri: android.net.Uri) {
         if (!_state.value.clipSync || _state.value.connected.isEmpty()) return
         if (uri.authority == ctx.packageName + ".files") return // Owned remote clips are never echoed.
@@ -335,6 +370,7 @@ class LinkManager internal constructor(
     }
 
     companion object {
+        const val PERSONAL_MIME="application/x-weavetext-personal"
         private const val MAX_TRANSFERS = 20
         /** 超长文本不自动同步（避免把整篇文档悄悄发出去）。 Very long text isn't synced silently. */
         const val MAX_CLIP_CHARS = 20_000

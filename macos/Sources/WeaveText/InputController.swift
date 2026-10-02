@@ -15,6 +15,8 @@ final class WeaveInputController: IMKInputController {
     /// 上一个直通的键是数字（3.14 里的句点保持半角）。 The last passed-through key was a digit.
     private var afterDigit = false
     private var preedit = ""
+    private var reconversionOriginal: (text:String,schema:String,range:NSRange)?
+    private weak var reconversionClient: AnyObject?
     /// 敲等号后给出的算式结果（候选窗里只有它一个）。 The result offered after `=`, the only item in the panel.
     private var calcResult: String?
     /// 候选窗里是上屏后的联想词。 The panel shows predictions after a commit.
@@ -42,6 +44,7 @@ final class WeaveInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        HandwritingWindow.shared.dismiss(owner:self)
         finishComposition(client: sender as? IMKTextInput)
         calcResult = nil
         CandidatePanel.shared.hide()
@@ -57,6 +60,7 @@ final class WeaveInputController: IMKInputController {
     /// 把正在组合的字母原样上屏并复位。 Commit the typed letters as they are and reset.
     func finishComposition(client: IMKTextInput? = nil) {
         dismissPredictions()
+        if reconversionOriginal != nil { cancelReconversion(); return }
         guard let engine = host.engine, engine.isComposing else { return }
         engine.commitRaw()
         refresh(client ?? self.client())
@@ -74,6 +78,7 @@ final class WeaveInputController: IMKInputController {
         case .keyDown:
             return keyDown(event, client)
         case .leftMouseDown:
+            if reconversionOriginal != nil { cancelReconversion() }
             dismissPredictions()
             // 光标挪了：之后的退格删的不是刚上屏的词。 The caret moved: a later backspace isn't deleting that commit.
             host.engine?.setContext(nil)
@@ -103,6 +108,7 @@ final class WeaveInputController: IMKInputController {
     private func keyDown(_ event: NSEvent, _ client: IMKTextInput) -> Bool {
         shiftTap.keyDown()
         guard let engine = host.engine else { return false }
+        if reconversionOriginal != nil && !ownsReconversion(client) {cancelReconversion()}
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = KeyInput(keyCode: event.keyCode, characters: event.characters ?? "",
                            shift: flags.contains(.shift), control: flags.contains(.control),
@@ -171,9 +177,9 @@ final class WeaveInputController: IMKInputController {
         case .backspace:
             engine.backspace()
         case .clear:
-            engine.clear()
+            if reconversionOriginal != nil {cancelReconversion()} else {engine.clear()}
         case .commitRaw:
-            engine.commitRaw()
+            if reconversionOriginal != nil {engine.select(pager.highlightedIndex)} else {engine.commitRaw()}
         case .commitHighlighted:
             commitHighlighted(engine)
         case .commitEnglishWord:
@@ -300,8 +306,52 @@ final class WeaveInputController: IMKInputController {
             return
         }
         guard let engine = host.engine, n < pager.page.count, let client = client() else { return }
+        if reconversionOriginal != nil && !ownsReconversion(client) {cancelReconversion();return}
         engine.select(pager.offset + n)
         refresh(client)
+    }
+
+    @objc func openHandwriting(_ sender:Any?) {HandwritingWindow.shared.show(owner:self)}
+    func commitHandCandidate(_ index:Int) {
+        guard let engine=host.engine,let client=client() else{return}
+        engine.select(index);refresh(client)
+    }
+    func setCandidatePolicy(pageIndex:Int,expectedText:String,mode:String) {
+        guard let engine=host.engine, pageIndex<pager.page.count,let client=client() else{return}
+        let text=pager.page[pageIndex].text
+        guard text==expectedText,engine.candidates(offset:pager.offset+pageIndex,limit:1).first?.text==text else{return}
+        if mode=="forget" {engine.forget(pager.offset+pageIndex);refresh(client);return}
+        engine.features(["op":"policy","index":pager.offset+pageIndex,"text":text,"mode":mode])
+        refresh(client)
+    }
+    @objc func reconvertSelection(_ sender:Any?) {
+        guard let client=client(),let engine=host.engine,!engine.isComposing else{return}
+        let range=client.selectedRange()
+        guard range.location != NSNotFound,range.length>0,range.length<=24,
+              let text=client.attributedSubstring(from:range)?.string else{return}
+        let schema=host.chinese ? host.scheme.id : "english"
+        guard engine.features(["op":"reconvert","text":text]).bool("ok") else{return}
+        reconversionOriginal=(text,schema,range);reconversionClient=client as AnyObject
+        refresh(client)
+    }
+
+    private func ownsReconversion(_ client:IMKTextInput)->Bool {
+        guard let original=reconversionOriginal,reconversionClient === client as AnyObject else{return false}
+        let marked=client.markedRange();let selected=client.selectedRange()
+        return marked.location != NSNotFound && marked.location==original.range.location &&
+            selected.location>=marked.location && NSMaxRange(selected)<=NSMaxRange(marked) &&
+            client.attributedSubstring(from:marked)?.string==preedit
+    }
+
+    private func cancelReconversion() {
+        guard let original=reconversionOriginal else{return}
+        if let target=reconversionClient as? IMKTextInput {
+            let marked=target.markedRange()
+            if marked.location != NSNotFound, marked.location==original.range.location, target.attributedSubstring(from:marked)?.string == preedit {write(original.text,target)}
+        }
+        reconversionOriginal=nil;reconversionClient=nil;preedit=""
+        host.engine?.clear();host.engine?.setSchema(original.schema)
+        CandidatePanel.shared.hide()
     }
 
     // MARK: - 上屏与显示 / Commit and display
@@ -321,9 +371,13 @@ final class WeaveInputController: IMKInputController {
     /// 读取内核状态：上屏、更新组合串与候选。 Read the engine: commit, update marked text and candidates.
     private func refresh(_ client: IMKTextInput?) {
         guard let engine = host.engine else { return }
-        let s = engine.snapshot()
+        var s = engine.snapshot()
         if !s.commit.isEmpty, let client {
             write(s.commit, client)
+            if let original=reconversionOriginal {
+                reconversionOriginal=nil;reconversionClient=nil
+                engine.setSchema(original.schema);s=engine.snapshot()
+            }
         }
         predicting = !s.composing && s.predicting && !s.candidates.isEmpty
         if s.composing || predicting {

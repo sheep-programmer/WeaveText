@@ -77,6 +77,19 @@ impl Readings {
         Readings { map }
     }
 
+    pub fn keys_for(&self,text:&str,limit:usize)->Vec<Vec<SyllableId>> {
+        let mut keys=vec![Vec::new()];
+        for c in text.chars() {
+            let Some(readings)=self.map.get(&c)else{return Vec::new()};
+            let mut next=Vec::new();
+            for key in &keys {for &r in readings.iter().filter(|&&r|r!=NO_READING) {
+                let mut k=key.clone();k.push(r);next.push(k);
+                if next.len()>=limit {break;}
+            } if next.len()>=limit {break;} }
+            keys=next;
+        }
+        keys
+    }
     pub fn len(&self) -> usize {
         self.map.len()
     }

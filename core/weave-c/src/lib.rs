@@ -52,6 +52,26 @@ fn cand_json(c: &CandidateView) -> Value {
     json!({ "text": c.text, "comment": c.comment, "user": c.user })
 }
 
+#[no_mangle]
+pub extern "C" fn weave_features_json(h:*mut WeaveEngine,command:*const c_char)->*mut c_char {
+    let cmd=str_arg(command).and_then(|s|serde_json::from_str::<Value>(s).ok());
+    // Recognition reads an independent model reference; applying ink stays on the UI thread.
+    if let Some(cmd) = &cmd {
+        if cmd["op"] == "handRecognize" {
+            let strokes = serde_json::from_value::<Vec<weave_dict::hand::Stroke>>(cmd["strokes"].clone());
+            let Some(models) = with(h, None, |e| e.hand_models()) else { return out(json!({"ok":false})); };
+            return out(catch_unwind(AssertUnwindSafe(|| match strokes {
+                Ok(strokes) if strokes.len() <= 128 && strokes.iter().all(|s| s.len() <= 4096 && s.iter().all(|(x,y)| x.is_finite() && y.is_finite())) => {
+                    let codes: Vec<u32> = models.recognize_input(&strokes, weave_engine::session::HAND_CANDIDATES).into_iter().map(|c| c as u32).collect();
+                    json!({"ok":true,"codes":codes})
+                }
+                _ => json!({"ok":false}),
+            })).unwrap_or(json!({"ok":false})));
+        }
+    }
+    out(cmd.map(|cmd|with(h,json!({"ok":false}),|e|e.features(&cmd))).unwrap_or(json!({"ok":false})))
+}
+
 /// 快照的 JSON 形式（字段与 Android 端一致）。 Snapshot as JSON, same fields as on Android.
 pub fn snapshot_json(s: &Snapshot) -> Value {
     json!({

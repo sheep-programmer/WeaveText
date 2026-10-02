@@ -58,7 +58,7 @@ final class CandidatePanel {
     func show(_ state: CandidateState, caret: NSRect, owner: WeaveInputController) {
         self.owner = owner
         panel.appearance = Self.appearance(Preferences.shared.appearance)
-        hosting.rootView = CandidateBar(state: state) { [weak self] i in self?.owner?.pick(pageIndex: i) }
+        hosting.rootView = CandidateBar(state: state, pick: { [weak self] i in self?.owner?.pick(pageIndex: i) }, policy: { [weak self] i,text,mode in self?.owner?.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) })
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.fittingSize
         let caret = usable(caret)
@@ -124,6 +124,7 @@ extension CandidateState {
 struct CandidateBar: View {
     let state: CandidateState
     let pick: (Int) -> Void
+    var policy: (Int,String,String) -> Void = {_,_,_ in}
 
     private var font: Font { .system(size: state.fontSize) }
     private var small: Font { .system(size: max(10, state.fontSize * 0.72)) }
@@ -183,6 +184,12 @@ struct CandidateBar: View {
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? Theme.accentSoft : .clear))
             .contentShape(Rectangle())
             .onTapGesture { pick(i) }
+            .contextMenu {
+                Button("固定为首选") { policy(i,c.text,"pin") }
+                Button("取消固定／恢复排序") { policy(i,c.text,"") }
+                Button("降低优先级") { policy(i,c.text,"down") }
+                if c.user {Button("删除学习记录") {policy(i,c.text,"forget")}}
+            }
         }
     }
 

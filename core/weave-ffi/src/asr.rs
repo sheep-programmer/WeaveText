@@ -335,6 +335,7 @@ api! {
     create_online: "SherpaOnnxCreateOnlineRecognizer" => fn(*const OnlineRecognizerConfig) -> H;
     destroy_online: "SherpaOnnxDestroyOnlineRecognizer" => fn(H);
     create_online_stream: "SherpaOnnxCreateOnlineStream" => fn(H) -> H;
+    create_online_stream_hotwords: "SherpaOnnxCreateOnlineStreamWithHotwords" => fn(H,P) -> H;
     destroy_online_stream: "SherpaOnnxDestroyOnlineStream" => fn(H);
     online_accept: "SherpaOnnxOnlineStreamAcceptWaveform" => fn(H, i32, *const f32, i32);
     online_ready: "SherpaOnnxIsOnlineStreamReady" => fn(H, H) -> i32;
@@ -460,6 +461,7 @@ pub struct Online {
     api: Arc<Api>,
     rec: H,
     stream: H,
+    hotword_path: String,
 }
 
 // SAFETY: sherpa-onnx 的识别器与流可以在线程间移动；我们保证同一时刻只有一个线程使用（外层互斥）。
@@ -490,6 +492,13 @@ impl Online {
             paths
         } else { vec![model.to_string()] };
         let models = paths.iter().map(|p| cstr(p)).collect::<Result<Vec<_>, _>>()?;
+        let hotword_path=options.as_ref().and_then(|v|v["hotwords_file"].as_str()).unwrap_or("");
+        let unit=options.as_ref().and_then(|v|v["modeling_unit"].as_str()).unwrap_or("");
+        let vocabulary=options.as_ref().and_then(|v|v["bpe_vocab"].as_str()).unwrap_or("");
+        if !hotword_path.is_empty() && (!Path::new(hotword_path).is_file() || !["cjkchar","cjkchar+bpe"].contains(&unit)
+            || (unit=="cjkchar+bpe" && !Path::new(vocabulary).is_file())) {return Err("invalid local hotword configuration".into());}
+        if !hotword_path.is_empty() && beam_paths<2 {return Err("hotwords require beam search".into());}
+        let modeling_unit=cstr(unit)?;let bpe_vocab=cstr(vocabulary)?;
         let tokens = cstr(tokens)?;
         let (cpu, greedy) = (cstr("cpu")?, cstr(if beam_paths > 1 { "modified_beam_search" } else { "greedy_search" })?);
         let mut c: OnlineRecognizerConfig = zeroed();
@@ -501,6 +510,10 @@ impl Online {
             c.model_config.transducer = Three { a: models[0].as_ptr(), b: models[1].as_ptr(), c: models[2].as_ptr() };
         } else { c.model_config.zipformer2_ctc.model = models[0].as_ptr(); }
         c.model_config.tokens = tokens.as_ptr();
+        if !hotword_path.is_empty(){
+            c.hotwords_score=2.0;
+            c.model_config.modeling_unit=modeling_unit.as_ptr();c.model_config.bpe_vocab=bpe_vocab.as_ptr();
+        }
         c.model_config.num_threads = threads.max(1);
         c.model_config.provider = cpu.as_ptr();
         c.decoding_method = greedy.as_ptr();
@@ -514,12 +527,22 @@ impl Online {
         if rec.is_null() {
             return Err("failed to create streaming recognizer".into());
         }
-        let stream = unsafe { (api.create_online_stream)(rec) };
+        let stream = match Self::make_stream(&api,rec,hotword_path) {
+            Ok(stream)=>stream,
+            Err(error)=>{unsafe{(api.destroy_online)(rec)};return Err(error);}
+        };
         if stream.is_null() {
             unsafe { (api.destroy_online)(rec) };
             return Err("failed to create stream".into());
         }
-        Ok(Online { api, rec, stream })
+        Ok(Online { api, rec, stream, hotword_path:hotword_path.into() })
+    }
+
+    fn make_stream(api:&Api,rec:H,path:&str)->Result<H,String> {
+        if path.is_empty(){return Ok(unsafe{(api.create_online_stream)(rec)});}
+        let text=std::fs::read_to_string(path).map_err(|e|format!("read voice vocabulary: {e}"))?;
+        let hotwords=cstr(&text.lines().collect::<Vec<_>>().join("/"))?;
+        Ok(unsafe{(api.create_online_stream_hotwords)(rec,hotwords.as_ptr())})
     }
 
     /// 送入 16 kHz 单声道样本并解码到当前。 Feed 16 kHz mono samples and decode what is ready.
@@ -553,7 +576,7 @@ impl Online {
     }
 
     pub fn new_stream(&mut self) -> Result<(), String> {
-        let next = unsafe { (self.api.create_online_stream)(self.rec) };
+        let next = Self::make_stream(&self.api,self.rec,&self.hotword_path)?;
         if next.is_null() { return Err("failed to create recording stream".into()); }
         unsafe { (self.api.destroy_online_stream)(self.stream) };
         self.stream = next;

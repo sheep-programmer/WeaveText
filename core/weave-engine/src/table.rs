@@ -21,6 +21,45 @@ pub fn code_key(code: &str) -> Option<Vec<u16>> {
         .collect()
 }
 
+/// Bounded Damerau-Levenshtein search over the dictionary trie. Neighbouring transpositions
+/// cost one edit; short prefixes never trigger correction and the original input stays available.
+pub fn corrections(lex: &Lexicon, code: &str, limit: usize) -> Vec<TableCand> {
+    let bytes=code.as_bytes();
+    if !(4..=32).contains(&bytes.len()) || !bytes.iter().all(u8::is_ascii_lowercase) {return Vec::new();}
+    struct Search<'a> { lex:&'a Lexicon, input:&'a [u8], budget:usize, out:Vec<(u32,TableCand)> }
+    impl Search<'_> {
+        fn walk(&mut self,n:NodeId,prefix:&mut Vec<u8>,prev:&[u32],before:Option<&[u32]>) {
+            if self.budget==0 || prefix.len()>self.input.len()+2{return;}
+            self.budget-=1;
+            for child in self.lex.children(n) {
+                let letter=sym_letter(self.lex.sym(child)) as u8;
+                let mut row=vec![prev[0]+1;self.input.len()+1];
+                for i in 1..row.len() {
+                    row[i]=(prev[i]+1).min(row[i-1]+1).min(prev[i-1]+u32::from(self.input[i-1]!=letter));
+                    if i>=2 && self.input[i-2]==letter && prefix.last()==Some(&self.input[i-1]) {
+                        if let Some(before)=before {row[i]=row[i].min(before[i-2]+1);}
+                    }
+                }
+                prefix.push(letter);
+                let distance=row[self.input.len()];
+                if distance<=2 {
+                    for e in self.lex.entries(child).take(8) {
+                        let text=self.lex.text(e.text_id,&[]);
+                        let score=e.cost as u32+distance*4000;
+                        self.out.push((score,TableCand{text,comment:"拼写建议".into(),cost:score,exact:false}));
+                    }
+                }
+                if row.iter().copied().min().unwrap_or(3)<=2 {self.walk(child,prefix,&row,Some(prev));}
+                prefix.pop();
+            }
+        }
+    }
+    let mut search=Search{lex,input:bytes,budget:20_000,out:Vec::new()};
+    search.walk(ROOT,&mut Vec::new(),&(0..=bytes.len() as u32).collect::<Vec<_>>(),None);
+    search.out.sort_by_key(|(score,c)|(*score,c.text.clone()));
+    search.out.into_iter().take(limit).map(|(_,c)|c).collect()
+}
+
 /// 查询：`exact_limit` 个精确匹配 + 最多 `completion_limit` 个补全（按子树最优 cost 优先）。
 /// Lookup: exact matches plus best-first completions.
 pub fn lookup(lex: &Lexicon, code: &str, completion_limit: usize) -> Vec<TableCand> {

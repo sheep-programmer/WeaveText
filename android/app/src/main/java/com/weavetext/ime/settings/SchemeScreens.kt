@@ -99,6 +99,12 @@ fun SchemesScreen() {
         }
         GroupTitle("手写")
         GroupCard {
+            ClearHandLearningRow()
+            RowDivider(false)
+            SwitchRow("多字连写", "从左到右写 2–4 个字，字间留空，点候选确认；不开启停笔自动上屏", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
+                p.edit().putBoolean(WeavePrefs.HAND_LINE,it).apply()
+            }
+            RowDivider(false)
             SettingRow("停笔判字", "停笔多久算写完一个字；写得慢选「慢」", onClick = { showHand = true }) {
                 ValueChevron(HAND_PAUSE_NAMES[WeavePrefs.handPause(p)])
             }

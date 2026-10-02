@@ -57,6 +57,7 @@ object WeavePrefs {
     /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
     const val AUTOCORRECT = "autocorrect"
     /** 手写停笔判字时间档位 0–2（[HAND_PAUSE_MS]）。 How long a pause ends a handwritten character (0–2). */
+    const val HAND_LINE = "hand_line"
     const val HAND_PAUSE = "hand_pause"
     /** 默认中档：写得慢的人（长辈）用慢档。 Default: the middle level; slow writers pick the slow one. */
     const val HAND_PAUSE_DEFAULT = 1
