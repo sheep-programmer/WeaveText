@@ -68,6 +68,11 @@ enum DevTools {
         for dark in [false,true] {
             try render(HandwritingView(model:hand),size:NSSize(width:520,height:360),dark:dark,to:dir.appendingPathComponent("handwriting-\(dark ? "dark" : "light").png"))
         }
+        let cloudCandidates=CandidateState(preedit:"shi jian fu za du",candidates:[Candidate(text:"时间复杂度",cloud:true),Candidate(text:"时间"),Candidate(text:"实践")],highlight:0,hasPrevious:false,hasNext:false,orientation:.horizontal,fontSize:16)
+        for dark in [false,true] {
+            let view=CandidateBar(state:cloudCandidates,pick:{_ in}).background(Color(nsColor:.windowBackgroundColor)).padding(12)
+            try render(view,size:nil,dark:dark,to:dir.appendingPathComponent("cloud-candidates-\(dark ? "dark" : "light").png"))
+        }
         // 互联页与配对窗口用示例状态画；偏好用一次性的域，不碰真实设置。 The link page and pairing sheet use a sample
         // state; preferences live in a throwaway domain, never the real settings.
         let link = LinkService.shared

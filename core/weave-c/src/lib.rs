@@ -49,7 +49,7 @@ fn out(v: Value) -> *mut c_char {
 }
 
 fn cand_json(c: &CandidateView) -> Value {
-    json!({ "text": c.text, "comment": c.comment, "user": c.user })
+    json!({ "text": c.text, "comment": c.comment, "user": c.user, "cloud": c.cloud })
 }
 
 #[no_mangle]
@@ -177,7 +177,9 @@ pub extern "C" fn weave_unload_pack(h: *mut WeaveEngine, id: *const c_char) -> b
 pub extern "C" fn weave_load_hotwords(h: *mut WeaveEngine, tsv_path: *const c_char, sig_path: *const c_char) -> i32 {
     let (Some(t), Some(s)) = (str_arg(tsv_path), str_arg(sig_path)) else { return -1 };
     let (Ok(t), Ok(s)) = (std::fs::read(t), std::fs::read_to_string(s)) else { return -1 };
-    with(h, -1, |e| e.load_hotwords(&t, &s).map(|n| n as i32).unwrap_or(-1))
+    let offset=with(h,480,|e|e.options.utc_offset_min);
+    let Some((lex,words))=catch_unwind(||weave_engine::session::compile_hotwords(&t,&s,offset).ok()).ok().flatten() else{return -1};
+    if with(h,false,|e|e.attach_pack(weave_engine::session::HOTWORDS_PACK,lex)) {words as i32} else {-1}
 }
 
 /// 宿主自己往编辑器写了字（标点、空格、符号）：之后的退格不撤销学习，也不与前面连成新词。

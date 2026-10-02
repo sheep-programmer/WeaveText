@@ -14,6 +14,12 @@ import Testing
         #expect(s.candidates == [Candidate(text: "你好"), Candidate(text: "拟好", comment: "ni hao", user: true)])
     }
 
+    @Test func cloudAndLearnedFlagsAreIndependent() throws {
+        let s=try #require(Snapshot.decode(#"{"candidates":[{"text":"云词","cloud":true,"user":false},{"text":"学过的云词","cloud":true,"user":true},{"text":"本地词"}]}"#))
+        #expect(s.candidates[0].cloud && !s.candidates[0].user)
+        #expect(s.candidates[1].cloud && s.candidates[1].user)
+        #expect(!s.candidates[2].cloud)
+    }
     @Test func decodesPredictions() throws {
         let json = #"{"commit":"今天","preedit":"","composing":false,"predicting":true,"total":2,"candidates":[{"text":"晚上"},{"text":"下午"}]}"#
         let s = try #require(Snapshot.decode(json))

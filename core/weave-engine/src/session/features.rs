@@ -94,7 +94,7 @@ impl Engine {
         {
             let text = expand(&template, self.options.utc_offset_min);
             let c = Cand {
-                view: CandidateView {
+                view: CandidateView { cloud: false,
                     text: text.clone(),
                     comment: "快捷短语".into(),
                     user: false,

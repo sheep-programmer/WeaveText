@@ -83,6 +83,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     // Buffers are reused and only grow; only the visible range plus one screen is measured, the rest on scroll.
     private val texts = ArrayList<String>(64)
     private val comments = ArrayList<String>(64)
+    private val cloudBadges = ArrayList<Boolean>(64)
+    var cloudLoading=false
+        set(value) {if(field!=value){field=value;invalidate()}}
+    private val cloudSpinner=Paint(Paint.ANTI_ALIAS_FLAG).apply {style=Paint.Style.STROKE;strokeCap=Paint.Cap.ROUND}
     private var shown = arrayOfNulls<String>(64)
     private var widths = FloatArray(64)
     private var lefts = FloatArray(64)
@@ -212,9 +216,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val marksChanged = marks != this.marks
         this.marks = marks
         var changed = preedit != this.preedit || items.size != texts.size
-        if (!changed) for (i in items.indices) if (items[i].text != texts[i]) { changed = true; break }
-        texts.clear(); comments.clear()
-        for (i in items.indices) { texts += items[i].text; comments += items[i].comment }
+        if (!changed) for (i in items.indices) if (items[i].text != texts[i] || items[i].isCloud != cloudBadges.getOrElse(i){false}) { changed = true; break }
+        texts.clear(); comments.clear(); cloudBadges.clear()
+        for (i in items.indices) { texts += items[i].text; comments += items[i].comment;cloudBadges += items[i].isCloud }
         apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
@@ -223,8 +227,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val marksChanged = marks.isNotEmpty()
         marks = emptyList()
         val changed = preedit != this.preedit || items != texts
-        texts.clear(); comments.clear()
-        for (t in items) { texts += t; comments += "" }
+        texts.clear(); comments.clear(); cloudBadges.clear()
+        for (t in items) { texts += t; comments += "";cloudBadges += false }
         apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
@@ -254,7 +258,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
     /** 追加候选（分页）。 Append a page of candidates. */
     fun appendCandidates(items: List<Candidate>) {
-        for (c in items) { texts += c.text; comments += c.comment }
+        for (c in items) { texts += c.text; comments += c.comment;cloudBadges += c.isCloud }
         hasMore = total > texts.size || measured < texts.size || contentWidth > width - leadW() - expandW()
         ensureMeasured(scrollX0 + width * 2f)
         invalidate()
@@ -386,7 +390,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         if (measured >= n || contentWidth > x) { hasMore = total > n || measured < n || contentWidth > width - leadW() - expandW(); return }
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
-        val maxItem = (width - expandW()) * 0.7f - m.dp(24f)
+        val maxItem = (width - expandW()) * 0.7f - m.dp(42f)
         while (measured < n && contentWidth <= x) {
             val i = measured
             text.typeface = if (i == 0 && firstStandsOut) mediumTf else Typeface.DEFAULT
@@ -395,7 +399,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             val out = if (tw > maxItem) {
                 TextUtils.ellipsize(s, text, maxItem, TextUtils.TruncateAt.MIDDLE).toString().also { tw = text.measureText(it) }
             } else s
-            var w = tw + m.dp(24f)
+            var w = tw + m.dp(24f) + if(cloudBadges.getOrElse(i){false}) m.dp(18f) else 0f
             val c = comments[i]
             if (c.isNotEmpty()) w += small.measureText(c) + m.dp(3f)
             w = max(w, m.dp(40f))
@@ -526,6 +530,13 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             val x = m.dp(12f) + lead
             val base = m.dp(15f) * m.topScale
             val end = drawPreedit(c, x, base)
+            if(cloudLoading) {
+                val cx=width-m.dp(14f);val cy=m.dp(10f)*m.topScale;val radius=m.dp(5f)
+                cloudSpinner.color=0xff2685e7.toInt();cloudSpinner.strokeWidth=m.dp(1.5f)
+                tmp.set(cx-radius,cy-radius,cx+radius,cy+radius)
+                c.drawArc(tmp,(SystemClock.uptimeMillis()%1000)*0.36f,100f,false,cloudSpinner)
+                postInvalidateOnAnimation()
+            }
             if (cursorOn) {
                 val cx = end + m.dp(1f)
                 fill.color = p.candidateFirst
@@ -569,10 +580,13 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 fill.color = p.candidateFirst
                 c.drawRect(cx, base + text.ascent() * 0.8f, cx + m.dp(1f), base + m.dp(1.5f), fill)
             }
+            val badge=cloudBadges.getOrElse(i){false}
+            val end=l+m.dp(12f)+text.measureText(sh)
+            if(badge) icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),end+m.dp(10f),top+rowH/2,m.dp(14f))
             val cm = comments[i]
             if (cm.isNotEmpty()) {
                 small.color = p.labelHint
-                c.drawText(cm, l + m.dp(12f) + text.measureText(sh) + m.dp(3f), base, small)
+                c.drawText(cm, end + m.dp(if(badge) 21f else 3f), base, small)
             }
         }
         c.restore()
@@ -698,7 +712,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             id == EXPAND -> if (expanded) "收起候选" else "展开更多候选"
             id >= CAND_BASE -> texts.getOrNull(id - CAND_BASE)?.let { t ->
                 val c = comments.getOrNull(id - CAND_BASE)
-                if (c.isNullOrEmpty()) t else "$t，$c"
+                (if (c.isNullOrEmpty()) t else "$t，$c") + if(cloudBadges.getOrElse(id-CAND_BASE){false}) "，云端词" else ""
             }
             id == CHIP -> "粘贴最近复制：${clipChip.orEmpty()}"
             else -> TOOL_NAMES.getOrNull(id)
@@ -721,7 +735,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
         override fun a11yLongClickLabel(id: Int): CharSequence? = when {
             id == ToolIds.MENU && clipChip == null && !candidateMode -> "打开设置"
-            id >= CAND_BASE -> "删除用户词"
+            id >= CAND_BASE -> "固定、降权或删除学习记录"
             else -> null
         }
 

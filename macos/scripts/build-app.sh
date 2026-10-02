@@ -34,7 +34,10 @@ CARGO_OUT="$BUILD/cargo"
 export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS='--cfg curve25519_dalek_backend="serial"'
 ( cd "$CORE"
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
+    # Host proc-macros retain debug info: a fresh optimized serde_derive dylib can have an
+    # unaligned LINKEDIT string pool on current macOS. These flags do not affect shipped target libraries.
     CARGO_TARGET_DIR="$CARGO_OUT" MACOSX_DEPLOYMENT_TARGET=13.0 CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=false \
+      CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG=true CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL=0 \
       cargo build --release -p weave-c --target "$t"
   done )
 mkdir -p "$BUILD/lib"

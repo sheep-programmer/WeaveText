@@ -130,6 +130,7 @@ struct CloudWordsSection: View {
                     if cloud.status.updating { ProgressView().controlSize(.small) }
                     Button(cloud.status.needsRetry ? "重试" : "立即更新") { cloud.refreshNow() }
                         .disabled(cloud.status.updating)
+                    Link("词库来源与许可",destination:URL(string:"https://github.com/sheep-programmer/weavetext-hotwords/blob/main/SOURCES.md")!)
                 }
             }
         }

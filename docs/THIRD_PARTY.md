@@ -38,6 +38,12 @@ text and source link; a self-built table is planned.*
 | Whisper base/small int8 | [OpenAI Whisper](https://github.com/openai/whisper)、Sherpa ONNX 转换 | MIT（Copyright 2022 OpenAI） | 按需下载，可选自动、中文、英文；英文测试与混说边界见语音调研记录 |
 | SenseVoice / Paraformer / CT-Transformer 标点 | [FunASR](https://github.com/modelscope/FunASR) 模型经 sherpa-onnx 转换 | FunASR Model License（需署名） | 仅按需下载，不随 APK 分发 |
 
+## 1.2 可选云端补充词表
+
+签名发布仓库：[weavetext-hotwords](https://github.com/sheep-programmer/weavetext-hotwords)。原有示例与自主整理的 AI／输入法术语为 CC0；万象补充数据保留 CC BY 4.0；THUOCL 数据保留 MIT，基于万象的补充注音保留 CC BY 4.0。发布原文含署名、许可链接、修改说明和 THUOCL MIT 声明，客户端只下载并在本机解码，不上传个人输入。
+
+来源、固定提交、原始及转换摘要、复现脚本和完整许可见 [SOURCES.md](https://github.com/sheep-programmer/weavetext-hotwords/blob/main/SOURCES.md)。不能将合并词表整体标为 CC0。本轮参考 Fcitx5 的来源提示交互，独立实现界面，没有引入其 LGPL 源码。
+
 ## 2. Rust crates
 
 | Crate | 许可证 License | 用途 Use |

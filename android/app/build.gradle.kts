@@ -169,8 +169,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 13
-        versionName = "0.1.0-beta.13"
+        versionCode = 14
+        versionName = "0.1.0-beta.14"
         // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
         // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
         ndk { abiFilters += abiList(isRelease = releaseBuild) }

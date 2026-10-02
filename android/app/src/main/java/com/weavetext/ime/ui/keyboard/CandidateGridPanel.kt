@@ -235,7 +235,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 var used = 0
                 val spans = ArrayList<Int>()
                 while (i < all.size) {
-                    val w = text.measureText(all[i]) + m.dp(24f)
+                    val w = text.measureText(all[i]) + m.dp(24f) + if(cands.getOrNull(i-nPinyin)?.isCloud==true) m.dp(18f) else 0f
                     val span = ceil(w / unit).toInt().coerceIn(1, 4)
                     if (used + span > 4) break
                     spans += span
@@ -254,7 +254,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         override fun a11yRect(index: Int, out: android.graphics.RectF) {
             out.set(rects[index * 4], rects[index * 4 + 1], rects[index * 4 + 2], rects[index * 4 + 3])
         }
-        override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let { if (index < nPinyin) "拼音 $it" else it }
+        override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let { if (index < nPinyin) "拼音 $it" else it + if(cands.getOrNull(index-nPinyin)?.isCloud==true) "，云端词" else "" }
 
         private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float) {
             val used = spans.sum()
@@ -304,9 +304,13 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 }
                 text.textSize = if (isPy) m.dp(15f) else m.dp(19f) * m.candScale
                 // 最多占 4 格，更长的候选在格内中间省略。 At most 4 units wide: longer candidates are ellipsized in the middle.
-                val maxW = r - l - m.dp(16f)
+                val cloud=!isPy && cands.getOrNull(i-nPinyin)?.isCloud==true
+                val maxW = r - l - m.dp(if(cloud) 34f else 16f)
                 val label = labels[i].let { if (maxW > 0f && text.measureText(it) > maxW) TextUtils.ellipsize(it, text, maxW, TextUtils.TruncateAt.MIDDLE).toString() else it }
-                c.drawText(label, (l + r) / 2, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
+                val badgeW=if(cloud)m.dp(18f)else 0f
+                val center=(l+r)/2-badgeW/2
+                c.drawText(label, center, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
+                if(cloud) kb.icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),center+text.measureText(label)/2+m.dp(10f),(t+b)/2,m.dp(14f))
                 line.color = p.divider
                 c.drawRect(0f, b - hair / 2, width.toFloat(), b + hair / 2, line)
                 if (r < width - 1f) c.drawRect(r - hair / 2, t + m.dp(10f), r + hair / 2, b - m.dp(10f), line)

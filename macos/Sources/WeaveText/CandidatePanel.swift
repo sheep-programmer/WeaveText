@@ -122,6 +122,7 @@ extension CandidateState {
 /// 候选条：组合串一行 + 带序号的候选，首选高亮，右侧翻页箭头。
 /// The candidate bar: a preedit line and numbered candidates, the highlight tinted, page arrows at the end.
 struct CandidateBar: View {
+    @ObservedObject var cloud=EngineHost.shared.cloud
     let state: CandidateState
     let pick: (Int) -> Void
     var policy: (Int,String,String) -> Void = {_,_,_ in}
@@ -133,12 +134,17 @@ struct CandidateBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !state.preedit.isEmpty || !state.hint.isEmpty {
+            if !state.preedit.isEmpty || !state.hint.isEmpty || (cloud.status.enabled && cloud.status.updating) {
+                HStack(spacing:6) {
                 Text(state.preedit.isEmpty ? state.hint : state.preedit)
                     .font(state.preedit.isEmpty ? note : small)
                     .foregroundStyle(state.preedit.isEmpty ? Theme.hint : Theme.secondary)
                     .padding(.horizontal, 6)
                     .lineLimit(1)
+                if cloud.status.enabled && cloud.status.updating {
+                    ProgressView().controlSize(.mini).tint(.blue).help("正在加载云端热词")
+                }
+                }
             }
             if state.orientation == .horizontal {
                 HStack(spacing: 2) {
@@ -170,6 +176,7 @@ struct CandidateBar: View {
                 Text(c.text)
                     .font(font)
                     .foregroundStyle(on ? Theme.candidate : Theme.label)
+                if c.cloud {Image(systemName:"cloud.fill").font(note).foregroundStyle(.blue).help("来自已下载的云端热词库").accessibilityLabel("云端词")}
                 if !c.comment.isEmpty {
                     Text(c.comment)
                         .font(note)

@@ -164,6 +164,8 @@ fn spell_key(k: &[SyllableId]) -> String {
 /// 候选（界面可见部分）。 A candidate as seen by the UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateView {
+    /// Added by the currently loaded cloud dictionary, rather than a built-in/local pack.
+    pub cloud: bool,
     pub text: String,
     pub comment: String,
     /// 是否来自用户词库（可删除）。 Learned from the user (deletable).
@@ -629,7 +631,7 @@ impl Engine {
                         continue;
                     }
                     let c = Cand {
-                        view: CandidateView {
+                        view: CandidateView { cloud: false,
                             text: e.clone(),
                             comment: String::new(),
                             user: false,
@@ -1213,7 +1215,7 @@ impl Engine {
             .into_iter()
             .map(|p| {
                 let text = self.out(&p.text);
-                Cand { view: CandidateView { text, comment: String::new(), user: p.user }, action: Action::Table { text: p.text } }
+                Cand { view: CandidateView { cloud: false, text, comment: String::new(), user: p.user }, action: Action::Table { text: p.text } }
             })
             .collect();
         self.predicting = true;
@@ -1564,6 +1566,21 @@ impl Engine {
         }
         self.decorate();
         self.apply_personal_policies();
+        self.mark_cloud_candidates();
+    }
+
+    fn mark_cloud_candidates(&mut self) {
+        let Some(index)=self.pack_ids.iter().position(|id|id==HOTWORDS_PACK) else{return};
+        let cloud=&self.packs[index];
+        let contains=|lex:&Lexicon,key:&[u16],word:&str|lex.find(key).and_then(|n|lex.find_entry(n,key,word)).is_some();
+        let supplied=|key:&[u16],word:&str| !key.is_empty() && contains(cloud,key,word)
+            && !self.pinyin.as_ref().is_some_and(|lex|contains(lex,key,word))
+            && !self.packs.iter().enumerate().any(|(i,lex)|i!=index && contains(lex,key,word));
+        for candidate in &mut self.cands {
+            if let Action::Pinyin(p)=&candidate.action {
+                candidate.view.cloud=supplied(&p.key,&p.text) || p.words.iter().any(|(key,word)|supplied(key,word));
+            }
+        }
     }
 
     /// 手写：给出当前这个字的全部笔画（每笔是 y 向下的点列），识别并刷新候选；返回是否有候选。
@@ -1622,13 +1639,13 @@ impl Engine {
         }
         self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
         if !self.hand_words.is_empty(){
-            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
+            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{ cloud: false,text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
             return;
         }
         for &c in &self.hand_cands.0 {
             let text = c.to_string();
             self.cands.push(Cand {
-                view: CandidateView { text: text.clone(), comment: String::new(), user: false },
+                view: CandidateView { cloud: false, text: text.clone(), comment: String::new(), user: false },
                 action: Action::Table { text },
             });
         }
@@ -1647,7 +1664,7 @@ impl Engine {
         self.cands = crate::special::v_candidates(body)
             .into_iter()
             .map(|(text, comment)| Cand {
-                view: CandidateView { text: text.clone(), comment, user: false },
+                view: CandidateView { cloud: false, text: text.clone(), comment, user: false },
                 action: Action::Table { text },
             })
             .collect();
@@ -1696,7 +1713,7 @@ impl Engine {
             .into_iter()
             .enumerate()
         {
-            let c = Cand { view: CandidateView { text: text.clone(), comment, user: false }, action: Action::Table { text } };
+            let c = Cand { view: CandidateView { cloud: false, text: text.clone(), comment, user: false }, action: Action::Table { text } };
             self.cands.insert(at + k, c);
         }
     }
@@ -1789,7 +1806,7 @@ impl Engine {
         self.cands = cands
             .into_iter()
             .map(|c| Cand {
-                view: CandidateView {
+                view: CandidateView { cloud: false,
                     text: c.text.clone(),
                     comment: c.comment.clone(),
                     user: c.origin == crate::decoder::Origin::User && c.kind == CandKind::Word,
@@ -1861,7 +1878,7 @@ impl Engine {
             return;
         };
         let cand = Cand {
-            view: CandidateView {
+            view: CandidateView { cloud: false,
                 text: text.clone(),
                 comment: String::new(),
                 user: false,
@@ -1977,7 +1994,7 @@ impl Engine {
             for c in found {
                 let code = self.wubi_code_of(&c.text);
                 self.cands.push(Cand {
-                    view: CandidateView {
+                    view: CandidateView { cloud: false,
                         text: c.text.clone(),
                         comment: code,
                         user: false,
@@ -1995,7 +2012,7 @@ impl Engine {
         };
         for c in table::lookup(lex, &self.raw, limit) {
             self.cands.push(Cand {
-                view: CandidateView {
+                view: CandidateView { cloud: false,
                     text: c.text.clone(),
                     comment: c.comment,
                     user: false,
@@ -2013,7 +2030,7 @@ impl Engine {
         let mut seen = std::collections::HashSet::new();
         seen.insert(typed.to_ascii_lowercase());
         self.cands.push(Cand {
-            view: CandidateView {
+            view: CandidateView { cloud: false,
                 text: typed.clone(),
                 comment: String::new(),
                 user: false,
@@ -2059,7 +2076,7 @@ impl Engine {
                 continue;
             }
             self.cands.push(Cand {
-                view: CandidateView {
+                view: CandidateView { cloud: false,
                     text: text.clone(),
                     comment: c.comment,
                     user: self.user_english.learning && self.user_english.get(&table::code_key(&c.text.replace('\'', "")).unwrap_or_default(), &c.text).is_some(),
@@ -2120,7 +2137,7 @@ impl Engine {
         let mut seen = std::collections::HashSet::new();
         for (text, user) in history.into_iter().map(|(t,_)|(t,true)).chain(common.iter().map(|t|(t.to_string(),false))) {
             if !seen.insert(text.clone()) { continue; }
-            self.cands.push(Cand { view: CandidateView { text: text.clone(), comment: String::new(), user }, action: Action::Table { text } });
+            self.cands.push(Cand { view: CandidateView { cloud: false, text: text.clone(), comment: String::new(), user }, action: Action::Table { text } });
             if self.cands.len() >= 8 { break; }
         }
         self.predicting = !self.cands.is_empty();

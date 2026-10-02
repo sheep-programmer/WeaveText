@@ -105,6 +105,16 @@ abstract class KeyboardSnapshotSupport {
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-port-420dpi")
 class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
+    @Test fun cloudCandidatesAndLoadingRemainReadableInBothThemes() {
+        for(dark in listOf(false,true)) {
+            val (keyboard,controller)=keyboard(dark)
+            val words=listOf(Candidate("时间复杂度","",false,true),Candidate("时间","",false),Candidate("正则表达式","",true,true))
+            controller.previewState(composing(preedit="shi'jian'fu'za'du",cands=words));idle()
+            keyboard.topBar.cloudLoading=true
+            snap("cloud_candidates_"+if(dark) "dark" else "light")
+            keyboard.topBar.cloudLoading=false;keyboard.dispose()
+        }
+    }
     @Test fun pinyinIdleLight() { keyboard(false); snap("pinyin_idle_light") }
 
     @Test fun pinyinIdleDarkSend() {

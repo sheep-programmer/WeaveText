@@ -6,20 +6,23 @@ public struct Candidate: Decodable, Equatable, Sendable {
     public var comment: String
     /// 来自用户词库（可删除）。 Learned from the user (deletable).
     public var user: Bool
+    public var cloud: Bool
 
-    public init(text: String, comment: String = "", user: Bool = false) {
+    public init(text: String, comment: String = "", user: Bool = false, cloud: Bool = false) {
         self.text = text
         self.comment = comment
         self.user = user
+        self.cloud = cloud
     }
 
-    private enum CodingKeys: String, CodingKey { case text, comment, user }
+    private enum CodingKeys: String, CodingKey { case text, comment, user, cloud }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         text = try c.decode(String.self, forKey: .text)
         comment = try c.decodeIfPresent(String.self, forKey: .comment) ?? ""
         user = try c.decodeIfPresent(Bool.self, forKey: .user) ?? false
+        cloud = try c.decodeIfPresent(Bool.self, forKey: .cloud) ?? false
     }
 }
 

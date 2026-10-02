@@ -76,6 +76,7 @@ public final class CloudWords: ObservableObject {
     private let loaded: () -> Bool
     private let now: () -> Date
     private var task: Task<Void, Never>?
+    private var generation=0
     private var error: String?
 
     public var tsv: URL { dir.appendingPathComponent("hotwords.tsv") }
@@ -103,6 +104,8 @@ public final class CloudWords: ObservableObject {
     public var enabled: Bool { defaults.bool(forKey: Key.enabled) }
 
     public func setEnabled(_ on: Bool) {
+        if on==enabled {if on {refreshNow()};return}
+        generation += 1
         defaults.set(on, forKey: Key.enabled)
         if on {
             refreshNow()
@@ -137,16 +140,18 @@ public final class CloudWords: ObservableObject {
     public func refreshNow() -> Task<Void, Never>? {
         guard enabled else { return nil }
         if let task { return task }
+        let token=generation
         let t = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 try await self.update()
-                self.error = nil
+                if self.generation==token {self.error = nil}
             } catch is CancellationError {
             } catch {
                 NSLog("WeaveText: hot words update failed: %@", String(describing: error))
-                if self.enabled { self.error = Self.failure }
+                if self.enabled && self.generation==token { self.error = Self.failure }
             }
+            guard self.generation==token else{return}
             self.task = nil
             self.publish()
         }

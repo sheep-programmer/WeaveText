@@ -33,6 +33,37 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         return (c, dir, d)
     }
 
+    final class DeferredFetcher:HTTPFetching,@unchecked Sendable {
+        private let lock=NSLock()
+        private var pending:[CheckedContinuation<HTTPResult,Error>]=[]
+        var count:Int {lock.withLock {pending.count}}
+        func get(_ url:URL,etag:String?,maxBytes:Int,progress:(@Sendable(Int64)->Void)?) async throws->HTTPResult {
+            try await withCheckedThrowingContinuation {continuation in lock.withLock {pending.append(continuation)}}
+        }
+        func complete(_ index:Int,_ body:Data) {
+            let continuation=lock.withLock {pending[index]}
+            continuation.resume(returning:HTTPResult(status:200,body:body))
+        }
+    }
+    @Test func cancellingOldUpdateDoesNotHideTheNewLoadingIndicator() async throws {
+        let fetcher=DeferredFetcher();let engine=Engine();let dir=try tempDir("cloud-cancel")
+        let suite="weave-cloud-cancel-\(UUID().uuidString)";let defaults=UserDefaults(suiteName:suite)!
+        defer {try? FileManager.default.removeItem(at:dir);defaults.removePersistentDomain(forName:suite)}
+        let cloud=CloudWords(defaults:defaults,dir:dir,fetcher:fetcher,mirrors:Mirrors(),load:engine.load,
+            unload:{engine.attached=false},loaded:{engine.attached})
+        let body=Data("#! version 2\n".utf8);engine.good=[String(decoding:body,as:UTF8.self)]
+        cloud.setEnabled(true);let old=try #require(cloud.refreshNow())
+        while fetcher.count<1 {await Task.yield()}
+        cloud.setEnabled(false);cloud.setEnabled(true);let next=try #require(cloud.refreshNow())
+        while fetcher.count<2 {await Task.yield()}
+        fetcher.complete(0,body);await old.value
+        #expect(cloud.status.updating && cloud.status.enabled)
+        fetcher.complete(1,body)
+        while fetcher.count<3 {await Task.yield()}
+        fetcher.complete(2,Data("signature".utf8));await next.value
+        #expect(cloud.status.attached && !cloud.status.updating && cloud.status.error==nil)
+    }
+
     @Test func offByDefaultAndDoesNothing() throws {
         let f = StubFetcher()
         let (c, dir, _) = try make(f, Engine(), clock: Date.init)

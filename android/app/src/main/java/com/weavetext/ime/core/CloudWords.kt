@@ -22,6 +22,7 @@ data class CloudStatus(
     val checkedAt: Long = 0,
     val updating: Boolean = false,
     val error: String? = null,
+    val attached: Boolean = true,
 )
 
 /** 界面看到的云端热词操作（截图测试用假实现）。 Cloud hot-word operations seen by the UI; faked in tests. */
@@ -47,6 +48,12 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
     private val listeners = ArrayList<() -> Unit>()
     private val busy = AtomicBoolean(false)
     @Volatile private var error: String? = null
+    @Volatile private var attached = false
+    @Volatile private var attaching = false
+    private val generation=java.util.concurrent.atomic.AtomicInteger()
+    private val commitLock=Any()
+    private class Cancelled: Exception()
+    private fun current(token:Int)=generation.get()==token && WeavePrefs.cloudWords(prefs)
 
     private val dir get() = File(ctx.filesDir, "dict/cloud")
     private val tsv get() = File(dir, "hotwords.tsv")
@@ -57,8 +64,9 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
         words = prefs.getInt(KEY_COUNT, 0),
         version = prefs.getString(KEY_VERSION, "").orEmpty(),
         checkedAt = prefs.getLong(KEY_CHECKED, 0),
-        updating = busy.get(),
+        updating = busy.get() || attaching,
         error = error,
+        attached = attached,
     )
 
     override fun addListener(l: () -> Unit) { synchronized(listeners) { listeners += l } }
@@ -66,21 +74,31 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
     private fun changed() = main.post { synchronized(listeners) { listeners.toList() }.forEach { it() } }
 
     override fun setEnabled(on: Boolean) {
-        prefs.edit().putBoolean(WeavePrefs.CLOUD_WORDS, on).apply()
-        if (on) refreshNow() else {
-            EngineHolder.peek()?.unloadPack(PACK_ID)
-            dir.deleteRecursively()
-            prefs.edit().remove(KEY_COUNT).remove(KEY_VERSION).remove(KEY_CHECKED).remove(KEY_ETAG).apply()
-            error = null
+        synchronized(commitLock) {
+            generation.incrementAndGet()
+            prefs.edit().putBoolean(WeavePrefs.CLOUD_WORDS, on).apply()
+            if(!on) {
+                EngineHolder.peek()?.unloadPack(PACK_ID);attached=false
+                dir.deleteRecursively()
+                prefs.edit().remove(KEY_COUNT).remove(KEY_VERSION).remove(KEY_CHECKED).remove(KEY_ETAG).apply()
+                error=null
+            }
         }
+        if(on)refreshNow()
         changed()
     }
 
     /** 内核刚创建时挂上已下载的热词。 Attach the downloaded hot words to a freshly created engine. */
     fun attach(e: NativeEngine) {
         if (!WeavePrefs.cloudWords(prefs) || !tsv.isFile || !sig.isFile) return
-        val n = e.loadHotwords(tsv.absolutePath, sig.absolutePath)
-        if (n < 0) Log.w(TAG, "stored hot words failed verification")
+        val token=generation.get()
+        attaching=true;changed()
+        val n = try {e.loadHotwords(tsv.absolutePath, sig.absolutePath)} finally {attaching=false}
+        synchronized(commitLock) {
+            if(!current(token)){e.unloadPack(PACK_ID);attached=false}
+            else {attached=n>=0;if(n<0)error="热词没能载入，请重试"}
+        }
+        changed()
     }
 
     /** 开启且超过一天没检查时更新（键盘出现时调用，很便宜）。 Update when on and stale; cheap to call on keyboard show. */
@@ -92,36 +110,41 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
 
     override fun refreshNow() {
         if (!WeavePrefs.cloudWords(prefs) || !busy.compareAndSet(false, true)) return
+        val token=generation.get()
         changed()
         io.execute {
             try {
-                fetch()
-                error = null
+                fetch(token)
+                if(current(token))error = null
+            } catch (_:Cancelled) {
             } catch (t: Throwable) {
                 Log.w(TAG, "hot words update failed", t)
-                error = "更新失败，稍后会自动重试"
+                if(current(token))error = "更新失败，稍后会自动重试"
             } finally {
                 busy.set(false)
                 changed()
+                if(generation.get()!=token && WeavePrefs.cloudWords(prefs)) main.post {refreshNow()}
             }
         }
     }
 
-    private fun fetch() {
+    private fun fetch(token:Int) {
         val sources = listOf<(String) -> String>({ it }) + ModelManager.get(ctx).mirrors().map { m -> { u: String -> m.apply(u) } }
         var last: Exception? = null
         for (src in sources) {
+            if(!current(token))throw Cancelled()
             try {
-                val etag = prefs.getString(KEY_ETAG, null).takeIf { tsv.isFile }
+                val etag = prefs.getString(KEY_ETAG, null).takeIf { tsv.isFile && sig.isFile && attached }
                 val (code, body, newTag) = get(src(TSV_URL), etag)
                 if (code == 304) {
-                    prefs.edit().putLong(KEY_CHECKED, System.currentTimeMillis()).apply()
+                    synchronized(commitLock) {if(!current(token))throw Cancelled();prefs.edit().putLong(KEY_CHECKED, System.currentTimeMillis()).apply()}
                     return
                 }
                 val (_, sigBody, _) = get(src(TSV_URL + ".sig"), null)
-                install(body, sigBody, newTag)
+                install(body, sigBody, newTag,token)
                 return
             } catch (e: Exception) {
+                if(!current(token) || e is Cancelled)throw Cancelled()
                 last = e
             }
         }
@@ -129,7 +152,8 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
     }
 
     /** 先写临时文件交给内核验签，通过才替换旧文件。 Verify via the engine from temp files; replace only on success. */
-    private fun install(body: ByteArray, sigBody: ByteArray, etag: String?) {
+    private fun install(body: ByteArray, sigBody: ByteArray, etag: String?,token:Int) {
+        if(!current(token))throw Cancelled()
         dir.mkdirs()
         val t = File(dir, "hotwords.tsv.new")
         val s = File(dir, "hotwords.tsv.sig.new")
@@ -139,15 +163,17 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
         val n = engine.loadHotwords(t.absolutePath, s.absolutePath)
         if (n < 0) {
             t.delete(); s.delete()
-            // 验签失败：保留旧版本继续用。 Verification failed: keep using the old version.
-            if (tsv.isFile) engine.loadHotwords(tsv.absolutePath, sig.absolutePath)
+            // Failed verification never replaces the active dictionary.
             error("bad signature")
         }
-        t.renameTo(tsv)
-        s.renameTo(sig)
+        synchronized(commitLock) {
+        if(!current(token)){engine.unloadPack(PACK_ID);attached=false;t.delete();s.delete();throw Cancelled()}
+        check(t.renameTo(tsv) && s.renameTo(sig)) {"cannot save signed words"}
+        attached=true
         val version = body.toString(Charsets.UTF_8).lineSequence().take(4).firstOrNull { it.startsWith("#! version") }?.removePrefix("#! version")?.trim().orEmpty()
         prefs.edit().putInt(KEY_COUNT, n).putString(KEY_VERSION, version).putLong(KEY_CHECKED, System.currentTimeMillis())
             .putString(KEY_ETAG, etag).apply()
+        }
     }
 
     private fun get(url: String, etag: String?): Triple<Int, ByteArray, String?> {

@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -304,6 +305,7 @@ private fun CloudWordsCard() {
         onDispose { cloud.removeListener(l) }
     }
     val st = remember(tick) { cloud.status() }
+    val uriHandler=androidx.compose.ui.platform.LocalUriHandler.current
     GroupCard {
         SwitchRow(
             "云端热词", "每天从公开的织文热词库下载一次新词、热词。只下载，不上传：你打的字不会离开手机",
@@ -315,11 +317,14 @@ private fun CloudWordsCard() {
                 st.updating -> "正在更新…"
                 st.error != null -> st.error
                 st.checkedAt == 0L -> "还没有下载"
+                !st.attached -> "热词没能载入，请重试"
                 else -> "${st.words} 个词 · " + SimpleDateFormat("M 月 d 日 HH:mm", Locale.CHINA).format(Date(st.checkedAt)) + " 检查"
             }
             SettingRow("热词", sub) {
-                TextButton(enabled = !st.updating, onClick = { cloud.refreshNow() }) { Text("立即更新") }
+                if(st.updating) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
+                TextButton(enabled = !st.updating, onClick = { cloud.refreshNow() }) { Text(if(st.error!=null || (!st.attached && st.checkedAt>0)) "重试" else "立即更新") }
             }
+            TextButton(onClick={uriHandler.openUri("https://github.com/sheep-programmer/weavetext-hotwords/blob/main/SOURCES.md")}) {Text("词库来源与许可")}
         }
     }
 }

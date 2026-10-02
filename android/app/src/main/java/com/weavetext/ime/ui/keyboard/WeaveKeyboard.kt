@@ -228,6 +228,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var clipChipTimeout = Runnable { topBar.clipChip = null }
 
     private val stateListener: (ImeState) -> Unit = { onState(it) }
+    private val cloudWords by lazy {com.weavetext.ime.core.CloudWords.get(ctx)}
+    private val cloudListener:()->Unit={topBar.cloudLoading=cloudWords.status().let {it.enabled && it.updating}}
     /** 上一次渲染到界面的状态。 State last rendered. */
     private var rendered: ImeState? = null
     private var renderPending = false
@@ -275,6 +277,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         prefs.registerOnSharedPreferenceChangeListener(this)
         applyAllPrefs()
         controller.addListener(stateListener)
+        cloudWords.addListener(cloudListener);cloudListener()
         // 敲等号后的计算结果：点一下接在等号后面。 A result after "=": tap to append it.
         controller.onCalc = { showLocalCandidates(it) }
     }
@@ -1411,6 +1414,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         Choreographer.getInstance().removeFrameCallback(frameRender)
         renderPending = false
         controller.removeListener(stateListener)
+        cloudWords.removeListener(cloudListener)
         controller.onCalc = null
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         voiceStrip?.end(true)
