@@ -284,7 +284,7 @@ class TypingFeelTest {
         release(0)
     }
 
-    @Test fun slowTapOnAnOrdinaryCandidateStillCommits() {
+    @Test fun ordinaryCandidateTapCommitsBeforeTheLongPressThreshold() {
         tap('n'); tap('i')
         hold(20)
         val bar = kb.topBar
@@ -292,9 +292,21 @@ class TypingFeelTest {
         val x = dp(60f)
         val t0 = SystemClock.uptimeMillis()
         bar.dispatchTouchEvent(MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, x, y, 0))
-        hold(600)
+        hold(200)
         bar.dispatchTouchEvent(MotionEvent.obtain(t0, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0))
         assertEquals("【ni】", ic.text)
+    }
+
+    @Test fun longPressOnAnOrdinaryCandidateOpensActionsWithoutCommitting() {
+        tap('n');tap('i');hold(20)
+        val bar=kb.topBar
+        val y=bar.height-dp(8f);val x=dp(60f)
+        val start=SystemClock.uptimeMillis()
+        bar.dispatchTouchEvent(MotionEvent.obtain(start,start,MotionEvent.ACTION_DOWN,x,y,0))
+        hold(600)
+        bar.dispatchTouchEvent(MotionEvent.obtain(start,SystemClock.uptimeMillis(),MotionEvent.ACTION_UP,x,y,0))
+        assertEquals("",ic.text)
+        assertEquals("ni",engine.raw.toString())
     }
 
     // ------------------------------------------------------------ space bar
