@@ -162,14 +162,19 @@ final class StickerWindow {
 }
 struct StickerCollectionView:View {
     @ObservedObject var model:StickerCollectionModel
+    @Environment(\.colorScheme) private var colorScheme
     var body:some View {
         VStack(spacing:10) {
-            HStack {
+            HStack(spacing:12) {
+                ZStack {Circle().fill(Color.accentColor.opacity(0.18));Image(systemName:"bag.fill").font(.title2).foregroundStyle(Color.accentColor)}.frame(width:42,height:42)
+                VStack(alignment:.leading,spacing:2) {Text("表情收纳袋 · \(model.items.count)").font(.headline);Text(model.compact ? "点按插入 · 长按管理" : "收藏、整理并快速发送你的图片").font(.caption).foregroundStyle(.secondary)}
+                Spacer()
                 Button("导入图片") {model.importPictures()}
                 Menu(model.compact ? "更多" : "收纳与备份") {Button("收纳剪贴板") {model.fromClipboard()};Button("导出表情备份") {model.exportArchive()};Button("导入表情备份") {model.importArchive()}}.fixedSize()
-                Spacer();Button(model.compact ? "展开" : "小窗"){StickerWindow.shared.toggleCompact()}
+                Button(model.compact ? "展开" : "小窗"){StickerWindow.shared.toggleCompact()}
                 if !model.compact {Toggle("整理",isOn:$model.selecting).toggleStyle(.button)}
-            }
+            }.padding(10).background(RoundedRectangle(cornerRadius:14).fill(Color.accentColor.opacity(colorScheme == .dark ? 0.13 : 0.09)))
+            .buttonStyle(.bordered).controlSize(.regular)
             HStack {
                 if !model.compact {TextField("搜索名称、标签和分组",text:$model.query)}
                 Picker("分组",selection:$model.filter) {
@@ -186,7 +191,8 @@ struct StickerCollectionView:View {
                             Text((item.favorite ? "★ " : "")+item.name).font(.callout).lineLimit(2)
                             if item.animated {Text("动图 · 原文件保留").font(.caption2).foregroundStyle(.secondary)}
                         }.padding(8).frame(maxWidth:.infinity,minHeight:140)
-                        .background(RoundedRectangle(cornerRadius:10).fill(model.selected.contains(item.id) ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06)))
+                        .background(RoundedRectangle(cornerRadius:12).fill(model.selected.contains(item.id) ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06)))
+                        .overlay(RoundedRectangle(cornerRadius:12).stroke(Color.primary.opacity(0.08),lineWidth:1))
                         .contentShape(Rectangle()).onTapGesture {if model.selecting {if !model.selected.insert(item.id).inserted {model.selected.remove(item.id)}}else {model.use(item)}}
                         .onDrag {model.file(item).flatMap {NSItemProvider(contentsOf:$0)} ?? NSItemProvider()}
                         .contextMenu {

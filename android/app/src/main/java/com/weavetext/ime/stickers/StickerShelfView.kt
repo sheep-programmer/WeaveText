@@ -3,6 +3,7 @@ package com.weavetext.ime.stickers
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.PorterDuff
 import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -36,11 +37,20 @@ class StickerShelfView(
     private val label get()=if(dark)Color.rgb(232,233,237)else Color.rgb(30,33,40)
     private val surface get()=if(dark)Color.rgb(24,26,32)else Color.rgb(248,249,252)
     private val soft get()=if(dark)Color.rgb(45,49,59)else Color.rgb(230,235,245)
+    private val muted get()=if(dark)Color.rgb(164,169,181)else Color.rgb(104,111,126)
+    private val accent get()=if(dark)Color.rgb(104,137,240)else Color.rgb(75,105,205)
     init {
-        orientation=VERTICAL;setPadding(dp(10),dp(5),dp(10),dp(5))
+        orientation=VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7))
+        background=rounded(surface,dp(16),Color.TRANSPARENT)
         header.gravity=android.view.Gravity.CENTER_VERTICAL
-        title.text="表情收纳袋";title.textSize=17f
-        header.addView(title,LayoutParams(0,dp(38),1f))
+        header.setPadding(dp(9),dp(5),dp(5),dp(5));header.background=rounded(soft,dp(15),Color.TRANSPARENT)
+        val mark=ImageView(ctx).apply {setImageResource(com.weavetext.ime.R.drawable.ic_sticker_bag);setColorFilter(label,PorterDuff.Mode.SRC_IN);contentDescription="表情收纳袋"}
+        header.addView(mark,LayoutParams(dp(30),dp(30)))
+        val titleBlock=LinearLayout(ctx).apply {orientation=VERTICAL;gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(8),0,dp(5),0)}
+        title.text=if(compact)"表情"else"表情收纳袋";title.textSize=16f;title.setTypeface(null,android.graphics.Typeface.BOLD)
+        val subtitle=TextView(ctx).apply {text=if(compact)"点按插入 · 长按管理"else"收藏你的图片与动图";textSize=11f;setTextColor(muted)}
+        titleBlock.addView(title,LayoutParams(-1,dp(22)));titleBlock.addView(subtitle,LayoutParams(-1,dp(17)))
+        header.addView(titleBlock,LayoutParams(0,dp(44),1f))
         header.addView(button("导入",import));header.addView(button(if(compact)"管理"else"整理") {if(compact)manage()else {selecting=!selecting;selected.clear();reload()}})
         header.addView(button("悬浮",overlay));addView(header)
         if(!compact){
@@ -51,7 +61,7 @@ class StickerShelfView(
                 override fun afterTextChanged(s:android.text.Editable?){}
             });addView(search,LayoutParams(-1,dp(44)))
         }
-        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;addView(tabs)},LayoutParams(-1,dp(38)))
+        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;setPadding(0,dp(5),0,0);addView(tabs)},LayoutParams(-1,dp(43)))
         addView(controls,LayoutParams(-1,dp(40)))
         val body=FrameLayout(ctx)
         grid.numColumns=if(compact)3 else 4;grid.verticalSpacing=dp(5);grid.horizontalSpacing=dp(5);grid.stretchMode=GridView.STRETCH_COLUMN_WIDTH
@@ -76,7 +86,7 @@ class StickerShelfView(
         empty.text=repository.store.loadError ?: if(repository.store.list().isEmpty())"把图片分享到「收纳到织文」\n或点导入，收藏自己的表情"else"没有找到表情"
         tabs.removeAllViews()
         for((id,name) in listOf("all" to "全部","recent" to "最近","favorites" to "收藏","ungrouped" to "未分组")+repository.store.groups().map {"group:$it" to it}) {
-            tabs.addView(button(name) {filter=id;reload()}.apply {alpha=if(filter==id)1f else .6f})
+            tabs.addView(tab(name,filter==id) {filter=id;reload()})
         }
         updateControls();adapter.notifyDataSetChanged()
     }
@@ -98,10 +108,9 @@ class StickerShelfView(
     private fun showActions(anchor:View,item:Sticker) {
         PopupMenu(context,anchor).apply {
             menu.add(if(item.favorite)"取消收藏"else"收藏").setOnMenuItemClickListener {repository.edit(item.id,item.name,item.group,item.tags,!item.favorite);true}
-            menu.add("编辑名称、标签与分组").setOnMenuItemClickListener {if(compact)manage()else edit(item);true}
-            menu.add("分享原图").setOnMenuItemClickListener {StickerSending.share(context,item);true}
-            menu.add("删除").setOnMenuItemClickListener {if(compact){manage();return@setOnMenuItemClickListener true};android.app.AlertDialog.Builder(context).setTitle("删除「${item.name}」？")
-                .setPositiveButton("删除"){_,_->repository.delete(setOf(item.id),notice)}.setNegativeButton("取消",null).show();true}
+            menu.add("编辑名称、标签与分组").setOnMenuItemClickListener {if(compact){notice("编辑名称和标签请点“管理”打开完整编辑")}else edit(item);true}
+            menu.add("分享原图").setOnMenuItemClickListener {StickerSending.share(context,item);notice("已打开分享");true}
+            menu.add("删除").setOnMenuItemClickListener {repository.delete(setOf(item.id)){notice("已删除「${item.name}」")};true}
             show()
         }
     }
@@ -115,10 +124,22 @@ class StickerShelfView(
     }
     private fun button(text:String,action:()->Unit)=TextView(context).apply {
         this.text=text;textSize=13f;gravity=android.view.Gravity.CENTER;setTextColor(label)
-        setPadding(dp(9),0,dp(9),0);minimumHeight=dp(36);isClickable=true;isFocusable=true
+        setPadding(dp(10),0,dp(10),0);minimumHeight=dp(34);isClickable=true;isFocusable=true
+        background=rounded(if(dark)Color.rgb(58,63,76) else Color.WHITE,dp(11),Color.TRANSPARENT)
         setOnClickListener {action()}
     }
-    private fun applyColors(){setBackgroundColor(surface);title.setTextColor(label);empty.setTextColor(label);for(i in 0 until header.childCount)(header.getChildAt(i) as? TextView)?.setTextColor(label);reload()}
+    private fun tab(text:String,active:Boolean,action:()->Unit)=TextView(context).apply {
+        this.text=text;textSize=13f;gravity=android.view.Gravity.CENTER;setTextColor(if(active)Color.WHITE else muted)
+        setPadding(dp(13),0,dp(13),0);minimumHeight=dp(32);background=rounded(if(active)accent else soft,dp(16),Color.TRANSPARENT);setOnClickListener {action()}
+    }
+    private fun rounded(color:Int,radius:Int,stroke:Int)=GradientDrawable().apply {setColor(color);cornerRadius=radius.toFloat();if(stroke!=Color.TRANSPARENT)setStroke(dp(1),stroke)}
+    private fun applyColors(){
+        background=rounded(surface,dp(16),Color.TRANSPARENT);header.background=rounded(soft,dp(15),Color.TRANSPARENT)
+        title.setTextColor(label);empty.setTextColor(muted)
+        (header.getChildAt(0) as? ImageView)?.setColorFilter(label,PorterDuff.Mode.SRC_IN)
+        for(i in 0 until header.childCount)(header.getChildAt(i) as? TextView)?.let {it.setTextColor(label);it.background=rounded(if(dark)Color.rgb(58,63,76) else Color.WHITE,dp(11),Color.TRANSPARENT)}
+        reload()
+    }
     override fun onAttachedToWindow(){super.onAttachedToWindow();repository.observe(changed);reload()}
     override fun onDetachedFromWindow(){repository.unobserve(changed);for(i in 0 until grid.childCount)(grid.getChildAt(i).tag as? Tile)?.image?.stop();super.onDetachedFromWindow()}
     private fun dp(value:Int)=(value*resources.displayMetrics.density).toInt()
@@ -135,7 +156,7 @@ class StickerShelfView(
             }
             val tile=cell.tag as Tile;val item=items[position]
             tile.caption.text=(if(selecting && item.id in selected)"✓ "else if(item.favorite)"★ "else "")+item.name
-            tile.caption.setTextColor(label);cell.background=GradientDrawable().apply {setColor(soft);cornerRadius=dp(10).toFloat()}
+            tile.caption.setTextColor(label);cell.background=rounded(if(dark)Color.rgb(38,42,52) else Color.WHITE,dp(12),if(dark)Color.rgb(63,68,82) else Color.rgb(225,230,240))
             cell.contentDescription=item.name+(if(item.animated)"，GIF 或动态图片"else"")
             tile.image.bind(repository.store.file(item),item.id);return cell
         }

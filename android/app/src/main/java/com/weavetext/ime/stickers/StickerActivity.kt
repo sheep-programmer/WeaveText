@@ -25,11 +25,15 @@ class StickerActivity:ComponentActivity() {
     }}
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
-        val root=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL}
-        val toolbar=LinearLayout(this).apply {gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(12),dp(4),dp(12),0)}
-        toolbar.addView(Button(this).apply {text="返回";setOnClickListener {finish()}})
-        toolbar.addView(TextView(this).apply {text="织文表情收纳袋";textSize=19f},LinearLayout.LayoutParams(0,dp(48),1f))
-        toolbar.addView(Button(this).apply {text="备份";setOnClickListener {export.launch("织文表情备份.zip")}})
+        val dark=(resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val root=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL;setBackgroundColor(if(dark)android.graphics.Color.rgb(20,22,28) else android.graphics.Color.rgb(246,248,252));setPadding(dp(10),dp(8),dp(10),0)}
+        val toolbar=LinearLayout(this).apply {gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(6),dp(3),dp(6),dp(8))}
+        toolbar.addView(ImageButton(this).apply {setImageResource(com.weavetext.ime.R.drawable.ic_arrow_back);contentDescription="返回";background=null;setOnClickListener {finish()}},LinearLayout.LayoutParams(dp(44),dp(44)))
+        val titleBlock=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL;gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(8),0,dp(8),0)}
+        titleBlock.addView(TextView(this).apply {text="表情收纳袋";textSize=21f;setTextColor(if(dark)android.graphics.Color.rgb(239,241,246) else android.graphics.Color.rgb(28,34,48));setTypeface(null,android.graphics.Typeface.BOLD)},LinearLayout.LayoutParams(-1,dp(27)))
+        titleBlock.addView(TextView(this).apply {text="收藏、整理并快速发送你的图片";textSize=12f;setTextColor(if(dark)android.graphics.Color.rgb(164,169,181) else android.graphics.Color.rgb(105,113,130))},LinearLayout.LayoutParams(-1,dp(19)))
+        toolbar.addView(titleBlock,LinearLayout.LayoutParams(0,dp(48),1f))
+        toolbar.addView(Button(this).apply {text="备份";setOnClickListener {export.launch("织文表情备份.zip")};setPadding(dp(12),0,dp(12),0)})
         root.addView(toolbar)
         shelf=StickerShelfView(this,false,{item->StickerSending.share(this,item)}, {},::chooseImport,::startOverlay,::message)
         root.addView(shelf,LinearLayout.LayoutParams(-1,0,1f))
