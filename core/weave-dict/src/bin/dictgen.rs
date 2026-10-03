@@ -83,8 +83,9 @@ fn read_rows(
         let key = match kind {
             Kind::Pinyin => syllable::parse_seq(&strip_tones(code)),
             Kind::Letters => {
+                // don't、Wi-Fi 按去掉撇号和连字符的字母编码。 Code don't and Wi-Fi by their letters alone.
                 let lower = code.trim().to_ascii_lowercase();
-                lower.bytes().map(letter_sym).collect::<Option<Vec<_>>>()
+                lower.bytes().filter(|b| !matches!(b, b'\'' | b'-')).map(letter_sym).collect::<Option<Vec<_>>>()
             }
         };
         match key {

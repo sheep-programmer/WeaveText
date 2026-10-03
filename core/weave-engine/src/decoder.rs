@@ -358,13 +358,7 @@ impl<'a> Decoder<'a> {
     pub fn decode_with_latin(&self,english:Option<&Lexicon>,original:&[u8],raw_input:&str,english_user:Option<&UserDict>)->Lattice {
         let mut lat=self.decode();
         if original.len()!=self.graph.len{return lat;}
-        if !original.iter().any(u8::is_ascii_uppercase) {
-            let mut full=vec![false;self.graph.len+1];full[0]=true;
-            for at in 0..self.graph.len {
-                if full[at] {for edge in &self.graph.out[at] {if edge.kind==EdgeKind::Full {full[edge.end]=true;}}}
-            }
-            if full[self.graph.len] {return lat;}
-        }
+        if !original.iter().any(u8::is_ascii_uppercase) && self.graph.spells_fully() {return lat;}
         let english_user=english_user.filter(|u|u.entry_count()>0);
         let before=lat.spans.len();
         let positions:Vec<_>=raw_input.bytes().enumerate().filter(|(_,b)|b.is_ascii_alphabetic()).map(|(i,_)|i).collect();

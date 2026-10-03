@@ -134,6 +134,20 @@ impl SyllableGraph {
         graph
     }
 
+    /// 按键能否整串读成实际打出的完整音节。 Whether the keys read through as fully typed syllables.
+    pub fn spells_fully(&self) -> bool {
+        let mut reach = vec![false; self.len + 1];
+        reach[0] = true;
+        for at in 0..self.len {
+            if reach[at] {
+                for edge in self.out[at].iter().filter(|e| e.kind == EdgeKind::Full) {
+                    reach[edge.end] = true;
+                }
+            }
+        }
+        reach[self.len]
+    }
+
     pub fn push(&mut self, e: Edge) {
         // 同一 (start,end,syls) 只保留惩罚最小的。 Keep the cheapest duplicate.
         let list = &mut self.out[e.start];

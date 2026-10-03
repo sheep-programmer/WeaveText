@@ -1891,8 +1891,8 @@ impl Engine {
                 action: Action::Pinyin(c),
             })
             .collect();
-        if self.schema == Schema::Pinyin {
-            self.mix_english(&lat, &keys);
+        if matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_)) {
+            self.mix_english(&lat, &keys, g.spells_fully());
         }
         if self.schema.is_pinyin_family() && !matches!(self.schema, Schema::Keypad(_)) {
             self.insert_dates();
@@ -1918,27 +1918,38 @@ impl Engine {
     }
 
     /// 中英混输：键入的字母恰好是常用英文词时，把英文词插进候选。
-    /// 拼音读不通时放首位；需要简拼时放第 2 位；拼音完全读得通时只有高频词放第 4 位。
+    /// 拼音读不通时放首位；需要简拼时放第 2 位；拼音完全读得通时只有高频词放第 4 位；
+    /// 不常用的词（wifi）在至少 4 个字母、又拼不成完整音节时放第 3 位。
     /// Mixed input: when the letters spell an English word, insert it — first if the letters are
-    /// not pinyin, second if pinyin needs abbreviations, fourth (frequent words only) otherwise.
-    fn mix_english(&mut self, lat: &Lattice, keys: &[u8]) {
+    /// not pinyin, second if pinyin needs abbreviations, fourth (frequent words only) otherwise;
+    /// rare words (wifi) go third when at least 4 letters do not spell complete syllables.
+    fn mix_english(&mut self, lat: &Lattice, keys: &[u8], spells_fully: bool) {
         let Some(en) = &self.english else { return };
         if keys.len() < 2 || self.rest_raw().contains('\'') {
             return;
         }
-        let Some(key) = table::code_key(std::str::from_utf8(keys).unwrap_or("")) else {
+        let typed = std::str::from_utf8(keys).unwrap_or("");
+        let Some(key) = table::code_key(typed) else {
             return;
         };
         let Some(node) = en.find(&key) else { return };
-        let Some(best) = en.entries(node).min_by_key(|e| e.cost) else {
+        // 按键原样拼出的写法优先（email 而非 e-mail），没有时才用带撇号、连字符的（don't）。
+        // Prefer the spelling the keys spell out (email over e-mail); fall back to don't-style forms.
+        let Some((text, best)) = en.entries(node).map(|e| (en.text(e.text_id, &key), e))
+            .min_by_key(|(text, e)| (!text.eq_ignore_ascii_case(typed), e.cost)) else {
             return;
         };
-        let text = en.text(best.text_id, &key);
-        if self
-            .cands
-            .iter()
-            .any(|c| c.view.text.eq_ignore_ascii_case(&text))
-        {
+        // 跟随打出的大写（School、SCHOOL）；小写 wifi 在原样字母之外仍给出词库的 WiFi。
+        // Follow typed capitals (School, SCHOOL); lowercase wifi still offers the dictionary's WiFi beside the raw letters.
+        let raw: Vec<u8> = self.rest_raw().bytes().filter(u8::is_ascii_alphabetic).collect();
+        let text = if raw.len() > 1 && raw.iter().all(u8::is_ascii_uppercase) {
+            text.to_ascii_uppercase()
+        } else if raw.first().is_some_and(u8::is_ascii_uppercase) {
+            capitalize(&text)
+        } else {
+            text
+        };
+        if self.cands.iter().any(|c| c.view.text == text) {
             return;
         }
         // 拼音越读不通（原样按键、简拼越多），越可能是英文。 The less pinyin-like, the likelier English.
@@ -1951,6 +1962,8 @@ impl Engine {
             1
         } else if cost < 11_000 {
             3
+        } else if !spells_fully && keys.len() >= 4 {
+            2
         } else {
             return;
         };
