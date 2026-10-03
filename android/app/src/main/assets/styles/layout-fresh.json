@@ -40,7 +40,7 @@
     "enterAccent": "action"
   },
   "candidates": { "english": "list", "preedit": "inline", "expandIcon": "chevron", "textSize": 19, "dividers": false },
-  "toolbar": { "items": ["menu", "keyboard", "voice", "cursor", "clipboard", "stickers", "hide"], "icons": "outline", "show": "idle" },
+  "toolbar": { "items": ["menu", "keyboard", "voice", "cursor", "clipboard", "hide"], "icons": "outline", "show": "idle" },
   "popup": { "bubble": "float", "radius": 10, "textSize": 30, "altRadius": 10 },
   "symbols": { "indicator": "underline", "categories": "bottom" }
 }

@@ -70,15 +70,7 @@
     "expandIcon": "chevron"
   },
   "toolbar": {
-    "items": [
-      "menu",
-      "emoji",
-      "clipboard",
-      "settings",
-      "cursor",
-      "stickers",
-      "voice"
-    ],
+    "items": ["menu", "emoji", "clipboard", "settings", "cursor", "voice"],
     "menuIcon": "grid"
   },
   "popup": {

@@ -61,14 +61,7 @@
     "space": "iconMic"
   },
   "toolbar": {
-    "items": [
-      "menu",
-      "emoji",
-      "voice",
-      "clipboard",
-      "stickers",
-      "hide"
-    ],
+    "items": ["menu", "emoji", "voice", "cursor", "clipboard", "hide"],
     "align": "edges",
     "buttons": "circle"
   },

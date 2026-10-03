@@ -206,4 +206,12 @@ class StyleParserTest {
         val side = repo.layoutIds.filter { repo.layout(it).symbols.categories == "side" }
         assertEquals(listOf("classic", "bright"), side)
     }
+
+    @Test fun everyBuiltInToolbarHasTheCursorAndNoStickerBagByDefault() {
+        for (id in repo.layoutIds) {
+            val items = WeavePrefs.toolbarItems(WeavePrefs.of(app), repo.layout(id).toolbar.items)
+            assertTrue("$id: $items", "cursor" in items)
+            assertFalse("$id: $items", "stickers" in items)
+        }
+    }
 }

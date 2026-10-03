@@ -67,15 +67,7 @@
     "shift": "split"
   },
   "toolbar": {
-    "items": [
-      "menu",
-      "emoji",
-      "voice",
-      "clipboard",
-      "keyboard",
-      "stickers",
-      "hide"
-    ],
+    "items": ["menu", "emoji", "voice", "cursor", "clipboard", "keyboard", "hide"],
     "menuAccent": true
   },
   "popup": {

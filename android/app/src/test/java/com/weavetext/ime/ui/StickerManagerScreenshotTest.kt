@@ -19,6 +19,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import java.io.File
 
 /**
@@ -43,7 +46,8 @@ class StickerManagerScreenshotTest {
         }
     }
 
-    private fun shot(name: String, dark: Boolean) {
+    private fun shot(name: String, dark: Boolean, before: () -> Unit = {}, act: () -> Unit = {}) {
+        before()
         compose.setContent {
             WeaveSettingsTheme(dark = dark) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { StickerManagerScreen(onBack = {}) }
@@ -52,9 +56,26 @@ class StickerManagerScreenshotTest {
         // 缩略图在后台解码：等它们出来再截。 Thumbnails decode in the background; wait for them.
         val end = System.nanoTime() + 3_000_000_000L
         while (System.nanoTime() < end) { Thread.sleep(50); compose.waitForIdle() }
+        act()
+        val settle = System.nanoTime() + 600_000_000L
+        while (System.nanoTime() < settle) { Thread.sleep(50); compose.waitForIdle() }
         compose.onRoot().captureRoboImage(File(dir, "$name.png").path)
+    }
+
+    private fun emptyStore() {
+        StickerRepository.io.submit {}.get(); StickerRepository.reset(); File(app.filesDir, "stickers").deleteRecursively()
+    }
+
+    private fun selectOne() {
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("整理").performClick()
+        compose.onNodeWithText("开心").performClick()
     }
 
     @Test fun managerLight() = shot("sticker_manager_light", false)
     @Test fun managerDark() = shot("sticker_manager_dark", true)
+    @Test fun managerSelecting() = shot("sticker_manager_selecting_light", false, act = ::selectOne)
+    @Test fun managerSelectingDark() = shot("sticker_manager_selecting_dark", true, act = ::selectOne)
+    @Test fun managerEmpty() = shot("sticker_manager_empty_light", false, before = ::emptyStore)
+    @Test fun managerEmptyDark() = shot("sticker_manager_empty_dark", true, before = ::emptyStore)
 }

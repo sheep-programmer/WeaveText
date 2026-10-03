@@ -61,13 +61,7 @@
     "enter": "text"
   },
   "toolbar": {
-    "items": [
-      "menu",
-      "emoji",
-      "voice",
-      "stickers",
-      "hide"
-    ],
+    "items": ["menu", "emoji", "voice", "cursor", "hide"],
     "align": "edges"
   },
   "popup": {

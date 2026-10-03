@@ -59,12 +59,7 @@
     "enter": "text"
   },
   "toolbar": {
-    "items": [
-      "menu",
-      "clipboard",
-      "stickers",
-      "hide"
-    ],
+    "items": ["menu", "cursor", "clipboard", "hide"],
     "align": "edges",
     "menuAccent": true
   },
