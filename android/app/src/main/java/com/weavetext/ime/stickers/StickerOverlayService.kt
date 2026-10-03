@@ -44,16 +44,34 @@ class StickerOverlayService:Service() {
         safeEdges()
         val open=requestedOpen && safeBottom()-statusTop>=dp(190)
         window?.let {runCatching {wm.removeView(it)}};expanded=open
-        val root=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL;setPadding(dp(5),dp(5),dp(5),dp(5))}
-        val color=if(resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK==android.content.res.Configuration.UI_MODE_NIGHT_YES)Color.rgb(31,34,41)else Color.rgb(245,248,255)
-        root.background=GradientDrawable().apply {setColor(color);cornerRadius=dp(if(open)16 else 24).toFloat()}
+        val night=resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK==android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val colors=if(night)ShelfColors.DARK else ShelfColors.LIGHT
+        val root=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL;if(open)setPadding(0,dp(2),0,dp(4))}
+        // 收起时是一颗强调色圆球，展开后是带描边的圆角卡片。 Collapsed: an accent ball. Open: a rounded, outlined card.
+        root.background=GradientDrawable().apply {
+            setColor(if(open)colors.surface else colors.accent);cornerRadius=dp(if(open)18 else 24).toFloat()
+            if(open)setStroke(dp(1),colors.stroke)
+        }
         val header=LinearLayout(this).apply {gravity=Gravity.CENTER_VERTICAL}
-        val handle=TextView(this).apply {text=if(open)"拖这里移动收纳袋"else"▣";textSize=if(open)13f else 24f;gravity=Gravity.CENTER;setTextColor(if(color==Color.rgb(31,34,41))Color.WHITE else Color.rgb(40,73,136));contentDescription="表情收纳袋，拖动移动，点击展开"}
-        header.addView(handle,LinearLayout.LayoutParams(0,dp(38),1f))
-        if(open){header.addView(action("收起"){show(false)});header.addView(action("关闭"){stopSelf()})}
+        val handle:View=if(!open)ImageView(this).apply {
+            setImageResource(com.weavetext.ime.R.drawable.ic_sticker_bag);imageTintList=android.content.res.ColorStateList.valueOf(colors.onAccent)
+            setPadding(dp(12),dp(12),dp(12),dp(12));contentDescription="表情收纳袋，拖动移动，点击展开"
+        } else LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL;gravity=Gravity.CENTER;contentDescription="拖动移动表情收纳袋"
+            // 顶部抓手：提示这一条可以拖。 A grabber hinting that this strip drags.
+            addView(View(context).apply {background=GradientDrawable().apply {setColor(colors.stroke);cornerRadius=dp(2).toFloat()}},LinearLayout.LayoutParams(dp(32),dp(4)))
+            addView(TextView(context).apply {text="表情收纳袋";textSize=13f;setTypeface(null,android.graphics.Typeface.BOLD);setTextColor(colors.label);gravity=Gravity.CENTER},
+                LinearLayout.LayoutParams(-2,-2).apply {topMargin=dp(3)})
+        }
+        header.addView(handle,LinearLayout.LayoutParams(if(open)0 else -1,dp(if(open)40 else 48),if(open)1f else 0f))
+        if(open){
+            header.addView(action(com.weavetext.ime.R.drawable.ic_chevron_down,"收起",colors.muted){show(false)})
+            header.addView(action(com.weavetext.ime.R.drawable.ic_close,"关闭",colors.muted){stopSelf()})
+            header.setPadding(dp(76),0,dp(4),0)
+        }
         root.addView(header)
         if(open){
-            val shelf=StickerShelfView(this,true,{item ->
+            val shelf=StickerShelfView(this,{item ->
                 if(StickerSending.insert(this,item))toast("已插入，请在聊天应用中确认发送")else StickerSending.share(this,item)
             },::manage,::manage, {show(false)},::toast)
             root.addView(shelf,LinearLayout.LayoutParams(-1,0,1f))
@@ -105,7 +123,10 @@ class StickerOverlayService:Service() {
     }
     override fun onConfigurationChanged(config:android.content.res.Configuration){super.onConfigurationChanged(config);show(expanded)}
     private fun manage(){startActivity(Intent(this,StickerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}
-    private fun action(label:String,onClick:()->Unit)=TextView(this).apply {text=label;textSize=12f;setTextColor(Color.rgb(80,125,230));setPadding(dp(8),dp(8),dp(8),dp(8));setOnClickListener {onClick()}}
+    private fun action(icon:Int,label:String,tint:Int,onClick:()->Unit)=ImageView(this).apply {
+        setImageResource(icon);contentDescription=label;imageTintList=android.content.res.ColorStateList.valueOf(tint)
+        setPadding(dp(9),dp(9),dp(9),dp(9));layoutParams=LinearLayout.LayoutParams(dp(36),dp(36));setOnClickListener {onClick()}
+    }
     private fun screenSize():android.graphics.Point {
         if(Build.VERSION.SDK_INT>=30){val b=wm.maximumWindowMetrics.bounds;return android.graphics.Point(b.width(),b.height())}
         val size=android.graphics.Point();@Suppress("DEPRECATION") wm.defaultDisplay.getRealSize(size);return size

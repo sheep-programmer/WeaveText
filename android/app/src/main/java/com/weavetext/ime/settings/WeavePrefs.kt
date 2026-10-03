@@ -141,6 +141,29 @@ object WeavePrefs {
         else -> keyboard
     }
 
+    /** 用户自选的工具栏按钮（逗号分隔，菜单始终在最前，不存）。 User-chosen toolbar items; the menu is implied. */
+    const val TOOLBAR_ITEMS = "toolbar_items"
+    /** 可放上工具栏的按钮，按设置页的展示顺序。 Items that can go on the toolbar, in settings order. */
+    val TOOLBAR_CHOICES = listOf("keyboard", "voice", "emoji", "cursor", "clipboard", "stickers", "settings", "hide")
+    /** 菜单之外最多几个，再多一行放不下。 At most this many besides the menu; more won't fit one row. */
+    const val TOOLBAR_MAX = 6
+
+    /** 用户自定义过的工具栏（不含菜单）；没改过为 null。 The customised toolbar without the menu, or null. */
+    fun toolbarCustom(p: SharedPreferences): List<String>? = p.getString(TOOLBAR_ITEMS, null)
+        ?.split(',')?.map { it.trim() }?.filter { it in TOOLBAR_CHOICES }?.distinct()?.take(TOOLBAR_MAX)
+
+    /**
+     * 实际显示的工具栏：用户改过就用用户的；没改过用风格自带的，但表情收纳袋默认不放，要到设置里打开。
+     * The toolbar actually shown: the user's own list if customised, else the style's, minus the sticker bag,
+     * which stays off until turned on in settings.
+     */
+    fun toolbarItems(p: SharedPreferences, styleItems: List<String>): List<String> =
+        toolbarCustom(p)?.let { listOf("menu") + it } ?: styleItems.filter { it != "stickers" }
+
+    fun setToolbar(p: SharedPreferences, items: List<String>?) {
+        p.edit().apply { if (items == null) remove(TOOLBAR_ITEMS) else putString(TOOLBAR_ITEMS, items.joinToString(",")) }.apply()
+    }
+
     fun theme(p: SharedPreferences) = p.getString(THEME, "system") ?: "system"
     fun heightLevel(p: SharedPreferences) = p.getInt(HEIGHT_LEVEL, HEIGHT_LEVEL_DEFAULT)
     fun styleLayout(p: SharedPreferences) = p.getString(STYLE_LAYOUT, null) ?: "fresh"

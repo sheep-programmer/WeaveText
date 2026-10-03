@@ -36,6 +36,8 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(SETTINGS, R.drawable.ic_settings, null, "设置"),
         Item(FLOAT, R.drawable.ic_float, null, "悬浮键盘"),
         Item(LINK, R.drawable.ic_send, null, "发到电脑"),
+        Item(STICKERS, R.drawable.ic_sticker_bag, null, "表情收纳袋"),
+        Item(TOOLBAR, R.drawable.ic_toolbox, null, "工具栏设置"),
     )
 
     override fun applyTheme() = view.invalidate()
@@ -77,6 +79,9 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             // 帮助入口在设置「关于」里；这一格让给悬浮键盘（06 §5）。 Help lives in Settings › About.
             FLOAT -> { kb.closePanel(); kb.toggleFloating() }
             LINK -> { kb.closePanel(); kb.sendClipboardToComputer() }
+            STICKERS -> kb.showPanel("stickers")
+            // 直接打开「工具栏」设置页，挑选、排序工具栏按钮。 Straight to the toolbar page to pick and order buttons.
+            TOOLBAR -> kb.openSettings("toolbar")
         }
         view.invalidate()
     }
@@ -176,7 +181,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         const val SCHEMES = 0; const val HEIGHT = 1; const val DARK = 2; const val TRAD = 3
         const val EMOJI = 4; const val PHRASES = 5; const val ONE_HAND = 6; const val ENGINES = 7
         const val CURSOR = 8; const val CLIPBOARD = 9; const val SETTINGS = 10; const val FLOAT = 11
-        const val LINK = 12
+        const val LINK = 12; const val STICKERS = 13; const val TOOLBAR = 14
         private const val ROWS = 3
     }
 }

@@ -306,7 +306,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val backdrop = palette.backdrop
         if (backdrop == null) board.setBackgroundColor(palette.background) else board.background = BackdropDrawable(backdrop)
         popup.applyStyle(style)
-        topBar.applyStyle(style, icons)
+        topBar.applyStyle(style, icons, WeavePrefs.toolbarItems(prefs, style.layout.toolbar.items))
         keyboardView.applyStyle(style, icons)
         oneHandButton.invalidate()
         handle.setBackgroundColor(palette.background)
@@ -438,7 +438,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun onSharedPreferenceChanged(p: SharedPreferences, key: String?) {
         when (key) {
             WeavePrefs.THEME, WeavePrefs.HEIGHT_LEVEL, WeavePrefs.STYLE_LAYOUT, WeavePrefs.STYLE_THEME,
-            WeavePrefs.STYLE_OVERRIDES, WeavePrefs.STYLE_STAMP -> { applyTheme(); layoutSig = ""; refreshLayout(); updateCandidates(null) }
+            WeavePrefs.STYLE_OVERRIDES, WeavePrefs.STYLE_STAMP, WeavePrefs.TOOLBAR_ITEMS -> { applyTheme(); layoutSig = ""; refreshLayout(); updateCandidates(null) }
             WeavePrefs.VIBRATION -> feedback.vibration = WeavePrefs.vibration(p)
             WeavePrefs.SOUND, WeavePrefs.SOUND_STYLE, WeavePrefs.SOUND_VOLUME -> {
                 feedback.soundStyle = WeavePrefs.soundStyle(p)
@@ -1283,7 +1283,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             style = KeyboardStyle(style.layout, style.theme, style.dark, style.overrides, style.palette, m)
             metrics = m
             popup.applyStyle(style)
-            topBar.applyStyle(style, icons)
+            topBar.applyStyle(style, icons, WeavePrefs.toolbarItems(prefs, style.layout.toolbar.items))
             keyboardView.applyStyle(style, icons)
             panel?.applyTheme()
             applyGeometry()

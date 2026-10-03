@@ -1,202 +1,296 @@
 package com.weavetext.ime.stickers
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.PorterDuff
+import android.graphics.Typeface
 import android.graphics.drawable.AnimatedImageDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.text.TextUtils
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.*
+import android.widget.BaseAdapter
+import android.widget.FrameLayout
+import android.widget.GridView
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.weavetext.ime.R
 import java.io.File
 
-/** Shared shelf for the keyboard, full manager and optional floating window. */
+/**
+ * 收纳袋配色：键盘里取键盘当前风格的颜色，悬浮窗用自带的浅色 / 深色。
+ * Shelf colours: the keyboard passes its current style; the floating window uses the built-in light/dark set.
+ */
+data class ShelfColors(
+    val surface: Int, val tile: Int, val chip: Int, val label: Int, val muted: Int,
+    val accent: Int, val onAccent: Int, val accentSoft: Int, val danger: Int, val stroke: Int,
+) {
+    companion object {
+        val LIGHT = ShelfColors(Color.rgb(246, 247, 251), Color.WHITE, Color.rgb(232, 236, 245), Color.rgb(30, 33, 40),
+            Color.rgb(104, 111, 126), Color.rgb(75, 105, 205), Color.WHITE, Color.rgb(222, 230, 250), Color.rgb(214, 69, 65), Color.rgb(226, 230, 238))
+        val DARK = ShelfColors(Color.rgb(24, 26, 32), Color.rgb(38, 42, 52), Color.rgb(45, 49, 59), Color.rgb(232, 233, 237),
+            Color.rgb(164, 169, 181), Color.rgb(104, 137, 240), Color.WHITE, Color.rgb(44, 54, 84), Color.rgb(242, 110, 104), Color.rgb(58, 63, 76))
+    }
+}
+
+/**
+ * 表情收纳袋（键盘面板与悬浮窗共用）：上方一行是分组标签与导入 / 悬浮 / 管理按钮，长按某张后这一行换成它的操作；
+ * 下方是自适应列数的圆角图块，收藏与动图有角标。完整的整理、搜索、批量操作在管理页。
+ * The sticker shelf shared by the keyboard panel and the floating window: one top row with group chips and the
+ * import / float / manage buttons, which turns into the actions for a long-pressed sticker; below, rounded tiles in
+ * as many columns as fit, badged for favourites and animation. Full organising, search and batch work live in the
+ * manager screen.
+ */
 class StickerShelfView(
-    ctx:Context,private val compact:Boolean,private val pick:(Sticker)->Unit,
-    private val manage:()->Unit,private val import:()->Unit,private val overlay:()->Unit,
-    private val notice:(String)->Unit,private val allowed:()->Boolean={true},
-):LinearLayout(ctx) {
-    private val repository=StickerRepository.get(ctx)
-    private var filter="all"
-    private var query=""
-    private var selecting=false
-    private val selected=linkedSetOf<String>()
-    private var items=emptyList<Sticker>()
-    private val title=TextView(ctx)
-    private val header=LinearLayout(ctx)
-    private val tabs=LinearLayout(ctx)
-    private val controls=LinearLayout(ctx)
-    private val grid=GridView(ctx)
-    private val adapter=Images()
-    private val empty=TextView(ctx)
-    private var actionItem:Sticker?=null
-    private val actionBar=LinearLayout(ctx)
-    private val changed:()->Unit={reload()}
-    var dark=ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK==android.content.res.Configuration.UI_MODE_NIGHT_YES
-        set(value){field=value;applyColors()}
-    private val label get()=if(dark)Color.rgb(232,233,237)else Color.rgb(30,33,40)
-    private val surface get()=if(dark)Color.rgb(24,26,32)else Color.rgb(248,249,252)
-    private val soft get()=if(dark)Color.rgb(45,49,59)else Color.rgb(230,235,245)
-    private val muted get()=if(dark)Color.rgb(164,169,181)else Color.rgb(104,111,126)
-    private val accent get()=if(dark)Color.rgb(104,137,240)else Color.rgb(75,105,205)
+    ctx: Context, private val pick: (Sticker) -> Unit,
+    private val manage: () -> Unit, private val import: () -> Unit, private val overlay: () -> Unit,
+    private val notice: (String) -> Unit, private val allowed: () -> Boolean = { true },
+) : LinearLayout(ctx) {
+    private val repository = StickerRepository.get(ctx)
+    private var filter = "all"
+    private var items = emptyList<Sticker>()
+    private val nav = LinearLayout(ctx)
+    private val tabs = LinearLayout(ctx)
+    private val tools = LinearLayout(ctx)
+    private val actionBar = LinearLayout(ctx)
+    private val grid = GridView(ctx)
+    private val adapter = Tiles()
+    private val empty = LinearLayout(ctx)
+    private val emptyIcon = ImageView(ctx)
+    private val emptyTitle = TextView(ctx)
+    private val emptyText = TextView(ctx)
+    private val emptyButton = TextView(ctx)
+    private var actionItem: Sticker? = null
+    private val changed: () -> Unit = { reload() }
+
+    /** 键盘按自己的风格给色；为空时按 [dark] 用自带配色。 Colours from the keyboard style, else the built-in set. */
+    var colors: ShelfColors? = null
+        set(value) { field = value; applyColors() }
+    var dark = ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+        android.content.res.Configuration.UI_MODE_NIGHT_YES
+        set(value) { field = value; applyColors() }
+    private val c get() = colors ?: if (dark) ShelfColors.DARK else ShelfColors.LIGHT
+
     init {
-        orientation=VERTICAL;setPadding(dp(10),dp(6),dp(10),dp(6))
-        background=rounded(surface,dp(16),Color.TRANSPARENT)
-        header.gravity=android.view.Gravity.CENTER_VERTICAL
-        header.setPadding(dp(8),dp(4),dp(4),dp(4));header.background=rounded(soft,dp(15),Color.TRANSPARENT)
-        val mark=ImageView(ctx).apply {setImageResource(com.weavetext.ime.R.drawable.ic_sticker_bag);setColorFilter(label,PorterDuff.Mode.SRC_IN);contentDescription="表情收纳袋"}
-        header.addView(mark,LayoutParams(dp(if(compact)26 else 30),dp(if(compact)26 else 30)))
-        val titleBlock=LinearLayout(ctx).apply {orientation=VERTICAL;gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(8),0,dp(5),0)}
-        title.text=if(compact)"表情"else"表情收纳袋";title.textSize=16f;title.setTypeface(null,android.graphics.Typeface.BOLD)
-        val subtitle=TextView(ctx).apply {text=if(compact)"点按插入 · 长按管理"else"收藏你的图片与动图";textSize=11f;setTextColor(muted)}
-        // 紧凑面板（键盘内）只有几行可用高度：标题块收窄，把空间留给图片网格。
-        // The compact panel has only a few rows of height: shrink the title block to leave the grid room.
-        titleBlock.addView(title,LayoutParams(-1,dp(if(compact)20 else 22)));titleBlock.addView(subtitle,LayoutParams(-1,dp(if(compact)15 else 17)))
-        header.addView(titleBlock,LayoutParams(0,dp(if(compact)38 else 44),1f))
-        header.addView(button("导入",import));header.addView(button(if(compact)"管理"else"整理") {if(compact)manage()else {selecting=!selecting;selected.clear();reload()}})
-        // 「悬浮」直接打开悬浮窗（首次会先要权限）；不再跳到管理页。 "Floating" opens the floating window itself.
-        header.addView(button("悬浮",overlay));addView(header)
-        if(!compact){
-            val search=EditText(ctx).apply {hint="搜索名称、标签或分组";isSingleLine=true;textSize=15f}
-            search.addTextChangedListener(object:android.text.TextWatcher {
-                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){query=s?.toString().orEmpty();reload()}
-                override fun afterTextChanged(s:android.text.Editable?){}
-            });addView(search,LayoutParams(-1,dp(44)))
+        orientation = VERTICAL
+        setPadding(dp(8), dp(6), dp(8), dp(4))
+        // 第一行：分组标签（可横滑）+ 右侧图标按钮；长按某张后换成操作条。
+        // Row one: scrolling group chips + icon buttons on the right; replaced by the action bar after a long-press.
+        val top = FrameLayout(ctx)
+        nav.gravity = Gravity.CENTER_VERTICAL
+        tabs.gravity = Gravity.CENTER_VERTICAL
+        nav.addView(HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false; isFillViewport = false; addView(tabs)
+        }, LayoutParams(0, -1, 1f))
+        tools.gravity = Gravity.CENTER_VERTICAL
+        tools.addView(iconButton(R.drawable.ic_plus, "导入图片") { import() })
+        tools.addView(iconButton(R.drawable.ic_float, "悬浮收纳窗") { overlay() })
+        tools.addView(iconButton(R.drawable.ic_settings, "管理表情") { manage() })
+        nav.addView(tools, LayoutParams(-2, -1))
+        top.addView(nav, FrameLayout.LayoutParams(-1, -1))
+        actionBar.gravity = Gravity.CENTER_VERTICAL
+        actionBar.visibility = GONE
+        top.addView(actionBar, FrameLayout.LayoutParams(-1, -1))
+        addView(top, LayoutParams(-1, dp(40)))
+
+        val body = FrameLayout(ctx)
+        grid.numColumns = GridView.AUTO_FIT
+        grid.columnWidth = dp(74)
+        grid.stretchMode = GridView.STRETCH_COLUMN_WIDTH
+        grid.verticalSpacing = dp(6); grid.horizontalSpacing = dp(6)
+        grid.setPadding(0, dp(4), 0, dp(4)); grid.clipToPadding = false
+        grid.selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+        grid.isVerticalScrollBarEnabled = false
+        grid.adapter = adapter
+        grid.setRecyclerListener { view -> (view.tag as? Tile)?.image?.stop() }
+        grid.setOnItemClickListener { _, _, position, _ ->
+            items.getOrNull(position)?.let { if (actionItem != null) { actionItem = null; reload() } else pick(it) }
         }
-        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;setPadding(0,dp(if(compact)3 else 5),0,0);addView(tabs)},LayoutParams(-1,dp(if(compact)38 else 43)))
-        // 操作条只在长按后占高度（稀缺的键盘空间不做预留）。 The in-panel action bar only takes height after a long-press.
-        actionBar.visibility=GONE;actionBar.gravity=android.view.Gravity.CENTER_VERTICAL
-        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;addView(actionBar)},LayoutParams(-1,dp(42)))
-        addView(controls,LayoutParams(-1,dp(40)))
-        val body=FrameLayout(ctx)
-        grid.numColumns=if(compact)3 else 4;grid.verticalSpacing=dp(5);grid.horizontalSpacing=dp(5);grid.stretchMode=GridView.STRETCH_COLUMN_WIDTH
-        grid.adapter=adapter;grid.setRecyclerListener {view -> (view.tag as? Tile)?.image?.stop()}
-        grid.setOnItemClickListener {_,_,position,_->items.getOrNull(position)?.let {item ->
-            if(selecting){if(!selected.add(item.id))selected.remove(item.id);adapter.notifyDataSetChanged();updateControls()}else pick(item)
-        }}
-        grid.setOnItemLongClickListener {viewParent,view,position,_->items.getOrNull(position)?.let {showActions(view,it)};true}
-        body.addView(grid,FrameLayout.LayoutParams(-1,-1))
-        empty.gravity=android.view.Gravity.CENTER;empty.textSize=14f
-        body.addView(empty,FrameLayout.LayoutParams(-1,-1));addView(body,LayoutParams(-1,0,1f))
-        StickerDrop.bind(this,repository,notice)
-        applyColors();reload()
-    }
-    fun reload() {
-        val permitted=allowed();header.visibility=if(permitted)VISIBLE else GONE
-        tabs.visibility=if(permitted)VISIBLE else GONE
-        // 当前选中的表情被删掉后收起操作条。 The action bar collapses once its sticker is gone.
-        if(actionItem!=null && repository.store.get(actionItem!!.id)==null){actionItem=null;updateActions()}
-        if(actionItem!=null && items.none {it.id==actionItem!!.id})actionItem=null
-        updateActions()
-        items=if(permitted)repository.store.list(query,filter)else emptyList();selected.retainAll(items.map {it.id}.toSet())
-        if(!permitted){selecting=false;empty.visibility=VISIBLE;empty.text="私密输入框不显示表情收纳袋";tabs.removeAllViews();updateControls();adapter.notifyDataSetChanged();return}
-        title.text=if(selecting)"已选 ${selected.size} 张"else "表情收纳袋 · ${repository.store.list().size}"
-        empty.visibility=if(items.isEmpty())VISIBLE else GONE
-        empty.text=repository.store.loadError ?: if(repository.store.list().isEmpty())"把图片分享到「收纳到织文」\n或点导入，收藏自己的表情"else"没有找到表情"
-        tabs.removeAllViews()
-        for((id,name) in listOf("all" to "全部","recent" to "最近","favorites" to "收藏","ungrouped" to "未分组")+repository.store.groups().map {"group:$it" to it}) {
-            tabs.addView(tab(name,filter==id) {filter=id;reload()})
+        grid.setOnItemLongClickListener { _, _, position, _ ->
+            items.getOrNull(position)?.let { actionItem = it; reload() }; true
         }
-        updateControls();adapter.notifyDataSetChanged()
-    }
-    private fun updateControls() {
-        controls.removeAllViews();controls.visibility=if(selecting)VISIBLE else GONE
-        if(!selecting)return
-        controls.addView(button("全选") {selected.addAll(items.map {it.id});reload()})
-        controls.addView(button("分组") {groupSelected()})
-        controls.addView(button("删除") {if(selected.isNotEmpty())android.app.AlertDialog.Builder(context).setTitle("删除 ${selected.size} 张表情？")
-            .setMessage("原应用中的图片不受影响。").setPositiveButton("删除"){_,_->repository.delete(selected.toSet(),notice);selected.clear()}.setNegativeButton("取消",null).show()})
-        controls.addView(button("完成") {selecting=false;selected.clear();reload()})
-    }
-    private fun groupSelected() {
-        val input=EditText(context).apply {hint="分组名称"}
-        android.app.AlertDialog.Builder(context).setTitle("批量分组").setView(input).setPositiveButton("保存"){_,_->
-            val ids=selected.toSet();val group=input.text.toString();StickerRepository.io.execute {val result=runCatching {repository.store.group(ids,group)};repository.changed();post {notice(result.fold({"已保存分组"},{it.message ?: "分组失败"}))}}
-        }.setNegativeButton("取消",null).show()
-    }
-    /**
-     * 长按就地给出操作：键盘面板里也能直接收藏、编辑、分享、删除，不再强制跳进全屏管理页。
-     * Long-press shows the actions in place: favourite, edit, share and delete work right in the keyboard
-     * panel instead of forcing a trip to the full manager.
-     */
-    private fun showActions(anchor:View,item:Sticker) {
-        if(compact){actionItem=item;updateActions();reload();return}
-        PopupMenu(context,anchor).apply {
-            menu.add(if(item.favorite)"取消收藏"else"收藏").setOnMenuItemClickListener {repository.edit(item.id,item.name,item.group,item.tags,!item.favorite);true}
-            menu.add("编辑名称、标签与分组").setOnMenuItemClickListener {edit(item);true}
-            menu.add("分享原图").setOnMenuItemClickListener {StickerSending.share(context,item);notice("已打开分享");true}
-            menu.add("删除").setOnMenuItemClickListener {repository.delete(setOf(item.id)){notice("已删除「${item.name}」")};true}
-            show()
-        }
+        body.addView(grid, FrameLayout.LayoutParams(-1, -1))
+        buildEmpty()
+        body.addView(empty, FrameLayout.LayoutParams(-1, -1))
+        addView(body, LayoutParams(-1, 0, 1f))
+        StickerDrop.bind(this, repository, notice)
+        applyColors()
     }
 
-    /** 就地操作条：选中一张时在网格上方显示。 In-panel action bar shown while one sticker is selected. */
-    private fun updateActions() {
-        val item=actionItem
-        actionBar.removeAllViews()
-        actionBar.visibility=if(item!=null)VISIBLE else GONE
-        if(item==null)return
-        actionBar.setPadding(0,dp(4),0,dp(4))
-        actionBar.addView(button(if(item.favorite)"取消收藏"else"收藏") {
-            repository.edit(item.id,item.name,item.group,item.tags,!item.favorite);actionItem=null;reload()
-        })
-        actionBar.addView(button("编辑") {edit(item)})
-        actionBar.addView(button("分享") {StickerSending.share(context,item);actionItem=null;reload()})
-        actionBar.addView(button("删除") {
-            repository.delete(setOf(item.id)){notice(it)};actionItem=null;actionBar.visibility=GONE
-        })
-        actionBar.addView(button("关闭") {actionItem=null;reload()})
+    private fun buildEmpty() {
+        empty.orientation = VERTICAL
+        empty.gravity = Gravity.CENTER
+        emptyIcon.setImageResource(R.drawable.ic_sticker_bag)
+        emptyIcon.setPadding(dp(14), dp(14), dp(14), dp(14))
+        empty.addView(emptyIcon, LayoutParams(dp(56), dp(56)))
+        emptyTitle.textSize = 15f; emptyTitle.setTypeface(null, Typeface.BOLD); emptyTitle.gravity = Gravity.CENTER
+        empty.addView(emptyTitle, LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        emptyText.textSize = 12f; emptyText.gravity = Gravity.CENTER; emptyText.setLineSpacing(0f, 1.15f)
+        empty.addView(emptyText, LayoutParams(-2, -2).apply { topMargin = dp(4); leftMargin = dp(24); rightMargin = dp(24) })
+        emptyButton.text = "导入图片"; emptyButton.textSize = 13f; emptyButton.gravity = Gravity.CENTER
+        emptyButton.setPadding(dp(18), 0, dp(18), 0); emptyButton.setOnClickListener { import() }
+        empty.addView(emptyButton, LayoutParams(-2, dp(34)).apply { topMargin = dp(12) })
     }
+
+    fun reload() {
+        val permitted = allowed()
+        val all = if (permitted) repository.store.list() else emptyList()
+        // 分组被删光（或改名）后回到「全部」。 A group that no longer exists falls back to "all".
+        if (filter.startsWith("group:") && filter.removePrefix("group:") !in repository.store.groups()) filter = "all"
+        actionItem = actionItem?.let { a -> repository.store.get(a.id) }
+        items = if (permitted) repository.store.list("", filter) else emptyList()
+        if (!permitted) actionItem = null
+        nav.visibility = if (actionItem == null) VISIBLE else INVISIBLE
+        tools.visibility = if (permitted) VISIBLE else GONE
+        updateActions()
+        tabs.removeAllViews()
+        if (permitted && all.isNotEmpty()) {
+            val counts = mapOf("all" to all.size)
+            for ((id, name) in listOf("all" to "全部", "recent" to "最近", "favorites" to "收藏", "ungrouped" to "未分组") +
+                repository.store.groups().map { "group:$it" to it }) {
+                tabs.addView(chip(if (id in counts) "$name ${counts[id]}" else name, filter == id) { filter = id; actionItem = null; reload() })
+            }
+        } else if (permitted) {
+            tabs.addView(TextView(context).apply { text = "表情收纳袋"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(c.label); setPadding(dp(6), 0, 0, 0) })
+        }
+        val error = repository.store.loadError
+        empty.visibility = if (items.isEmpty()) VISIBLE else GONE
+        emptyButton.visibility = if (permitted && all.isEmpty()) VISIBLE else GONE
+        when {
+            !permitted -> { emptyTitle.text = "私密输入框"; emptyText.text = "这里不显示收藏的表情" }
+            error != null -> { emptyTitle.text = "收纳袋读取失败"; emptyText.text = error }
+            all.isEmpty() -> { emptyTitle.text = "还没有收藏表情"; emptyText.text = "在相册或聊天里把图片分享到「收纳到织文」，\n或点下面导入，动图也能收" }
+            else -> { emptyTitle.text = "这里还没有表情"; emptyText.text = if (filter == "favorites") "长按表情可以收藏" else "换个分组看看" }
+        }
+        adapter.notifyDataSetChanged()
+    }
+
+    /** 长按后的操作条：缩略图、名称，再是收藏 / 编辑 / 分享 / 删除 / 关闭。 Actions for the long-pressed sticker. */
+    private fun updateActions() {
+        val item = actionItem
+        actionBar.removeAllViews()
+        actionBar.visibility = if (item != null) VISIBLE else GONE
+        if (item == null) return
+        actionBar.background = rounded(c.accentSoft, dp(14))
+        actionBar.setPadding(dp(6), 0, dp(2), 0)
+        actionBar.addView(StickerImageView(context).apply { bind(repository.store.file(item), item.id) }, LayoutParams(dp(30), dp(30)))
+        actionBar.addView(TextView(context).apply {
+            text = item.name; textSize = 13f; setTextColor(c.label); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(8), 0, dp(4), 0)
+        }, LayoutParams(0, -2, 1f))
+        actionBar.addView(iconButton(if (item.favorite) R.drawable.ic_star_filled else R.drawable.ic_star,
+            if (item.favorite) "取消收藏" else "收藏", tint = if (item.favorite) FAVORITE else c.label) {
+            repository.edit(item.id, item.name, item.group, item.tags, !item.favorite) { notice(if (item.favorite) "已取消收藏" else "已收藏") }
+            actionItem = null; reload()
+        })
+        actionBar.addView(iconButton(R.drawable.ic_edit, "编辑名称、标签与分组") { edit(item) })
+        actionBar.addView(iconButton(R.drawable.ic_share, "分享原图") { StickerSending.share(context, item); actionItem = null; reload() })
+        actionBar.addView(iconButton(R.drawable.ic_delete, "删除", tint = c.danger) {
+            repository.delete(setOf(item.id)) { notice("已删除「${item.name}」") }; actionItem = null; reload()
+        })
+        actionBar.addView(iconButton(R.drawable.ic_close, "关闭") { actionItem = null; reload() })
+    }
+
     /**
      * 编辑交给管理页：键盘和悬浮窗都是服务窗口，弹不出对话框，键盘自己的窗口里也没法给输入框打字。
      * Editing opens the manager: the keyboard and floating window are service windows that cannot host a
      * dialog, and an input field inside the keyboard's own window could not be typed into anyway.
      */
-    private fun edit(item:Sticker) {
-        actionItem=null;updateActions()
-        context.startActivity(StickerActivity.edit(context,item.id))
+    private fun edit(item: Sticker) {
+        actionItem = null; reload()
+        context.startActivity(StickerActivity.edit(context, item.id))
     }
-    private fun button(text:String,action:()->Unit)=TextView(context).apply {
-        this.text=text;textSize=13f;gravity=android.view.Gravity.CENTER;setTextColor(label)
-        setPadding(dp(10),0,dp(10),0);minimumHeight=dp(34);isClickable=true;isFocusable=true
-        background=rounded(if(dark)Color.rgb(58,63,76) else Color.WHITE,dp(11),Color.TRANSPARENT)
-        setOnClickListener {action()}
+
+    private fun iconButton(icon: Int, label: String, tint: Int? = null, action: () -> Unit) = ImageView(context).apply {
+        setImageResource(icon); contentDescription = label
+        imageTintList = ColorStateList.valueOf(tint ?: c.label)
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+        background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(c.stroke), null, rounded(Color.WHITE, dp(12)))
+        isClickable = true; isFocusable = true
+        setOnClickListener { action() }
+        layoutParams = LayoutParams(dp(36), dp(36))
     }
-    private fun tab(text:String,active:Boolean,action:()->Unit)=TextView(context).apply {
-        this.text=text;textSize=13f;gravity=android.view.Gravity.CENTER;setTextColor(if(active)Color.WHITE else muted)
-        setPadding(dp(13),0,dp(13),0);minimumHeight=dp(32);background=rounded(if(active)accent else soft,dp(16),Color.TRANSPARENT);setOnClickListener {action()}
+
+    private fun chip(text: String, active: Boolean, action: () -> Unit) = TextView(context).apply {
+        this.text = text; textSize = 13f; gravity = Gravity.CENTER; maxLines = 1
+        setTextColor(if (active) c.onAccent else c.muted)
+        if (active) setTypeface(null, Typeface.BOLD)
+        setPadding(dp(12), 0, dp(12), 0)
+        background = rounded(if (active) c.accent else c.chip, dp(15))
+        setOnClickListener { action() }
+        layoutParams = LayoutParams(-2, dp(30)).apply { rightMargin = dp(6) }
     }
-    private fun rounded(color:Int,radius:Int,stroke:Int)=GradientDrawable().apply {setColor(color);cornerRadius=radius.toFloat();if(stroke!=Color.TRANSPARENT)setStroke(dp(1),stroke)}
-    private fun applyColors(){
-        background=rounded(surface,dp(16),Color.TRANSPARENT);header.background=rounded(soft,dp(15),Color.TRANSPARENT)
-        title.setTextColor(label);empty.setTextColor(muted)
-        (header.getChildAt(0) as? ImageView)?.setColorFilter(label,PorterDuff.Mode.SRC_IN)
-        for(i in 0 until header.childCount)(header.getChildAt(i) as? TextView)?.let {it.setTextColor(label);it.background=rounded(if(dark)Color.rgb(58,63,76) else Color.WHITE,dp(11),Color.TRANSPARENT)}
+
+    private fun rounded(color: Int, radius: Int, stroke: Int = Color.TRANSPARENT, width: Int = 1) = GradientDrawable().apply {
+        setColor(color); cornerRadius = radius.toFloat(); if (stroke != Color.TRANSPARENT) setStroke(dp(width), stroke)
+    }
+
+    private fun applyColors() {
+        val c = c
+        background = if (colors == null) rounded(c.surface, dp(16)) else null
+        for (i in 0 until tools.childCount) (tools.getChildAt(i) as? ImageView)?.imageTintList = ColorStateList.valueOf(c.label)
+        emptyIcon.imageTintList = ColorStateList.valueOf(c.accent)
+        emptyIcon.background = rounded(c.accentSoft, dp(28))
+        emptyTitle.setTextColor(c.label); emptyText.setTextColor(c.muted)
+        emptyButton.setTextColor(c.onAccent); emptyButton.background = rounded(c.accent, dp(17))
         reload()
     }
-    override fun onAttachedToWindow(){super.onAttachedToWindow();repository.observe(changed);reload()}
-    override fun onDetachedFromWindow(){repository.unobserve(changed);for(i in 0 until grid.childCount)(grid.getChildAt(i).tag as? Tile)?.image?.stop();super.onDetachedFromWindow()}
-    private fun dp(value:Int)=(value*resources.displayMetrics.density).toInt()
-    private data class Tile(val image:StickerImageView,val caption:TextView)
-    private inner class Images:BaseAdapter() {
-        override fun getCount()=items.size
-        override fun getItem(position:Int)=items[position]
-        override fun getItemId(position:Int)=position.toLong()
-        override fun getView(position:Int,convertView:View?,parent:ViewGroup):View {
-            val cell=convertView as? LinearLayout ?: LinearLayout(context).apply {
-                orientation=VERTICAL;setPadding(dp(4),dp(4),dp(4),dp(4))
-                val image=StickerImageView(context);val caption=TextView(context).apply {gravity=android.view.Gravity.CENTER;maxLines=1;textSize=if(compact)10f else 12f}
-                addView(image,LayoutParams(-1,dp(if(compact)58 else 84)));addView(caption,LayoutParams(-1,dp(if(compact)18 else 32)));tag=Tile(image,caption)
+
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); repository.observe(changed); reload() }
+    override fun onDetachedFromWindow() {
+        repository.unobserve(changed)
+        for (i in 0 until grid.childCount) (grid.getChildAt(i).tag as? Tile)?.image?.stop()
+        super.onDetachedFromWindow()
+    }
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private class Tile(val image: StickerImageView, val caption: TextView, val star: ImageView, val gif: TextView)
+
+    private inner class Tiles : BaseAdapter() {
+        override fun getCount() = items.size
+        override fun getItem(position: Int) = items[position]
+        override fun getItemId(position: Int) = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val cell = convertView as? FrameLayout ?: FrameLayout(context).apply {
+                val image = StickerImageView(context)
+                addView(image, FrameLayout.LayoutParams(-1, dp(56), Gravity.TOP).apply { topMargin = dp(7); leftMargin = dp(7); rightMargin = dp(7) })
+                val caption = TextView(context).apply {
+                    gravity = Gravity.CENTER; maxLines = 1; ellipsize = TextUtils.TruncateAt.END; textSize = 10.5f
+                }
+                addView(caption, FrameLayout.LayoutParams(-1, dp(18), Gravity.BOTTOM).apply { bottomMargin = dp(3); leftMargin = dp(4); rightMargin = dp(4) })
+                val star = ImageView(context).apply { setImageResource(R.drawable.ic_star_filled); imageTintList = ColorStateList.valueOf(FAVORITE) }
+                addView(star, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.TOP or Gravity.END).apply { topMargin = dp(5); rightMargin = dp(5) })
+                val gif = TextView(context).apply {
+                    text = "GIF"; textSize = 8f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+                    background = GradientDrawable().apply { setColor(0x99000000.toInt()); cornerRadius = dp(4).toFloat() }
+                    setPadding(dp(3), 0, dp(3), 0)
+                }
+                addView(gif, FrameLayout.LayoutParams(-2, dp(13), Gravity.TOP or Gravity.START).apply { topMargin = dp(5); leftMargin = dp(5) })
+                tag = Tile(image, caption, star, gif)
+                layoutParams = android.widget.AbsListView.LayoutParams(-1, dp(86))
             }
-            val tile=cell.tag as Tile;val item=items[position]
-            tile.caption.text=(if(selecting && item.id in selected)"✓ "else if(item.favorite)"★ "else "")+item.name
-            tile.caption.setTextColor(label);cell.background=rounded(if(dark)Color.rgb(38,42,52) else Color.WHITE,dp(12),if(dark)Color.rgb(63,68,82) else Color.rgb(225,230,240))
-            cell.contentDescription=item.name+(if(item.animated)"，GIF 或动态图片"else"")
-            tile.image.bind(repository.store.file(item),item.id);return cell
+            val tile = cell.tag as Tile
+            val item = items[position]
+            val chosen = actionItem?.id == item.id
+            tile.caption.text = item.name
+            tile.caption.setTextColor(c.muted)
+            tile.star.visibility = if (item.favorite) VISIBLE else GONE
+            tile.gif.visibility = if (item.animated) VISIBLE else GONE
+            cell.background = rounded(c.tile, dp(14), if (chosen) c.accent else c.stroke, if (chosen) 2 else 1)
+            cell.contentDescription = item.name + (if (item.favorite) "，已收藏" else "") + (if (item.animated) "，动图" else "")
+            tile.image.bind(repository.store.file(item), item.id)
+            return cell
         }
+    }
+
+    companion object {
+        private val FAVORITE = Color.rgb(245, 166, 35)
     }
 }
 

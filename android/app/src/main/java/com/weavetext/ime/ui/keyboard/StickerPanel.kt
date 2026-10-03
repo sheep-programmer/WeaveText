@@ -15,7 +15,7 @@ class StickerPanel(kb:WeaveKeyboard):KbPanel(kb) {
             kb.topBar.showAction("允许悬浮窗权限后，再点一次“悬浮”即可打开",null,3500,null)
         }else StickerOverlayService.start(kb.ctx)
     }
-    override val view=StickerShelfView(kb.ctx,true,{item ->
+    override val view=StickerShelfView(kb.ctx,{item ->
         if(kb.controller.isSensitiveField)kb.topBar.showAction("此输入框不支持图片，请到收纳袋管理页分享",null,2500,null)
         else {
             val repository=StickerRepository.get(kb.ctx)
@@ -24,6 +24,8 @@ class StickerPanel(kb:WeaveKeyboard):KbPanel(kb) {
             } else StickerSending.share(kb.ctx,item)
         }
     },::manage,::manage,::openFloating,{message->kb.topBar.showAction(message,null,3000,null)},{!kb.controller.isSensitiveField})
-    override fun onShow(){view.dark=kb.palette.dark;view.reload()}
-    override fun applyTheme(){view.dark=kb.palette.dark}
+    /** 跟随键盘当前风格的颜色。 Follow the keyboard style's colours. */
+    private fun colors()=kb.palette.let {p->ShelfColors(p.background,p.key,p.keyFunc,p.label,p.labelSecondary,p.keyAccent,p.onAccent,p.accentSoft,p.danger,p.divider)}
+    override fun onShow(){view.colors=colors()}
+    override fun applyTheme(){view.colors=colors()}
 }

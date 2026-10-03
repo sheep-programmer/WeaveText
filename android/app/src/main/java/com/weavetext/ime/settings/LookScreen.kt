@@ -76,6 +76,10 @@ fun LookScreen() {
             SettingRow("键盘风格", "布局、配色、微调与导入导出", icon = R.drawable.ic_theme, onClick = { nav.push(Route.Styles) }) {
                 ValueChevron("${layout.name} · $themeName")
             }
+            RowDivider()
+            SettingRow("工具栏", "选择候选栏上方显示的按钮和顺序", icon = R.drawable.ic_toolbox, onClick = { nav.push(Route.Toolbar) }) {
+                ValueChevron("${(WeavePrefs.toolbarCustom(p) ?: defaultToolbar(ctx, p)).size} 个")
+            }
         }
         GroupTitle("深浅色")
         val themes = listOf("light" to "浅色", "dark" to "深色", "system" to "跟随系统")

@@ -60,7 +60,7 @@ class StickerIntegrationTest {
         val repository=StickerRepository.get(app);val (item,_)=repository.store.import(File(root,"tests/fixtures/stickers/sample.png").inputStream(),"私密图片")
         val controller=InputController {null};controller.onStartInput(EditorInfo().apply {inputType=InputType.TYPE_CLASS_TEXT},false)
         val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
-        val shelf=StickerShelfView(activity,true,{}, {}, {}, {}, {}, {!controller.isSensitiveField})
+        val shelf=StickerShelfView(activity,{}, {}, {}, {}, {}, {!controller.isSensitiveField})
         val grid=(shelf.getChildAt(shelf.childCount-1) as android.widget.FrameLayout).getChildAt(0) as GridView
         assertEquals(1,grid.adapter.count)
         controller.onStartInput(EditorInfo().apply {inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD},false)

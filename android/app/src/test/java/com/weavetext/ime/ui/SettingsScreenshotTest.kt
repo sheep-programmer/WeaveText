@@ -74,6 +74,12 @@ class SettingsScreenshotTest {
         show("dictionary_cloud_on", Route.Home, Route.Dictionary)
     }
 
+    /** 工具栏设置：默认（收纳袋不在栏上）与自定义后。 Toolbar settings: default (no sticker bag) and customised. */
+    @Test fun toolbarDefault() = show("toolbar_default", Route.Home, Route.Look, Route.Toolbar)
+    @Test fun toolbarCustomDark() {
+        WeavePrefs.setToolbar(WeavePrefs.of(app), listOf("voice", "cursor", "clipboard", "stickers", "hide"))
+        show("toolbar_custom_dark", Route.Home, Route.Look, Route.Toolbar, dark = true)
+    }
     @Test fun dictionaryPacks() = show("dictionary_packs", Route.Home, Route.Dictionary, Route.DictPacks)
     @Test fun dictionaryPacksDark() = show("dictionary_packs_dark", Route.Home, Route.Dictionary, Route.DictPacks, dark = true)
 

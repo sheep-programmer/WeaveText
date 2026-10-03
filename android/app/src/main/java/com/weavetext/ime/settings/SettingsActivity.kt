@@ -64,6 +64,7 @@ sealed class Route {
     data object Licenses : Route()
     data object Link : Route()
     data object DictPacks : Route()
+    data object Toolbar : Route()
 
     companion object {
         /**
@@ -84,6 +85,7 @@ sealed class Route {
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
                 "dictionary" -> listOf(Dictionary) + if (parts.getOrNull(1) == "packs") listOf(DictPacks) else emptyList()
                 "link" -> listOf(Link)
+                "toolbar" -> listOf(Look, Toolbar)
                 "about" -> listOf(About) + when (parts.getOrNull(1)) { "help" -> listOf(Help); "privacy" -> listOf(Privacy); else -> emptyList() }
                 else -> emptyList()
             }
@@ -134,6 +136,7 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Licenses -> LicensesScreen()
                     Route.Link -> LinkScreen()
                     Route.DictPacks -> DictPacksScreen()
+                    Route.Toolbar -> ToolbarScreen()
                 }
             }
         }

@@ -1,0 +1,60 @@
+package com.weavetext.ime.ui
+
+import android.app.Application
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onRoot
+import androidx.test.core.app.ApplicationProvider
+import com.github.takahirom.roborazzi.captureRoboImage
+import com.weavetext.ime.settings.WeaveSettingsTheme
+import com.weavetext.ime.stickers.StickerManagerScreen
+import com.weavetext.ime.stickers.StickerRepository
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
+
+/**
+ * 管理页截图：单独一个类，不和键盘截图共用 Activity（共用时 Compose 画不出来，截到一片空白）。
+ * Manager screenshots in their own class: sharing the keyboard tests' activity left the Compose capture blank.
+ */
+@RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(sdk = [35], qualifiers = "w411dp-h914dp-port-420dpi")
+class StickerManagerScreenshotTest {
+    @get:Rule val compose = createComposeRule()
+    private val app get() = ApplicationProvider.getApplicationContext<Application>()
+    private val dir = File(System.getProperty("weave.snapshotDir") ?: "build/snapshots")
+
+    @Before fun samples() {
+        StickerRepository.io.submit {}.get(); StickerRepository.reset(); File(app.filesDir, "stickers").deleteRecursively()
+        val root = generateSequence(File(checkNotNull(System.getProperty("user.dir")))) { it.parentFile }.first { File(it, "tests/fixtures/stickers").isDirectory }
+        val store = StickerRepository.get(app).store
+        for ((name, title) in listOf("sample.png" to "开心", "animated.gif" to "晚安", "animated.webp" to "收到")) {
+            val (item, _) = store.import(File(root, "tests/fixtures/stickers/$name").inputStream(), title)
+            store.edit(item.id, title, "日常", listOf("常用"), name == "sample.png")
+        }
+    }
+
+    private fun shot(name: String, dark: Boolean) {
+        compose.setContent {
+            WeaveSettingsTheme(dark = dark) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { StickerManagerScreen(onBack = {}) }
+            }
+        }
+        // 缩略图在后台解码：等它们出来再截。 Thumbnails decode in the background; wait for them.
+        val end = System.nanoTime() + 3_000_000_000L
+        while (System.nanoTime() < end) { Thread.sleep(50); compose.waitForIdle() }
+        compose.onRoot().captureRoboImage(File(dir, "$name.png").path)
+    }
+
+    @Test fun managerLight() = shot("sticker_manager_light", false)
+    @Test fun managerDark() = shot("sticker_manager_dark", true)
+}

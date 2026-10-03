@@ -284,16 +284,33 @@ private fun StickerTile(
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
             StickerThumbnail(repository, item)
-            if (checked) {
-                Box(Modifier.align(Alignment.TopEnd)) {
-                    Icon(painterResource(R.drawable.ic_check), null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+            // 角标与键盘面板一致：左上动图、右上收藏，选择时右上换成勾。
+            // Badges match the keyboard panel: animation top-left, favourite top-right, a check while selecting.
+            if (item.animated) {
+                Text(
+                    "GIF", style = MaterialTheme.typography.labelSmall, color = androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier.align(Alignment.TopStart).clip(RoundedCornerShape(4.dp))
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)).padding(horizontal = 4.dp),
+                )
+            }
+            if (checked || selecting) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).size(22.dp).clip(RoundedCornerShape(11.dp))
+                        .background(if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface)
+                        .border(1.5.dp, if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(11.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (checked) Icon(painterResource(R.drawable.ic_check), null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimary)
                 }
+            } else if (item.favorite) {
+                Icon(painterResource(R.drawable.ic_star_filled), "已收藏", Modifier.align(Alignment.TopEnd).size(16.dp), tint = FAVORITE)
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            if (item.favorite) Text("★", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            Text(item.name, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        }
+        Text(
+            item.name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
     androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
         androidx.compose.material3.DropdownMenuItem(text = { Text(if (item.favorite) "取消收藏" else "收藏") }, onClick = { menu = false; onFavorite() })
@@ -302,6 +319,9 @@ private fun StickerTile(
         androidx.compose.material3.DropdownMenuItem(text = { Text("删除") }, onClick = { menu = false; onDelete() })
     }
 }
+
+/** 收藏星标的颜色，与键盘面板一致。 Favourite star colour, shared with the keyboard panel. */
+private val FAVORITE = androidx.compose.ui.graphics.Color(0xFFF5A623)
 
 @Composable
 private fun StickerThumbnail(repository: StickerRepository, item: Sticker) {

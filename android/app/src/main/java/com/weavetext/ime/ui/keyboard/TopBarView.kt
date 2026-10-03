@@ -160,11 +160,13 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         invalidate()
     }
 
-    fun applyStyle(s: KeyboardStyle, i: Icons) {
+    /** [items]：用户在设置里排好的工具栏（默认取风格自带）。 [items]: the toolbar as arranged in settings. */
+    fun applyStyle(s: KeyboardStyle, i: Icons, items: List<String> = s.layout.toolbar.items) {
         palette = s.palette; metrics = s.metrics; icons = i
         layout = s.layout
         val tb = s.layout.toolbar
-        tools = IntArray(tb.items.size) { ToolIds.NAMES.getValue(tb.items[it]) }
+        val names = items.filter { it in ToolIds.NAMES }
+        tools = IntArray(names.size) { ToolIds.NAMES.getValue(names[it]) }
         val set = if (tb.icons == "filled") FILLED_ICONS else OUTLINE_ICONS
         toolIcons = IntArray(tools.size) { set.getValue(tools[it]) }
         if (tb.menuIcon == "grid") tools.indexOf(ToolIds.MENU).takeIf { it >= 0 }?.let { toolIcons[it] = R.drawable.ic_toolbox }
