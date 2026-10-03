@@ -1,9 +1,17 @@
 package com.weavetext.ime.ui
 
 import android.widget.FrameLayout
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.weavetext.ime.settings.WeaveSettingsTheme
 import com.weavetext.ime.stickers.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -18,6 +26,8 @@ import org.junit.Assert.assertEquals
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk=[35],qualifiers="w411dp-h914dp-port-420dpi")
 class StickerScreenshotTest:KeyboardSnapshotSupport() {
+    @get:Rule val compose = createComposeRule()
+
     @Before fun samples() {
         StickerRepository.io.submit {}.get();StickerRepository.reset();File(app.filesDir,"stickers").deleteRecursively()
         val root=generateSequence(File(checkNotNull(System.getProperty("user.dir")))) {it.parentFile}.first {File(it,"tests/fixtures/stickers").isDirectory}
@@ -38,9 +48,17 @@ class StickerScreenshotTest:KeyboardSnapshotSupport() {
     }
     @Test fun keyboardLight(){val (k,_)=keyboard(false);k.showPanel("stickers");idle();previews(k.view);snap("stickers_light")}
     @Test fun keyboardDark(){val (k,_)=keyboard(true);k.showPanel("stickers");idle();previews(k.view);snap("stickers_dark")}
+
+    /** 管理页现在是与设置页同一套 Compose 风格；截图直接渲染它。 The manager is now the Compose screen. */
     @Test fun manager() {
-        val shelf=StickerShelfView(activity,false,{}, {}, {}, {}, {})
-        activity.setContentView(shelf,FrameLayout.LayoutParams(-1,-1));idle();previews(shelf)
-        shelf.captureRoboImage(File(dir,"sticker_manager_light.png").path)
+        compose.setContent {
+            WeaveSettingsTheme(dark = false) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    StickerManagerScreen(onBack = {})
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(dir, "sticker_manager_light.png").path)
     }
 }

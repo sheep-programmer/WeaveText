@@ -31,6 +31,8 @@ class StickerShelfView(
     private val grid=GridView(ctx)
     private val adapter=Images()
     private val empty=TextView(ctx)
+    private var actionItem:Sticker?=null
+    private val actionBar=LinearLayout(ctx)
     private val changed:()->Unit={reload()}
     var dark=ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK==android.content.res.Configuration.UI_MODE_NIGHT_YES
         set(value){field=value;applyColors()}
@@ -40,18 +42,21 @@ class StickerShelfView(
     private val muted get()=if(dark)Color.rgb(164,169,181)else Color.rgb(104,111,126)
     private val accent get()=if(dark)Color.rgb(104,137,240)else Color.rgb(75,105,205)
     init {
-        orientation=VERTICAL;setPadding(dp(10),dp(7),dp(10),dp(7))
+        orientation=VERTICAL;setPadding(dp(10),dp(6),dp(10),dp(6))
         background=rounded(surface,dp(16),Color.TRANSPARENT)
         header.gravity=android.view.Gravity.CENTER_VERTICAL
-        header.setPadding(dp(9),dp(5),dp(5),dp(5));header.background=rounded(soft,dp(15),Color.TRANSPARENT)
+        header.setPadding(dp(8),dp(4),dp(4),dp(4));header.background=rounded(soft,dp(15),Color.TRANSPARENT)
         val mark=ImageView(ctx).apply {setImageResource(com.weavetext.ime.R.drawable.ic_sticker_bag);setColorFilter(label,PorterDuff.Mode.SRC_IN);contentDescription="表情收纳袋"}
-        header.addView(mark,LayoutParams(dp(30),dp(30)))
+        header.addView(mark,LayoutParams(dp(if(compact)26 else 30),dp(if(compact)26 else 30)))
         val titleBlock=LinearLayout(ctx).apply {orientation=VERTICAL;gravity=android.view.Gravity.CENTER_VERTICAL;setPadding(dp(8),0,dp(5),0)}
         title.text=if(compact)"表情"else"表情收纳袋";title.textSize=16f;title.setTypeface(null,android.graphics.Typeface.BOLD)
         val subtitle=TextView(ctx).apply {text=if(compact)"点按插入 · 长按管理"else"收藏你的图片与动图";textSize=11f;setTextColor(muted)}
-        titleBlock.addView(title,LayoutParams(-1,dp(22)));titleBlock.addView(subtitle,LayoutParams(-1,dp(17)))
-        header.addView(titleBlock,LayoutParams(0,dp(44),1f))
+        // 紧凑面板（键盘内）只有几行可用高度：标题块收窄，把空间留给图片网格。
+        // The compact panel has only a few rows of height: shrink the title block to leave the grid room.
+        titleBlock.addView(title,LayoutParams(-1,dp(if(compact)20 else 22)));titleBlock.addView(subtitle,LayoutParams(-1,dp(if(compact)15 else 17)))
+        header.addView(titleBlock,LayoutParams(0,dp(if(compact)38 else 44),1f))
         header.addView(button("导入",import));header.addView(button(if(compact)"管理"else"整理") {if(compact)manage()else {selecting=!selecting;selected.clear();reload()}})
+        // 「悬浮」直接打开悬浮窗（首次会先要权限）；不再跳到管理页。 "Floating" opens the floating window itself.
         header.addView(button("悬浮",overlay));addView(header)
         if(!compact){
             val search=EditText(ctx).apply {hint="搜索名称、标签或分组";isSingleLine=true;textSize=15f}
@@ -61,7 +66,10 @@ class StickerShelfView(
                 override fun afterTextChanged(s:android.text.Editable?){}
             });addView(search,LayoutParams(-1,dp(44)))
         }
-        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;setPadding(0,dp(5),0,0);addView(tabs)},LayoutParams(-1,dp(43)))
+        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;setPadding(0,dp(if(compact)3 else 5),0,0);addView(tabs)},LayoutParams(-1,dp(if(compact)38 else 43)))
+        // 操作条只在长按后占高度（稀缺的键盘空间不做预留）。 The in-panel action bar only takes height after a long-press.
+        actionBar.visibility=GONE;actionBar.gravity=android.view.Gravity.CENTER_VERTICAL
+        addView(HorizontalScrollView(ctx).apply {isHorizontalScrollBarEnabled=false;addView(actionBar)},LayoutParams(-1,dp(42)))
         addView(controls,LayoutParams(-1,dp(40)))
         val body=FrameLayout(ctx)
         grid.numColumns=if(compact)3 else 4;grid.verticalSpacing=dp(5);grid.horizontalSpacing=dp(5);grid.stretchMode=GridView.STRETCH_COLUMN_WIDTH
@@ -79,6 +87,10 @@ class StickerShelfView(
     fun reload() {
         val permitted=allowed();header.visibility=if(permitted)VISIBLE else GONE
         tabs.visibility=if(permitted)VISIBLE else GONE
+        // 当前选中的表情被删掉后收起操作条。 The action bar collapses once its sticker is gone.
+        if(actionItem!=null && repository.store.get(actionItem!!.id)==null){actionItem=null;updateActions()}
+        if(actionItem!=null && items.none {it.id==actionItem!!.id})actionItem=null
+        updateActions()
         items=if(permitted)repository.store.list(query,filter)else emptyList();selected.retainAll(items.map {it.id}.toSet())
         if(!permitted){selecting=false;empty.visibility=VISIBLE;empty.text="私密输入框不显示表情收纳袋";tabs.removeAllViews();updateControls();adapter.notifyDataSetChanged();return}
         title.text=if(selecting)"已选 ${selected.size} 张"else "表情收纳袋 · ${repository.store.list().size}"
@@ -105,14 +117,38 @@ class StickerShelfView(
             val ids=selected.toSet();val group=input.text.toString();StickerRepository.io.execute {val result=runCatching {repository.store.group(ids,group)};repository.changed();post {notice(result.fold({"已保存分组"},{it.message ?: "分组失败"}))}}
         }.setNegativeButton("取消",null).show()
     }
+    /**
+     * 长按就地给出操作：键盘面板里也能直接收藏、编辑、分享、删除，不再强制跳进全屏管理页。
+     * Long-press shows the actions in place: favourite, edit, share and delete work right in the keyboard
+     * panel instead of forcing a trip to the full manager.
+     */
     private fun showActions(anchor:View,item:Sticker) {
+        if(compact){actionItem=item;updateActions();reload();return}
         PopupMenu(context,anchor).apply {
             menu.add(if(item.favorite)"取消收藏"else"收藏").setOnMenuItemClickListener {repository.edit(item.id,item.name,item.group,item.tags,!item.favorite);true}
-            menu.add("编辑名称、标签与分组").setOnMenuItemClickListener {if(compact){notice("编辑名称和标签请点“管理”打开完整编辑")}else edit(item);true}
+            menu.add("编辑名称、标签与分组").setOnMenuItemClickListener {edit(item);true}
             menu.add("分享原图").setOnMenuItemClickListener {StickerSending.share(context,item);notice("已打开分享");true}
             menu.add("删除").setOnMenuItemClickListener {repository.delete(setOf(item.id)){notice("已删除「${item.name}」")};true}
             show()
         }
+    }
+
+    /** 就地操作条：选中一张时在网格上方显示。 In-panel action bar shown while one sticker is selected. */
+    private fun updateActions() {
+        val item=actionItem
+        actionBar.removeAllViews()
+        actionBar.visibility=if(item!=null)VISIBLE else GONE
+        if(item==null)return
+        actionBar.setPadding(0,dp(4),0,dp(4))
+        actionBar.addView(button(if(item.favorite)"取消收藏"else"收藏") {
+            repository.edit(item.id,item.name,item.group,item.tags,!item.favorite);actionItem=null;reload()
+        })
+        actionBar.addView(button("编辑") {edit(item)})
+        actionBar.addView(button("分享") {StickerSending.share(context,item);actionItem=null;reload()})
+        actionBar.addView(button("删除") {
+            repository.delete(setOf(item.id)){notice(it)};actionItem=null;actionBar.visibility=GONE
+        })
+        actionBar.addView(button("关闭") {actionItem=null;reload()})
     }
     private fun edit(item:Sticker) {
         val fields=LinearLayout(context).apply {orientation=VERTICAL;setPadding(dp(20),0,dp(20),0)}
@@ -151,8 +187,8 @@ class StickerShelfView(
         override fun getView(position:Int,convertView:View?,parent:ViewGroup):View {
             val cell=convertView as? LinearLayout ?: LinearLayout(context).apply {
                 orientation=VERTICAL;setPadding(dp(4),dp(4),dp(4),dp(4))
-                val image=StickerImageView(context);val caption=TextView(context).apply {gravity=android.view.Gravity.CENTER;maxLines=2;textSize=12f}
-                addView(image,LayoutParams(-1,dp(if(compact)72 else 84)));addView(caption,LayoutParams(-1,dp(32)));tag=Tile(image,caption)
+                val image=StickerImageView(context);val caption=TextView(context).apply {gravity=android.view.Gravity.CENTER;maxLines=1;textSize=if(compact)10f else 12f}
+                addView(image,LayoutParams(-1,dp(if(compact)58 else 84)));addView(caption,LayoutParams(-1,dp(if(compact)18 else 32)));tag=Tile(image,caption)
             }
             val tile=cell.tag as Tile;val item=items[position]
             tile.caption.text=(if(selecting && item.id in selected)"✓ "else if(item.favorite)"★ "else "")+item.name

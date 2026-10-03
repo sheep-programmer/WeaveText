@@ -121,6 +121,14 @@ interface VoiceEngines {
     }
     fun recheck() {}
 
+    /**
+     * 当前档位的选择是否真的能满足该档位。例如「中英混合」档位却只选了一个只会中文的模型时为 false，
+     * 界面据此提示并自动补装双语模型，而不是让用户以为已经装好了。
+     * Whether the current selection actually satisfies the current mode — e.g. false for mixed mode when only a
+     * Chinese-only model is selected.
+     */
+    fun selectionSatisfiesMode(): Boolean = true
+
     /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
     fun inspect(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException())
     /** 从 .xipk 文件导入。 Import a .xipk package. */

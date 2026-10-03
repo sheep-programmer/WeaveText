@@ -262,8 +262,11 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
         private fun transcriptArea(out: RectF) {
             val m = kb.metrics
+            val top = contentTop + m.dp(2f)
             val bottom = if (compactWide()) mic.top - m.dp(8f) else comma.top - m.dp(40f)
-            out.set(m.dp(20f), contentTop + m.dp(2f), width - m.dp(20f), bottom)
+            // 面板较矮时 bottom 可能落回语言档位那一行：夹住下界，否则文字会画到档位条上（叠字）。
+            // On a short panel `bottom` can fall back onto the language row; clamp it or the text is drawn over it.
+            out.set(m.dp(20f), top, width - m.dp(20f), max(top + m.dp(18f), bottom))
         }
 
         /**
@@ -273,10 +276,13 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private fun drawNoEngine(c: Canvas, title: String) {
             val pal = kb.palette
             val m = kb.metrics
+            // 从区域顶部往下排（标题一行 + 按钮一行），矮面板里两行也不会互相压住。
+            // Lay out from the area top (title row, then button row) so the two never overlap on a short panel.
+            val titleY = area.top + m.dp(22f)
             text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(15f); text.color = pal.labelSecondary
             val titleSize = min(m.dp(15f), m.dp(15f) * (area.width() / max(1f, text.measureText(title))))
             text.textSize = titleSize
-            c.drawText(title, area.centerX(), area.centerY() - m.dp(12f), text)
+            c.drawText(title, area.centerX(), titleY, text)
             clearPills()
             val labels = mutableListOf(offlineBtn to "下载离线语音包")
             text.textSize = m.dp(13f); text.typeface = medium
@@ -291,7 +297,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             }
             val total = width()
             var x = area.centerX() - total / 2
-            val top = area.centerY() + m.dp(2f)
+            val top = min(area.bottom - bh, titleY + m.dp(16f)).coerceAtLeast(titleY + m.dp(6f))
             for ((rect, label) in labels) {
                 val bw = text.measureText(label) + 2 * pad
                 rect.set(x, top, x + bw, top + bh)
@@ -310,7 +316,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             transcriptArea(area)
             if (engines == 0) {
                 val auto = com.weavetext.ime.voice.VoiceAutoDownload.state
-                drawNoEngine(c, if (auto == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading) "正在自动下载中英混合语音…" else "正在准备中英混合语音")
+                val label = VoiceAccess.engines(kb.ctx).language.label
+                drawNoEngine(c, if (auto == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading) "正在自动下载「$label」语音…" else "正在准备「$label」语音")
                 return
             }
             clearPills()
@@ -420,13 +427,16 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 listening -> kb.icons.draw(c, R.drawable.ic_stop, pal.onAccent, cx, cy, m.dp(32f))
                 else -> kb.icons.draw(c, R.drawable.ic_mic, pal.onAccent, cx, cy, m.dp(32f))
             }
+            val downloading = com.weavetext.ime.voice.VoiceAutoDownload.state == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading
             val hint = when {
                 holdCancel -> "松手取消"
                 st == VoiceSession.State.ERROR -> (session.error ?: "识别失败") + "，点击重试"
                 st == VoiceSession.State.CONNECTING -> "正在加载离线模型…"
                 st == VoiceSession.State.FINALIZING -> "识别中…"
                 listening -> if (hold) "松手结束，上滑取消" else "正在聆听 · 可以停顿，点击结束"
-                engines == 0 -> "请先下载离线语音包"
+                // 缺模型时不再与上方文字重复报同一句：下载中就说明进度，否则指向下载按钮。
+                // When no model is usable, do not repeat the same line shown above.
+                engines == 0 -> if (downloading) "正在下载语音模型…" else "点上方按钮下载当前档位的语音模型"
                 hold -> "按住 说话"
                 else -> "点击开始说话"
             }
@@ -773,6 +783,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 session.cancel()
                 kb.stopVoice()
                 VoiceAccess.engines(kb.ctx).language = com.weavetext.ime.voice.VoiceLanguage.entries[id - LANGUAGE_BASE]
+                // 切档位后如果这个档位没有可用模型（如新用户切到英文档），就地开始下载，并刷新引擎列表。
+                // Switching to a mode with no usable model (e.g. English on a fresh install) starts the download here.
+                com.weavetext.ime.voice.VoiceAutoDownload.ensure(kb.ctx)
                 kb.onEngineChanged()
                 session.warmUp()
                 return

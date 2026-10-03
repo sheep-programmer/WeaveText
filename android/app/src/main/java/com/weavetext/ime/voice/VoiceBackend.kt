@@ -49,6 +49,7 @@ private class OfflineEngines(private val ctx: Context) : VoiceEngines {
         get() = selected.ids().drop(1).toSet()
         set(value) { selected.select(listOfNotNull(activeId) + value) }
     override fun setSelection(ids: List<String>) { selected.select(ids) }
+    override fun selectionSatisfiesMode(): Boolean = selected.primaryOk()
     override fun selection(): List<VoicePlugin> {
         val installed = list().associateBy { it.id }
         return selected.ids().mapNotNull { installed[it] }

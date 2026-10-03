@@ -4,9 +4,10 @@ import android.content.Context
 import com.weavetext.ime.models.AsrRuntime
 import com.weavetext.ime.models.ModelManager
 import com.weavetext.ime.models.VoicePack
+import com.weavetext.ime.models.isReady
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** 首次点语音时自动准备默认的中英混合模型，不要求用户先打开语音包页面。 */
+/** 首次点语音时自动准备当前档位需要的离线模型（默认中英混合），不要求用户先打开语音包页面。 */
 object VoiceAutoDownload {
     sealed interface State {
         data object Idle : State
@@ -14,6 +15,13 @@ object VoiceAutoDownload {
         data object Ready : State
         data class Failed(val message: String) : State
     }
+
+    /** 每个档位的默认模型：混说／英文用双语实时模型，中文用中文实时模型。 */
+    private val defaults = mapOf(
+        VoiceLanguage.MIXED to listOf("asr-stream-mixed-medium"),
+        VoiceLanguage.ENGLISH to listOf("asr-stream-mixed-medium"),
+        VoiceLanguage.CHINESE to listOf("asr-stream-small"),
+    )
 
     @Volatile var state: State = State.Idle
         private set
@@ -23,23 +31,50 @@ object VoiceAutoDownload {
     fun removeListener(listener: () -> Unit) { listeners -= listener }
     private fun changed() = listeners.forEach { it() }
 
-    /** Returns true when a download was started or is already running. */
+    /**
+     * 保证当前语言档位有一组可用的已装模型；缺模型时开始下载。返回 true 表示已开始（或正在进行）下载。
+     * Make sure the current language mode has a usable installed set, downloading when it does not. Returns true when
+     * a download was started or is already running.
+     */
     fun ensure(ctx: Context): Boolean {
         val repo = ModelManager.get(ctx)
-        if (AsrRuntime.engineReady(repo)) { state = State.Ready; return false }
+        if (!AsrRuntime.ready(repo)) {
+            // 运行库没有（轻量版）：下载运行库 + 当前档位默认模型。
+            return download(ctx, repo, language(ctx))
+        }
+        if (usable(ctx, repo)) { state = State.Ready; return false }
         if (state == State.Downloading) return true
-        val pack = VoicePack(repo, bundledRuntime = true, modelIds = listOf("asr-stream-mixed-medium"))
+        return download(ctx, repo, language(ctx))
+    }
+
+    /** 当前档位是否已经有一组可用模型；没有就用默认模型补上。 */
+    private fun usable(ctx: Context, repo: com.weavetext.ime.models.ModelRepository): Boolean {
+        val engines = runCatching { VoiceHub.engines(ctx) }.getOrNull() ?: return false
+        if (engines.selection().isNotEmpty()) return true
+        val ids = defaults[engines.language]!!.filter { repo.state(it).isReady }
+        if (ids.isEmpty()) return false
+        runCatching { engines.setSelection(ids) }
+        return engines.selection().isNotEmpty()
+    }
+
+    private fun language(ctx: Context): VoiceLanguage =
+        runCatching { VoiceHub.engines(ctx).language }.getOrDefault(VoiceLanguage.MIXED)
+
+    private fun download(ctx: Context, repo: com.weavetext.ime.models.ModelRepository, mode: VoiceLanguage): Boolean {
+        if (state == State.Downloading) return true
+        val ids = defaults[mode] ?: defaults.getValue(VoiceLanguage.MIXED)
+        val pack = VoicePack(repo, bundledRuntime = true, modelIds = ids)
         if (!pack.supported) {
-            state = State.Failed("当前设备没有可用的中英混合模型")
+            state = State.Failed("当前设备不支持「${mode.label}」离线语音，请到语音包页换一档")
             changed()
             return false
         }
-        state = State.Downloading;changed()
+        state = State.Downloading; changed()
         pack.start(allowMetered = !repo.wifiOnly) {
             runCatching {
                 VoiceHub.engines(ctx).apply {
-                    language = VoiceLanguage.MIXED
-                    setSelection(listOf("asr-stream-mixed-medium"))
+                    language = mode
+                    setSelection(ids)
                 }
                 state = State.Ready
             }.onFailure { state = State.Failed("语音模型已下载，但加载失败，请重试") }
