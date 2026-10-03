@@ -415,10 +415,11 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandRecogn
     let Some(strokes) = read_strokes(&env, &xy, &lens) else { return std::ptr::null_mut() };
     // SAFETY: m 来自 nativeHandModels，从不释放。 m comes from nativeHandModels and is never freed.
     let models = unsafe { &*(m as *const std::sync::Arc<weave_dict::handnet::HandModels>) };
-    let Ok(cands) = catch_unwind(AssertUnwindSafe(|| models.recognize_input(&strokes, weave_engine::session::HAND_CANDIDATES))) else {
+    let Ok(wire) = catch_unwind(AssertUnwindSafe(|| models.recognize_wire(&strokes, weave_engine::session::HAND_CANDIDATES))) else {
         return std::ptr::null_mut();
     };
-    let cps: Vec<jint> = cands.into_iter().map(|c| c as jint).collect();
+    // 传输格式（含分数）按位当作 jint；回来时再按位还原。 The wire format (with scores) travels bit-for-bit as jint.
+    let cps: Vec<jint> = wire.into_iter().map(|c| c as jint).collect();
     let Ok(arr) = env.new_int_array(cps.len() as i32) else { return std::ptr::null_mut() };
     if env.set_int_array_region(&arr, 0, &cps).is_err() {
         return std::ptr::null_mut();
@@ -442,8 +443,8 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandApply(
     if env.get_int_array_region(&cps, 0, &mut raw).is_err() {
         return JNI_FALSE;
     }
-    let cands: Vec<char> = raw.into_iter().filter_map(|c| char::from_u32(c as u32)).collect();
-    jbool(with_engine(h, false, |e| e.hand_apply(strokes, cands)))
+    let wire: Vec<u32> = raw.into_iter().map(|c| c as u32).collect();
+    jbool(with_engine(h, false, |e| e.hand_apply_wire(strokes, &wire)))
 }
 
 bool_op!(

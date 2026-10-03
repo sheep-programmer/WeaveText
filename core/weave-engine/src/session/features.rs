@@ -399,8 +399,7 @@ impl Engine {
                 let Ok(codes) = serde_json::from_value::<Vec<u32>>(cmd["codes"].clone()) else {
                     return json!({"ok":false});
                 };
-                let cands = codes.into_iter().filter_map(char::from_u32).collect();
-                json!({"ok":self.hand_apply(strokes,cands)})
+                json!({"ok":self.hand_apply_wire(strokes,&codes)})
             }
             "handInput" => {
                 let strokes = serde_json::from_value(cmd["strokes"].clone()).unwrap_or_default();

@@ -380,21 +380,92 @@ impl HandModels {
     /// the templates neat writing in standard stroke order; together they beat the network alone by about three
     /// points of top-1 on real ink.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<char> {
+        self.recognize_scored(strokes, top).into_iter().map(|x| x.0).collect()
+    }
+
+    /// 同 [`HandModels::recognize`]，并带上分数。个人纠正过的字排在最前，分数比第一名再高一点。
+    /// Same as [`HandModels::recognize`] with scores; a personally corrected char goes first, scored just above the best.
+    pub fn recognize_scored(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
         if top == 0 { return Vec::new(); }
         let tmpl = self.templates.as_ref().map(|t| t.recognize(strokes, FUSE_POOL.max(top))).unwrap_or_default();
         let mut result = if let Some(net) = &self.net {
             let probs = net.recognize_robust(strokes, FUSE_POOL.max(top));
             let t = self.templates.as_ref();
-            fuse(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
-        } else { tmpl.into_iter().take(top).map(|c| c.0).collect() };
+            fuse_scored(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
+        } else {
+            // 只有模板：代价越低越好，换成同方向的分数。 Templates only: lower cost is better; flip the sign.
+            tmpl.into_iter().take(top).map(|c| (c.0, -c.1 * 12.0)).collect()
+        };
         if let Some(ch) = self.corrected_char(strokes) {
-            result.retain(|&c| c != ch);
-            result.insert(0, ch);
+            let best = result.iter().map(|x| x.1).fold(f32::NEG_INFINITY, f32::max);
+            result.retain(|&(c, _)| c != ch);
+            // 个人纠正是用户明确教的：加得足够多，上文重排也翻不过它。 Taught explicitly; no context re-ranking may overturn it.
+            result.insert(0, (ch, if best.is_finite() { best + 50.0 } else { 0.0 }));
             result.truncate(top);
         }
         result
-
     }
+
+    /// 一次笔迹的识别结果，按「字组」分：单字模式只有一组；连写模式按字间留白分成 2–4 组、每组前 5 个。
+    /// Recognition of one ink: grouped per character. Single-char mode gives one group; spaced mode splits at the
+    /// whitespace into 2–4 groups of five candidates each.
+    pub fn recognize_groups(&self, strokes: &[Stroke], top: usize) -> Vec<Vec<(char, f32)>> {
+        if self.line_mode.load(std::sync::atomic::Ordering::Acquire) {
+            let groups = Self::line_groups(strokes);
+            if groups.len() >= 2 {
+                return groups.iter().map(|g| self.recognize_scored(g, LINE_PER_GROUP)).collect();
+            }
+        }
+        vec![self.recognize_scored(strokes, top)]
+    }
+
+    /// [`HandModels::recognize_groups`] 编成传输格式（见 [`encode_wire`]）。 Encoded for transport.
+    pub fn recognize_wire(&self, strokes: &[Stroke], top: usize) -> Vec<u32> {
+        encode_wire(&self.recognize_groups(strokes, top))
+    }
+}
+
+/// 连写模式每个字组保留的候选数。 Candidates kept per group in spaced mode.
+pub const LINE_PER_GROUP: usize = 5;
+/// 传输格式的开头标记（"WHV1"）。 Leading marker of the wire format ("WHV1").
+pub const WIRE_MAGIC: u32 = 0x5748_5631;
+
+/// 识别结果的传输格式：`[MAGIC, 组数, (个数, (字码位, 分数×1000)…)…]`。Android 当作 `IntArray`、Mac 当作 JSON 数组原样转交，
+/// 分数按补码存进 u32。没有开头标记的数组仍按旧格式（只有字码位）解读。
+/// Wire format of a recognition: `[MAGIC, groups, (count, (code point, score×1000)…)…]`. Android hands it over as an
+/// `IntArray` and the Mac as a JSON array, untouched; scores are stored as two's complement in u32. An array without the
+/// marker is read in the old format (code points only).
+pub fn encode_wire(groups: &[Vec<(char, f32)>]) -> Vec<u32> {
+    let mut out = vec![WIRE_MAGIC, groups.len() as u32];
+    for g in groups {
+        out.push(g.len() as u32);
+        for &(c, s) in g {
+            out.push(c as u32);
+            out.push(((s * 1000.0).round().clamp(-2.0e9, 2.0e9) as i32) as u32);
+        }
+    }
+    out
+}
+
+/// 读回 [`encode_wire`]；格式不对（或是旧格式）为 `None`。 Reads [`encode_wire`] back; `None` if malformed or old format.
+pub fn decode_wire(wire: &[u32]) -> Option<Vec<Vec<(char, f32)>>> {
+    let mut it = wire.iter().copied();
+    if it.next()? != WIRE_MAGIC { return None; }
+    let groups = it.next()? as usize;
+    if groups == 0 || groups > 8 { return None; }
+    let mut out = Vec::with_capacity(groups);
+    for _ in 0..groups {
+        let n = it.next()? as usize;
+        if n > 64 { return None; }
+        let mut g = Vec::with_capacity(n);
+        for _ in 0..n {
+            let c = char::from_u32(it.next()?)?;
+            let s = it.next()? as i32 as f32 / 1000.0;
+            g.push((c, s));
+        }
+        out.push(g);
+    }
+    it.next().is_none().then_some(out)
 }
 
 /// 合并两个识别器的候选（见 [`HandModels::recognize`]）。只在一边出现的字，另一边按「刚好排不上」计分；
@@ -409,6 +480,18 @@ pub fn fuse(
     has_template: impl Fn(char) -> bool,
     top: usize,
 ) -> Vec<char> {
+    fuse_scored(net, tmpl, prior, has_template, top).into_iter().map(|x| x.0).collect()
+}
+
+/// 同 [`fuse`]，并带上融合分数（近似对数概率，越大越像）。 Same as [`fuse`], with the fused score (roughly a log
+/// probability, larger is better) so a caller can combine it with other evidence such as the context.
+pub fn fuse_scored(
+    net: &[(char, f32)],
+    tmpl: &[(char, f32)],
+    prior: impl Fn(char) -> f32,
+    has_template: impl Fn(char) -> bool,
+    top: usize,
+) -> Vec<(char, f32)> {
     let worst = tmpl.last().map_or(1.0, |x| x.1) + 0.05;
     let best = tmpl.first().map_or(0.0, |x| x.1);
     let pmin = (net.last().map_or(1e-6, |x| x.1) * 0.5).max(1e-6);
@@ -425,7 +508,8 @@ pub fn fuse(
         })
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(top).map(|x| x.0).collect()
+    scored.truncate(top);
+    scored
 }
 
 /// 笔迹归一化并画成 `n × n` 灰度图（与训练脚本逐像素一致）；没有点时为 `None`。

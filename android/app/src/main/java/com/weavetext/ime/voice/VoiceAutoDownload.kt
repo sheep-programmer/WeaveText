@@ -47,10 +47,46 @@ object VoiceAutoDownload {
             // 运行库没有（轻量版）：下载运行库 + 当前档位默认模型。
             return download(ctx, repo, language(ctx))
         }
-        if (usable(ctx, repo)) { state = State.Ready; return false }
+        if (usable(ctx, repo)) { state = State.Ready; upgradeInBackground(ctx, repo); return false }
         if (state == State.Downloading) return true
         return download(ctx, repo, language(ctx))
     }
+
+    /**
+     * 已经装了流式双语模型的老用户：在后台补装更准的 SenseVoice 并切换过去，只做一次，不打断当前使用，
+     * 并遵守「仅 Wi-Fi 下载」设置。之后用户自己改回流式模型就不再替他换。
+     * Existing users on a streaming bilingual model: fetch the more accurate SenseVoice in the background and switch to
+     * it, once, without interrupting use and honouring the Wi-Fi-only setting. A later manual choice is left alone.
+     */
+    private fun upgradeInBackground(ctx: Context, repo: com.weavetext.ime.models.ModelRepository) {
+        if (upgrading) return
+        val prefs = ctx.getSharedPreferences("voice_auto", Context.MODE_PRIVATE)
+        if (prefs.getBoolean(UPGRADED, false)) return
+        val engines = runCatching { VoiceHub.engines(ctx) }.getOrNull() ?: return
+        if (engines.language == VoiceLanguage.CHINESE) return
+        val selected = engines.selection().map { it.id }
+        if (selected.isEmpty() || !selected.all { it in STREAMING_BILINGUAL }) return
+        fun switchOver() {
+            val now = engines.selection().map { it.id }
+            // 下载期间用户自己换过模型就不动。 Leave it if the user picked something else meanwhile.
+            if (now.isNotEmpty() && now.all { it in STREAMING_BILINGUAL } && engines.language != VoiceLanguage.CHINESE) {
+                engines.setSelection(listOf(BEST))
+            }
+            prefs.edit().putBoolean(UPGRADED, true).apply()
+            upgrading = false
+            changed()
+        }
+        if (repo.state(BEST).isReady) { switchOver(); return }
+        val pack = VoicePack(repo, bundledRuntime = true, modelIds = listOf(BEST))
+        if (!pack.supported) return
+        upgrading = true
+        pack.start(allowMetered = !repo.wifiOnly, onStopped = { upgrading = false }) { runCatching { switchOver() }.onFailure { upgrading = false } }
+    }
+
+    @Volatile private var upgrading = false
+    private const val BEST = "asr-sensevoice"
+    private const val UPGRADED = "sensevoice_upgrade_done"
+    private val STREAMING_BILINGUAL = setOf("asr-stream-mixed-medium", "asr-stream-mixed-high")
 
     /** 当前档位是否已经有一组可用模型；没有就用默认模型补上。 */
     private fun usable(ctx: Context, repo: com.weavetext.ime.models.ModelRepository): Boolean {

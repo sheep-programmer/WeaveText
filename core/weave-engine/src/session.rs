@@ -6,6 +6,7 @@
 //! candidates).
 
 mod features;
+mod handrank;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -91,6 +92,10 @@ pub struct Options {
     pub utc_offset_min: i32,
     /// 上屏后给出联想词。 Offer next-word predictions after a commit.
     pub prediction: bool,
+    /// 手写候选按上文重排的权重（0 关闭），与连写时词库里确有的词的奖励。
+    /// Weight of the context re-ranking of handwriting candidates (0 = off), and the bonus for lexicon words in a line.
+    pub hand_lm_weight: f32,
+    pub hand_word_bonus: f32,
     /// 拼音自动纠错（换位、漏字母、多字母），预编辑里标出改动。
     /// Pinyin auto-correction (swapped, missing or extra letters), with the changes marked in the preedit.
     pub autocorrect: bool,
@@ -109,6 +114,8 @@ impl Default for Options {
             lm_baseline: 12.0,
             utc_offset_min: 480,
             prediction: true,
+            hand_lm_weight: 0.25,
+            hand_word_bonus: 2.0,
             autocorrect: true,
         }
     }
@@ -1627,7 +1634,8 @@ impl Engine {
         if self.schema != Schema::Hand {
             return false;
         }
-        let cands = self.hand_models().map(|m| m.recognize_input(&strokes, HAND_CANDIDATES)).unwrap_or_default();
+        let groups = self.hand_models().map(|m| m.recognize_groups(&strokes, HAND_CANDIDATES)).unwrap_or_default();
+        let cands = self.rank_hand(groups);
         self.hand_apply(strokes, cands)
     }
 
@@ -1671,7 +1679,8 @@ impl Engine {
         }
         // 笔画变了（退一笔）而结果还是旧的：当场重新识别。 Strokes changed (undo) since the result: recognise again.
         if self.hand_cands.1 != self.hand_strokes.len() {
-            let cands = self.hand_models().map(|m| m.recognize_input(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
+            let groups = self.hand_models().map(|m| m.recognize_groups(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
+            let cands = self.rank_hand(groups);
             self.hand_cands = (cands, self.hand_strokes.len());
         }
         self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};

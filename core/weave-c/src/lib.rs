@@ -62,7 +62,7 @@ pub extern "C" fn weave_features_json(h:*mut WeaveEngine,command:*const c_char)-
             let Some(models) = with(h, None, |e| e.hand_models()) else { return out(json!({"ok":false})); };
             return out(catch_unwind(AssertUnwindSafe(|| match strokes {
                 Ok(strokes) if strokes.len() <= 128 && strokes.iter().all(|s| s.len() <= 4096 && s.iter().all(|(x,y)| x.is_finite() && y.is_finite())) => {
-                    let codes: Vec<u32> = models.recognize_input(&strokes, weave_engine::session::HAND_CANDIDATES).into_iter().map(|c| c as u32).collect();
+                    let codes: Vec<u32> = models.recognize_wire(&strokes, weave_engine::session::HAND_CANDIDATES);
                     json!({"ok":true,"codes":codes})
                 }
                 _ => json!({"ok":false}),
