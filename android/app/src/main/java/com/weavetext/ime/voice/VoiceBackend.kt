@@ -72,6 +72,7 @@ private class OfflineEngines(private val ctx: Context) : VoiceEngines {
 /** Capture and decode have separate lifetimes: a sentence endpoint never closes the microphone. */
 private class Recognizer(private val ctx: Context, private val engines: OfflineEngines) : VoiceRecognizer {
     private val main = Handler(Looper.getMainLooper())
+    private val gainControl = VoiceGain()
     private val audioThread = Executors.newSingleThreadExecutor { r -> Thread(r, "weave-audio") }
     @Volatile private var recording = false
     @Volatile private var generation = 0
@@ -261,8 +262,10 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
                     }
                     // Deliver the last short chunk before scheduling the final decode.
                     if (gen != generation) break
-                    sink(buf, off)
+                    // 音量表看原始电平，识别器拿增益后的声音。 The meter shows the raw level; the recognizer gets the gained audio.
                     val level = rms(buf, off)
+                    gainControl.apply(buf, off)
+                    sink(buf, off)
                     post(gen) { it.onLevel(level) }
                 }
             } catch (t: Throwable) {

@@ -16,10 +16,15 @@ object VoiceAutoDownload {
         data class Failed(val message: String) : State
     }
 
-    /** 每个档位的默认模型：混说／英文用双语实时模型，中文用中文实时模型。 */
+    /**
+     * 每个档位的默认模型：混说／英文用 SenseVoice（整句识别，离线基准的中英混说错误率约 4%，双语实时模型约 22%），
+     * 中文用中文实时模型。
+     * Default per mode: SenseVoice for mixed/English (whole-utterance; ~4% error on mixed speech in the offline
+     * benchmark versus ~22% for the bilingual streaming model), the Chinese streaming model for Chinese.
+     */
     private val defaults = mapOf(
-        VoiceLanguage.MIXED to listOf("asr-stream-mixed-medium"),
-        VoiceLanguage.ENGLISH to listOf("asr-stream-mixed-medium"),
+        VoiceLanguage.MIXED to listOf("asr-sensevoice"),
+        VoiceLanguage.ENGLISH to listOf("asr-sensevoice"),
         VoiceLanguage.CHINESE to listOf("asr-stream-small"),
     )
 

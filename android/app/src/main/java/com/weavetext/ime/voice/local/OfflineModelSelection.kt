@@ -53,7 +53,7 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
             ?.takeIf { it.isNotEmpty() }?.let { return it }
         val old = if (mode == VoiceLanguage.MIXED) prefs.getString(LocalAsrChoice.KEY_FINAL, null) else null
         val preferred = when (mode) {
-            VoiceLanguage.MIXED -> listOf("asr-stream-mixed-high", "asr-stream-mixed-medium", "asr-sensevoice")
+            VoiceLanguage.MIXED -> listOf("asr-sensevoice", "asr-stream-mixed-high", "asr-stream-mixed-medium")
             VoiceLanguage.CHINESE -> listOf("asr-sensevoice", "asr-stream-small", "asr-final-small")
             VoiceLanguage.ENGLISH -> listOf("asr-whisper-small", "asr-whisper-base", "asr-stream-mixed-high", "asr-stream-mixed-medium", "asr-sensevoice")
         }
