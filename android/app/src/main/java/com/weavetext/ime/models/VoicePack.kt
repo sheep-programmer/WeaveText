@@ -67,14 +67,16 @@ class VoicePack(private val repo: ModelRepository, private val bundledRuntime: B
      * Download the missing parts; [onReady] runs once on the main thread when both are ready, even if the
      * page has been closed.
      */
-    fun start(allowMetered: Boolean, onReady: () -> Unit = {}) {
+    fun start(allowMetered: Boolean, onStopped: (String?) -> Unit = {}, onReady: () -> Unit = {}) {
         if (!supported) return
         if (state() == State.Ready) { onReady(); return }
         val watcher = object : () -> Unit {
             override fun invoke() {
-                when (state()) {
+                when (val s = state()) {
                     State.Ready -> { repo.removeListener(this); onReady() }
-                    is State.Idle, is State.Failed -> repo.removeListener(this)
+                    // 失败或取消也要告诉调用方，否则它一直以为还在下载。 Report failure/cancel too, or the caller waits forever.
+                    is State.Failed -> { repo.removeListener(this); onStopped(s.message) }
+                    is State.Idle -> { repo.removeListener(this); onStopped(null) }
                     else -> {}
                 }
             }

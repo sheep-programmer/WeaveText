@@ -150,13 +150,14 @@ class StickerShelfView(
         })
         actionBar.addView(button("关闭") {actionItem=null;reload()})
     }
+    /**
+     * 编辑交给管理页：键盘和悬浮窗都是服务窗口，弹不出对话框，键盘自己的窗口里也没法给输入框打字。
+     * Editing opens the manager: the keyboard and floating window are service windows that cannot host a
+     * dialog, and an input field inside the keyboard's own window could not be typed into anyway.
+     */
     private fun edit(item:Sticker) {
-        val fields=LinearLayout(context).apply {orientation=VERTICAL;setPadding(dp(20),0,dp(20),0)}
-        fun field(hintText:String,value:String)=EditText(context).apply {hint=hintText;setText(value);fields.addView(this)}
-        val name=field("名称",item.name);val group=field("分组",item.group);val tags=field("标签，用逗号分隔",item.tags.joinToString("，"))
-        android.app.AlertDialog.Builder(context).setTitle("编辑表情").setView(fields).setPositiveButton("保存"){_,_->
-            repository.edit(item.id,name.text.toString(),group.text.toString(),tags.text.toString().split(',','，'),item.favorite,notice)
-        }.setNegativeButton("取消",null).show()
+        actionItem=null;updateActions()
+        context.startActivity(StickerActivity.edit(context,item.id))
     }
     private fun button(text:String,action:()->Unit)=TextView(context).apply {
         this.text=text;textSize=13f;gravity=android.view.Gravity.CENTER;setTextColor(label)

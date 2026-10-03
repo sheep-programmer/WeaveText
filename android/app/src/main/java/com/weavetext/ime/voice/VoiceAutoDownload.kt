@@ -70,13 +70,15 @@ object VoiceAutoDownload {
             return false
         }
         state = State.Downloading; changed()
-        pack.start(allowMetered = !repo.wifiOnly) {
+        pack.start(allowMetered = !repo.wifiOnly, onStopped = { message ->
+            state = State.Failed(message ?: "语音模型下载已取消，点话筒重试"); changed()
+        }) {
             runCatching {
-                VoiceHub.engines(ctx).apply {
-                    language = mode
-                    setSelection(ids)
-                }
-                state = State.Ready
+                val engines = VoiceHub.engines(ctx)
+                // 下载期间用户换了档位：不把档位拨回去，改为给新档位补模型。
+                // The user switched modes meanwhile: keep their choice and fetch for the new mode instead.
+                if (engines.language != mode) { state = State.Idle; ensure(ctx) }
+                else { engines.setSelection(ids); state = State.Ready }
             }.onFailure { state = State.Failed("语音模型已下载，但加载失败，请重试") }
             changed()
         }

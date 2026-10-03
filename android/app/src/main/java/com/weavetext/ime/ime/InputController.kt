@@ -57,6 +57,16 @@ class InputController(private val icProvider: () -> InputConnection?) {
         reconversion=Triple(text,editor.selStart,editor.selEnd)
         refresh(); return true
     }
+    /**
+     * 放弃重选：清掉组合、恢复原方案。切换中/英、换方案、方向键、换输入框前都要先走这里，
+     * 否则重选的拼音会被当作原文上屏，盖掉用户选中的文字。
+     * Abandon reconversion: drop the composition and restore the schema. Mode/schema switches, arrow keys and new
+     * editors must come through here first, or the reconversion pinyin would be committed over the selection.
+     */
+    private fun endReconversion() {
+        if (reconversion == null) return
+        engine?.clear(); engine?.setSchema(reconversionSchema); reconversion = null
+    }
     fun candidatePolicy(index: Int, text: String, mode: String? = null): String {
         val command=org.json.JSONObject().put("op","policy").put("index",index).put("text",text)
         if (mode!=null) command.put("mode",mode)
@@ -177,7 +187,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     // ---------------------------------------------------------------- lifecycle
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
-        reconversion = null
+        endReconversion()
         editorInfo = info
         engine?.let(::syncClock)
         editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
@@ -263,7 +273,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onFinishInput() {
-        if(reconversion!=null){engine?.setSchema(reconversionSchema);reconversion=null}
+        endReconversion()
         engine?.let { it.clear(); it.flush() }
         pendingKeys.clear()
         lastSpaceAt = 0L
@@ -664,6 +674,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun toggleChinese() {
         // 内核未就绪时记下的字母按原样上屏，不带到另一种模式里。 Kept letters go out as typed, not into the other mode.
         if (engine == null) replayPending()
+        endReconversion()
         engine?.commitRaw()
         drainCommit()
         applyMode(!state.chinese)
@@ -673,6 +684,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** 切换中文方案并保持中文模式。 Switch the Chinese schema. */
     fun setSchema(key: String): Boolean {
         val e = engine ?: return false
+        endReconversion()
         e.commitRaw()
         drainCommit()
         if (!e.setSchema(key)) return false
@@ -773,7 +785,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
     fun reset() {
-        if(reconversion!=null){engine?.setSchema(reconversionSchema);reconversion=null}
+        endReconversion()
         engine?.clear()
         pendingKeys.clear()
         refresh()
@@ -834,6 +846,15 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (before.isEmpty()) return null
         ic.deleteSurroundingText(before.length, 0)
         return before
+    }
+
+    /**
+     * 撤销「清空」：原样放回，不走打字逻辑（不补配对括号、不弹计算候选、不先上屏组合）。
+     * Undo a clear: put the text back verbatim, bypassing typing logic (no bracket pairing, no calculator
+     * candidates, no committing a pending composition first).
+     */
+    fun restoreCleared(text: String) {
+        ic()?.commitText(text, 1)
     }
 
     /** 按词删除（长按删除加速后）。 Delete one word/run before the cursor. */
@@ -987,6 +1008,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     private fun commitRawIfComposing() {
         val e = engine ?: return
+        if (reconversion != null) { endReconversion(); refresh(); return }
         if (e.isComposing()) { e.commitRaw(); refresh() }
     }
 
@@ -1005,9 +1027,29 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     // ---------------------------------------------------------------- voice (composing text allowed here)
 
+    /** 开始说话时所在的输入框。 The editor dictation started in. */
+    private var voiceField: Pair<String?, Int>? = null
+    private fun field(info: EditorInfo?) = info?.packageName to (info?.fieldId ?: 0)
+
+    /** 记下开始说话的输入框。 Remember which editor dictation started in. */
+    fun voiceBegin() { voiceField = field(editorInfo) }
+
+    /**
+     * 语音的输入连接：收起键盘后才出来的终稿，只写回开始说话的那个输入框；用户已经换到别的应用或输入框就丢掉，
+     * 免得一句话落进别人的搜索框。
+     * The connection for voice output: a final that arrives after the keyboard was hidden is only written to the
+     * editor dictation started in; if the user has moved to another app or field it is dropped, so a sentence
+     * never lands in someone else's search box.
+     */
+    private fun voiceIc(): InputConnection? {
+        val started = voiceField
+        if (started != null && started != field(editorInfo)) return null
+        return ic()
+    }
+
     /** 语音中间结果以 composing 文本显示（带下划线）。 Voice interim result as composing text. */
     fun voicePartial(text: String) {
-        val ic = ic() ?: return
+        val ic = voiceIc() ?: return
         prepareVoiceText()
         ic.setComposingText(text, 1)
     }
@@ -1030,14 +1072,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 语音最终结果上屏（替换 composing）。 Commit a final voice segment. */
     fun voiceFinal(text: String) {
-        val ic = ic() ?: return
+        val ic = voiceIc() ?: return
         if (text.isEmpty()) voiceTouched() else prepareVoiceText()
         if (text.isEmpty()) ic.finishComposingText() else ic.commitText(text, 1)
     }
 
     /** 插件事后修正已上屏文本。 Post-hoc correction of committed voice text. */
     fun voiceReplace(old: String, new: String) {
-        val ic = ic() ?: return
+        val ic = voiceIc() ?: return
         val before = ic.getTextBeforeCursor(old.length, 0)?.toString() ?: return
         if (before == old) {
             voiceTouched()

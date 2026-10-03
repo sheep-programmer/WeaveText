@@ -129,6 +129,7 @@ class VoiceSession(
         }
         val r = recognizerProvider()
         rec = r
+        controller.voiceBegin()
         committed.clear(); partial = ""; error = null; notice = null; level = 0f
         results = null; detached = false; levels.fill(0f)
         state = State.CONNECTING

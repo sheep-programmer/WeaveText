@@ -105,6 +105,16 @@ class Downloader(
         if (dest.isFile && sha256Of(dest) == sha256) return dest
         dest.parentFile?.mkdirs()
         val part = File(dest.path + ".part")
+        // 上次已下完、只差校验时进程被杀：直接校验，别再发 Range 请求（服务器会回 416，每个镜像都失败）。
+        // Killed after the download finished but before verification: verify now instead of sending a Range
+        // request every server answers with 416.
+        if (expectedSize > 0 && part.isFile && part.length() == expectedSize) {
+            if (sha256Of(part) == sha256) {
+                if (dest.exists()) dest.delete()
+                if (part.renameTo(dest)) return dest
+            }
+            part.delete()
+        }
         var order = ranked ?: rankMirrors(url)
         if (preferred != null) order = order.sortedBy { if (it.id == preferred) 0 else 1 }
         val errors = mutableListOf<String>()
@@ -156,6 +166,8 @@ class Downloader(
         }
         val c = open(m.apply(url), have)
         val code = c.responseCode
+        // 请求的起点已到文件尾：已下完，交给调用方校验（不对会删掉重下）。 Range past the end: complete, let the caller verify.
+        if (code == 416 && have > 0) { c.disconnect(); return }
         if (code != 200 && code != 206) throw IOException("HTTP $code")
         var resumed = code == 206 && have > 0
         if (resumed) {

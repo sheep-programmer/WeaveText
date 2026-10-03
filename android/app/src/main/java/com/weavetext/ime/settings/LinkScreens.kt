@@ -70,8 +70,10 @@ fun LinkScreen() {
     var manual by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var peerMenu by remember { mutableStateOf<LinkPeer?>(null) }
-    val notifyPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val nearbyPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) link.rescan() }
+    // 一次只能有一个权限请求在途，通知与附近设备合并成一次申请。 Only one request may be in flight: ask for both at once.
+    val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result[Manifest.permission.NEARBY_WIFI_DEVICES] == true) link.rescan()
+    }
     val directory = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) runCatching {
             ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -90,11 +92,14 @@ fun LinkScreen() {
                 "织文互联", "设备间直传文字、图片和文件，支持局域网及可直连的远程地址，端到端加密",
                 checked = s.enabled, icon = R.drawable.ic_devices, subtitleMaxLines = 3,
             ) { on ->
-                if (on && Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    notifyPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
                 link.setEnabled(on)
-                if (on && Build.VERSION.SDK_INT == 36 && ctx.checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) nearbyPerm.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
+                if (on) {
+                    val wanted = buildList {
+                        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                        if (Build.VERSION.SDK_INT == 36) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                    }.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+                    if (wanted.isNotEmpty()) perms.launch(wanted.toTypedArray())
+                }
             }
         }
         if (!s.enabled) {

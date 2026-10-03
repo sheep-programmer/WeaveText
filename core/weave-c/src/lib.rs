@@ -94,7 +94,9 @@ pub extern "C" fn weave_create(data_dir: *const c_char, user_dir: *const c_char)
     };
     catch_unwind(|| {
         let mut e = Engine::new(&paths_in(&PathBuf::from(d), &PathBuf::from(u)));
-        e.warm_up();
+        // 预热单独兜底：坏掉的词库文件只让预热失败，不至于整个输入法建不起来。
+        // Warm-up gets its own guard: a corrupt dictionary file fails the warm-up, not the whole engine.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| e.warm_up()));
         Box::into_raw(Box::new(WeaveEngine(Mutex::new(e))))
     })
     .unwrap_or(std::ptr::null_mut())

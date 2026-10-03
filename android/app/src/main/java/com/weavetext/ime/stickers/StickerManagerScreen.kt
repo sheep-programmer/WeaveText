@@ -78,7 +78,7 @@ private data class StickerFilter(val id: String, val label: String)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StickerManagerScreen(onBack: () -> Unit) {
+fun StickerManagerScreen(onBack: () -> Unit, editId: String? = null, onEditShown: () -> Unit = {}) {
     val ctx = LocalContext.current
     val repository = remember { StickerRepository.get(ctx) }
     val snackbar = remember { SnackbarHostState() }
@@ -98,6 +98,12 @@ fun StickerManagerScreen(onBack: () -> Unit) {
     fun notify(text: String) = scope.launch { snackbar.showSnackbar(text) }
 
     val all = remember(tick) { repository.store.list() }
+    LaunchedEffect(editId) {
+        if (editId != null) {
+            editing = all.firstOrNull { it.id == editId }
+            onEditShown()
+        }
+    }
     val items = remember(tick, query, filter) { repository.store.list(query, filter) }
     val filters = remember(tick) {
         listOf(StickerFilter("all", "全部"), StickerFilter("recent", "最近"), StickerFilter("favorites", "收藏"), StickerFilter("ungrouped", "未分组")) +
@@ -302,9 +308,7 @@ private fun StickerThumbnail(repository: StickerRepository, item: Sticker) {
     var image by remember(item.id) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(item.id) {
         val file = runCatching { repository.store.file(item) }.getOrNull() ?: return@LaunchedEffect
-        withContext(Dispatchers.IO) {
-            StickerThumbs.load(file, item.id, 256) { bitmap -> image = bitmap }
-        }
+        image = StickerThumbs.load(file, item.id, 256)
     }
     val bitmap = image
     if (bitmap != null) {
@@ -337,7 +341,7 @@ private fun StickerEditorDialog(item: Sticker, onDismiss: () -> Unit, onSave: (S
 }
 
 private fun collect(uris: List<Uri>, repository: StickerRepository, notify: (String) -> Unit) {
-    if (uris.isNotEmpty()) repository.import(uris, notify)
+    if (uris.isNotEmpty()) repository.importInBackground(uris, notify)
 }
 
 private fun repositoryImport(

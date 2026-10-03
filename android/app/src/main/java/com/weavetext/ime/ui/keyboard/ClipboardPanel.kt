@@ -34,6 +34,19 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
     private val listeners = ArrayList<() -> Unit>()
     private var lastSeen: String? = null
 
+    /**
+     * 只记录比上次记过的更新的剪贴：键盘视图重建（旋转、深色模式、进程重启）后补查时，
+     * 不会把用户删掉或清空的那条重新加回来、标成「刚刚」。
+     * Only record clips newer than the last one recorded, so the re-check after the keyboard view is rebuilt
+     * (rotation, dark mode, process restart) cannot resurrect an item the user deleted, stamped "just now".
+     */
+    private fun unrecorded(clip: android.content.ClipData, fresh: Boolean): Boolean {
+        val stamp = clip.description.timestamp
+        if (!fresh && stamp <= kb.prefs.getLong(LAST_RECORDED, 0L)) return false
+        kb.prefs.edit().putLong(LAST_RECORDED, maxOf(stamp, kb.prefs.getLong(LAST_RECORDED, 0L))).apply()
+        return true
+    }
+
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { onClip(fresh = true) }
     private val historyListener: () -> Unit = { kb.view.post { notifyChanged() } }
 
@@ -84,8 +97,9 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
             if (key == lastSeen) return
             lastSeen = key
             val recent = fresh || System.currentTimeMillis() - clip.description.timestamp < 30_000
+            val record = recording && unrecorded(clip, fresh)
             uris.forEach { uri ->
-                if (recording) com.weavetext.ime.link.LinkContent.io.execute {
+                if (record) com.weavetext.ime.link.LinkContent.io.execute {
                     if (recording && !com.weavetext.ime.ime.ClipPrivacy.privateField) runCatching { com.weavetext.ime.link.LinkContent.import(ctx, uri) }
                 }
                 if (recent) com.weavetext.ime.link.LinkManager.get(ctx).onLocalMedia(uri)
@@ -97,7 +111,7 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
         lastSeen = text
         val now = System.currentTimeMillis()
         val recent = fresh || now - clip.description.timestamp < 30_000
-        if (recording) {
+        if (recording && unrecorded(clip, fresh)) {
             history.add(text, now)
             notifyChanged()
         }
@@ -129,6 +143,7 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
     companion object {
         /** 相对 filesDir。 Relative to filesDir. */
         const val HISTORY_FILE = "clipboard/history.json"
+        private const val LAST_RECORDED = "clipboard_last_recorded_stamp"
         private val EXTRA_IS_SENSITIVE = if (Build.VERSION.SDK_INT >= 33) android.content.ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
         val DEFAULT_PHRASES = listOf("好的，收到", "稍等，马上回复你", "我在开会，晚点联系", "谢谢！", "辛苦了")
     }

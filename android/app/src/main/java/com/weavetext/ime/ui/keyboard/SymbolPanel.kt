@@ -119,6 +119,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         /** 翻页模式每页行数（0 = 自由滚动）。 Rows per page in paged mode (0 = free scrolling). */
         private var rowsPerPage = 0
         private var altFor = -1
+        /** 长按时的原表情：松手前可能已经换了分类。 The pressed base emoji; the tab may change before release. */
+        private var altBase = ""
         private var shownPage = -1
 
         fun rebuild() {
@@ -207,6 +209,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 tmp.offset(0f, -scroll)
                 ov.map(this, tmp, tmp)
                 altFor = index
+                altBase = base
                 ov.showAlternatives(tmp, SymbolData.SKIN_TONES.indices.map { SymbolData.withTone(base, it) }, skinTone)
                 return true
             }
@@ -227,7 +230,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             val ov = kb.overlay ?: return
             if (altFor < 0) return
             val sel = ov.altSelected
-            val base = cats[tab].items[altFor]
+            val base = altBase
             ov.hideAlternatives()
             altFor = -1
             if (cancel || sel < 0) return

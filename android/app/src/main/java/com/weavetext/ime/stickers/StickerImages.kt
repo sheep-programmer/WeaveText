@@ -1,39 +1,48 @@
 package com.weavetext.ime.stickers
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.concurrent.Executors
 
 /**
- * 表情缩略图解码：网格滚动时按需解码，同一张只解一次，最多保留 [MAX_CACHE] 张。
- * Thumbnail decoding for the sticker grid: decoded on demand, once per file, capped at [MAX_CACHE] entries.
+ * 表情缩略图解码：网格滚动时按需解码，同一张只解一次，缓存按字节数限额。滑出屏幕的格子会取消协程，
+ * 排队中的解码随之跳过，快速翻过几千张时屏幕上的格子不用等前面的队列。
+ * Thumbnail decoding for the sticker grid: on demand, once per file, with a byte-bounded cache. Tiles that
+ * scroll away cancel their coroutine, so queued decodes are skipped and visible tiles never wait behind a
+ * backlog of thousands.
  */
 internal object StickerThumbs {
-    private const val MAX_CACHE = 160
-    private val worker = Executors.newFixedThreadPool(2) { r -> Thread(r, "weave-sticker-thumb").apply { isDaemon = true } }
-    private val cache = object : LinkedHashMap<String, ImageBitmap>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>) = size > MAX_CACHE
+    private val decoder = Dispatchers.IO.limitedParallelism(2)
+    private val cache = object : LruCache<String, Bitmap>(
+        minOf(32L shl 20, Runtime.getRuntime().maxMemory() / 8).toInt(),
+    ) {
+        override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
     }
 
-    /** 主线程调用；解码在工作线程完成后回主线程。 Call from the main thread; decoding happens on a worker. */
-    fun load(file: File, id: String, target: Int, done: (ImageBitmap) -> Unit) {
+    /** 解码到不小于 [target] 像素的最小 2 次幂缩放。 Decodes at the smallest power-of-two scale not below [target] px. */
+    suspend fun load(file: File, id: String, target: Int): ImageBitmap? {
         val key = "$id@$target"
-        synchronized(cache) { cache[key] }?.let { done(it); return }
-        worker.execute {
+        cache.get(key)?.let { return it.asImageBitmap() }
+        return withContext(decoder) {
+            ensureActive()
+            cache.get(key)?.let { return@withContext it.asImageBitmap() }
             val bitmap = runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(file.path, bounds)
                 var sample = 1
-                while (bounds.outWidth / sample > target * 2 || bounds.outHeight / sample > target * 2) sample *= 2
+                while (bounds.outWidth / (sample * 2) >= target && bounds.outHeight / (sample * 2) >= target) sample *= 2
                 BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
-            }.getOrNull() ?: return@execute
-            val image = bitmap.asImageBitmap()
-            synchronized(cache) { cache[key] = image }
-            done(image)
+            }.getOrNull() ?: return@withContext null
+            cache.put(key, bitmap)
+            bitmap.asImageBitmap()
         }
     }
 
-    internal fun clear() = synchronized(cache) { cache.clear() }
+    internal fun clear() = cache.evictAll()
 }

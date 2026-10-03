@@ -163,7 +163,9 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeCreateFrom
         }
         let mut engine = Engine::new(&Paths::from_spec(&spec, &PathBuf::from(user)));
         // 创建发生在后台加载线程，顺便预热缓存。 Creation runs on the loader thread; warm the caches.
-        engine.warm_up();
+        // 预热单独兜底：坏掉的词库文件只让预热失败，不至于整个输入法建不起来。
+        // Warm-up gets its own guard: a corrupt dictionary file fails the warm-up, not the whole engine.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.warm_up()));
         Box::into_raw(Box::new(Mutex::new(engine))) as jlong
     })
     .unwrap_or(0)

@@ -26,7 +26,6 @@ class StickerOverlayService:Service() {
     override fun onCreate(){super.onCreate();wm=getSystemService(WindowManager::class.java)}
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
         if(intent?.action==STOP){stopSelf();return START_NOT_STICKY}
-        if(!android.provider.Settings.canDrawOverlays(this)){stopSelf();return START_NOT_STICKY}
         val manager=getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL,"表情收纳窗",NotificationManager.IMPORTANCE_LOW))
         val close=PendingIntent.getService(this,0,Intent(this,StickerOverlayService::class.java).setAction(STOP),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -34,6 +33,9 @@ class StickerOverlayService:Service() {
             .setContentTitle("表情收纳窗已打开").setContentText("拖入可分享的图片收纳；点击表情插入或转发")
             .setOngoing(true).addAction(0,"关闭",close).build()
         if(Build.VERSION.SDK_INT>=34)startForeground(480,notification,ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)else startForeground(480,notification)
+        // 先进前台再查权限：以前台方式启动却不调 startForeground 就退出，系统会让进程崩溃。
+        // Enter the foreground before checking: a foreground-started service that stops without it crashes the process.
+        if(!android.provider.Settings.canDrawOverlays(this)){stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return START_NOT_STICKY}
         active=java.lang.ref.WeakReference(this)
         if(window==null)show(false)
         return START_NOT_STICKY

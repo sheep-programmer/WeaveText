@@ -21,6 +21,8 @@ class StickerActivity : ComponentActivity() {
     private val repository by lazy { StickerRepository.get(this) }
     /** 待收纳的分享图片；null 表示没有。 Pending shared images to collect, or null. */
     private val pending = mutableStateOf<List<Uri>?>(null)
+    /** 打开后直接编辑的表情。 Sticker whose editor opens right away. */
+    private val editId = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,13 +35,13 @@ class StickerActivity : ComponentActivity() {
                     val uris = pending.value
                     LaunchedEffect(uris) {
                         if (uris != null) {
-                            repository.import(uris) { message ->
+                            repository.importInBackground(uris) { message ->
                                 Toast.makeText(this@StickerActivity, message, Toast.LENGTH_LONG).show()
                             }
                             pending.value = null
                         }
                     }
-                    StickerManagerScreen(onBack = { finish() })
+                    StickerManagerScreen(onBack = { finish() }, editId = editId.value, onEditShown = { editId.value = null })
                 }
             }
         }
@@ -53,6 +55,7 @@ class StickerActivity : ComponentActivity() {
     }
 
     private fun collectShare(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_EDIT)?.let { editId.value = it; intent.removeExtra(EXTRA_EDIT) }
         if (intent?.action !in listOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) return
         @Suppress("DEPRECATION")
         val uris = when (intent?.action) {
@@ -67,5 +70,13 @@ class StickerActivity : ComponentActivity() {
             pending.value = uris
         }
         intent?.action = null
+    }
+
+    companion object {
+        private const val EXTRA_EDIT = "com.weavetext.ime.extra.EDIT_STICKER"
+
+        /** 从键盘或悬浮窗打开某张表情的编辑。 Opens the editor for one sticker from a service context. */
+        fun edit(ctx: android.content.Context, id: String): Intent =
+            Intent(ctx, StickerActivity::class.java).putExtra(EXTRA_EDIT, id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 }

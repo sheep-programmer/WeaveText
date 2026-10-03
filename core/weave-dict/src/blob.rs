@@ -308,6 +308,11 @@ impl Packed {
         if block == 0 || block > 16 << 20 || n != raw_len.div_ceil(block) {
             return Err(bad("bad pack header"));
         }
+        // 先确认偏移表放得进文件再分配，坏头部不能让进程因申请几 GB 内存而直接中止。
+        // Check the offset table fits before allocating: a bad header must not abort the process on a huge alloc.
+        if (HEADER as u64).saturating_add((n as u64 + 1) * 4) > len {
+            return Err(bad("truncated pack"));
+        }
         let mut raw = vec![0u8; (n + 1) * 4];
         read_exact_at(&file, &mut raw, base + HEADER as u64)?;
         let offsets: Vec<u32> = raw.chunks_exact(4).map(|c| le32(c, 0)).collect();
@@ -373,6 +378,7 @@ impl Packed {
         let mut out = Vec::with_capacity(want);
         let ok = read_exact_at(&self.file, &mut comp, self.data_off + s).is_ok()
             && brotli_decompressor::Decompressor::new(&comp[..], 4096)
+                .take(want as u64 + 1)
                 .read_to_end(&mut out)
                 .is_ok()
             && out.len() == want;

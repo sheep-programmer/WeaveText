@@ -192,7 +192,12 @@ fun ModelsScreen() {
                 )
             },
             confirmButton = {
-                TextButton(onClick = { confirmDelete = null; repo.delete(m.id) }) { Text("卸载", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = {
+                    confirmDelete = null
+                    // 卸载要等正在加载或识别的引擎放手（每个最多 3 秒），放到后台免得界面卡住。
+                    // Unloading waits for busy engines to let go (up to 3 s each): do it off the main thread.
+                    Thread({ repo.delete(m.id) }, "weave-model-delete").apply { isDaemon = true }.start()
+                }) { Text("卸载", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("取消") } },
         )

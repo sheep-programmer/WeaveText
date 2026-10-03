@@ -37,6 +37,7 @@ object AppUpgrade {
 
     @Volatile var state: State = State.Idle
         private set
+    private val APP_TAG = Regex("v\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?")
     private val listeners = CopyOnWriteArrayList<(State) -> Unit>()
     private val main = Handler(Looper.getMainLooper())
     private val cancel = AtomicBoolean(false)
@@ -101,7 +102,11 @@ object AppUpgrade {
         val urls=(listOf(API)+mirrors.map {it.apply(API)}).distinct()
         for(url in urls) runCatching {
             val a=JSONArray(httpText(url))
-            for(i in 0 until a.length()) {val r=a.getJSONObject(i);if(!r.optBoolean("draft"))return r}
+            // 只认应用版本标签（词库包、语音运行库也发在同一个仓库里），并取版本最高的：接口按创建时间排序。
+            // App tags only (packs and runtimes share the repo), highest version first: the API sorts by creation time.
+            return (0 until a.length()).map {a.getJSONObject(it)}
+                .filter {!it.optBoolean("draft")&&APP_TAG.matches(it.optString("tag_name"))}
+                .maxWithOrNull {x,y->compareVersions(x.optString("tag_name"),y.optString("tag_name"))} ?: return@runCatching
         }
         return null
     }
@@ -120,8 +125,23 @@ object AppUpgrade {
     }
     private fun readLimited(input:java.io.InputStream,max:Int):ByteArray {val out=ByteArrayOutputStream();val b=ByteArray(8192);while(true){val n=input.read(b);if(n<0)break;require(out.size()+n<=max);out.write(b,0,n)};return out.toByteArray()}
 
+    /**
+     * 按语义化版本比较：先比主版本号，相同时正式版高于预发布版，预发布段逐段比（数字按数值）。
+     * Semantic-version order: core numbers first; on a tie a release outranks a prerelease and prerelease
+     * identifiers compare piece by piece (numeric ones by value), so beta.18 < beta.19 < 0.1.0.
+     */
     internal fun compareVersions(a:String,b:String):Int {
-        fun nums(v:String)=v.removePrefix("v").substringBefore('-').split('.').map {it.toIntOrNull() ?: 0}
-        val x=nums(a);val y=nums(b);for(i in 0 until maxOf(x.size,y.size)){val d=(x.getOrNull(i)?:0)-(y.getOrNull(i)?:0);if(d!=0)return d};return 0
+        fun split(v:String)=v.trim().removePrefix("v").substringBefore('+').let {it.substringBefore('-') to it.substringAfter('-',"")}
+        val (coreA,preA)=split(a);val (coreB,preB)=split(b)
+        val x=coreA.split('.').map {it.toIntOrNull() ?: 0};val y=coreB.split('.').map {it.toIntOrNull() ?: 0}
+        for(i in 0 until maxOf(x.size,y.size)){val d=(x.getOrNull(i)?:0).compareTo(y.getOrNull(i)?:0);if(d!=0)return d}
+        if(preA.isEmpty()||preB.isEmpty())return (if(preA.isEmpty())1 else 0)-(if(preB.isEmpty())1 else 0)
+        val p=preA.split('.');val q=preB.split('.')
+        for(i in 0 until minOf(p.size,q.size)){
+            val m=p[i].toIntOrNull();val n=q[i].toIntOrNull()
+            val d=when{m!=null&&n!=null->m.compareTo(n);m!=null->-1;n!=null->1;else->p[i].compareTo(q[i])}
+            if(d!=0)return d
+        }
+        return p.size.compareTo(q.size)
     }
 }

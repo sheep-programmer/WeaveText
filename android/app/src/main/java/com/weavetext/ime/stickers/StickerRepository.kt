@@ -25,15 +25,24 @@ class StickerRepository private constructor(context:Context) {
         val file=store.file(sticker);check(file.isFile){"表情原文件丢失，请重新导入"}
         return FileProvider.getUriForFile(ctx,ctx.packageName+".files",file)
     }
-    fun import(uris:List<Uri>,result:(String)->Unit) {
-        // Acquire streams before returning to a drag/share sender that owns a temporary grant.
-        val inputs=uris.take(100).map {uri ->runCatching {
-            require(uri.scheme=="content" || uri.scheme=="file"){"收到的是链接，请从原应用分享图片或保存后导入"}
-            val name=com.weavetext.ime.link.LinkContent.describe(ctx,uri).first
-            val input=ctx.contentResolver.openInputStream(uri) ?: error("原应用没有开放图片读取权限")
-            name to input
-        }}
-        importOpened(inputs,result)
+    /**
+     * 拖放：授权只在回调期间有效，必须当场打开数据流。
+     * Drag and drop: the grant only lasts for the callback, so streams are opened right here.
+     */
+    fun import(uris:List<Uri>,result:(String)->Unit)=importOpened(uris.take(100).map(::open),result)
+    /**
+     * 选图器与分享：授权跟随 Activity，查询和打开都放到后台，云端图片下载时界面不卡。
+     * Pickers and shares: the grant lives with the Activity, so querying and opening run in the background and
+     * cloud-backed photos do not freeze the screen while they download.
+     */
+    fun importInBackground(uris:List<Uri>,result:(String)->Unit) {
+        val list=uris.take(100);io.execute {importOpened(list.map(::open),result)}
+    }
+    private fun open(uri:Uri)=runCatching {
+        require(uri.scheme=="content" || uri.scheme=="file"){"收到的是链接，请从原应用分享图片或保存后导入"}
+        val name=com.weavetext.ime.link.LinkContent.describe(ctx,uri).first
+        val input=ctx.contentResolver.openInputStream(uri) ?: error("原应用没有开放图片读取权限")
+        name to input
     }
     private fun importOpened(inputs:List<Result<Pair<String,InputStream>>>,result:(String)->Unit) {
         io.execute {

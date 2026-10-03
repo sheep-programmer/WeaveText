@@ -115,9 +115,11 @@ impl UserDict {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let mut d = Self::in_memory();
         if let Ok(f) = File::open(path) {
-            for line in BufReader::new(f).lines() {
+            // 按字节读：写到一半断电留下的坏行只跳过这一行，后面追加的学习照样读回来。
+            // Read raw lines: a torn write only costs that line; learning appended after it still loads.
+            for line in BufReader::new(f).split(b'\n') {
                 let Ok(line) = line else { break };
-                d.apply_line(&line);
+                d.apply_line(String::from_utf8_lossy(&line).trim_end_matches('\r'));
                 d.log_lines += 1;
             }
         }

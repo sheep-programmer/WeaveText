@@ -130,6 +130,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var swallowed = false
     private var cursorOn = true
     private var lastInput = 0L
+    /** 键盘收起时停掉光标闪烁，别每 530 ms 唤醒主线程。 Stop blinking while hidden instead of waking every 530 ms. */
+    fun stopBlink() = removeCallbacks(blink)
     private val blink = object : Runnable {
         override fun run() {
             if (!candidateMode || preedit.isEmpty()) return
@@ -238,7 +240,14 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         this.preedit = preedit
         this.english = english
         this.total = total
+        val wasCandidates = candidateMode
         candidateMode = preedit.isNotEmpty() || texts.isNotEmpty()
+        // 按住工具按钮时栏切成了候选（如手写结果晚到）：这次按下作废，否则松手会打开别的工具。
+        // The bar switched mode under a pressed tool (e.g. a late handwriting result): drop the press, or the
+        // release would open a different tool.
+        if (wasCandidates != candidateMode && (pressedTool >= 0 || pressedChip)) {
+            removeCallbacks(longPress); pressedTool = -1; pressedChip = false
+        }
         // 不浮动时也通知一次（样式从浮动切回行内时收起浮条）。 Notify when inline too, so switching styles drops the chip.
         host.onFloatingPreedit(if (floating && !english && preedit.isNotEmpty()) preedit else null)
         if (changed && !keepScroll) { scrollX0 = 0f; scroller.forceFinished(true) }

@@ -13,6 +13,7 @@ import java.util.concurrent.Executors
 
 /** Copies provider streams while the grant is valid; never sends a pipe with an unknown length. */
 object LinkContent {
+    private const val CLIP_LIMIT = 512L * 1024 * 1024
     val io = Executors.newSingleThreadExecutor { r -> Thread(r, "weave-content").apply { isDaemon = true } }
     fun history(ctx: Context) = ClipHistory.shared(File(ctx.filesDir, "clipboard/history.json"))
     fun describe(ctx: Context, uri: Uri): Pair<String, String> {
@@ -32,8 +33,17 @@ object LinkContent {
         val dir = File(ctx.cacheDir, "link-outgoing").apply { mkdirs() }
         val snapshot = File.createTempFile("send-", ".tmp", dir)
         return try {
-            ctx.contentResolver.openInputStream(uri)?.use { input -> snapshot.outputStream().use { input.copyTo(it) } }
-                ?: error("无法读取文件，需重新从原应用分享")
+            ctx.contentResolver.openInputStream(uri)?.use { input -> snapshot.outputStream().use { out ->
+                // 剪贴板自动同步与剪贴板历史同一上限，复制大视频不会在后台悄悄写满存储。
+                // Automatic clip sync shares the clipboard-history cap, so copying a huge video can't fill storage.
+                val buffer = ByteArray(64 * 1024)
+                var bytes = 0L
+                while (true) {
+                    val n = input.read(buffer); if (n < 0) break
+                    bytes += n; require(!clip || bytes <= CLIP_LIMIT) { "剪贴板文件超过 512 MB，未同步；请直接发送文件" }
+                    out.write(buffer, 0, n)
+                }
+            } } ?: error("无法读取文件，需重新从原应用分享")
             val fd = ParcelFileDescriptor.open(snapshot, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
             link.sendFd(to, fd, name, mime, clip)
         } finally { snapshot.delete() } // Core owns an open FD, so unlinking cannot interrupt the transfer.
@@ -50,7 +60,7 @@ object LinkContent {
                 var bytes = 0L
                 while (true) {
                     val n = input.read(buffer); if (n < 0) break
-                    bytes += n; require(bytes <= 512L * 1024 * 1024) { "文件超过剪贴板历史的 512 MB 上限，请直接发送文件" }
+                    bytes += n; require(bytes <= CLIP_LIMIT) { "文件超过剪贴板历史的 512 MB 上限，请直接发送文件" }
                     hash.update(buffer, 0, n); out.write(buffer, 0, n)
                 }
             } } ?: error("无法读取剪贴板文件")

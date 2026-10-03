@@ -62,7 +62,18 @@ class DictPacks private constructor(private val ctx: Context) : DictPackReposito
 
     private fun file(id: String) = File(dir(ctx), "$id.wvz")
 
-    override fun state(id: String): PackState = states[id] ?: if (file(id).isFile) PackState.Installed else PackState.NotInstalled
+    private fun shaFile(id: String) = File(dir(ctx), "$id.sha256")
+
+    /**
+     * 目录里的校验值变了（词库重新生成）就当作未安装，界面重新给出下载；旧版本装的没有记录，照旧算已安装。
+     * A pack whose catalog hash changed (rebuilt data) reads as not installed so the UI offers the download again;
+     * packs installed before hashes were recorded still count as installed.
+     */
+    override fun state(id: String): PackState = states[id] ?: when {
+        !file(id).isFile -> PackState.NotInstalled
+        runCatching { shaFile(id).readText().trim() }.getOrNull()?.let { it != packs.firstOrNull { p -> p.id == id }?.sha256 } == true -> PackState.NotInstalled
+        else -> PackState.Installed
+    }
 
     private fun set(id: String, s: PackState) {
         states[id] = s
@@ -85,7 +96,9 @@ class DictPacks private constructor(private val ctx: Context) : DictPackReposito
                 Downloader(mirrors).download(base + "$id.wvz", p.sha256, tmp, cancel, expectedSize = p.bytes) { pr -> set(id, PackState.Downloading(pr)) }
                 val dest = file(id)
                 dest.parentFile?.mkdirs()
+                EngineHolder.peek()?.unloadPack(id)
                 if (!tmp.renameTo(dest)) { tmp.copyTo(dest, overwrite = true); tmp.delete() }
+                shaFile(id).writeText(p.sha256)
                 EngineHolder.peek()?.loadPack(id, dest.absolutePath)
                 set(id, PackState.Installed)
             } catch (t: Throwable) {
@@ -102,6 +115,7 @@ class DictPacks private constructor(private val ctx: Context) : DictPackReposito
     override fun remove(id: String): Boolean {
         EngineHolder.peek()?.unloadPack(id)
         val ok = !file(id).exists() || file(id).delete()
+        shaFile(id).delete()
         set(id, PackState.NotInstalled)
         return ok
     }

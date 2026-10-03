@@ -88,7 +88,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             view.invalidate()
             if (session.active && session.state != VoiceSession.State.LISTENING) view.postInvalidateDelayed(40)
         }
-        com.weavetext.ime.voice.VoiceAutoDownload.addListener { view.postInvalidate() }
+        // 下载完成要重新数引擎，否则面板一直停在「正在准备」，按住说话也不起作用。
+        // Recount engines when the download settles, or the panel stays on "preparing" and hold-to-talk does nothing.
+        com.weavetext.ime.voice.VoiceAutoDownload.addListener { view.post { view.refreshEngine(); view.invalidate() } }
         // 没有引擎：打开面板显示安装引导，而不是报错。 No engine: show the guidance in the panel, not an error.
         session.onNoEngine = { if (kb.panel !== this) kb.showPanel("voice") else { view.refreshEngine(); view.invalidate() } }
     }
@@ -317,7 +319,11 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             if (engines == 0) {
                 val auto = com.weavetext.ime.voice.VoiceAutoDownload.state
                 val label = VoiceAccess.engines(kb.ctx).language.label
-                drawNoEngine(c, if (auto == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading) "正在自动下载「$label」语音…" else "正在准备「$label」语音")
+                drawNoEngine(c, when (auto) {
+                    com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading -> "正在自动下载「$label」语音…"
+                    is com.weavetext.ime.voice.VoiceAutoDownload.State.Failed -> auto.message
+                    else -> "正在准备「$label」语音"
+                })
                 return
             }
             clearPills()

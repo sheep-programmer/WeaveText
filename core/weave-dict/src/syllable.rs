@@ -91,9 +91,10 @@ pub fn id_of(spelling: &str) -> Option<SyllableId> {
     index().get(spelling).copied()
 }
 
-/// 音节 ID → 规范拼写。 Id → canonical spelling.
+/// 音节 ID → 规范拼写；越界的 ID（损坏或旧版的用户数据）给空串，不让整个词库因为一条坏数据崩掉。
+/// Id → canonical spelling; an out-of-range id (corrupt or outdated user data) gives "" instead of a panic.
 pub fn spelling(id: SyllableId) -> &'static str {
-    SYLLABLES[(id - 1) as usize]
+    (id as usize).checked_sub(1).and_then(|i| SYLLABLES.get(i)).copied().unwrap_or("")
 }
 
 pub fn count() -> usize {

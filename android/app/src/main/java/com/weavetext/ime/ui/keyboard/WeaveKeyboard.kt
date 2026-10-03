@@ -853,7 +853,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onDeleteClear() {
         val removed = controller.clearBeforeCursor() ?: return
-        topBar.showAction("已清空", "撤销", 3000) { controller.onText(removed) }
+        topBar.showAction("已清空", "撤销", 3000) { controller.restoreCleared(removed) }
     }
 
     override fun onLongPressFunc(key: Key): Int = when (key.code) {
@@ -1406,6 +1406,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         engineSheet.visibility = View.GONE
         topBar.clipChip = null
         topBar.clearAction()
+        topBar.stopBlink()
         popup.showPreedit(null)
     }
 
