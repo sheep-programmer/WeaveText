@@ -13,6 +13,11 @@ struct CandidateState: Equatable {
     var fontSize: CGFloat
     /// 没有组合串时顶行的小字提示（联想词）。 A small top-line hint when there is no preedit (predictions).
     var hint: String = ""
+    /// 候选比一页多：显示下拉按钮。 More candidates than a page: show the dropdown button.
+    var expandable = false
+    /// 展开后的候选网格（nil = 没展开）。 The expanded grid's candidates (nil = collapsed).
+    var expanded: [Candidate]? = nil
+    var expandedMore = false
 }
 
 /// 跟随光标的候选窗：无边框、不抢焦点，整个进程复用一个。
@@ -58,7 +63,10 @@ final class CandidatePanel {
     func show(_ state: CandidateState, caret: NSRect, owner: WeaveInputController) {
         self.owner = owner
         panel.appearance = Self.appearance(Preferences.shared.appearance)
-        hosting.rootView = CandidateBar(state: state, pick: { [weak self] i in self?.owner?.pick(pageIndex: i) }, policy: { [weak self] i,text,mode in self?.owner?.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) })
+        hosting.rootView = CandidateBar(state: state, pick: { [weak self] i in self?.owner?.pick(pageIndex: i) }, policy: { [weak self] i,text,mode in self?.owner?.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) },
+                                        toggle: { [weak self] in self?.owner?.toggleExpand() },
+                                        pickExpanded: { [weak self] i in self?.owner?.pickExpanded(index: i) },
+                                        loadMore: { [weak self] in self?.owner?.loadMoreExpanded() })
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.fittingSize
         let caret = usable(caret)
@@ -126,6 +134,9 @@ struct CandidateBar: View {
     let state: CandidateState
     let pick: (Int) -> Void
     var policy: (Int,String,String) -> Void = {_,_,_ in}
+    var toggle: () -> Void = {}
+    var pickExpanded: (Int) -> Void = {_ in}
+    var loadMore: () -> Void = {}
 
     private var font: Font { .system(size: state.fontSize) }
     private var small: Font { .system(size: max(10, state.fontSize * 0.72)) }
@@ -146,17 +157,21 @@ struct CandidateBar: View {
                 }
                 }
             }
-            if state.orientation == .horizontal {
+            if let all = state.expanded {
+                expandedGrid(all)
+            } else if state.orientation == .horizontal {
                 HStack(spacing: 2) {
                     items
                     arrows(vertical: false)
+                    expandButton
                 }
             } else {
                 VStack(alignment: .leading, spacing: 1) {
                     items
-                    HStack {
+                    HStack(spacing: 2) {
                         Spacer(minLength: 0)
                         arrows(vertical: true)
+                        expandButton
                     }
                 }
             }
@@ -197,6 +212,60 @@ struct CandidateBar: View {
                 Button("降低优先级") { policy(i,c.text,"down") }
                 if c.user {Button("删除学习记录") {policy(i,c.text,"forget")}}
             }
+        }
+    }
+
+    /// 下拉按钮：展开成全部候选。 The dropdown button: expand into the full list.
+    @ViewBuilder private var expandButton: some View {
+        if state.expandable {
+            Button(action: toggle) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 22, height: 22)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.accentSoft))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("展开全部候选")
+            .accessibilityLabel("展开全部候选")
+        }
+    }
+
+    /// 展开后的候选网格：滚动浏览，点选上屏，滚到底附近再取一批。 The expanded grid: scroll, click to pick, more load near the end.
+    @ViewBuilder private func expandedGrid(_ all: [Candidate]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 260), spacing: 2, alignment: .leading)],
+                          alignment: .leading, spacing: 2) {
+                    ForEach(Array(all.enumerated()), id: \.offset) { i, c in
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(c.text).font(font).foregroundStyle(i == 0 ? Theme.candidate : Theme.label)
+                            if c.cloud { Image(systemName: "cloud.fill").font(note).foregroundStyle(.blue) }
+                            if !c.comment.isEmpty { Text(c.comment).font(note).foregroundStyle(Theme.hint) }
+                        }
+                        .lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(i == 0 ? Theme.accentSoft : .clear))
+                        .contentShape(Rectangle())
+                        .onTapGesture { pickExpanded(i) }
+                        .onAppear { if state.expandedMore, i >= all.count - 12 { loadMore() } }
+                    }
+                }
+            }
+            .frame(width: 560, height: min(300, max(80, CGFloat((all.count + 4) / 5) * (state.fontSize + 14))))
+            HStack {
+                Text("共 \(all.count)\(state.expandedMore ? "+" : "") 个 · 点选上屏，按任意键收起").font(note).foregroundStyle(Theme.hint)
+                Spacer()
+                Button(action: toggle) {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
+                        .foregroundStyle(Theme.accent).frame(width: 22, height: 22)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.accentSoft))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("收起").accessibilityLabel("收起")
+            }.padding(.horizontal, 6)
         }
     }
 

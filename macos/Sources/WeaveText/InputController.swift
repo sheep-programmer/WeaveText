@@ -9,6 +9,12 @@ final class WeaveInputController: IMKInputController {
     private var host: EngineHost { .shared }
     private var prefs: Preferences { host.prefs }
     private var pager = Pager(pageSize: 7)
+    /// 候选窗展开成全部候选的网格，及已取到的那部分。 The panel expanded into a grid of all candidates, and what has been fetched.
+    private var expanded = false
+    private var expandedList: [Candidate] = []
+    private var expandedExhausted = false
+    private static let expandedBatch = 60
+    private static let expandedLimit = 600
     private var punctuation = Punctuation()
     private var shiftTap = ShiftTapDetector()
     private var capsLock = false
@@ -131,15 +137,21 @@ final class WeaveInputController: IMKInputController {
         let composing = engine.isComposing
         let ctx = KeyContext(composing: composing, chinese: host.chinese && host.scheme.isChinese, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
-                             vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id))
+                             vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
+                             bindings: prefs.candidateKeys)
         let action = KeyMapper.action(for: key, in: ctx)
         if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
             return true
         }
         let wasAfterDigit = afterDigit
         afterDigit = false
+        // 展开着全部候选时，任何别的按键先收起它。 Any other key first collapses the expanded list.
+        if expanded, action != .toggleExpand { expanded = false; expandedList = []; expandedExhausted = false }
 
         switch action {
+        case .toggleExpand:
+            toggleExpand(client)
+            return true
         case .pass:
             if ctx.composing && !ctx.chinese { engine.commitRaw(); refresh(client) }
             afterDigit = !ctx.composing && key.character?.isNumber == true && key.character?.isASCII == true
@@ -371,6 +383,7 @@ final class WeaveInputController: IMKInputController {
 
     /// 读取内核状态：上屏、更新组合串与候选。 Read the engine: commit, update marked text and candidates.
     private func refresh(_ client: IMKTextInput?) {
+        expanded = false; expandedList = []; expandedExhausted = false
         guard let engine = host.engine else { return }
         var s = engine.snapshot()
         if !s.commit.isEmpty, let client {
@@ -418,6 +431,38 @@ final class WeaveInputController: IMKInputController {
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
+    /// 展开／收起全部候选（点下拉按钮或自定义的快捷键）。 Expand or collapse the full list (the button or a custom key).
+    func toggleExpand(_ client: IMKTextInput? = nil) {
+        guard !predicting, pager.total > 0, let client = client ?? self.client() else { return }
+        if expanded {
+            expanded = false; expandedList = []; expandedExhausted = false
+        } else {
+            expandedList = fetch(0, Self.expandedBatch)
+            expandedExhausted = expandedList.count < Self.expandedBatch
+            expanded = true
+        }
+        showCandidates(client)
+    }
+
+    /// 滚到底附近时再取一批。 Fetch the next batch when scrolling near the end.
+    func loadMoreExpanded() {
+        guard expanded, !expandedExhausted, expandedList.count < Self.expandedLimit, let client = client() else { return }
+        let more = fetch(expandedList.count, Self.expandedBatch)
+        if more.count < Self.expandedBatch { expandedExhausted = true }
+        expandedList += more
+        showCandidates(client)
+    }
+
+    /// 点选展开网格里的候选（全局序号）。 Pick a candidate in the expanded grid (global index).
+    func pickExpanded(index: Int) {
+        guard let engine = host.engine, expanded, index < expandedList.count, let client = client() else { return }
+        guard engine.candidates(offset: index, limit: 1).first?.text == expandedList[index].text else { return }
+        if reconversionOriginal != nil && !ownsReconversion(client) { cancelReconversion(); return }
+        expanded = false; expandedList = []; expandedExhausted = false
+        engine.select(index)
+        refresh(client)
+    }
+
     private func showCandidates(_ client: IMKTextInput?) {
         guard let client else { return }
         var caret = NSRect.zero
@@ -426,7 +471,9 @@ final class WeaveInputController: IMKInputController {
         let state = CandidateState(preedit: preedit, candidates: pager.page, highlight: predicting ? -1 : pager.highlight,
                                    hasPrevious: !predicting && pager.hasPrevious, hasNext: !predicting && pager.hasNext,
                                    orientation: prefs.orientation, fontSize: CGFloat(prefs.fontSize),
-                                   hint: predicting ? "联想" : "")
+                                   hint: predicting ? "联想" : "",
+                                   expandable: !predicting && pager.total > pager.page.count,
+                                   expanded: expanded ? expandedList : nil, expandedMore: expanded && !expandedExhausted)
         CandidatePanel.shared.show(state, caret: caret, owner: self)
     }
 

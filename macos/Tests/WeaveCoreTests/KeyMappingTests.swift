@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import WeaveCore
 
@@ -132,5 +133,57 @@ private let busy = KeyContext(composing: true)
             #expect(KeyMapper.idlePass(for: k) == .breakChain)
         }
         #expect(KeyMapper.idlePass(for: key("\u{1b}", KeyCode.escape)) == .none)
+    }
+}
+
+@Suite struct CandidateShortcutTests {
+    private func key(_ code: UInt16, _ chars: String) -> KeyInput { KeyInput(keyCode: code, characters: chars) }
+
+    @Test func customKeysBeatTheDefaultsWhileComposing() {
+        var keys = CandidateKeys()
+        keys.assign(KeyBinding(keyCode: 33, character: "[", label: "["), to: .pagePrevious)
+        keys.assign(KeyBinding(keyCode: KeyCode.right, character: nil, label: "→"), to: .pageNext)
+        let ctx = KeyContext(composing: true, bindings: keys)
+        #expect(KeyMapper.action(for: key(33, "["), in: ctx) == .pagePrevious)
+        // → 默认是高亮右移，改绑后成了下一页。 → used to move the highlight; rebound, it pages.
+        #expect(KeyMapper.action(for: key(KeyCode.right, ""), in: ctx) == .pageNext)
+        // 没改的键照旧。 Untouched keys keep their meaning.
+        #expect(KeyMapper.action(for: key(KeyCode.left, ""), in: ctx) == .highlightPrevious)
+        // 不在组合时自定义键不拦截。 Not composing: custom keys don't intercept.
+        let idle = KeyContext(composing: false, bindings: keys)
+        #expect(KeyMapper.action(for: key(KeyCode.right, ""), in: idle) == .pass)
+    }
+
+    @Test func expandHasNoDefaultKeyButCanBeBound() {
+        var keys = CandidateKeys()
+        let ctx = KeyContext(composing: true, bindings: keys)
+        #expect(KeyMapper.action(for: key(KeyCode.down, ""), in: ctx) == .highlightNext)
+        keys.assign(KeyBinding(keyCode: KeyCode.down, character: nil, label: "↓"), to: .expand)
+        #expect(KeyMapper.action(for: key(KeyCode.down, ""), in: KeyContext(composing: true, bindings: keys)) == .toggleExpand)
+    }
+
+    @Test func recordingRefusesKeysTheInputNeeds() {
+        for (code, chars) in [(UInt16(36), "\r"), (53, "\u{1b}"), (51, "\u{7f}"), (49, " "), (0, "a"), (18, "1")] {
+            let made = KeyBinding.make(from: key(code, chars))
+            #expect(made.binding == nil && made.refusal != nil)
+        }
+        #expect(KeyBinding.make(from: KeyInput(keyCode: 33, characters: "[", command: true)).binding == nil)
+        #expect(KeyBinding.make(from: key(33, "[")).binding?.label == "[")
+        #expect(KeyBinding.make(from: key(KeyCode.pageDown, "")).binding?.label == "Page Down")
+    }
+
+    @Test func assigningTheSameKeyMovesItAndSettingsRoundTrip() throws {
+        var keys = CandidateKeys()
+        let bracket = KeyBinding(keyCode: 30, character: "]", label: "]")
+        keys.assign(bracket, to: .pageNext)
+        keys.assign(bracket, to: .highlightNext)
+        #expect(keys.pageNext == nil && keys.highlightNext == bracket)
+        let suite = UserDefaults(suiteName: "weave-keys-\(getpid())")!
+        defer { suite.removePersistentDomain(forName: "weave-keys-\(getpid())") }
+        let prefs = Preferences(defaults: suite)
+        prefs.candidateKeys = keys
+        #expect(Preferences(defaults: suite).candidateKeys == keys)
+        prefs.candidateKeys = CandidateKeys()
+        #expect(Preferences(defaults: suite).candidateKeys.isDefault)
     }
 }

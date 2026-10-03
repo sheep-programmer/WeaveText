@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
 import WeaveCore
@@ -21,12 +22,82 @@ final class LoginItem: ObservableObject {
     }
 }
 
+/// 录制一个快捷键：点按钮后按下想用的键；被输入占用的键会提示原因。
+/// Record a shortcut: click the button, then press the key; keys the input needs are refused with a reason.
+final class KeyRecorder: ObservableObject {
+    @Published var recording: CandidateKeySlot?
+    @Published var message = ""
+    private var monitor: Any?
+
+    func start(_ slot: CandidateKeySlot, prefs: Preferences) {
+        stop()
+        recording = slot
+        message = "请按下要用的键，Esc 取消"
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == KeyCode.escape { self.stop(); return nil }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let key = KeyInput(keyCode: event.keyCode, characters: event.characters ?? "", shift: flags.contains(.shift),
+                               control: flags.contains(.control), option: flags.contains(.option), command: flags.contains(.command),
+                               capsLock: flags.contains(.capsLock))
+            let made = KeyBinding.make(from: key)
+            if let binding = made.binding {
+                var keys = prefs.candidateKeys
+                keys.assign(binding, to: slot)
+                prefs.candidateKeys = keys
+                self.stop()
+            } else {
+                self.message = (made.refusal ?? "这个键不能用") + "，换一个键"
+            }
+            return nil
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        recording = nil
+        message = ""
+    }
+
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+}
+
+struct ShortcutRow: View {
+    let slot: CandidateKeySlot
+    @ObservedObject var prefs: Preferences
+    @ObservedObject var recorder: KeyRecorder
+
+    var body: some View {
+        LabeledContent {
+            HStack(spacing: 6) {
+                Button(recorder.recording == slot ? "按下按键…" : (prefs.candidateKeys[slot]?.label ?? "未设置")) {
+                    recorder.recording == slot ? recorder.stop() : recorder.start(slot, prefs: prefs)
+                }
+                .frame(minWidth: 96)
+                if prefs.candidateKeys[slot] != nil {
+                    Button {
+                        var keys = prefs.candidateKeys
+                        keys[slot] = nil
+                        prefs.candidateKeys = keys
+                    } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).help("清除，恢复默认键")
+                }
+            }
+        } label: {
+            TitleAndNote(slot.title, recorder.recording == slot ? recorder.message : slot.defaultKeys,
+                         noteColor: recorder.recording == slot ? .orange : .secondary)
+        }
+    }
+}
+
 // SwiftUI 的 @State 在新 SDK 里是宏，命令行工具不带它的插件，所以页面状态都放在 ObservableObject 里。
 // @State is a macro in the newer SDK and the command-line tools lack its plugin, so page state lives in ObservableObjects.
 
 struct GeneralPage: View {
     @ObservedObject var prefs: Preferences
     @StateObject private var login = LoginItem()
+    @StateObject private var recorder = KeyRecorder()
 
     var body: some View {
         Form {
@@ -54,6 +125,18 @@ struct GeneralPage: View {
                     Text("- =").tag(PageKeys.minusEqual)
                     Text(", .").tag(PageKeys.commaPeriod)
                 }
+            }
+            Section {
+                ForEach(CandidateKeySlot.allCases, id: \.self) { slot in
+                    ShortcutRow(slot: slot, prefs: prefs, recorder: recorder)
+                }
+                if !prefs.candidateKeys.isDefault {
+                    Button("全部恢复默认") { prefs.candidateKeys = CandidateKeys() }
+                }
+            } header: {
+                Text("候选快捷键")
+            } footer: {
+                Footnote("点按钮后按下想用的键，比如 [ 和 ] 翻页，或 Tab 展开全部候选。自定义的键优先于上面的默认翻页键；字母、数字、空格、回车、Esc 要用来打字，不能设置。")
             }
         }
         .formStyle(.grouped)

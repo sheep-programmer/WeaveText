@@ -42,6 +42,146 @@ public enum KeyCode {
     public static let up: UInt16 = 126
 }
 
+/// 用户自定义的候选快捷键（一个键）。字符键按字符匹配（-、=、[、]、, 等，换键盘布局也一样），功能键按键码匹配。
+/// A user-chosen candidate shortcut (one key). Printable keys match by character, so they keep working across keyboard
+/// layouts; function keys match by key code.
+public struct KeyBinding: Codable, Equatable, Sendable {
+    public var keyCode: UInt16
+    /// 可打印字符；功能键为 nil。 The printable character; nil for function keys.
+    public var character: String?
+    /// 界面上显示的名字（← → ⇥ …）。 The name shown in the UI.
+    public var label: String
+
+    public init(keyCode: UInt16, character: String?, label: String) {
+        self.keyCode = keyCode
+        self.character = character
+        self.label = label
+    }
+
+    public func matches(_ key: KeyInput) -> Bool {
+        if let c = character { return key.characters == c }
+        return key.keyCode == keyCode
+    }
+
+    /// 从一次按键生成绑定；被输入占用的键（字母、数字、空格、回车、Esc、退格）返回 nil 及原因。
+    /// Make a binding from a key press; keys the input needs (letters, digits, space, return, Esc, delete) are refused.
+    public static func make(from key: KeyInput) -> (binding: KeyBinding?, refusal: String?) {
+        if key.command || key.control || key.option { return (nil, "不能带 ⌘ ⌃ ⌥") }
+        switch key.keyCode {
+        case KeyCode.returnKey, KeyCode.keypadEnter: return (nil, "回车已用于上屏字母")
+        case KeyCode.escape: return (nil, "Esc 已用于取消输入")
+        case KeyCode.delete, KeyCode.forwardDelete: return (nil, "退格已用于删除")
+        case KeyCode.space: return (nil, "空格已用于选词")
+        case KeyCode.home, KeyCode.end: return (nil, "这个键已被占用")
+        default: break
+        }
+        if let named = functionName(key.keyCode) {
+            return (KeyBinding(keyCode: key.keyCode, character: nil, label: named), nil)
+        }
+        guard let c = key.character, c.isASCII else { return (nil, "请按一个标点或方向键") }
+        if c.isLetter { return (nil, "字母要用来打字") }
+        if c.isNumber { return (nil, "数字要用来选词") }
+        return (KeyBinding(keyCode: key.keyCode, character: String(c), label: String(c)), nil)
+    }
+
+    static func functionName(_ code: UInt16) -> String? {
+        switch code {
+        case KeyCode.left: return "←"
+        case KeyCode.right: return "→"
+        case KeyCode.up: return "↑"
+        case KeyCode.down: return "↓"
+        case KeyCode.tab: return "⇥ Tab"
+        case KeyCode.pageUp: return "Page Up"
+        case KeyCode.pageDown: return "Page Down"
+        default: return nil
+        }
+    }
+}
+
+/// 可以自定义快捷键的候选操作。 The candidate actions that can have a custom key.
+public enum CandidateKeySlot: String, CaseIterable, Sendable {
+    case pagePrevious, pageNext, highlightPrevious, highlightNext, expand
+
+    public var title: String {
+        switch self {
+        case .pagePrevious: return "上一页"
+        case .pageNext: return "下一页"
+        case .highlightPrevious: return "高亮左移"
+        case .highlightNext: return "高亮右移"
+        case .expand: return "展开／收起全部候选"
+        }
+    }
+
+    /// 没自定义时用的键。 The keys used when nothing is set.
+    public var defaultKeys: String {
+        switch self {
+        case .pagePrevious: return "默认 -  ,  Page Up"
+        case .pageNext: return "默认 =  .  Page Down"
+        case .highlightPrevious: return "默认 ←  ↑"
+        case .highlightNext: return "默认 →  ↓  Tab"
+        case .expand: return "默认没有快捷键，可点候选窗右侧的下拉按钮"
+        }
+    }
+}
+
+/// 候选窗的自定义快捷键；没设的动作沿用默认键。 Custom candidate shortcuts; an unset action keeps its default keys.
+public struct CandidateKeys: Codable, Equatable, Sendable {
+    public var pagePrevious: KeyBinding?
+    public var pageNext: KeyBinding?
+    public var highlightPrevious: KeyBinding?
+    public var highlightNext: KeyBinding?
+    /// 展开／收起全部候选。 Expand or collapse the full candidate list.
+    public var expand: KeyBinding?
+
+    public init(pagePrevious: KeyBinding? = nil, pageNext: KeyBinding? = nil, highlightPrevious: KeyBinding? = nil,
+                highlightNext: KeyBinding? = nil, expand: KeyBinding? = nil) {
+        self.pagePrevious = pagePrevious
+        self.pageNext = pageNext
+        self.highlightPrevious = highlightPrevious
+        self.highlightNext = highlightNext
+        self.expand = expand
+    }
+
+    public var isDefault: Bool { self == CandidateKeys() }
+
+    public subscript(slot: CandidateKeySlot) -> KeyBinding? {
+        get {
+            switch slot {
+            case .pagePrevious: return pagePrevious
+            case .pageNext: return pageNext
+            case .highlightPrevious: return highlightPrevious
+            case .highlightNext: return highlightNext
+            case .expand: return expand
+            }
+        }
+        set {
+            switch slot {
+            case .pagePrevious: pagePrevious = newValue
+            case .pageNext: pageNext = newValue
+            case .highlightPrevious: highlightPrevious = newValue
+            case .highlightNext: highlightNext = newValue
+            case .expand: expand = newValue
+            }
+        }
+    }
+
+    /// 给某个操作设键；同一个键原先给了别的操作就从那里拿掉。 Assign a key; another action holding it loses it.
+    public mutating func assign(_ binding: KeyBinding, to slot: CandidateKeySlot) {
+        for other in CandidateKeySlot.allCases where other != slot && self[other] == binding { self[other] = nil }
+        self[slot] = binding
+    }
+
+    /// 这个键对应的动作；自定义的优先于默认键。 The action for a key; custom bindings beat the default keys.
+    func action(for key: KeyInput) -> KeyAction? {
+        if let b = pagePrevious, b.matches(key) { return .pagePrevious }
+        if let b = pageNext, b.matches(key) { return .pageNext }
+        if let b = highlightPrevious, b.matches(key) { return .highlightPrevious }
+        if let b = highlightNext, b.matches(key) { return .highlightNext }
+        if let b = expand, b.matches(key) { return .toggleExpand }
+        return nil
+    }
+}
+
 /// 按键时的输入法状态。 IME state when a key arrives.
 public struct KeyContext: Equatable, Sendable {
     public var composing: Bool
@@ -52,9 +192,12 @@ public struct KeyContext: Equatable, Sendable {
     /// 拼音 v 模式（v1234、v(1+2)*3）：数字与运算符进组合串，不选词。
     /// Pinyin v mode: digits and operators go into the composition instead of picking candidates.
     public var vMode: Bool
+    /// 自定义的候选快捷键。 Custom candidate shortcuts.
+    public var bindings = CandidateKeys()
 
     public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both,
-                vMode: Bool = false) {
+                vMode: Bool = false, bindings: CandidateKeys = CandidateKeys()) {
+        self.bindings = bindings
         self.composing = composing
         self.vMode = vMode
         self.chinese = chinese
@@ -89,6 +232,8 @@ public enum KeyAction: Equatable, Sendable {
     case pageNext
     case highlightPrevious
     case highlightNext
+    /// 展开／收起全部候选。 Expand or collapse the full candidate list.
+    case toggleExpand
 }
 
 /// 联想词显示时一次按键要做的事。 What a key does while predictions show.
@@ -141,6 +286,8 @@ public enum KeyMapper {
     public static func action(for key: KeyInput, in ctx: KeyContext) -> KeyAction {
         // 快捷键一律放行。 Shortcuts always go to the app.
         if key.command || key.control || key.option { return .pass }
+        // 用户自定义的候选键优先于默认键，只在组合中生效。 Custom candidate keys beat the defaults, while composing only.
+        if ctx.composing, let custom = ctx.bindings.action(for: key) { return custom }
         if !ctx.chinese { return englishAction(key, ctx) }
         if ctx.composing { return composingAction(key, ctx) }
         // 大写锁定：直通输入大写。 Caps Lock: pass through, the app types capitals.

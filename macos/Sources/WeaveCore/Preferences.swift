@@ -74,6 +74,10 @@ public final class Preferences: ObservableObject {
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
     /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
     @Published public var prediction: Bool { didSet { save(prediction, "prediction") } }
+    /// 自定义的候选快捷键（上一页、下一页、左右移动高亮、展开全部）。 Custom candidate shortcuts.
+    @Published public var candidateKeys: CandidateKeys {
+        didSet { save((try? JSONEncoder().encode(candidateKeys)) ?? Data(), "candidateKeys") }
+    }
     /// 候选后显示拼音（可带声调），默认关闭。 Pinyin after candidates (optionally with tones), off by default.
     @Published public var pinyinHint: PinyinHint { didSet { save(pinyinHint.rawValue, "pinyinHint") } }
     /// 手写停笔自动上屏的快慢。 How quickly a pause commits handwriting.
@@ -100,6 +104,7 @@ public final class Preferences: ObservableObject {
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
         prediction = defaults.object(forKey: "prediction") as? Bool ?? true
+        candidateKeys = defaults.data(forKey: "candidateKeys").flatMap { try? JSONDecoder().decode(CandidateKeys.self, from: $0) } ?? CandidateKeys()
         pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
         handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])

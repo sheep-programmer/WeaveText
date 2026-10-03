@@ -70,6 +70,23 @@ enum DevTools {
             candidates: [Candidate(text: "1234"), Candidate(text: "壹仟贰佰叁拾肆元整", comment: "大写金额"),
                          Candidate(text: "一千二百三十四", comment: "中文数字"), Candidate(text: "1,234", comment: "千分位")],
             highlight: 0, hasPrevious: false, hasNext: false, orientation: .horizontal, fontSize: 16)
+        // 展开后的全部候选。 The expanded list of all candidates.
+        let many = (0..<42).map { Candidate(text: ["你好", "你", "妮", "拟好", "泥", "尼", "逆", "腻", "匿", "溺", "昵", "拟"][$0 % 12], comment: $0 % 5 == 0 ? "nǐ" : "") }
+        var expandedState = horizontal
+        expandedState.expandable = true
+        expandedState.expanded = many
+        expandedState.expandedMore = true
+        var collapsedState = horizontal
+        collapsedState.expandable = true
+        for (name, state) in [("candidates-expandable", collapsedState), ("candidates-expanded", expandedState)] {
+            for dark in [false, true] {
+                let view = CandidateBar(state: state, pick: { _ in })
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: CandidatePanel.cornerRadius))
+                    .padding(12)
+                try render(view, size: nil, dark: dark, to: dir.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
         // 候选后的拼音提示（带声调）。 Pinyin hints after the candidates (with tones).
         var pinyin = horizontal
         for (i, hint) in ["nǐ hǎo", "nǐ", "nī", "nǐ hǎo", "ní", "ní", "nì"].enumerated() { pinyin.candidates[i].comment = hint }
