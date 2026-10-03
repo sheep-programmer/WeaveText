@@ -74,6 +74,21 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     private val handPad = HandPad()
     /** 手写停笔多久算写完一个字（毫秒，来自设置）。 Pause that ends a handwritten char, in ms (from settings). */
     var handPauseMs = HandPad.COMMIT_PAUSE_MS
+    /**
+     * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。连写模式下字间的停顿不该上屏，所以比 [handPauseMs] 长得多。
+     * Idle time after the pen lifts before the top candidate commits by itself (ms); 0 = never. Spaced multi-char
+     * writing needs a much longer wait, so a pause between characters doesn't commit the line early.
+     */
+    var handIdleMs = HandPad.COMMIT_PAUSE_MS
+    private val handIdle = Runnable { commitIdleInk() }
+
+    private fun commitIdleInk() {
+        val pad = hand ?: return
+        if (inkOwner != null || pad.drawing || pad.strokes.isEmpty()) return
+        host?.onHandCommit()
+        pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+        invalidate()
+    }
     /** 正在处理的触摸事件时刻（笔画按事件时间计时，不受主线程忙闲影响）。 Time of the event being handled. */
     private var evTime = 0L
     private var layoutKind = Layouts.QWERTY
@@ -194,6 +209,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (hand == null) return
         cancelTouch()
         hand = null
+        removeCallbacks(handIdle)
         handPad.reset()
         inkLayer?.invalidate()
     }
@@ -204,6 +220,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
      */
     fun clearInk() {
         val pad = hand ?: return
+        removeCallbacks(handIdle)
         pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
         invalidate()
     }
@@ -738,6 +755,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val pad = hand
         if (pad != null && inPad(pad, x, y, e.eventTime)) {
             settleOthers()
+            removeCallbacks(handIdle)
             p.id = e.getPointerId(index)
             p.key = null
             p.mode = M_INK
@@ -1048,7 +1066,11 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 inkOwner = null
                 val pad = hand
                 if (pad != null) {
-                    if (commit && pad.end(evTime) != null) host?.onHandStroke(pad.strokes) else pad.cancel()
+                    if (commit && pad.end(evTime) != null) {
+                        host?.onHandStroke(pad.strokes)
+                        removeCallbacks(handIdle)
+                        if (handIdleMs > 0) postDelayed(handIdle, handIdleMs)
+                    } else pad.cancel()
                 }
             }
             M_SIDE -> {

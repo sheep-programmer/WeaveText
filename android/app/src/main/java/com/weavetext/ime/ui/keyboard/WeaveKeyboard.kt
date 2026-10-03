@@ -291,7 +291,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         feedback.soundVolume = WeavePrefs.soundVolume(prefs)
         previewEnabled = WeavePrefs.keyPreview(prefs)
         keyboardView.splitWide = WeavePrefs.splitWide(prefs)
-        keyboardView.handPauseMs = if(prefs.getBoolean(WeavePrefs.HAND_LINE,false)) Long.MAX_VALUE else WeavePrefs.handPauseMs(prefs)
+        applyHandPause(prefs)
         applyTheme()
         applyEngineOptions()
         applySchemaPref()
@@ -447,7 +447,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
             WeavePrefs.HAND_PAUSE, WeavePrefs.HAND_LINE -> {
-                keyboardView.handPauseMs=if(p.getBoolean(WeavePrefs.HAND_LINE,false)) Long.MAX_VALUE else WeavePrefs.handPauseMs(p)
+                applyHandPause(p)
                 controller.reset();applyEngineOptions()
             }
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
@@ -837,6 +837,17 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
         if (count > 20) controller.deleteWordBefore() else controller.onBackspace()
         return true
+    }
+
+    /**
+     * 单字：停笔 [WeavePrefs.handPauseMs] 后上屏；连写：字间留空不上屏，整行写完停笔更久（至少 1.6 秒）才上屏。
+     * Single char: commit after the pause. Spaced line: commit only after a longer idle, so gaps between chars stay.
+     */
+    private fun applyHandPause(p: android.content.SharedPreferences) {
+        val pause = WeavePrefs.handPauseMs(p)
+        val line = p.getBoolean(WeavePrefs.HAND_LINE, false)
+        keyboardView.handPauseMs = if (line) Long.MAX_VALUE else pause
+        keyboardView.handIdleMs = if (line) maxOf(pause * 2, 1600L) else pause
     }
 
     private fun clearHand() {

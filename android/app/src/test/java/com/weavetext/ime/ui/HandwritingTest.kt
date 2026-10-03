@@ -204,6 +204,39 @@ class HandwritingTest {
         assertFalse(s2.contentEquals(last[0]))
     }
 
+    @Test fun idlePenCommitsWithoutAnotherStroke() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS - 200)
+        assertEquals("still inside the pause", "", ic.text)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        hold(HandPad.COMMIT_PAUSE_MS - 200)
+        assertEquals("the second stroke restarted the wait", "", ic.text)
+        hold(400)
+        assertEquals("2笔0", ic.text)
+        assertEquals("ink is cleared after the auto commit", 0, pad.strokes.size)
+    }
+
+    @Test fun ink_in_progress_is_not_committed_by_the_idle_timer() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS - 100)
+        stroke(0.5f, 0.1f, 0.5f, 0.5f, lift = false)
+        hold(HandPad.COMMIT_PAUSE_MS + 500)
+        assertEquals("", ic.text)
+        release(0)
+    }
+
+    @Test fun spacedLineWaitsLongerThanASingleCharPause() {
+        kv.handPauseMs = Long.MAX_VALUE
+        kv.handIdleMs = 1600L
+        stroke(0.1f, 0.5f, 0.4f, 0.5f)
+        hold(1000)
+        stroke(0.6f, 0.5f, 0.9f, 0.5f)
+        hold(1500)
+        assertEquals("a gap between characters must not commit the line", "", ic.text)
+        hold(200)
+        assertEquals("2笔0", ic.text)
+    }
+
     @Test fun commitKeysClearInk() {
         stroke(0.1f, 0.5f, 0.9f, 0.5f)
         tap(KeyCode.SPACE)

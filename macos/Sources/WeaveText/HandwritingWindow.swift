@@ -4,13 +4,14 @@ import WeaveCore
 
 final class HandwritingModel: ObservableObject {
     @Published var candidates:[Candidate]=[]
-    @Published var message="写一个字，点选候选上屏"
+    @Published var message="写一个字，停笔自动上屏"
     @Published var clearTick=0
     @Published var multi=false
     weak var owner:WeaveInputController?
     private var generation=0
+    private var idle:DispatchWorkItem?
     private let worker=DispatchQueue(label:"WeaveText.handwriting",qos:.userInitiated)
-    func beginStroke() {generation += 1;candidates=[];message="正在书写…"}
+    func beginStroke() {idle?.cancel();generation += 1;candidates=[];message="正在书写…"}
     func recognize(_ strokes:[[[Float]]]) {
         guard let engine=EngineHost.shared.engine,let owner,EngineHost.shared.activeController === owner else{return}
         generation += 1;let token=generation
@@ -21,9 +22,21 @@ final class HandwritingModel: ObservableObject {
                 guard let self,self.generation==token,self.owner === owner,EngineHost.shared.activeController === owner else{return}
                 let ok=result.bool("ok") && engine.features(["op":"handApply","strokes":strokes,"codes":result["codes"] ?? []]).bool("ok")
                 self.candidates=ok ? engine.candidates(offset:0,limit:12) : []
-                self.message=self.candidates.isEmpty ? "请继续书写，或清空重写" : "点选候选上屏"
+                self.message=self.candidates.isEmpty ? "请继续书写，或清空重写" : "停笔自动上屏，也可点选候选"
+                self.scheduleIdleCommit(token)
             }
         }
+    }
+    /// 停笔后自动上屏首选：单字约 0.9 秒；连写字间要留空，等 1.8 秒。 Commit the top candidate after the pen rests.
+    private func scheduleIdleCommit(_ token:Int) {
+        idle?.cancel()
+        guard !candidates.isEmpty else{return}
+        let work=DispatchWorkItem {[weak self] in
+            guard let self,self.generation==token,let first=self.candidates.first else{return}
+            self.choose(first,index:0)
+        }
+        idle=work
+        DispatchQueue.main.asyncAfter(deadline:.now()+(multi ? 1.8 : 0.9),execute:work)
     }
     func choose(_ candidate:Candidate,index:Int) {
         guard let owner,EngineHost.shared.activeController === owner,let engine=EngineHost.shared.engine,engine.candidates(offset:index,limit:1).first?.text==candidate.text else{return}
@@ -31,8 +44,8 @@ final class HandwritingModel: ObservableObject {
         clear()
     }
     func clear() {
-        generation += 1;clearTick += 1;candidates=[]
-        message=multi ? "从左到右写 2–4 个字，字间留空；点选候选上屏" : "写一个字，点选候选上屏"
+        idle?.cancel();generation += 1;clearTick += 1;candidates=[]
+        message=multi ? "从左到右写 2–4 个字，字间留空，写完停笔自动上屏" : "写一个字，停笔自动上屏"
         EngineHost.shared.engine?.clear()
     }
     func changeMode() {
