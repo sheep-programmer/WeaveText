@@ -92,9 +92,31 @@ struct SchemesPage: View {
             } footer: {
                 Footnote("上屏后推荐下一个词，越用越懂你的搭配。按数字选，空格、回车或 Esc 收起。")
             }
+            Section {
+                Picker("候选显示拼音", selection: $prefs.pinyinHint) {
+                    Text("关闭").tag(PinyinHint.off)
+                    Text("带声调（nǐ hǎo）").tag(PinyinHint.toned)
+                    Text("不带声调（ni hao）").tag(PinyinHint.plain)
+                }
+            } header: {
+                Text("拼音提示")
+            } footer: {
+                Footnote("在候选字后面用小字标出读音，方便认字和学拼音；读音按词库实际用的音节挑选，「银行」是 yín háng。")
+            }
             Section("输出") {
                 Toggle("繁体输出", isOn: $prefs.traditional)
                 Toggle("表情候选", isOn: $prefs.emoji)
+            }
+            Section {
+                Picker("停笔自动上屏", selection: $prefs.handPause) {
+                    Text("快").tag(HandPause.fast)
+                    Text("中").tag(HandPause.medium)
+                    Text("慢").tag(HandPause.slow)
+                }
+            } header: {
+                Text("手写")
+            } footer: {
+                Footnote("写完停笔多久，把第一个候选上屏；写得慢选「慢」。连写模式等待时间加倍。从系统输入法菜单打开「织文手写」。")
             }
         }
         .formStyle(.grouped)
@@ -148,7 +170,7 @@ struct AppearancePage: View {
 
     private var sample: CandidateState {
         let words = ["织文", "知闻", "之文", "只闻", "支文", "职位", "直闻", "至文", "止闻"]
-        return CandidateState(preedit: "zhi wen", candidates: words.prefix(prefs.pageSize).map { Candidate(text: $0) },
+        return CandidateState(preedit: "zhi'wen", candidates: words.prefix(prefs.pageSize).map { Candidate(text: $0) },
                               highlight: 0, hasPrevious: false, hasNext: true, orientation: prefs.orientation,
                               fontSize: CGFloat(prefs.fontSize))
     }

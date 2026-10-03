@@ -451,7 +451,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 controller.reset();applyEngineOptions()
             }
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
-            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.AUTOCORRECT, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
+            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.PINYIN_HINT, WeavePrefs.AUTOCORRECT, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
             WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
@@ -467,6 +467,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         // 繁体输出：内核暂未提供选项，调用无副作用。 Traditional output: no engine option yet (no-op).
         controller.setOption("output.traditional", WeavePrefs.traditional(prefs))
         controller.setOption("candidates.prediction", WeavePrefs.prediction(prefs))
+        val hint = WeavePrefs.pinyinHint(prefs)
+        controller.setOption("candidates.pinyin", hint != 0)
+        controller.setOption("candidates.pinyin_tones", hint != 2)
         controller.setOption("input.autocorrect", WeavePrefs.autocorrect(prefs))
         controller.feature(org.json.JSONObject().put("op","setHandLine").put("on",prefs.getBoolean(WeavePrefs.HAND_LINE,false)))
         controller.autoPair = WeavePrefs.autoPair(prefs)

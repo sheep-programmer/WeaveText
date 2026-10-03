@@ -39,6 +39,9 @@ import kotlin.math.roundToInt
 
 /** 手写停笔判字的三档名称，与 [WeavePrefs.HAND_PAUSE_MS] 对应。 Names of the three pause levels. */
 private val HAND_PAUSE_NAMES = listOf("快", "中", "慢")
+/** 候选拼音的三档，与 [WeavePrefs.PINYIN_HINT] 对应。 Names and samples of the three pinyin-hint levels. */
+private val PINYIN_HINT_NAMES = listOf("关闭", "带声调", "不带声调")
+private val PINYIN_HINT_SAMPLES = listOf("只显示汉字", "你好  nǐ hǎo", "你好  ni hao")
 
 private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "hand", "wubi86", "english")
 
@@ -49,6 +52,7 @@ fun SchemesScreen() {
     val nav = LocalNav.current
     val p by rememberLivePrefs(deps.prefs)
     var showScheme by remember { mutableStateOf(false) }
+    var showHint by remember { mutableStateOf(false) }
     var showHand by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
     // 已启用的在前（按用户顺序），其余在后。 Enabled first (user order), then the rest.
@@ -93,6 +97,10 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
             }
             RowDivider(false)
+            SettingRow("候选显示拼音", "在候选字后面用小字标出读音，方便认字和学拼音", onClick = { showHint = true }) {
+                ValueChevron(PINYIN_HINT_NAMES[WeavePrefs.pinyinHint(p)])
+            }
+            RowDivider(false)
             SwitchRow("成对符号", "输入“（《【时自动补上另一半", checked = WeavePrefs.autoPair(p)) {
                 p.edit().putBoolean(WeavePrefs.AUTO_PAIR, it).apply()
             }
@@ -117,6 +125,33 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.WUBI_PINYIN_MIX, it).apply()
             }
         }
+    }
+
+    if (showHint) {
+        AlertDialog(
+            onDismissRequest = { showHint = false },
+            title = { Text("候选显示拼音") },
+            text = {
+                Column {
+                    for (i in PINYIN_HINT_NAMES.indices) {
+                        val sel = i == WeavePrefs.pinyinHint(p)
+                        Row(
+                            Modifier.fillMaxWidth().height(56.dp).selectable(sel) {
+                                p.edit().putInt(WeavePrefs.PINYIN_HINT, i).apply(); showHint = false
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = sel, onClick = null)
+                            Column(Modifier.padding(start = 16.dp)) {
+                                Text(PINYIN_HINT_NAMES[i], style = MaterialTheme.typography.bodyLarge)
+                                Text(PINYIN_HINT_SAMPLES[i], style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showHint = false }) { Text("取消") } },
+        )
     }
 
     if (showHand) {

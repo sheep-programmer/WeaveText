@@ -127,15 +127,39 @@ class JniTest {
         }
     }
 
-    /** 联想：上屏「今天」后给出常接的词；选一个接着联想；空格等收起。 Predictions after a commit. */
+    /** 手写：后台识别的结果带分数，按传输格式经 IntArray 原样交回；上文能把「气」排到「汽」前（需要手写数据）。 */
+    @Test
+    fun handwritingRecognitionTravelsAsScoredWire() {
+        engine().use { e ->
+            assertTrue("handwriting data ships with the build", e.setSchema("hand"))
+            // 「十」：一横一竖，书写区坐标（y 向下）。 十: one horizontal and one vertical stroke.
+            val strokes = listOf(floatArrayOf(10f, 50f, 90f, 50f), floatArrayOf(50f, 10f, 50f, 90f))
+            val wire = checkNotNull(e.handRecognize(strokes)) { "handwriting models" }
+            assertEquals("new wire format marker", 0x57485631, wire[0])
+            assertEquals("single group", 1, wire[1])
+            assertTrue(e.handApply(strokes, wire))
+            val words = e.snapshot().candidates.map { it.text }
+            assertTrue(words.toString(), "十" in words)
+            // 旧格式（只有码位）仍可交回。 The old code-point-only array is still accepted.
+            e.clear()
+            assertTrue(e.handApply(strokes, intArrayOf('十'.code, '土'.code)))
+            assertEquals("十", e.snapshot().candidates.first().text)
+        }
+    }
+
+    /** 联想：写了一串字（「我们今天」）后给出常接的词；只有一个词时不联想；选一个接着联想。 Predictions after a run of text. */
     @Test
     fun predictionsAfterCommit() {
         engine().use { e ->
             assertTrue(e.setSchema("pinyin"))
             e.type("jintian")
             e.select(e.snapshot().candidates.indexOfFirst { it.text == "今天" })
+            assertTrue("a bare word is too little context", e.snapshot().candidates.isEmpty())
+            e.clear()
+            e.type("womenjintian")
+            e.select(e.snapshot().candidates.indexOfFirst { it.text == "我们今天" })
             val s = e.snapshot()
-            assertEquals("今天", s.commit)
+            assertEquals("我们今天", s.commit)
             assertTrue(!s.composing)
             val words = s.candidates.map { it.text }
             assertTrue(words.toString(), words.any { it in setOf("晚上", "早上", "下午") })

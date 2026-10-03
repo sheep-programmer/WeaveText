@@ -34,6 +34,23 @@ public enum CandidateOrientation: String, CaseIterable, Sendable {
     case horizontal, vertical
 }
 
+/// 候选后面的拼音提示。 Pinyin shown after each candidate.
+public enum PinyinHint: String, CaseIterable, Sendable {
+    case off, toned, plain
+}
+
+/// 手写停笔多久自动上屏（单字；连写按 2 倍）。 How long a pause commits handwriting (spaced lines wait twice as long).
+public enum HandPause: String, CaseIterable, Sendable {
+    case fast, medium, slow
+    public var seconds: Double {
+        switch self {
+        case .fast: return 0.6
+        case .medium: return 0.9
+        case .slow: return 1.4
+        }
+    }
+}
+
 public enum AppearanceMode: String, CaseIterable, Sendable {
     case system, light, dark
 }
@@ -57,6 +74,10 @@ public final class Preferences: ObservableObject {
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
     /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
     @Published public var prediction: Bool { didSet { save(prediction, "prediction") } }
+    /// 候选后显示拼音（可带声调），默认关闭。 Pinyin after candidates (optionally with tones), off by default.
+    @Published public var pinyinHint: PinyinHint { didSet { save(pinyinHint.rawValue, "pinyinHint") } }
+    /// 手写停笔自动上屏的快慢。 How quickly a pause commits handwriting.
+    @Published public var handPause: HandPause { didSet { save(handPause.rawValue, "handPause") } }
     @Published public var fuzzy: Set<String> { didSet { save(fuzzy.sorted(), "fuzzy") } }
     @Published public var orientation: CandidateOrientation { didSet { save(orientation.rawValue, "orientation") } }
     @Published public var fontSize: Int { didSet { save(fontSize, "fontSize") } }
@@ -79,6 +100,8 @@ public final class Preferences: ObservableObject {
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
         prediction = defaults.object(forKey: "prediction") as? Bool ?? true
+        pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
+        handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])
         orientation = defaults.string(forKey: "orientation").flatMap(CandidateOrientation.init) ?? .horizontal
         fontSize = Self.clamp(defaults.object(forKey: "fontSize") as? Int ?? 16, Self.fontSizes)
@@ -100,7 +123,8 @@ public final class Preferences: ObservableObject {
     public var engineOptions: [(String, Bool)] {
         FuzzyPair.all.map { ($0.id, fuzzy.contains($0.id)) }
             + [("output.traditional", traditional), ("candidates.emoji", emoji),
-               ("candidates.prediction", prediction)]
+               ("candidates.prediction", prediction),
+               ("candidates.pinyin", pinyinHint != .off), ("candidates.pinyin_tones", pinyinHint != .plain)]
     }
 
     private func save(_ value: Any, _ key: String) {

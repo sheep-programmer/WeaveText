@@ -44,11 +44,12 @@ enum DevTools {
         let calc = e.snapshot().candidates.first?.text ?? "-"
         print("selftest: v(128+32)*4 → \(calc)")
         e.clear()
-        // 联想表随包：上屏「今天」后应有联想。 The prediction table ships: committing 今天 must predict.
-        "jintian".forEach { _ = e.input($0) }
-        if let i = e.snapshot().candidates.firstIndex(where: { $0.text == "今天" }) { e.select(i) }
+        // 联想表随包：写了一串字（「我们今天」）后应有联想；只有一个词时不联想。
+        // The prediction table ships: after a run of text (我们今天) there must be predictions; one bare word gives none.
+        "womenjintian".forEach { _ = e.input($0) }
+        if let i = e.snapshot().candidates.firstIndex(where: { $0.text == "我们今天" }) { e.select(i) }
         let next = e.snapshot()
-        print("selftest: 今天 → \(next.candidates.prefix(5).map(\.text).joined(separator: " "))")
+        print("selftest: 我们今天 → \(next.candidates.prefix(5).map(\.text).joined(separator: " "))")
         return ok && first == "你好" && calc == "640" && next.predicting && !next.candidates.isEmpty
     }
 
@@ -57,20 +58,23 @@ enum DevTools {
         _ = NSApplication.shared
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let words = ["你好", "你", "妮", "拟好", "泥", "尼", "逆"]
-        let horizontal = CandidateState(preedit: "ni hao", candidates: words.map { Candidate(text: $0) }, highlight: 0,
+        let horizontal = CandidateState(preedit: "ni'hao", candidates: words.map { Candidate(text: $0) }, highlight: 0,
                                         hasPrevious: false, hasNext: true, orientation: .horizontal, fontSize: 16)
         var vertical = horizontal
         vertical.orientation = .vertical
         vertical.highlight = 1
         vertical.hasPrevious = true
-        vertical.candidates[3].comment = "ni hao"
+        vertical.candidates[3].comment = "nǐ hǎo"
         let money = CandidateState(
             preedit: "v1234",
             candidates: [Candidate(text: "1234"), Candidate(text: "壹仟贰佰叁拾肆元整", comment: "大写金额"),
                          Candidate(text: "一千二百三十四", comment: "中文数字"), Candidate(text: "1,234", comment: "千分位")],
             highlight: 0, hasPrevious: false, hasNext: false, orientation: .horizontal, fontSize: 16)
+        // 候选后的拼音提示（带声调）。 Pinyin hints after the candidates (with tones).
+        var pinyin = horizontal
+        for (i, hint) in ["nǐ hǎo", "nǐ", "nī", "nǐ hǎo", "ní", "ní", "nì"].enumerated() { pinyin.candidates[i].comment = hint }
         for (name, state) in [("candidates-horizontal", horizontal), ("candidates-vertical", vertical),
-                              ("candidates-comments", money)] {
+                              ("candidates-comments", money), ("candidates-pinyin", pinyin)] {
             for dark in [false, true] {
                 let view = CandidateBar(state: state, pick: { _ in })
                     .background(Color(nsColor: .windowBackgroundColor))
@@ -83,7 +87,7 @@ enum DevTools {
         for dark in [false,true] {
             try render(HandwritingView(model:hand),size:NSSize(width:520,height:360),dark:dark,to:dir.appendingPathComponent("handwriting-\(dark ? "dark" : "light").png"))
         }
-        let cloudCandidates=CandidateState(preedit:"shi jian fu za du",candidates:[Candidate(text:"时间复杂度",cloud:true),Candidate(text:"时间"),Candidate(text:"实践")],highlight:0,hasPrevious:false,hasNext:false,orientation:.horizontal,fontSize:16)
+        let cloudCandidates=CandidateState(preedit:"shi'jian'fu'za'du",candidates:[Candidate(text:"时间复杂度",cloud:true),Candidate(text:"时间"),Candidate(text:"实践")],highlight:0,hasPrevious:false,hasNext:false,orientation:.horizontal,fontSize:16)
         for dark in [false,true] {
             let view=CandidateBar(state:cloudCandidates,pick:{_ in}).background(Color(nsColor:.windowBackgroundColor)).padding(12)
             try render(view,size:nil,dark:dark,to:dir.appendingPathComponent("cloud-candidates-\(dark ? "dark" : "light").png"))

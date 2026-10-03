@@ -131,6 +131,29 @@ private let dataDir = URL(fileURLWithPath: #filePath)
     }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
+    func pinyinHintsFollowThePreferenceAndTheLexiconSyllables() throws {
+        let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-hint-\(getpid())")
+        try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("pinyin")
+        for c in "yinhang" { #expect(e.input(c)) }
+        #expect(e.snapshot().candidates.allSatisfy { $0.comment.isEmpty })
+        e.clear()
+        let prefs = Preferences(defaults: UserDefaults(suiteName: "weave-hint-\(getpid())")!)
+        prefs.pinyinHint = .toned
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        for c in "yinhang" { #expect(e.input(c)) }
+        let first = try #require(e.snapshot().candidates.first)
+        #expect(first.text == "银行" && first.comment == "yín háng")
+        e.clear()
+        prefs.pinyinHint = .plain
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        for c in "nihao" { #expect(e.input(c)) }
+        #expect(e.snapshot().candidates.first?.comment == "ni hao")
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
     func predictsAfterACommitAndUndoesOnBackspace() throws {
         let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-p-\(getpid())")
         try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)

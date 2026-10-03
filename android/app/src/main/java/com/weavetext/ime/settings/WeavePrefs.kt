@@ -54,6 +54,8 @@ object WeavePrefs {
     const val AUTO_PAIR = "auto_pair"
     /** 上屏后推荐下一个词（默认开）。 Suggest the next word after a commit (on by default). */
     const val PREDICTION = "prediction"
+    /** 候选后面显示拼音：0 关、1 带声调、2 不带声调。 Pinyin after each candidate: 0 off, 1 with tones, 2 without. */
+    const val PINYIN_HINT = "pinyin_hint"
     /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
     const val AUTOCORRECT = "autocorrect"
     /** 手写停笔判字时间档位 0–2（[HAND_PAUSE_MS]）。 How long a pause ends a handwritten character (0–2). */
@@ -195,6 +197,7 @@ object WeavePrefs {
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
     fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
+    fun pinyinHint(p: SharedPreferences) = p.getInt(PINYIN_HINT, 0).coerceIn(0, 2)
     fun autocorrect(p: SharedPreferences) = p.getBoolean(AUTOCORRECT, true)
     fun handPause(p: SharedPreferences) = p.getInt(HAND_PAUSE, HAND_PAUSE_DEFAULT).coerceIn(0, HAND_PAUSE_MS.size - 1)
     fun handPauseMs(p: SharedPreferences) = HAND_PAUSE_MS[handPause(p)]

@@ -19,6 +19,7 @@ pub mod shuangpin;
 pub mod special;
 pub mod t9;
 pub mod table;
+pub mod tones;
 pub mod userdict;
 
 pub use session::{CandidateView, Engine, MarkKind, Options, Paths, PreeditMark, Schema, Snapshot, UserWord};

@@ -52,7 +52,7 @@ check "密码框直接上屏"    "abc"                                 "abc" 129
 echo "== 语音与删除 / voice and deletion"
 check "语音终稿结束拼音"  "ni{voice-final:明天见}{bs}"          "你明天"
 check "语音终稿连续退格"  "ni{voice-final:明天见}{bs}{bs}{bs}{bs}" ""
-check "语音清掉旧联想"    "jintian{sel:0}{voice-final:明天见}{sel:0}" "今天明天见"
+check "语音清掉旧联想"    "womenjintian{sel:0}{voice-final:明天见}{sel:0}" "我们今天明天见"
 check "中间结果替换"      "{voice-partial:明天}{voice-partial:明天见}{voice-final:明天见。}{bs}" "明天见"
 check "语音多句连续退格"  "{voice-partial:明天}{voice-final:明天见}{voice-partial:再}{voice-final:再见}{voice-final:}{bs}{bs}{bs}{bs}{bs}" ""
 check "语音取消后退格"    "ni{sel:0}{voice-partial:临时文字}{voice-cancel}{bs}" ""

@@ -48,19 +48,23 @@ struct DictionaryPage: View {
                     NavigationLink {
                         DictPacksPage(store: packs)
                     } label: {
-                        LabeledContent {
-                            Text(packs.installed.isEmpty ? "" : "\(packs.installed.count) 个")
-                        } label: {
+                        HStack(alignment: .center) {
                             TitleAndNote("专业词库", packs.installed.isEmpty
                                 ? "医学、法律、IT、地名等，按需下载"
                                 : packs.installed.map(\.name).joined(separator: "、"))
+                            Spacer(minLength: 12)
+                            if !packs.installed.isEmpty { Text("\(packs.installed.count) 个").foregroundStyle(.secondary) }
                         }
+                        .padding(.vertical, 2)
                     }
                 }
                 CloudWordsSection(cloud: cloud)
-                Section("手写学习") {
-                    Button("清空个人手写字形…",role:.destructive) {model.confirmHandClear=true}
-                    Text("清空后恢复内置识别，也取消手写候选的固定与降权。")
+                Section {
+                    Button("清空个人手写字形…", role: .destructive) { model.confirmHandClear = true }
+                } header: {
+                    Text("手写学习")
+                } footer: {
+                    Footnote("清空后恢复内置识别，也取消手写候选的固定与降权。")
                 }
                 Section {
                     HStack {
@@ -110,6 +114,7 @@ struct TitleAndNote: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .padding(.vertical, 3)
     }
 }
 

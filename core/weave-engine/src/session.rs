@@ -92,6 +92,9 @@ pub struct Options {
     pub utc_offset_min: i32,
     /// 上屏后给出联想词。 Offer next-word predictions after a commit.
     pub prediction: bool,
+    /// 候选后面显示拼音（小字），以及是否带声调。 Show pinyin after each candidate, and whether with tone marks.
+    pub pinyin_hint: bool,
+    pub pinyin_tones: bool,
     /// 手写候选按上文重排的权重（0 关闭），与连写时词库里确有的词的奖励。
     /// Weight of the context re-ranking of handwriting candidates (0 = off), and the bonus for lexicon words in a line.
     pub hand_lm_weight: f32,
@@ -114,6 +117,8 @@ impl Default for Options {
             lm_baseline: 12.0,
             utc_offset_min: 480,
             prediction: true,
+            pinyin_hint: false,
+            pinyin_tones: true,
             hand_lm_weight: 0.25,
             hand_word_bonus: 2.0,
             autocorrect: true,
@@ -146,6 +151,8 @@ impl Options {
             "candidates.emoji" => &mut self.emoji,
             "candidates.prediction" => &mut self.prediction,
             "input.autocorrect" => &mut self.autocorrect,
+            "candidates.pinyin" => &mut self.pinyin_hint,
+            "candidates.pinyin_tones" => &mut self.pinyin_tones,
             _ => return false,
         };
         *slot = on;
@@ -619,8 +626,30 @@ impl Engine {
             .unwrap_or_else(|| s.to_owned())
     }
 
+    /// 给没有注释的汉字候选配上拼音（词库给这个候选用的音节决定读音）；要在繁体转换之前做。
+    /// Give Han candidates without a comment their pinyin (the lexicon's syllables decide the reading); before traditional conversion.
+    fn add_pinyin_hints(&mut self) {
+        if !self.options.pinyin_hint || self.schema == Schema::English {
+            return;
+        }
+        let tones = self.options.pinyin_tones;
+        for cand in &mut self.cands {
+            if !cand.view.comment.is_empty() {
+                continue;
+            }
+            let hint = match &cand.action {
+                Action::Pinyin(p) => crate::tones::pinyin(&p.text, Some(&p.key), tones),
+                Action::Table { text } => crate::tones::pinyin(text, None, tones),
+            };
+            if let Some(h) = hint {
+                cand.view.comment = h;
+            }
+        }
+    }
+
     /// 刷新后处理：插入表情、繁体显示。 Post-process candidates: emoji, traditional display.
     fn decorate(&mut self) {
+        self.add_pinyin_hints();
         if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 {
             let mut i = 0;
             let mut inserted = 0;
