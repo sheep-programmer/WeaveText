@@ -32,6 +32,12 @@ const SECONDS: usize = 12;
 const MAX_SINGLES: usize = 3;
 /// 各来源的档位间隔（档内再按分数排）。 Gap between source tiers; within a tier, by score.
 const TIER: i64 = 1_000_000;
+/// 联想的把握档：`cost` 低于 [STRONG] 的来自你自己的搭配或词库长词的接续，低于 [WEAK] 的是搭配模型的猜测，
+/// 其余（只凭最后一个字）太弱，不值得打扰。
+/// Confidence bands: below [STRONG] comes from the user's own pairs or the lexicon's phrases, below [WEAK] from the
+/// collocation model; the rest (one char of context) is too weak to be worth showing.
+pub const STRONG: i64 = TIER * 3 / 2;
+pub const WEAK: i64 = TIER * 5 / 2;
 /// 接续表每多匹配一个上文字的奖励。 Bonus per context char matched in the follow table.
 const FOLLOW_CONTEXT_BONUS: i64 = 800;
 const LEX_WEIGHT: f32 = 1.0;

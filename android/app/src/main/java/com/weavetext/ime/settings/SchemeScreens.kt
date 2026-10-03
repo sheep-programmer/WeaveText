@@ -89,7 +89,7 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.AUTOCORRECT, it).apply()
             }
             RowDivider(false)
-            SwitchRow("联想词", "上屏后推荐下一个词，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
+            SwitchRow("联想词", "写到一定长度才推荐下一个词，句子像说完了就不再出；最多连着联想 3 次，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
                 p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
             }
             RowDivider(false)

@@ -422,6 +422,8 @@ pub struct Engine {
     recent: String,
     /// 候选栏里是联想词（没有组合中的输入）。 The candidates are predictions (nothing is composing).
     predicting: bool,
+    /// 连着选了几次联想词（打字、换输入框后归零）。 Predictions picked in a row; typing or a new editor resets it.
+    predict_depth: u8,
     /// 刚才那次上屏学到的内容（上屏后马上退格就撤销）。 What the last commit learned, undone by an immediate backspace.
     last_learned: Option<Learned>,
     /// 上一次上屏的词（连着两次上屏可能是一个新词）。 The previous commit; two quick commits may form a new word.
@@ -515,6 +517,7 @@ impl Engine {
             readings: None,
             recent: String::new(),
             predicting: false,
+            predict_depth: 0,
             last_learned: None,
             prev_commit: None,
             provisional: HashMap::new(),
@@ -758,6 +761,7 @@ impl Engine {
     pub fn reset_context(&mut self) {
         self.last_word = None;
         self.recent.clear();
+        self.predict_depth = 0;
         self.drop_predictions();
         self.break_chain();
     }
@@ -873,6 +877,7 @@ impl Engine {
     /// Feed a character; false means "not mine", the UI should insert it directly.
     pub fn input_char(&mut self, c: char) -> bool {
         self.drop_predictions();
+        self.predict_depth = 0;
         self.last_learned = None;
         match self.schema {
             Schema::Pinyin => {
@@ -1030,6 +1035,7 @@ impl Engine {
             let out = self.out(&text);
             self.commit.push_str(&out);
             self.last_word = Some(text.clone());
+            self.predict_depth = self.predict_depth.saturating_add(1);
             self.predict_next(&text);
             return true;
         }
@@ -1056,6 +1062,7 @@ impl Engine {
                 if self.schema == Schema::Hand {
                     self.last_word = Some(text.clone());
                 }
+                self.predict_depth = 0;
                 self.predict_next(&all);
             }
             Action::Pinyin(cand) => {
@@ -1208,6 +1215,7 @@ impl Engine {
             crate::predict::PREDICTIONS,
         );
         self.cands_more = false;
+        let list = self.worth_showing(list);
         if list.is_empty() {
             return;
         }
@@ -1219,6 +1227,34 @@ impl Engine {
             })
             .collect();
         self.predicting = true;
+    }
+
+    /// 联想要「看情况」：上文太短、像是一句话说完了、或只剩很弱的猜测时不出；连着选联想词最多接 [MAX_PREDICT_DEPTH] 次，
+    /// 越往后要求越高。
+    /// Predictions are shown only when worth it: not after a short context, not when the sentence seems finished, not
+    /// when only weak guesses remain; picking predictions chains at most [MAX_PREDICT_DEPTH] times, with the bar rising.
+    fn worth_showing(&self, list: Vec<crate::predict::Prediction>) -> Vec<crate::predict::Prediction> {
+        use crate::predict::{STRONG, WEAK};
+        let mut list: Vec<_> = list.into_iter().filter(|p| p.user || p.cost < WEAK).collect();
+        let Some(top) = list.first() else { return list };
+        let strong = top.user || top.cost < STRONG;
+        // 句末语气词收尾：多半说完了，除非你自己常在它后面接东西。 A closing particle usually ends the sentence.
+        let closes = self.recent.chars().last().is_some_and(|c| SENTENCE_FINAL.contains(c))
+            || CLOSING_PHRASES.iter().any(|w| self.recent.ends_with(w));
+        let long_enough = self.recent.chars().count() >= MIN_PREDICT_CONTEXT;
+        let ok = match self.predict_depth {
+            // 第一次：上文够长，或是你自己常接的搭配。 First: enough context, or a pair you write yourself.
+            0 => top.user || (long_enough && !closes),
+            // 第二次：词库长词有接续，或已经写了一长串。 Second: a lexicon phrase continues, or a long run is written.
+            1 => strong || (self.recent.chars().count() >= LONG_RUN && !closes),
+            // 第三次：必须有词库长词或你自己的搭配支撑。 Third: needs a lexicon phrase or the user's own pair.
+            d if d < MAX_PREDICT_DEPTH => strong,
+            _ => false,
+        } && !(closes && !top.user);
+        if !ok {
+            list.clear();
+        }
+        list
     }
 
     pub fn clear(&mut self) {
@@ -1477,6 +1513,7 @@ impl Engine {
         let out = self.out(&text);
         self.commit.push_str(&out);
         self.clear();
+        self.predict_depth = 0;
         self.predict_next(&text);
     }
 
@@ -2152,6 +2189,20 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// 联想前至少要有几个字的上文（用户自己的常用搭配、词库里确有的长词接续不受此限）。
+/// Context chars needed before predicting (the user's own pairs and lexicon phrases are exempt).
+const MIN_PREDICT_CONTEXT: usize = 4;
+/// 已经写了这么长一串时，联想第二次不要求词库长词支撑。 A run this long may be predicted a second time on the model alone.
+const LONG_RUN: usize = 6;
+/// 连着选联想词最多接几次。 How many predictions may be chained.
+const MAX_PREDICT_DEPTH: u8 = 3;
+/// 句末语气词。 Sentence-final particles.
+/// 本身就是一整句话的收尾词。 Phrases that are a whole sentence by themselves.
+const CLOSING_PHRASES: &[&str] = &[
+    "谢谢", "再见", "拜拜", "晚安", "你好", "好的", "是的", "对的", "没事", "没关系", "不客气", "对不起", "不用", "加油", "谢了", "辛苦",
+];
+const SENTENCE_FINAL: &str = "了吗吧呢啊呀嘛啦哦哇呗哈喽";
+
 fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3134F)
 }
@@ -2325,6 +2376,12 @@ mod wubi_tests {
         f.push_phrase("时间到了", 5000, 1, 4);
         f.push_phrase("时间不够", 6000, 1, 4);
         e.follow = Some(weave_dict::follow::Follow::from_bytes(f.build(8)).unwrap());
+        // 上文太短时不联想；已经写了一串字才联想。 No prediction after a short context; a longer run predicts.
+        typing(&mut e, "shijian");
+        e.select(0);
+        assert!(!e.is_predicting(), "a bare two-char word is too little context");
+        e.clear();
+        e.set_context(Some("我们没有".to_string()));
         typing(&mut e, "shijian");
         e.select(0);
         let s = e.snapshot();

@@ -138,11 +138,17 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
         e.setSchema("pinyin")
         #expect(e.setOption("candidates.prediction", true))
+        // 只有一个词的上文太短，不联想；写了一串字才联想。 One bare word is too little context; a longer run predicts.
         for c in "jintian" { #expect(e.input(c)) }
-        let i = try #require(e.snapshot().candidates.firstIndex { $0.text == "今天" })
+        let short = try #require(e.snapshot().candidates.firstIndex { $0.text == "今天" })
+        #expect(e.select(short))
+        #expect(!e.snapshot().predicting)
+        e.clear()
+        for c in "womenjintian" { #expect(e.input(c)) }
+        let i = try #require(e.snapshot().candidates.firstIndex { $0.text == "我们今天" })
         #expect(e.select(i))
         let s = e.snapshot()
-        #expect(s.commit == "今天")
+        #expect(s.commit == "我们今天")
         #expect(!s.composing && s.predicting)
         #expect(s.candidates.contains { ["晚上", "早上", "下午"].contains($0.text) })
         // 选联想词：上屏并接着联想。 Picking a prediction commits it and predicts again.
