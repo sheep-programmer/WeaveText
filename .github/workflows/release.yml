@@ -1,6 +1,5 @@
-# 推送 v* 标签时构建并发布：轻量版与离线语音版，正式签名，附 SHA-256 校验和。
-# 标签含「-」（如 v0.2.0-beta.1）时标为预发布；发布说明取自 docs/releases/<标签>.md。
-# On a v* tag: build the lite and offline-voice APKs, sign them with the release key, attach SHA-256 sums.
+# 推送 v* 标签时构建并发布统一的离线语音版；识别模型首次使用时下载。
+# On a v* tag: build one offline-runtime APK; recognition models download on first use.
 # Tags containing "-" are marked as pre-releases; notes come from docs/releases/<tag>.md.
 name: Release
 
@@ -65,28 +64,20 @@ jobs:
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=weavetext\nkeyPassword=%s\n' \
             "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > android/keystore.properties
 
-      - name: Build lite
-        working-directory: android
-        run: |
-          ./gradlew --no-daemon :app:assembleRelease -Pweave.lite=true
-          mkdir -p ../dist
-          cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64-lite.apk"
-
-      - name: Build offline voice
+      - name: Build unified offline runtime
         working-directory: android
         run: |
           ./gradlew --no-daemon :app:assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64-voice.apk"
-          python3 ../tools/check-release-jni.py "../dist/WeaveText-$VERSION-arm64-voice.apk" "../.ref/cache/sherpa-onnx-1.13.8.aar"
+          mkdir -p ../dist
+          cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64.apk"
+          python3 ../tools/check-release-jni.py "../dist/WeaveText-$VERSION-arm64.apk" "../.ref/cache/sherpa-onnx-1.13.8.aar"
 
       - name: Verify
         run: |
-          # 语音版带运行库；两版的识别模型均按需下载。 Both builds require model downloads.
-          lite="dist/WeaveText-$VERSION-arm64-lite.apk"; voice="dist/WeaveText-$VERSION-arm64-voice.apk"
-          for f in "$lite" "$voice"; do unzip -l "$f" | grep -q 'assets/dict/pinyin.wvz' || { echo "$f: no dictionary"; exit 1; }; done
-          ! unzip -l "$voice" | grep -qE '\.onnx$' || { echo "voice: models must be downloaded"; exit 1; }
-          unzip -l "$voice" | grep -q 'libonnxruntime.so' || { echo "voice: missing runtime"; exit 1; }
-          ! unzip -l "$lite" | grep -qE 'libonnxruntime.so|\.onnx$' || { echo "lite: contains speech runtime"; exit 1; }
+          apk="dist/WeaveText-$VERSION-arm64.apk"
+          unzip -l "$apk" | grep -q 'assets/dict/pinyin.wvz' || { echo "no dictionary"; exit 1; }
+          ! unzip -l "$apk" | grep -qE '\.onnx$' || { echo "models must be downloaded"; exit 1; }
+          unzip -l "$apk" | grep -q 'libonnxruntime.so' || { echo "missing runtime"; exit 1; }
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
           for f in dist/*.apk; do "$apksigner" verify --print-certs "$f" | grep 'SHA-256'; done
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
@@ -103,7 +94,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/weave-release-draft" 2>/dev/null; then
             test "$(cat "$RUNNER_TEMP/weave-release-draft")" = false || { echo "existing release is a draft"; exit 1; }
             gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/weave-release-assets"
-            for name in "WeaveText-$VERSION-arm64-lite.apk" "WeaveText-$VERSION-arm64-voice.apk" SHA256SUMS.txt; do
+            for name in "WeaveText-$VERSION-arm64.apk" SHA256SUMS.txt; do
               grep -Fxq "$name" "$RUNNER_TEMP/weave-release-assets" || { echo "existing release is incomplete: $name"; exit 1; }
             done
             echo "Complete public Android release already present"

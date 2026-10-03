@@ -87,7 +87,7 @@ object VoiceUpgrade {
                 set(State.Downloading(p.downloaded, p.total, p.bytesPerSecond, p.mirror))
             }
             set(State.Verifying)
-            if (!sameSigner(ctx, dest)) {
+            if (!verifySigner(ctx, dest)) {
                 dest.delete()
                 throw IOException("下载的安装包签名不一致，已丢弃")
             }
@@ -165,7 +165,7 @@ object VoiceUpgrade {
 
     /** 安装包与当前应用同包名、同签名。 Same package name and signer as the installed app. */
     @Suppress("DEPRECATION")
-    private fun sameSigner(ctx: Context, apk: File): Boolean {
+    fun verifySigner(ctx: Context, apk: File): Boolean {
         val pm = ctx.packageManager
         return runCatching {
             if (Build.VERSION.SDK_INT >= 28) {

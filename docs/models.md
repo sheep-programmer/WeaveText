@@ -85,7 +85,7 @@ Lite 界面测试需要在独立 AVD 里准备已安装的语音包。可用
 随后运行 `VoiceSmoke` 的 `stage-lite-pack` 用例（`-e pack assets`），它会先按照公开 APK 的模型目录
 核对大小和 SHA-256，再复制到该测试实例的私有模型目录。测试代码与这些文件均不会进入产品 APK。
 
-轻量版不带 Sherpa 运行库与识别模型；从语音包页面下载后使用 Rust 动态加载 C API，识别参数与离线语音版一致。两版均只使用设备上的离线模型。两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1）。
+统一 Android 包内置 Sherpa 运行库，不内置识别模型；第一次使用语音时从语音包目录自动下载模型，识别参数与桌面语音版一致。只使用设备上的离线模型。两个版本的词库都直接从 APK 读取、不再解压（见 `docs/ARCHITECTURE.md` §2.1）。
 
 正式版只含 arm64-v8a；调试版额外含 x86_64 以便模拟器。`-Pweave.abis=arm64-v8a,x86_64` 可覆盖。
 *Release builds are arm64-v8a only; debug adds x86_64 for emulators; override with `-Pweave.abis`.*

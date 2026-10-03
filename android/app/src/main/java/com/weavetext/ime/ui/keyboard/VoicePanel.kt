@@ -88,6 +88,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             view.invalidate()
             if (session.active && session.state != VoiceSession.State.LISTENING) view.postInvalidateDelayed(40)
         }
+        com.weavetext.ime.voice.VoiceAutoDownload.addListener { view.postInvalidate() }
         // 没有引擎：打开面板显示安装引导，而不是报错。 No engine: show the guidance in the panel, not an error.
         session.onNoEngine = { if (kb.panel !== this) kb.showPanel("voice") else { view.refreshEngine(); view.invalidate() } }
     }
@@ -108,12 +109,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
     /** 顶栏 🎙 点击进入：点按模式下直接开始。 Opened from the toolbar: tap mode starts right away. */
     fun startFromToolbar() {
-        if (!holdMode && engineAvailable() && session.hasPermission()) session.start()
+        if (!holdMode && session.hasPermission()) session.start()
     }
 
     fun stopSession() = session.detach()
-
-    private fun engineAvailable() = runCatching { VoiceAccess.engines(kb.ctx).list().isNotEmpty() }.getOrDefault(false)
 
     @SuppressLint("ViewConstructor")
     inner class VoiceView(c: Context) : View(c) {
@@ -310,7 +309,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             transcriptArea(area)
             if (engines == 0) {
-                drawNoEngine(c, "先下载离线语音包，再开始说话")
+                val auto = com.weavetext.ime.voice.VoiceAutoDownload.state
+                drawNoEngine(c, if (auto == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading) "正在自动下载中英混合语音…" else "正在准备中英混合语音")
                 return
             }
             clearPills()
@@ -803,7 +803,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 OFFLINE -> kb.openSettings("voice/upgrade")
                 MIC -> if (!holdMode) {
                     when {
-                        engines == 0 -> kb.openSettings("voice/upgrade")
+                        engines == 0 -> session.start()
                         // 「识别中」等了一会儿还没结果：不再等，重新开始。 Finalizing for a while: start over.
                         session.state == VoiceSession.State.FINALIZING -> session.start()
                         session.active -> session.stop()

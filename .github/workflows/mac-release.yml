@@ -52,13 +52,13 @@ jobs:
         run: |
           # The successful Android release already built and verified the shared data.
           # Reuse its dictionaries instead of fetching the mutable upstream LTS asset again.
-          gh release download "$TAG" --pattern "WeaveText-$VERSION-arm64-lite.apk" \
+          gh release download "$TAG" --pattern "WeaveText-$VERSION-arm64.apk" \
             --pattern SHA256SUMS.txt --dir "$RUNNER_TEMP/weave-android"
           python3 - "$RUNNER_TEMP/weave-android" "$VERSION" <<'PY'
           from pathlib import Path
           import hashlib, struct, sys, zipfile
           root = Path(sys.argv[1])
-          apk = root / f"WeaveText-{sys.argv[2]}-arm64-lite.apk"
+          apk = root / f"WeaveText-{sys.argv[2]}-arm64.apk"
           sums = dict((line.split()[1], line.split()[0]) for line in (root / "SHA256SUMS.txt").read_text().splitlines())
           assert hashlib.sha256(apk.read_bytes()).hexdigest() == sums[apk.name], "APK checksum mismatch"
           out = Path("data/build")

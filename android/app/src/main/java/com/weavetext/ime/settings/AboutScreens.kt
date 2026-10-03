@@ -13,6 +13,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -20,6 +25,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
+import com.weavetext.ime.voice.AppUpgrade
 
 /** 问题反馈地址；仓库公开前为空，此时隐藏该入口。 Issue tracker URL; the row is hidden while empty. */
 const val ISSUES_URL = ""
@@ -30,6 +36,23 @@ fun AboutScreen() {
     val deps = LocalDeps.current
     val nav = LocalNav.current
     val ctx = LocalContext.current
+    var update by remember { mutableStateOf(AppUpgrade.state) }
+    DisposableEffect(Unit) {
+        val listener: (AppUpgrade.State) -> Unit = { update = it }
+        AppUpgrade.addListener(listener)
+        update = AppUpgrade.state
+        onDispose { AppUpgrade.removeListener(listener) }
+    }
+    val updateText = when (val s = update) {
+        AppUpgrade.State.Idle -> "从 GitHub 检查最新版本（支持镜像）"
+        AppUpgrade.State.Checking -> "正在检查 GitHub Release…"
+        is AppUpgrade.State.UpToDate -> "已是最新版 v${s.current}"
+        is AppUpgrade.State.Available -> "发现 ${s.tag} · 点击下载并安装"
+        is AppUpgrade.State.Downloading -> if (s.total > 0) "正在下载 ${(s.done * 100 / s.total).coerceIn(0, 100)}% · ${s.mirror}" else "正在连接镜像…"
+        AppUpgrade.State.Verifying -> "正在校验安装包…"
+        is AppUpgrade.State.Ready -> "已下载 ${s.tag} · 点击安装"
+        is AppUpgrade.State.Failed -> s.message
+    }
     SubPage("关于") {
         Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             BrandLogo(72)
@@ -46,6 +69,15 @@ fun AboutScreen() {
             SettingRow("隐私说明", onClick = { nav.push(Route.Privacy) }) { Chevron() }
             RowDivider(false)
             SettingRow("开源许可", onClick = { nav.push(Route.Licenses) }) { Chevron() }
+            RowDivider(false)
+            SettingRow("在线检查更新", updateText, icon = R.drawable.ic_update, subtitleMaxLines = 2, onClick = {
+                when (val s = AppUpgrade.state) {
+                    is AppUpgrade.State.Available -> AppUpgrade.download(ctx, s)
+                    is AppUpgrade.State.Ready -> AppUpgrade.install(ctx, s)
+                    is AppUpgrade.State.Downloading, AppUpgrade.State.Checking, AppUpgrade.State.Verifying -> AppUpgrade.cancel()
+                    else -> AppUpgrade.check(ctx)
+                }
+            }) { Chevron() }
             if (ISSUES_URL.isNotEmpty()) {
                 RowDivider(false)
                 SettingRow("反馈问题", onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ISSUES_URL))) }) {

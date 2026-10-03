@@ -43,13 +43,11 @@
 
 ## 下载 / Download
 
-在 [Releases](../../releases) 下载 APK（Android 8.0+，arm64），两个版本签名相同、可互相覆盖安装：
+在 [Releases](../../releases) 下载统一 Android APK（Android 8.0+，arm64）。安装包内置离线语音运行库，识别模型在第一次使用语音时通过镜像自动下载；默认准备中英混合模型，识别全程在手机上完成。
 
-- **轻量版**（推荐）：全部输入功能，词库直接从 APK 读取、不再解压，装机占用约等于 APK 大小；语音输入前需在应用内下载离线语音包（运行库 + 实时模型 + 人声检测，约 33 MB）；之后无需联网。停顿只分句，点击结束或松手才停止录音。
-- **离线语音版**：随包带识别运行库，识别模型仍需在「语音包」下载。支持实时识别、SenseVoice、Paraformer、Dolphin 和 TeleSpeech 等选择。
+- **Android 版**：只有一个安装包，输入、手写、语音和互联功能统一发布；语音模型按需下载，不需要先手动选择 Lite 或语音版。
 - **macOS 版**（`.pkg` 安装包，macOS 13+，Apple 芯片与 Intel 通用；另有内含同一安装包的 `.dmg`）：下载后双击，按提示安装即可；
   安装包没有签名，macOS 拦下时到 系统设置 › 隐私与安全性 点「仍要打开」。
-
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 
 *Get the APK from [Releases](../../releases) (Android 8.0+, arm64); both builds share one signature. **Lite**

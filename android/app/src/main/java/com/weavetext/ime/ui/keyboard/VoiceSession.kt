@@ -122,7 +122,11 @@ class VoiceSession(
         }
         if (state == State.CHOOSING) discard()
         if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
-        if (!hasEngine()) { error = null; state = State.IDLE; changed(); onNoEngine(); return false }
+        if (!hasEngine()) {
+            error = null; state = State.IDLE
+            com.weavetext.ime.voice.VoiceAutoDownload.ensure(ctx)
+            changed(); onNoEngine(); return false
+        }
         val r = recognizerProvider()
         rec = r
         committed.clear(); partial = ""; error = null; notice = null; level = 0f

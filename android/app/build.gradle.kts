@@ -33,6 +33,9 @@ val pluginAssetsDir = layout.buildDirectory.dir("pluginAssets").get().asFile
 // several GitHub mirrors with SHA-256 verification.
 /** Lite downloads runtime + models; voice bundles only the runtime. Both require model downloads. */
 val liteBuild = (findProperty("weave.lite") as String?) == "true"
+// 公开安装包统一带离线语音运行库；识别模型始终按需下载，避免把大模型塞进 APK。
+// The public APK always carries the offline runtime; recognition models are downloaded on demand.
+val bundleSpeechModels = false
 
 /** ABI 过滤在 AGP 里跨构建类型取并集，所以按本次要构建的类型决定。 AGP unions ABI filters, so decide per invocation. */
 val releaseBuild = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
@@ -138,7 +141,7 @@ val fetchBuiltinModels by tasks.registering {
     outputs.dir(modelAssetsDir)
     doLast {
         @Suppress("UNCHECKED_CAST")
-        val models = (catalog()["models"] as List<Map<String, Any>>).filter { it["builtin"] == true && !liteBuild }
+        val models = (catalog()["models"] as List<Map<String, Any>>).filter { it["builtin"] == true && bundleSpeechModels }
         // 不再内置的模型从资源目录里清掉。 Drop models that are no longer built in.
         val keep = models.map { it["id"] as String }.toSet()
         modelAssetsDir.resolve("models").listFiles()?.filter { it.isDirectory && it.name !in keep }?.forEach { it.deleteRecursively() }
@@ -169,8 +172,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 16
-        versionName = "0.1.0-beta.16"
+        versionCode = 17
+        versionName = "0.1.0-beta.17"
         // 调试版打 arm64（真机）+ x86_64（模拟器）；正式版只打 arm64，可用 -Pweave.abis=… 覆盖。
         // Debug: arm64 + x86_64 (emulators); release: arm64 only, override with -Pweave.abis=….
         ndk { abiFilters += abiList(isRelease = releaseBuild) }
@@ -209,7 +212,7 @@ android {
     sourceSets["main"].jniLibs.srcDir(rustJniDir)
     sourceSets["main"].assets.srcDir(dictAssetsDir)
     sourceSets["main"].assets.srcDir(pluginAssetsDir)
-    if (!liteBuild) sourceSets["main"].assets.srcDir(modelAssetsDir)
+    if (bundleSpeechModels) sourceSets["main"].assets.srcDir(modelAssetsDir)
     // 端侧语音适配层：轻量版换成空实现，不依赖 sherpa-onnx。 Lite swaps the ASR adapter for a stub.
     sourceSets["main"].java.srcDir(if (liteBuild) "src/nosherpa/java" else "src/sherpa/java")
     packaging {
