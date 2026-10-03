@@ -53,6 +53,7 @@ fun SchemesScreen() {
     val p by rememberLivePrefs(deps.prefs)
     var showScheme by remember { mutableStateOf(false) }
     var showHint by remember { mutableStateOf(false) }
+    var showDepth by remember { mutableStateOf(false) }
     var showHand by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
     // 已启用的在前（按用户顺序），其余在后。 Enabled first (user order), then the rest.
@@ -96,6 +97,12 @@ fun SchemesScreen() {
             SwitchRow("联想词", "写到一定长度才推荐下一个词，句子像说完了就不再出；最多连着联想 3 次，越用越懂你的搭配", checked = WeavePrefs.prediction(p)) {
                 p.edit().putBoolean(WeavePrefs.PREDICTION, it).apply()
             }
+            if (WeavePrefs.prediction(p)) {
+                RowDivider(false)
+                SettingRow("联想深度", "连着选联想词最多接几次，越往后越要求有把握", onClick = { showDepth = true }) {
+                    ValueChevron("${WeavePrefs.predictionDepth(p)} 次")
+                }
+            }
             RowDivider(false)
             SettingRow("候选显示拼音", "在候选字后面用小字标出读音，方便认字和学拼音", onClick = { showHint = true }) {
                 ValueChevron(PINYIN_HINT_NAMES[WeavePrefs.pinyinHint(p)])
@@ -125,6 +132,30 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.WUBI_PINYIN_MIX, it).apply()
             }
         }
+    }
+
+    if (showDepth) {
+        AlertDialog(
+            onDismissRequest = { showDepth = false },
+            title = { Text("联想深度") },
+            text = {
+                Column {
+                    for (d in 1..6) {
+                        val sel = d == WeavePrefs.predictionDepth(p)
+                        Row(
+                            Modifier.fillMaxWidth().height(48.dp).selectable(sel) {
+                                p.edit().putInt(WeavePrefs.PREDICTION_DEPTH, d).apply(); showDepth = false
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = sel, onClick = null)
+                            Text(if (d == 3) "$d 次（默认）" else "$d 次", Modifier.padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showDepth = false }) { Text("取消") } },
+        )
     }
 
     if (showHint) {

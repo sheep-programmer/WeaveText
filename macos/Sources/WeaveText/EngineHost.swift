@@ -91,6 +91,7 @@ final class EngineHost {
             }
         }
         for (key, on) in prefs.engineOptions { engine.setOption(key, on) }
+        engine.features(["op": "setPredictionDepth", "depth": prefs.predictionDepth])
     }
 
     /// 本地时区给内核（rq / sj / xq）；夏令时切换也会变，所以每次激活时也同步。

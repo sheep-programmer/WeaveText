@@ -101,6 +101,7 @@ fun VoiceListScreen() {
     val modelTick = rememberModelTick(models)
     var language by remember { mutableStateOf(engines.language) }
     val engine = remember(modelTick, language) { engines.active() }
+    val prefs by rememberLivePrefs(deps.prefs)
     SubPage("离线语音") {
         OfflineModelsCard(models) { nav.push(Route.Models) }
         GroupTitle("识别语言")
@@ -126,6 +127,13 @@ fun VoiceListScreen() {
             GroupCard {
                 SettingRow("模型设置与标点", "语音页下拉多选已下载模型，最多三个", onClick = { nav.push(Route.VoiceDetail(engine.id)) }) { Chevron() }
             }
+        }
+        GroupTitle("语音面板")
+        GroupCard {
+            SwitchRow(
+                "说完后文字留在面板上", "默认关闭：文字上屏后，面板上的字幕立即消失。说话时点一下字幕可以看全文",
+                checked = WeavePrefs.voiceKeepText(prefs), subtitleMaxLines = 3,
+            ) { prefs.edit().putBoolean(WeavePrefs.VOICE_KEEP_TEXT, it).apply() }
         }
         Text(
             "点按开始、再点结束；长按空格松手后结束。可多选三个离线模型，同一次录音分别识别，最后点一行上屏。中文专用与中英混说模型已在列表中标明。波纹跟随实际收音音量。",

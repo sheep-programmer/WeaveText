@@ -361,6 +361,11 @@ impl Engine {
                 let mut seen = std::collections::HashSet::new();
                 json!({"ok":true,"words":words.into_iter().filter(|e| e.text.chars().count()>=2 && e.text.chars().count()<=24 && seen.insert(e.text.clone())).take(256).map(|e|e.text).collect::<Vec<_>>()})
             }
+            "setPredictionDepth" => {
+                let depth = cmd["depth"].as_u64().unwrap_or(DEFAULT_PREDICTION_DEPTH as u64);
+                self.options.prediction_depth = depth.clamp(1, MAX_PREDICTION_DEPTH as u64) as u8;
+                json!({"ok":true,"depth":self.options.prediction_depth})
+            }
             "setHandLine" => {
                 let value = cmd["on"].as_bool().unwrap_or(false).to_string();
                 if self.personal.get("hand-line") != value {

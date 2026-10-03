@@ -172,8 +172,12 @@ struct SchemesPage: View {
             .disabled(!pinyinFamily)
             Section {
                 Toggle("联想词", isOn: $prefs.prediction)
+                Picker("联想深度", selection: $prefs.predictionDepth) {
+                    ForEach(Array(Preferences.predictionDepths), id: \.self) { Text($0 == 3 ? "\($0) 次（默认）" : "\($0) 次").tag($0) }
+                }
+                .disabled(!prefs.prediction)
             } footer: {
-                Footnote("上屏后推荐下一个词，越用越懂你的搭配。按数字选，空格、回车或 Esc 收起。")
+                Footnote("写到一定长度才推荐下一个词，句子像说完了就不再出。联想深度是连着选联想词最多接几次，越往后越要求有把握。按数字选，空格、回车或 Esc 收起。")
             }
             Section {
                 Picker("候选显示拼音", selection: $prefs.pinyinHint) {

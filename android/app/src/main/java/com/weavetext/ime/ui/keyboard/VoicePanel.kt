@@ -107,7 +107,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         view.invalidate()
     }
 
-    override fun onHide() = stopSession()
+    override fun onHide() { view.closeFullText(); stopSession() }
 
     /** 顶栏 🎙 点击进入：点按模式下直接开始。 Opened from the toolbar: tap mode starts right away. */
     fun startFromToolbar() {
@@ -141,11 +141,30 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private val tmp2 = RectF()
         private val area = RectF()
         private val lines = ArrayList<String>()
+        /** 点一下字幕进入「语音文字」整页，再点返回。 Tap the caption to open the full-text page; tap again to return. */
+        private var fullText = false
+        /** 字幕的可点区域（没有文字时为空）。 The caption's tap area (empty without text). */
+        private val captionRect = RectF()
+        /** 字幕动画：上一次的文字、新增字从哪个下标起、变化的时刻。 Caption animation: last text, where the new chars begin, when it changed. */
+        private var capText = ""
+        private var capNew = 0
+        private var capAt = 0L
+        private val capClip = RectF()
+        private val fadePaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN) }
+        private var fadeShader: android.graphics.LinearGradient? = null
+        private var fadeShaderW = 0f
         private var pressed = NONE
         private var downY = 0f
         private var downX = 0f
         private var holdActive = false
         private var holdCancel = false
+
+        fun closeFullText() { fullText = false }
+
+        /** 测试用：字幕是否在显示、整页是否打开、字幕区域的中心。 For tests: caption shown, full page open, caption centre. */
+        @androidx.annotation.VisibleForTesting val captionShown get() = !captionRect.isEmpty
+        @androidx.annotation.VisibleForTesting val fullTextOpen get() = fullText
+        @androidx.annotation.VisibleForTesting fun captionCenter() = floatArrayOf(captionRect.centerX(), captionRect.centerY())
 
         fun refreshEngine() {
             val e = runCatching { VoiceAccess.engines(kb.ctx) }.getOrNull()
@@ -230,7 +249,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 return
             }
             drawTranscript(c)
-            drawWave(c)
+            if (!fullText) drawWave(c)
             // 侧键 / side keys
             sideKey(c, comma, pressed == COMMA); drawLabel(c, comma, "，")
             sideKey(c, kbd, pressed == KBD); kb.icons.draw(c, R.drawable.ic_keyboard, pal.icon, kbd.centerX(), kbd.centerY(), m.dp(22f))
@@ -265,7 +284,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private fun transcriptArea(out: RectF) {
             val m = kb.metrics
             val top = contentTop + m.dp(2f)
-            val bottom = if (compactWide()) mic.top - m.dp(8f) else comma.top - m.dp(40f)
+            // 整页文字：占满到侧键上方，不画波形。 Full page: down to just above the side keys, no waveform.
+            val bottom = if (fullText) comma.top - m.dp(6f) else if (compactWide()) mic.top - m.dp(8f) else comma.top - m.dp(40f)
             // 面板较矮时 bottom 可能落回语言档位那一行：夹住下界，否则文字会画到档位条上（叠字）。
             // On a short panel `bottom` can fall back onto the language row; clamp it or the text is drawn over it.
             out.set(m.dp(20f), top, width - m.dp(20f), max(top + m.dp(18f), bottom))
@@ -327,9 +347,14 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 return
             }
             clearPills()
-            val done = session.committed.toString()
-            val part = session.partial
+            // 说完、文字已上屏后，面板上的字就消失（设置里可以改成留着）。 After the text is committed it leaves the panel (a setting keeps it).
+            val shown = session.active || WeavePrefs.voiceKeepText(kb.prefs)
+            val done = if (shown) session.committed.toString() else ""
+            val part = if (shown) session.partial else ""
+            captionRect.setEmpty()
             if (done.isEmpty() && part.isEmpty()) {
+                fullText = false
+                capText = ""; capNew = 0
                 // 引擎的一行提示（如已改用本地识别）。 The engine's one-line note (e.g. switched to local).
                 val note = session.notice ?: return
                 text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.color = pal.labelSecondary
@@ -338,31 +363,97 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 c.drawText(note, area.centerX(), area.top + m.dp(26f) * 0.8f, text)
                 return
             }
+            captionRect.set(area)
+            if (fullText) drawFullText(c, done, part) else drawCaption(c, done, part)
+        }
+
+        /**
+         * 字幕：一行，短时居中从中间出现，变长后右端对齐，左边渐隐、新字从右边淡入。
+         * The caption: one line, centred while short, right-aligned once long; the left end fades out and new
+         * characters fade in on the right.
+         */
+        private fun drawCaption(c: Canvas, done: String, part: String) {
+            val pal = kb.palette
+            val m = kb.metrics
+            val all = done + part
+            val now = SystemClock.uptimeMillis()
+            if (all != capText) {
+                capNew = if (all.startsWith(capText)) capText.length else all.commonPrefixWith(capText).length
+                capText = all
+                capAt = now
+            }
+            val fade = ((now - capAt) / 220f).coerceIn(0f, 1f)
+            text.textAlign = Paint.Align.LEFT; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(22f)
+            val w = text.measureText(all)
+            val pad = m.dp(6f)
+            val x0 = if (w <= area.width() - 2 * pad) area.centerX() - w / 2 else area.right - pad - w
+            val centerY = area.centerY() - m.dp(5f)
+            val base = centerY - (text.ascent() + text.descent()) / 2
+            capClip.set(area.left, centerY - m.dp(24f), area.right, centerY + m.dp(24f))
+            val layer = c.saveLayer(capClip, null)
+            // 按「已确定／中间结果」与「新增字」把文字切成几段分别上色。 Colour runs split at the final/interim and new-char boundaries.
+            val cuts = listOf(0, done.length, capNew.coerceIn(0, all.length), all.length).distinct().sorted()
+            var x = x0
+            for (i in 0 until cuts.size - 1) {
+                val a = cuts[i]; val b = cuts[i + 1]
+                val color = if (a < done.length) pal.label else pal.labelSecondary
+                val isNew = a >= capNew && capNew < all.length
+                text.color = color
+                text.alpha = if (isNew) (255 * fade).toInt() else 255
+                c.drawText(all, a, b, x, base, text)
+                x += text.measureText(all, a, b)
+            }
+            text.alpha = 255
+            // 左边渐隐：把最左一段按渐变擦成透明。 Fade the left end out with a gradient mask.
+            val fw = min(m.dp(56f), area.width() * 0.3f)
+            if (fadeShader == null || fadeShaderW != fw) {
+                fadeShader = android.graphics.LinearGradient(0f, 0f, fw, 0f, 0, 0xFF000000.toInt(), Shader.TileMode.CLAMP)
+                fadeShaderW = fw
+            }
+            fadePaint.shader = fadeShader
+            c.save(); c.translate(area.left, 0f)
+            c.drawRect(0f, capClip.top, fw, capClip.bottom, fadePaint)
+            c.restore()
+            // 其余部分保持原样：DST_IN 会把没画到的地方擦掉，所以补一块不透明的覆盖。 Keep the rest: DST_IN clears what isn't drawn, so cover it.
+            fadePaint.shader = null
+            fadePaint.color = 0xFF000000.toInt()
+            c.drawRect(area.left + fw, capClip.top, area.right, capClip.bottom, fadePaint)
+            c.restoreToCount(layer)
+            if (fade < 1f) postInvalidateOnAnimation()
+        }
+
+        /** 「语音文字」整页：已识别的全部文字，点一下返回。 The full-text page: everything recognised so far; tap to return. */
+        private fun drawFullText(c: Canvas, done: String, part: String) {
+            val pal = kb.palette
+            val m = kb.metrics
+            fill.color = pal.keyFunc
+            c.drawRoundRect(area, m.dp(14f), m.dp(14f), fill)
             text.textAlign = Paint.Align.LEFT; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(18f)
             val lineH = m.dp(26f)
-            val maxLines = max(1, (area.height() / lineH).toInt()).coerceAtMost(3)
-            // 按宽度折行（已确定 + 中间结果），只显示最后几行。 Wrap and keep the last lines.
+            val inner = RectF(area.left + m.dp(14f), area.top + m.dp(10f), area.right - m.dp(14f), area.bottom - m.dp(22f))
+            val maxLines = max(1, (inner.height() / lineH).toInt())
             val all = done + part
             lines.clear()
             var start = 0
             while (start < all.length) {
-                val n = text.breakText(all, start, all.length, true, area.width(), null).coerceAtLeast(1)
+                val n = text.breakText(all, start, all.length, true, inner.width(), null).coerceAtLeast(1)
                 lines += all.substring(start, start + n)
                 start += n
             }
             val first = max(0, lines.size - maxLines)
             var offset = lines.subList(0, first).sumOf { it.length }
-            var y = area.top + lineH * 0.8f
+            var y = inner.top + lineH * 0.8f
             for (i in first until lines.size) {
                 val s = lines[i]
-                // 已确定部分 label，中间结果 labelSecondary。 Final vs interim colours.
                 val split = (done.length - offset).coerceIn(0, s.length)
-                var x = area.left
+                var x = inner.left
                 if (split > 0) { text.color = pal.label; c.drawText(s, 0, split, x, y, text); x += text.measureText(s, 0, split) }
                 if (split < s.length) { text.color = pal.labelSecondary; c.drawText(s, split, s.length, x, y, text) }
                 offset += s.length
                 y += lineH
             }
+            text.textAlign = Paint.Align.RIGHT; text.textSize = m.dp(11f); text.color = pal.labelHint
+            c.drawText("点一下返回", area.right - m.dp(14f), area.bottom - m.dp(8f), text)
         }
 
         private fun clearPills() {
@@ -717,6 +808,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
         private fun hitAt(x: Float, y: Float): Int = when {
             languageRects.any { it.contains(x, y) } -> LANGUAGE_BASE + languageRects.indexOfFirst { it.contains(x, y) }
+            !captionRect.isEmpty && captionRect.contains(x, y) && !mic.contains(x, y) -> TRANSCRIPT
             close.contains(x, y) -> CLOSE
             gear.contains(x, y) -> GEAR
             chip.contains(x, y) -> CHIP
@@ -798,6 +890,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             }
             val c = kb.controller
             when (id) {
+                TRANSCRIPT -> { fullText = !fullText }
                 CLOSE -> kb.closePanel()
                 GEAR -> kb.openSettings(plugin?.let { "voice/${it.id}" } ?: "voice")
                 CHIP -> kb.showEngineSheet()
@@ -846,5 +939,6 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private const val R_CANCEL = 12; private const val R_COMMIT = 13; private const val R_REDO = 14
         private const val OFFLINE = 15
         private const val LANGUAGE_BASE = 16
+        private const val TRANSCRIPT = 30
     }
 }

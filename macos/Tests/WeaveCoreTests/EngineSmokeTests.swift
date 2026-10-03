@@ -154,6 +154,28 @@ private let dataDir = URL(fileURLWithPath: #filePath)
     }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
+    func predictionDepthIsASettingThatLimitsChainedPredictions() throws {
+        let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-depth-\(getpid())")
+        try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("pinyin")
+        #expect(e.setOption("candidates.prediction", true))
+        #expect(e.features(["op": "setPredictionDepth", "depth": 1]).bool("ok"))
+        for c in "womenjintian" { #expect(e.input(c)) }
+        let i = try #require(e.snapshot().candidates.firstIndex { $0.text == "我们今天" })
+        #expect(e.select(i))
+        #expect(e.snapshot().predicting)
+        // 深度 1：选了一个联想词后不再接着联想。 Depth 1: after one pick there is no further prediction.
+        #expect(e.select(0))
+        #expect(!e.snapshot().predicting)
+        let prefs = Preferences(defaults: UserDefaults(suiteName: "weave-depth-\(getpid())")!)
+        #expect(prefs.predictionDepth == 3)
+        prefs.predictionDepth = 99
+        #expect(Preferences(defaults: UserDefaults(suiteName: "weave-depth-\(getpid())")!).predictionDepth == 6)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
     func predictsAfterACommitAndUndoesOnBackspace() throws {
         let user = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-p-\(getpid())")
         try FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)

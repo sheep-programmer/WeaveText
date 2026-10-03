@@ -92,6 +92,8 @@ pub struct Options {
     pub utc_offset_min: i32,
     /// 上屏后给出联想词。 Offer next-word predictions after a commit.
     pub prediction: bool,
+    /// 联想深度：连着选联想词最多接几次（1–6）。 Prediction depth: how many predictions may be picked in a row (1–6).
+    pub prediction_depth: u8,
     /// 候选后面显示拼音（小字），以及是否带声调。 Show pinyin after each candidate, and whether with tone marks.
     pub pinyin_hint: bool,
     pub pinyin_tones: bool,
@@ -117,6 +119,7 @@ impl Default for Options {
             lm_baseline: 12.0,
             utc_offset_min: 480,
             prediction: true,
+            prediction_depth: DEFAULT_PREDICTION_DEPTH,
             pinyin_hint: false,
             pinyin_tones: true,
             hand_lm_weight: 0.25,
@@ -1265,10 +1268,10 @@ impl Engine {
         self.predicting = true;
     }
 
-    /// 联想要「看情况」：上文太短、像是一句话说完了、或只剩很弱的猜测时不出；连着选联想词最多接 [MAX_PREDICT_DEPTH] 次，
+    /// 联想要「看情况」：上文太短、像是一句话说完了、或只剩很弱的猜测时不出；连着选联想词最多接「联想深度」次（设置，默认 3），
     /// 越往后要求越高。
     /// Predictions are shown only when worth it: not after a short context, not when the sentence seems finished, not
-    /// when only weak guesses remain; picking predictions chains at most [MAX_PREDICT_DEPTH] times, with the bar rising.
+    /// when only weak guesses remain; picking predictions chains at most `prediction_depth` times (a setting, 3 by default), with the bar rising.
     fn worth_showing(&self, list: Vec<crate::predict::Prediction>) -> Vec<crate::predict::Prediction> {
         use crate::predict::{STRONG, WEAK};
         let mut list: Vec<_> = list.into_iter().filter(|p| p.user || p.cost < WEAK).collect();
@@ -1278,14 +1281,13 @@ impl Engine {
         let closes = self.recent.chars().last().is_some_and(|c| SENTENCE_FINAL.contains(c))
             || CLOSING_PHRASES.iter().any(|w| self.recent.ends_with(w));
         let long_enough = self.recent.chars().count() >= MIN_PREDICT_CONTEXT;
-        let ok = match self.predict_depth {
+        let ok = self.predict_depth < self.options.prediction_depth && match self.predict_depth {
             // 第一次：上文够长，或是你自己常接的搭配。 First: enough context, or a pair you write yourself.
             0 => top.user || (long_enough && !closes),
             // 第二次：词库长词有接续，或已经写了一长串。 Second: a lexicon phrase continues, or a long run is written.
             1 => strong || (self.recent.chars().count() >= LONG_RUN && !closes),
-            // 第三次：必须有词库长词或你自己的搭配支撑。 Third: needs a lexicon phrase or the user's own pair.
-            d if d < MAX_PREDICT_DEPTH => strong,
-            _ => false,
+            // 第三次起：必须有词库长词或你自己的搭配支撑。 From the third: needs a lexicon phrase or the user's own pair.
+            _ => strong,
         } && !(closes && !top.user);
         if !ok {
             list.clear();
@@ -2232,8 +2234,9 @@ fn capitalize(s: &str) -> String {
 const MIN_PREDICT_CONTEXT: usize = 4;
 /// 已经写了这么长一串时，联想第二次不要求词库长词支撑。 A run this long may be predicted a second time on the model alone.
 const LONG_RUN: usize = 6;
-/// 连着选联想词最多接几次。 How many predictions may be chained.
-const MAX_PREDICT_DEPTH: u8 = 3;
+/// 联想深度（连着选联想词最多接几次）的默认值与可设范围。 Default and allowed range of the prediction depth (chained picks).
+pub const DEFAULT_PREDICTION_DEPTH: u8 = 3;
+pub const MAX_PREDICTION_DEPTH: u8 = 6;
 /// 句末语气词。 Sentence-final particles.
 /// 本身就是一整句话的收尾词。 Phrases that are a whole sentence by themselves.
 const CLOSING_PHRASES: &[&str] = &[

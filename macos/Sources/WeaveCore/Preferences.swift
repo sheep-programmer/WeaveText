@@ -74,6 +74,9 @@ public final class Preferences: ObservableObject {
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
     /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
     @Published public var prediction: Bool { didSet { save(prediction, "prediction") } }
+    /// 联想深度：连着选联想词最多接几次（1–6），默认 3。 How many predictions may be picked in a row (1–6), 3 by default.
+    @Published public var predictionDepth: Int { didSet { save(predictionDepth, "predictionDepth") } }
+    public static let predictionDepths = 1...6
     /// 自定义的候选快捷键（上一页、下一页、左右移动高亮、展开全部）。 Custom candidate shortcuts.
     @Published public var candidateKeys: CandidateKeys {
         didSet { save((try? JSONEncoder().encode(candidateKeys)) ?? Data(), "candidateKeys") }
@@ -104,6 +107,7 @@ public final class Preferences: ObservableObject {
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
         prediction = defaults.object(forKey: "prediction") as? Bool ?? true
+        predictionDepth = Self.clamp(defaults.object(forKey: "predictionDepth") as? Int ?? 3, Self.predictionDepths)
         candidateKeys = defaults.data(forKey: "candidateKeys").flatMap { try? JSONDecoder().decode(CandidateKeys.self, from: $0) } ?? CandidateKeys()
         pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
         handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium

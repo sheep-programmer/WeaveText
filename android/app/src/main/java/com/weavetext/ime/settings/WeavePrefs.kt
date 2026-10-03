@@ -54,6 +54,8 @@ object WeavePrefs {
     const val AUTO_PAIR = "auto_pair"
     /** 上屏后推荐下一个词（默认开）。 Suggest the next word after a commit (on by default). */
     const val PREDICTION = "prediction"
+    /** 联想深度：连着选联想词最多接几次（1–6）。 Prediction depth: how many predictions may be picked in a row. */
+    const val PREDICTION_DEPTH = "prediction_depth"
     /** 候选后面显示拼音：0 关、1 带声调、2 不带声调。 Pinyin after each candidate: 0 off, 1 with tones, 2 without. */
     const val PINYIN_HINT = "pinyin_hint"
     /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
@@ -102,6 +104,8 @@ object WeavePrefs {
     const val FLOAT_SIZE_LAND = "float_size_land"
     /** "tap" / "hold" */
     const val VOICE_MODE = "voice_mode"
+    /** 说完上屏后，语音面板上的文字是否留着；默认不留。 Keep the text on the voice panel after it is committed; off by default. */
+    const val VOICE_KEEP_TEXT = "voice_keep_text"
     const val SYMBOL_LOCK = "symbol_lock"
     const val SYMBOL_RECENT = "symbol_recent"
     const val EMOJI_SKIN = "emoji_skin"
@@ -196,7 +200,9 @@ object WeavePrefs {
     fun floating(p: SharedPreferences) = p.getBoolean(FLOATING, false)
     fun splitWide(p: SharedPreferences) = p.getBoolean(SPLIT_WIDE, true)
     fun voiceMode(p: SharedPreferences) = p.getString(VOICE_MODE, "tap") ?: "tap"
+    fun voiceKeepText(p: SharedPreferences) = p.getBoolean(VOICE_KEEP_TEXT, false)
     fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
+    fun predictionDepth(p: SharedPreferences) = p.getInt(PREDICTION_DEPTH, 3).coerceIn(1, 6)
     fun pinyinHint(p: SharedPreferences) = p.getInt(PINYIN_HINT, 0).coerceIn(0, 2)
     fun autocorrect(p: SharedPreferences) = p.getBoolean(AUTOCORRECT, true)
     fun handPause(p: SharedPreferences) = p.getInt(HAND_PAUSE, HAND_PAUSE_DEFAULT).coerceIn(0, HAND_PAUSE_MS.size - 1)

@@ -55,6 +55,7 @@ fn long_context_predicts_and_chains_at_most_three_times() {
         shown += 1;
     }
     eprintln!("chain picks: {texts:?}");
+    assert!(shown >= 1, "a long context predicts at least once");
     assert!(shown <= 3, "at most three chained predictions, got {shown}: {texts:?}");
 }
 
@@ -94,4 +95,31 @@ fn pinyin_hints_follow_the_option_and_the_lexicon_syllables() {
         e.input_char(c);
     }
     assert_eq!(comments(&mut e)[0], ("银行".to_string(), "yin hang".to_string()));
+}
+
+#[test]
+fn prediction_depth_is_a_setting() {
+    let Some(mut e) = engine("depth") else { return };
+    let chain = |e: &mut Engine| {
+        e.reset_context();
+        type_and_commit(e, "jintiantianqi");
+        let mut shown = 0;
+        while e.is_predicting() && shown < 12 {
+            e.select(0);
+            shown += 1;
+        }
+        e.drop_predictions();
+        shown
+    };
+    // 深度 1：只联想一次，选了就停。 Depth 1: one prediction, then it stops.
+    assert!(e.features(&serde_json::json!({"op":"setPredictionDepth","depth":1}))["ok"].as_bool().unwrap());
+    assert!(chain(&mut e) <= 1);
+    // 越深越多，但永远不超过设定。 A deeper setting allows more, never beyond itself.
+    for depth in [2u64, 4, 6] {
+        e.features(&serde_json::json!({"op":"setPredictionDepth","depth":depth}));
+        assert!(chain(&mut e) as u64 <= depth);
+    }
+    // 范围被夹住。 The range is clamped.
+    assert_eq!(e.features(&serde_json::json!({"op":"setPredictionDepth","depth":99}))["depth"], 6);
+    assert_eq!(e.features(&serde_json::json!({"op":"setPredictionDepth","depth":0}))["depth"], 1);
 }
