@@ -98,6 +98,32 @@ public struct KeyBinding: Codable, Equatable, Sendable {
     }
 }
 
+/// 语音窗口的组合键，只在织文处于当前输入源时生效。
+/// A modified shortcut for the voice window, active only while WeaveText is the input source.
+public struct VoiceShortcut: Codable, Equatable, Sendable {
+    public var keyCode: UInt16
+    public var shift: Bool
+    public var control: Bool
+    public var option: Bool
+    public var command: Bool
+    public var label: String
+
+    public static let defaultBinding = VoiceShortcut(keyCode: 9, shift: false, control: true, option: true, command: false, label: "⌃⌥V")
+
+    public func matches(_ key: KeyInput) -> Bool {
+        key.keyCode == keyCode && key.shift == shift && key.control == control && key.option == option && key.command == command
+    }
+
+    public static func make(from key: KeyInput) -> VoiceShortcut? {
+        guard key.control || key.option || key.command else { return nil }
+        let name = KeyBinding.functionName(key.keyCode)
+            ?? (key.keyCode == KeyCode.space ? "Space" : key.character.flatMap { $0.isASCII && !$0.isWhitespace ? String($0).uppercased() : nil })
+        guard let name, key.keyCode != KeyCode.escape else { return nil }
+        let modifiers = (key.control ? "⌃" : "") + (key.option ? "⌥" : "") + (key.shift ? "⇧" : "") + (key.command ? "⌘" : "")
+        return VoiceShortcut(keyCode: key.keyCode, shift: key.shift, control: key.control, option: key.option, command: key.command, label: modifiers + name)
+    }
+}
+
 /// 可以自定义快捷键的候选操作。 The candidate actions that can have a custom key.
 public enum CandidateKeySlot: String, CaseIterable, Sendable {
     case pagePrevious, pageNext, highlightPrevious, highlightNext, expand

@@ -84,6 +84,7 @@ final class WeaveInputController: IMKInputController {
         case .keyDown:
             return keyDown(event, client)
         case .leftMouseDown:
+            if event.window is InputPanel { return false }
             if reconversionOriginal != nil { cancelReconversion() }
             dismissPredictions()
             // 光标挪了：之后的退格删的不是刚上屏的词。 The caret moved: a later backspace isn't deleting that commit.
@@ -120,6 +121,7 @@ final class WeaveInputController: IMKInputController {
                            shift: flags.contains(.shift), control: flags.contains(.control),
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
+        if prefs.voiceShortcut?.matches(key) == true { openVoice(nil); return true }
         if calcResult != nil, handleCalcKey(key, client) { return true }
         if predicting {
             switch KeyMapper.predictionAction(for: key, count: pager.page.count, pageSize: prefs.pageSize) {
@@ -325,6 +327,14 @@ final class WeaveInputController: IMKInputController {
 
     @objc func openStickers(_ sender:Any?) {StickerWindow.shared.show(owner:self)}
     @objc func openHandwriting(_ sender:Any?) {HandwritingWindow.shared.show(owner:self)}
+    @objc func openVoice(_ sender: Any?) { VoiceWindow.shared.show(owner: self) }
+    @discardableResult func commitVoiceText(_ text: String) -> Bool {
+        guard host.activeController === self, let client = client(), !text.isEmpty else { return false }
+        finishComposition(client: client)
+        insert(text, client)
+        host.engine?.setContext(text)
+        return true
+    }
     func commitHandCandidate(_ index:Int) {
         guard let engine=host.engine,let client=client() else{return}
         engine.select(index);refresh(client)

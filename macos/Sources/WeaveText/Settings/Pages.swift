@@ -63,6 +63,36 @@ final class KeyRecorder: ObservableObject {
     deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
 }
 
+final class VoiceKeyRecorder: ObservableObject {
+    @Published var recording = false
+    @Published var message = ""
+    private var monitor: Any?
+
+    func start(prefs: Preferences) {
+        stop(); recording = true; message = "按下组合键，Esc 取消"
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if event.keyCode == KeyCode.escape { self.stop(); return nil }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let key = KeyInput(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers ?? "",
+                               shift: flags.contains(.shift), control: flags.contains(.control),
+                               option: flags.contains(.option), command: flags.contains(.command))
+            if let shortcut = VoiceShortcut.make(from: key) {
+                prefs.voiceShortcut = shortcut; self.stop()
+            } else {
+                self.message = "请使用带 ⌃、⌥ 或 ⌘ 的组合键"
+            }
+            return nil
+        }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil; recording = false; message = ""
+    }
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+}
+
 struct ShortcutRow: View {
     let slot: CandidateKeySlot
     @ObservedObject var prefs: Preferences
@@ -98,6 +128,7 @@ struct GeneralPage: View {
     @ObservedObject var prefs: Preferences
     @StateObject private var login = LoginItem()
     @StateObject private var recorder = KeyRecorder()
+    @StateObject private var voiceRecorder = VoiceKeyRecorder()
 
     var body: some View {
         Form {
@@ -124,6 +155,7 @@ struct GeneralPage: View {
                     Text("- = 与 , .").tag(PageKeys.both)
                     Text("- =").tag(PageKeys.minusEqual)
                     Text(", .").tag(PageKeys.commaPeriod)
+                    Text("[ ]").tag(PageKeys.brackets)
                 }
             }
             Section {
@@ -138,8 +170,27 @@ struct GeneralPage: View {
             } footer: {
                 Footnote("点按钮后按下想用的键，比如 [ 和 ] 翻页，或 Tab 展开全部候选。自定义的键优先于上面的默认翻页键；字母、数字、空格、回车、Esc 要用来打字，不能设置。")
             }
+            Section {
+                LabeledContent("打开语音悬浮窗") {
+                    HStack(spacing: 6) {
+                        Button(voiceRecorder.recording ? "按下组合键…" : (prefs.voiceShortcut?.label ?? "关闭")) {
+                            if voiceRecorder.recording { voiceRecorder.stop() }
+                            else { recorder.stop(); voiceRecorder.start(prefs: prefs) }
+                        }
+                        Button("恢复默认") { voiceRecorder.stop(); prefs.voiceShortcut = .defaultBinding }
+                        Button("关闭快捷键") { voiceRecorder.stop(); prefs.voiceShortcut = nil }
+                    }
+                }
+                if voiceRecorder.recording { Text(voiceRecorder.message).foregroundStyle(.orange) }
+                Button("打开表情收纳袋…") { StickerWindow.shared.show() }
+            } header: {
+                Text("语音")
+            } footer: {
+                Footnote("切换到织文后生效，也可从输入法菜单打开。悬浮窗可拖动，点关闭按钮才关闭；点击话筒后才开始录音。系统占用的组合键无法传给输入法。")
+            }
         }
         .formStyle(.grouped)
+        .onDisappear { recorder.stop(); voiceRecorder.stop() }
     }
 }
 

@@ -19,10 +19,10 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
     fun available(): List<ModelSpec> = models.catalog.models.filter {
         (it.kind == ModelKind.ASR_STREAMING || it.kind == ModelKind.ASR_OFFLINE) && models.state(it.id).isReady &&
             when (mode) {
-                // 中文档位不限制可选范围（任何识别模型都能出中文），只是优先选中文专用模型；
-                // 英文档位必须排除只会中文的模型，否则选了英文也只会出中文。
+                // 双语实时模型没有语言约束，英文档位只能使用能真正设置 en 的模型。
+                // Bilingual streaming models cannot constrain the language; English requires an actual en setting.
                 VoiceLanguage.MIXED, VoiceLanguage.CHINESE -> true
-                VoiceLanguage.ENGLISH -> supportsEnglish(it)
+                VoiceLanguage.ENGLISH -> supportsEnglishMode(it)
             }
     }
 
@@ -34,7 +34,8 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
     fun primaryOk(): Boolean {
         val ids = ids()
         return ids.isNotEmpty() && when (mode) {
-            VoiceLanguage.MIXED, VoiceLanguage.ENGLISH -> ids.any { id -> models.catalog.find(id)?.let { supportsEnglish(it) } == true }
+            VoiceLanguage.MIXED -> ids.any { id -> models.catalog.find(id)?.let { supportsEnglish(it) } == true }
+            VoiceLanguage.ENGLISH -> ids.any { id -> models.catalog.find(id)?.let { supportsEnglishMode(it) } == true }
             VoiceLanguage.CHINESE -> true
         }
     }
@@ -50,16 +51,28 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
             // In mixed mode a previously pinned Chinese-only model must not lock the whole mode: prefer bilingual.
             ?.let { list -> if (mode == VoiceLanguage.MIXED && list.none { id -> catalogModel(id)?.let { supportsEnglish(it) } == true } &&
                 available.any { supportsEnglish(it) }) null else list }
-            ?.takeIf { it.isNotEmpty() }?.let { return it }
+            ?.takeIf { it.isNotEmpty() }?.let { list ->
+                return if (mode == VoiceLanguage.MIXED) list.sortedBy { id -> !supportsEnglish(catalogModel(id)!!) } else list
+            }
         val old = if (mode == VoiceLanguage.MIXED) prefs.getString(LocalAsrChoice.KEY_FINAL, null) else null
         val preferred = when (mode) {
             VoiceLanguage.MIXED -> listOf("asr-sensevoice", "asr-stream-mixed-high", "asr-stream-mixed-medium")
             VoiceLanguage.CHINESE -> listOf("asr-sensevoice", "asr-stream-small", "asr-final-small")
-            VoiceLanguage.ENGLISH -> listOf("asr-whisper-small", "asr-whisper-base", "asr-stream-mixed-high", "asr-stream-mixed-medium", "asr-sensevoice")
+            VoiceLanguage.ENGLISH -> listOf("asr-whisper-small", "asr-whisper-base", "asr-sensevoice")
         }
-        val best = available.firstOrNull { it.id == old } ?: preferred.firstNotNullOfOrNull { id -> available.firstOrNull { it.id == id } }
+        val legacy = available.firstOrNull { it.id == old && (mode != VoiceLanguage.MIXED || supportsMixed(it)) }
+        val best = legacy ?: preferred.firstNotNullOfOrNull { id -> available.firstOrNull { it.id == id } }
             ?: available.firstOrNull { supportsEnglish(it) } ?: available.firstOrNull { supportsMixed(it) } ?: available.firstOrNull()
         return listOfNotNull(best?.id)
+    }
+
+    /** 单个双语实时模型用已装的 SenseVoice 补终稿，降低把英文猜成中文的概率。 */
+    fun finalCompanion(id: String): String? {
+        val spec = catalogModel(id) ?: return null
+        return "asr-sensevoice".takeIf {
+            mode == VoiceLanguage.MIXED && ids() == listOf(id) && spec.kind == ModelKind.ASR_STREAMING &&
+                supportsMixed(spec) && models.state(it).isReady
+        }
     }
 
     private fun catalogModel(id: String): ModelSpec? = models.catalog.find(id)
@@ -92,6 +105,7 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
         /** 模型认识英文（含中文专用 CTC 之外的多语种／双语架构）。 Model knows English. */
         fun supportsEnglish(model: ModelSpec) = model.arch in setOf("sense-voice", "wenet-ctc", "zipformer-transducer", "whisper", "dolphin")
         fun supportsMixed(model: ModelSpec) = supportsEnglish(model)
+        fun supportsEnglishMode(model: ModelSpec) = model.arch in setOf("sense-voice", "whisper")
         fun language(model: ModelSpec) = if (model.arch == "whisper") "多语种 · 中文/英文" else if (supportsMixed(model)) "中英混说" else "中文"
     }
 }

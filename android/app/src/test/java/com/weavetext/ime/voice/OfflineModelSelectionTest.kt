@@ -28,9 +28,9 @@ class OfflineModelSelectionTest {
         assertFalse(selection.toggle("asr-stream-large"))
         assertFalse(selection.toggle("punc-ct"))
         assertFalse(selection.toggle("vad-silero"))
-        assertEquals(listOf("asr-sensevoice", "asr-stream-small", "asr-wenet-mixed"), OfflineModelSelection(ctx, repo).ids())
+        assertEquals(listOf("asr-sensevoice", "asr-wenet-mixed", "asr-stream-small"), OfflineModelSelection(ctx, repo).ids())
         repo.emit("asr-sensevoice", ModelState.NotInstalled)
-        assertEquals(listOf("asr-stream-small", "asr-wenet-mixed"), selection.ids())
+        assertEquals(listOf("asr-wenet-mixed", "asr-stream-small"), selection.ids())
         assertTrue(selection.toggle("asr-stream-small"))
         assertFalse(selection.toggle("asr-wenet-mixed"))
     }
@@ -39,10 +39,9 @@ class OfflineModelSelectionTest {
         val selection = OfflineModelSelection(ctx, repo)
         assertEquals(VoiceLanguage.MIXED, selection.mode)
         selection.select(listOf("asr-stream-mixed-medium", "asr-sensevoice"))
-        // 英文档位必须保留双语模型：中英双语 Zipformer 是用户手上最常见的英文来源，排除它会让英文档位无模型可用。
-        // English mode keeps bilingual models: excluding them left the mode with no engine at all.
+        // 英文档位必须能真正指定 en，不能把双语自动识别当成英文专用识别。
         selection.mode = VoiceLanguage.ENGLISH
-        assertEquals(setOf("asr-stream-mixed-medium", "asr-sensevoice", "asr-whisper-base"), selection.available().map { it.id }.toSet())
+        assertEquals(setOf("asr-sensevoice", "asr-whisper-base"), selection.available().map { it.id }.toSet())
         selection.select(listOf("asr-whisper-base"))
         selection.mode = VoiceLanguage.CHINESE
         assertEquals(listOf("asr-sensevoice"), selection.ids())
@@ -53,18 +52,34 @@ class OfflineModelSelectionTest {
         assertEquals(listOf("asr-whisper-base"), selection.ids())
     }
 
-    /**
-     * 只装了中英双语实时模型、切到英文档位：必须有可用引擎，且首选就是那个双语模型。
-     * 旧实现把 zipformer-transducer 排除在英文档位之外，界面因此显示「未选择引擎／请先下载离线语音包」，
-     * 用户即使下载了中英模型也无法用英文。 Only the bilingual streaming model installed, switched to English:
-     * there must be a usable engine and it must be that model.
-     */
-    @Test fun englishModeUsesABilingualModelWhenThatIsWhatIsInstalled() {
+    /** 只有不支持指定语言的双语实时模型时，英文档位必须准备语言可控模型，不能继续出中文。 */
+    @Test fun englishModeDoesNotTreatAutoBilingualStreamingAsForcedEnglish() {
         val repo = FakeModels(mapOf("asr-stream-mixed-medium" to ModelState.Installed))
         val selection = OfflineModelSelection(ctx, repo)
         selection.mode = VoiceLanguage.ENGLISH
-        assertEquals(listOf("asr-stream-mixed-medium"), selection.ids())
-        assertTrue("选中项应满足英文档位 / the selection must satisfy English mode", selection.primaryOk())
+        assertTrue(selection.ids().isEmpty())
+        assertFalse(selection.primaryOk())
+        repo.emit("asr-sensevoice", ModelState.Installed)
+        assertEquals(listOf("asr-sensevoice"), selection.ids())
+        assertTrue(selection.primaryOk())
+    }
+
+    @Test fun aSingleMixedStreamingModelUsesAnInstalledFinalCompanion() {
+        val repo = FakeModels(listOf("asr-stream-mixed-high", "asr-sensevoice", "asr-stream-small").associateWith { ModelState.Installed })
+        val selection = OfflineModelSelection(ctx, repo)
+        selection.select(listOf("asr-stream-mixed-high"))
+        assertEquals("asr-sensevoice", selection.finalCompanion("asr-stream-mixed-high"))
+        selection.select(listOf("asr-stream-mixed-high", "asr-sensevoice"))
+        assertNull(selection.finalCompanion("asr-stream-mixed-high"))
+        selection.mode = VoiceLanguage.CHINESE
+        selection.select(listOf("asr-stream-small"))
+        assertNull(selection.finalCompanion("asr-stream-small"))
+    }
+
+    @Test fun mixedModeDoesNotReviveALegacyChineseOnlyFinalChoice() {
+        val repo = FakeModels(listOf("asr-final-small", "asr-sensevoice").associateWith { ModelState.Installed })
+        ctx.getSharedPreferences(LocalAsrChoice.PREFS, 0).edit().putString(LocalAsrChoice.KEY_FINAL, "asr-final-small").commit()
+        assertEquals(listOf("asr-sensevoice"), OfflineModelSelection(ctx, repo).ids())
     }
 
     /** 中文专用模型不能被当成「已满足混说／英文档位」，否则会一直只出中文。 Chinese-only models must not satisfy mixed/English. */

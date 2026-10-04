@@ -30,6 +30,10 @@
 	<string>public.app-category.utilities</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>点击语音窗口的话筒后，织文使用麦克风在本机识别你说的话。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>织文使用系统离线语音识别，将说话内容转为文字；不会改用云端识别。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>织文互联需要访问本地网络，才能发现同一 Wi-Fi 下的手机并与它互传文字、图片和文件。</string>
 	<key>NSBonjourServices</key>

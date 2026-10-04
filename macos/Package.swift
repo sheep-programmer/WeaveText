@@ -25,6 +25,8 @@ let package = Package(
                 .linkedFramework("InputMethodKit"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("Speech"),
             ]
         ),
         .testTarget(name: "WeaveCoreTests", dependencies: ["WeaveCore"], linkerSettings: engineLib),

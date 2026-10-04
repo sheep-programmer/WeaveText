@@ -102,6 +102,9 @@ struct Conn {
     ch: Channel,
     /// 是否由本机发起（重复连接时据此取舍）。 Whether we initiated it (decides duplicates).
     outbound: bool,
+    /// Forgetting a peer revokes the live channel immediately, before its socket is shut down.
+    /// 取消配对时先撤销现有通道，再关闭 socket，避免并发读线程继续处理数据。
+    trusted: AtomicBool,
     incoming: Mutex<HashMap<String, Incoming>>,
 }
 
@@ -223,7 +226,9 @@ impl Link {
             "peers" => inner.peers_json(),
             "forget" => {
                 let id = cmd["id"].as_str().unwrap_or("");
-                if let Some(c) = inner.conns.lock().unwrap().remove(id) {
+                if let Some(c) = inner.conns.lock().unwrap().get(id).cloned() {
+                    c.trusted.store(false, Ordering::SeqCst);
+                    inner.conns.lock().unwrap().remove(id);
                     c.ch.shutdown();
                 }
                 json!({"ok": inner.peers.lock().unwrap().remove(id)})
@@ -568,7 +573,7 @@ fn establish(inner: &Arc<Inner>, ch: Channel, outbound: bool, pairing: bool) -> 
     if pairing {
         *inner.pairing.lock().unwrap() = None;
     }
-    let conn = Arc::new(Conn { peer, ch, outbound, incoming: Mutex::new(HashMap::new()) });
+    let conn = Arc::new(Conn { peer, ch, outbound, trusted: AtomicBool::new(true), incoming: Mutex::new(HashMap::new()) });
     // 重复连接：保留「id 较小的一方发起」的那条，两端取舍一致。
     // Duplicates: keep the one initiated by the smaller id, so both ends choose the same.
     let prefer_outbound = inner.id < rid;
@@ -617,6 +622,10 @@ fn read_loop(inner: Arc<Inner>, conn: Arc<Conn>) {
 }
 
 fn handle(inner: &Inner, conn: &Conn, m: Message) -> Result<(), String> {
+    if !conn.trusted.load(Ordering::SeqCst) || inner.peers.lock().unwrap().by_key(&conn.ch.remote_key).is_none() {
+        conn.ch.shutdown();
+        return Err("device is no longer trusted".into());
+    }
     let from = conn.peer.id.as_str();
     match m.kind {
         Kind::Ping => conn.ch.send(&Message::new(Kind::Pong, json!({})))?,

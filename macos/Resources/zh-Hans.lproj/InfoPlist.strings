@@ -2,4 +2,6 @@
 "CFBundleDisplayName" = "织文输入法";
 "com.weavetext.inputmethod.WeaveText" = "织文输入法";
 "com.weavetext.inputmethod.WeaveText.pinyin" = "织文拼音";
+"NSMicrophoneUsageDescription" = "点击语音窗口的话筒后，织文使用麦克风在本机识别你说的话。";
+"NSSpeechRecognitionUsageDescription" = "织文使用系统离线语音识别，将说话内容转为文字；不会改用云端识别。";
 "NSLocalNetworkUsageDescription" = "织文互联需要访问本地网络，才能发现同一 Wi-Fi 下的手机并与它互传文字、图片和文件。";

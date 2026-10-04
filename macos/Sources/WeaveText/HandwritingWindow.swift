@@ -48,7 +48,7 @@ final class HandwritingModel: ObservableObject {
         clear()
     }
     func clear() {
-        idle?.cancel();generation += 1;clearTick += 1;candidates=[]
+        idle?.cancel();generation += 1;clearTick += 1;candidates=[];hasInk=false
         message=multi ? "从左到右写 2–4 个字，字间留空，写完停笔自动上屏" : "写一个字，停笔自动上屏"
         EngineHost.shared.engine?.clear()
     }
@@ -68,9 +68,11 @@ final class HandwritingWindow:NSObject,NSWindowDelegate {
         model.owner=owner
         previousSchema=EngineHost.shared.chinese ? EngineHost.shared.scheme.id : "english"
         if window==nil {
-            let panel=NSPanel(contentRect:NSRect(x:0,y:0,width:520,height:360),styleMask:[.titled,.closable,.nonactivatingPanel,.resizable],backing:.buffered,defer:false)
+            let panel=InputPanel(contentRect:NSRect(x:0,y:0,width:520,height:360),styleMask:[.titled,.closable,.nonactivatingPanel,.resizable],backing:.buffered,defer:false)
             panel.title="织文手写";panel.level = .floating;panel.hidesOnDeactivate=false;panel.isReleasedWhenClosed=false
-            panel.contentView=NSHostingView(rootView:HandwritingView(model:model));panel.delegate=self
+            panel.becomesKeyOnlyIfNeeded=true
+            panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.ignoresCycle]
+            panel.contentView=ClickThroughHostingView(rootView:HandwritingView(model:model));panel.delegate=self
             window=panel;panel.center()
         }
         model.clear();EngineHost.shared.engine?.setSchema("hand")

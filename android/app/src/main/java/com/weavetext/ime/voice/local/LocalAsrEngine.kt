@@ -72,8 +72,10 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
     private fun offlineModels() = choice.offlineModels()
     private fun streamId(): String? = if (modelId == null) choice.streamId() else
         modelId.takeIf { models.catalog.find(it)?.kind == ModelKind.ASR_STREAMING && models.isAvailable(it) }
-    private fun finalId(): String? = if (modelId == null) choice.finalId() else
+    private fun finalId(): String? = if (modelId == null) choice.finalId() else {
         modelId.takeIf { models.catalog.find(it)?.kind == ModelKind.ASR_OFFLINE && models.isAvailable(it) }
+            ?: OfflineModelSelection(ctx, models).finalCompanion(modelId)
+    }
 
     private fun punctuationOn(): Boolean =
         prefs.getBoolean(KEY_PUNCT, true) && models.isAvailable(PUNCT_ID)
@@ -176,9 +178,14 @@ internal class LocalAsrEngine(private val ctx: Context, private val modelId: Str
                     l.offline?.setLanguage(language)
                     l.streaming?.startSession()
                     l.detector?.reset()
+                    val mode = com.weavetext.ime.voice.VoiceLanguage.of(language)
                     TwoPassRecognizer(l.streaming, l.offline, l.punct, object : TwoPassListener {
-                        override fun onPartial(text: String) { if (!cancelled) listener.onPartial(text) }
-                        override fun onFinal(text: String) { if (!cancelled) listener.onFinal(text) }
+                        override fun onPartial(text: String) { if (!cancelled && mode.acceptsTranscript(text)) listener.onPartial(text) }
+                        override fun onFinal(text: String) {
+                            if (cancelled) return
+                            if (mode.acceptsTranscript(text)) listener.onFinal(text)
+                            else onError("没有识别为英文，请重试或选择其他英文模型")
+                        }
                     }, speechDetector = l.detector)
                 }.onFailure {
                     Log.e(TAG, "load failed", it)

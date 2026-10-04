@@ -150,6 +150,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private var capNew = 0
         private var capAt = 0L
         private val capClip = RectF()
+        private val capInk = RectF()
         private val fadePaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN) }
         private var fadeShader: android.graphics.LinearGradient? = null
         private var fadeShaderW = 0f
@@ -165,6 +166,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         @androidx.annotation.VisibleForTesting val captionShown get() = !captionRect.isEmpty
         @androidx.annotation.VisibleForTesting val fullTextOpen get() = fullText
         @androidx.annotation.VisibleForTesting fun captionCenter() = floatArrayOf(captionRect.centerX(), captionRect.centerY())
+        @androidx.annotation.VisibleForTesting fun captionVerticalBounds() =
+            floatArrayOf(languageRects.maxOf { it.bottom }, capInk.top, capInk.bottom, captionRect.bottom)
 
         fun refreshEngine() {
             val e = runCatching { VoiceAccess.engines(kb.ctx) }.getOrNull()
@@ -384,13 +387,20 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             }
             val fade = ((now - capAt) / 220f).coerceIn(0f, 1f)
             text.textAlign = Paint.Align.LEFT; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(22f)
+            // 矮面板也要容纳整个字形，不能只按 ascent/descent 居中后画到语言按钮下面。
+            // Fit the full glyph metrics in the caption area, even on a short keyboard.
+            val inkHeight = text.fontMetrics.let { it.bottom - it.top }
+            val available = max(1f, area.height() - m.dp(4f))
+            if (inkHeight > available) text.textSize *= available / inkHeight
             val w = text.measureText(all)
             val pad = m.dp(6f)
             val x0 = if (w <= area.width() - 2 * pad) area.centerX() - w / 2 else area.right - pad - w
-            val centerY = area.centerY() - m.dp(5f)
-            val base = centerY - (text.ascent() + text.descent()) / 2
-            capClip.set(area.left, centerY - m.dp(24f), area.right, centerY + m.dp(24f))
+            val metrics = text.fontMetrics
+            val base = area.centerY() - (metrics.top + metrics.bottom) / 2
+            capInk.set(x0, base + metrics.top, x0 + w, base + metrics.bottom)
+            capClip.set(area)
             val layer = c.saveLayer(capClip, null)
+            c.clipRect(capClip)
             // 按「已确定／中间结果」与「新增字」把文字切成几段分别上色。 Colour runs split at the final/interim and new-char boundaries.
             val cuts = listOf(0, done.length, capNew.coerceIn(0, all.length), all.length).distinct().sorted()
             var x = x0

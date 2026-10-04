@@ -160,7 +160,7 @@ class TwoPassRecognizer(
             val before = text
             text = runCatching { punct.punctuate(before) }.getOrDefault(before)
         }
-        text = stripTrailingPeriod(text)
+        text = stripTrailingPeriod(clean(text))
         if (text.isNotEmpty()) listener.onFinal(text)
     }
 
@@ -185,8 +185,29 @@ class TwoPassRecognizer(
     companion object {
         private val CJK_SPACE = Regex("(?<=[\\u3000-\\u9fff\\uff00-\\uffef])\\s+|\\s+(?=[\\u3000-\\u9fff\\uff00-\\uffef])")
 
-        /** 去掉中文之间的空格与首尾空白。 Drop spaces next to CJK and trim. */
-        fun clean(s: String): String = s.replace(CJK_SPACE, "").trim()
+        private val LATIN_WORD = Regex("[A-Za-z]+(?:['’-][A-Za-z]+)*")
+        private val SENTENCE_START = Regex("(^|[.!?。！？]\\s*)([a-z])")
+        private val ACRONYMS = setOf("AI", "API", "CPU", "GPU", "USB", "URL", "HTML", "HTTP", "HTTPS", "IP", "DNS", "PDF", "ID")
+
+        /** 去掉中文空格；全大写词表输出还原小写，完整句子按标点恢复句首大写。 */
+        fun clean(s: String): String {
+            var text = s.replace(CJK_SPACE, "").trim()
+            val letters = text.filter { it in 'a'..'z' || it in 'A'..'Z' }
+            if (letters.isNotEmpty() && letters.all { it in 'A'..'Z' }) {
+                text = LATIN_WORD.replace(text) { match ->
+                    when (val word = match.value) {
+                        "I" -> word
+                        in ACRONYMS -> word
+                        "WIFI" -> "WiFi"
+                        else -> word.lowercase(java.util.Locale.ROOT)
+                    }
+                }
+            }
+            if (text.lastOrNull() in listOf('.', '!', '?', '。', '！', '？')) {
+                text = SENTENCE_START.replace(text) { it.groupValues[1] + it.groupValues[2].uppercase(java.util.Locale.ROOT) }
+            }
+            return text
+        }
 
         fun continuation(previous: Char?, next: String): String {
             fun ascii(c: Char?) = c != null && (c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9')

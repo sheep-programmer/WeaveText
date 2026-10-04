@@ -8,6 +8,22 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class TwoPassContinuityTest {
+    @Test fun uppercaseModelTokensBecomeOrdinaryEnglishWithoutLosingAcronyms() {
+        assertEquals("hello", TwoPassRecognizer.clean("HELLO"))
+        assertEquals("hello world", TwoPassRecognizer.clean("HELLO WORLD"))
+        assertEquals("Hello world. How are you?", TwoPassRecognizer.clean("HELLO WORLD. HOW ARE YOU?"))
+        assertEquals("I use the USB API", TwoPassRecognizer.clean("I USE THE USB API"))
+        assertEquals("我使用USB和WiFi", TwoPassRecognizer.clean("我 使用 USB 和 WIFI"))
+        assertEquals("John uses GitHub", TwoPassRecognizer.clean("John uses GitHub"))
+    }
+
+    @Test fun englishModeNeverAcceptsAChineseTranscriptButMixedModeDoes() {
+        assertEquals(false, VoiceLanguage.ENGLISH.acceptsTranscript("权力"))
+        assertEquals(false, VoiceLanguage.ENGLISH.acceptsTranscript("hello 你好"))
+        assertEquals(true, VoiceLanguage.ENGLISH.acceptsTranscript("hello, world!"))
+        assertEquals(true, VoiceLanguage.MIXED.acceptsTranscript("hello 你好"))
+    }
+
     @Test fun silentStreamingEndpointDoesNotAskOfflineModelToHallucinate() {
         var accepted = 0
         var decodes = 0

@@ -20,6 +20,13 @@ struct CandidateState: Equatable {
     var expandedMore = false
 }
 
+/// 输入法的交互窗只能接收鼠标，不能夺走文档的键盘焦点。
+/// Interactive IME panels receive mouse events without taking the document's keyboard focus.
+final class InputPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 /// 跟随光标的候选窗：无边框、不抢焦点，整个进程复用一个。
 /// The caret-following candidate window: borderless, never takes focus, one per process.
 final class CandidatePanel {
@@ -33,7 +40,7 @@ final class CandidatePanel {
     static let cornerRadius: CGFloat = 8
 
     private init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
+        panel = InputPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.level = .popUpMenu
         panel.isOpaque = false
@@ -119,6 +126,7 @@ final class CandidatePanel {
 
 /// 不激活窗口也能响应第一下点击。 Accept the first click without activating the window.
 final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
+    override var needsPanelToBecomeKey: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 

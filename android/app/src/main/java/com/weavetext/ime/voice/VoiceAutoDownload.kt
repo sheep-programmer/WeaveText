@@ -61,18 +61,20 @@ object VoiceAutoDownload {
     private fun upgradeInBackground(ctx: Context, repo: com.weavetext.ime.models.ModelRepository) {
         if (upgrading) return
         val prefs = ctx.getSharedPreferences("voice_auto", Context.MODE_PRIVATE)
-        if (prefs.getBoolean(UPGRADED, false)) return
         val engines = runCatching { VoiceHub.engines(ctx) }.getOrNull() ?: return
-        if (engines.language == VoiceLanguage.CHINESE) return
+        val mode = engines.language
+        if (mode == VoiceLanguage.CHINESE) return
+        val upgradeKey = "${UPGRADED}_${mode.key}"
+        if (prefs.getBoolean(upgradeKey, false)) return
         val selected = engines.selection().map { it.id }
         if (selected.isEmpty() || !selected.all { it in STREAMING_BILINGUAL }) return
         fun switchOver() {
             val now = engines.selection().map { it.id }
             // 下载期间用户自己换过模型就不动。 Leave it if the user picked something else meanwhile.
-            if (now.isNotEmpty() && now.all { it in STREAMING_BILINGUAL } && engines.language != VoiceLanguage.CHINESE) {
+            if (now.isNotEmpty() && now.all { it in STREAMING_BILINGUAL } && engines.language == mode) {
                 engines.setSelection(listOf(BEST))
             }
-            prefs.edit().putBoolean(UPGRADED, true).apply()
+            if (engines.language == mode) prefs.edit().putBoolean(upgradeKey, true).apply()
             upgrading = false
             changed()
         }
@@ -91,7 +93,7 @@ object VoiceAutoDownload {
     /** 当前档位是否已经有一组可用模型；没有就用默认模型补上。 */
     private fun usable(ctx: Context, repo: com.weavetext.ime.models.ModelRepository): Boolean {
         val engines = runCatching { VoiceHub.engines(ctx) }.getOrNull() ?: return false
-        if (engines.selection().isNotEmpty()) return true
+        if (engines.selection().isNotEmpty() && engines.selectionSatisfiesMode()) return true
         val ids = defaults[engines.language]!!.filter { repo.state(it).isReady }
         if (ids.isEmpty()) return false
         runCatching { engines.setSelection(ids) }

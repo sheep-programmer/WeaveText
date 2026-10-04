@@ -12,12 +12,14 @@ public enum PageKeys: String, CaseIterable, Sendable {
     case both
     case minusEqual
     case commaPeriod
+    case brackets
 
     public func pagesBack(_ c: Character) -> Bool {
         switch self {
         case .both: return c == "-" || c == ","
         case .minusEqual: return c == "-"
         case .commaPeriod: return c == ","
+        case .brackets: return c == "["
         }
     }
 
@@ -26,6 +28,7 @@ public enum PageKeys: String, CaseIterable, Sendable {
         case .both: return c == "=" || c == "."
         case .minusEqual: return c == "="
         case .commaPeriod: return c == "."
+        case .brackets: return c == "]"
         }
     }
 }
@@ -81,6 +84,10 @@ public final class Preferences: ObservableObject {
     @Published public var candidateKeys: CandidateKeys {
         didSet { save((try? JSONEncoder().encode(candidateKeys)) ?? Data(), "candidateKeys") }
     }
+    @Published public var voiceShortcut: VoiceShortcut? {
+        didSet { save(voiceShortcut.flatMap { try? JSONEncoder().encode($0) } ?? Data(), "voiceShortcut") }
+    }
+    @Published public var voiceLanguage: String { didSet { save(voiceLanguage, "voiceLanguage") } }
     /// 候选后显示拼音（可带声调），默认关闭。 Pinyin after candidates (optionally with tones), off by default.
     @Published public var pinyinHint: PinyinHint { didSet { save(pinyinHint.rawValue, "pinyinHint") } }
     /// 手写停笔自动上屏的快慢。 How quickly a pause commits handwriting.
@@ -109,6 +116,9 @@ public final class Preferences: ObservableObject {
         prediction = defaults.object(forKey: "prediction") as? Bool ?? true
         predictionDepth = Self.clamp(defaults.object(forKey: "predictionDepth") as? Int ?? 3, Self.predictionDepths)
         candidateKeys = defaults.data(forKey: "candidateKeys").flatMap { try? JSONDecoder().decode(CandidateKeys.self, from: $0) } ?? CandidateKeys()
+        voiceShortcut = defaults.object(forKey: "voiceShortcut") == nil ? .defaultBinding :
+            defaults.data(forKey: "voiceShortcut").flatMap { try? JSONDecoder().decode(VoiceShortcut.self, from: $0) }
+        voiceLanguage = defaults.string(forKey: "voiceLanguage") == "en-US" ? "en-US" : "zh-CN"
         pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
         handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])

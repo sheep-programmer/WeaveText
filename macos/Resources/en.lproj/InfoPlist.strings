@@ -2,4 +2,6 @@
 "CFBundleDisplayName" = "WeaveText";
 "com.weavetext.inputmethod.WeaveText" = "织文输入法 WeaveText";
 "com.weavetext.inputmethod.WeaveText.pinyin" = "织文拼音 WeaveText";
+"NSMicrophoneUsageDescription" = "After you press the microphone in the voice window, WeaveText uses it to recognize speech on this Mac.";
+"NSSpeechRecognitionUsageDescription" = "WeaveText uses system on-device speech recognition to turn speech into text, without falling back to cloud recognition.";
 "NSLocalNetworkUsageDescription" = "WeaveLink needs the local network to find phones on the same Wi-Fi and exchange text, images and files with them.";

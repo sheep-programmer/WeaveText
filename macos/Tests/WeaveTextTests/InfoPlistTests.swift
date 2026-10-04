@@ -35,6 +35,15 @@ import Testing
         #expect(Set(try strings("en").keys) == Set(try strings("zh-Hans").keys))
     }
 
+    @Test func voicePermissionsAreExplainedInBothLanguages() throws {
+        let info = try info()
+        for key in ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"] {
+            #expect((info[key] as? String)?.isEmpty == false)
+            #expect(try strings("en")[key]?.isEmpty == false)
+            #expect(try strings("zh-Hans")[key]?.isEmpty == false)
+        }
+    }
+
     @Test func developmentRegionAndModeIDs() throws {
         let info = try info()
         #expect(info["CFBundleDevelopmentRegion"] as? String == "zh-Hans")

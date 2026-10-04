@@ -145,7 +145,7 @@ final class StickerWindow {
     static let shared=StickerWindow()
     let model=StickerCollectionModel()
     private var panel:NSPanel?
-    func show(owner:WeaveInputController) {
+    func show(owner:WeaveInputController? = nil) {
         model.owner=owner
         let front=NSWorkspace.shared.frontmostApplication
         if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {model.target=front}

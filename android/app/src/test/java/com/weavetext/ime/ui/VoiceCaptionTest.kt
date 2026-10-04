@@ -54,6 +54,19 @@ class VoiceCaptionTest : KeyboardSnapshotSupport() {
         render(v)
     }
 
+    @Test fun compactCaptionKeepsTheWholeGlyphBelowTheLanguageButtons() {
+        val v = panel()
+        for (height in listOf(600, 768, 900)) {
+            v.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+            v.layout(0, 0, 1080, height)
+            session.preview(VoiceSession.State.LISTENING, "", "权力 English", 0.5f)
+            render(v)
+            val (languageBottom, glyphTop, glyphBottom, captionBottom) = v.captionVerticalBounds()
+            assertTrue("caption overlaps language buttons at height $height", glyphTop > languageBottom)
+            assertTrue("caption clips glyph bottoms at height $height", glyphBottom <= captionBottom)
+        }
+    }
+
     @Test fun shortCaptionIsCentredAndLongOneKeepsTheLatestText() {
         val v = panel()
         session.preview(VoiceSession.State.LISTENING, "你好，", "今天", 0.5f)

@@ -74,6 +74,12 @@ private let busy = KeyContext(composing: true)
         #expect(KeyMapper.action(for: key("="), in: busy) == .pageNext)
         #expect(KeyMapper.action(for: key(","), in: busy) == .pagePrevious)
         #expect(KeyMapper.action(for: key("."), in: busy) == .pageNext)
+        var brackets = busy
+        brackets.pageKeys = .brackets
+        #expect(KeyMapper.action(for: key("["), in: brackets) == .pagePrevious)
+        #expect(KeyMapper.action(for: key("]"), in: brackets) == .pageNext)
+        #expect(KeyMapper.action(for: key("["), in: idle) == .punctuation("["))
+        #expect(KeyMapper.action(for: key("-"), in: brackets) == .punctuation("-"))
         var minus = busy
         minus.pageKeys = .minusEqual
         #expect(KeyMapper.action(for: key(","), in: minus) == .punctuation(","))
@@ -185,5 +191,32 @@ private let busy = KeyContext(composing: true)
         #expect(Preferences(defaults: suite).candidateKeys == keys)
         prefs.candidateKeys = CandidateKeys()
         #expect(Preferences(defaults: suite).candidateKeys.isDefault)
+    }
+}
+
+@Suite struct VoiceShortcutTests {
+    @Test func requiresAModifiedShortcutAndMatchesExactly() {
+        #expect(VoiceShortcut.make(from: KeyInput(keyCode: 9, characters: "v")) == nil)
+        let chord = VoiceShortcut.make(from: KeyInput(keyCode: 9, characters: "v", control: true, option: true))
+        #expect(chord == .defaultBinding)
+        #expect(chord?.matches(KeyInput(keyCode: 9, characters: "√", control: true, option: true)) == true)
+        #expect(chord?.matches(KeyInput(keyCode: 9, characters: "v", control: true)) == false)
+        #expect(chord?.matches(KeyInput(keyCode: 9, characters: "v", shift: true, control: true, option: true)) == false)
+    }
+
+    @Test func shortcutCanBeDisabledAndRestoredAcrossLaunches() {
+        let name = "weave-voice-keys-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let prefs = Preferences(defaults: defaults)
+        #expect(prefs.voiceShortcut == .defaultBinding)
+        prefs.voiceShortcut = nil
+        #expect(Preferences(defaults: defaults).voiceShortcut == nil)
+        prefs.voiceShortcut = .defaultBinding
+        prefs.pageKeys = .brackets
+        prefs.voiceLanguage = "en-US"
+        let restored = Preferences(defaults: defaults)
+        #expect(restored.voiceShortcut == .defaultBinding)
+        #expect(restored.pageKeys == .brackets && restored.voiceLanguage == "en-US")
     }
 }
