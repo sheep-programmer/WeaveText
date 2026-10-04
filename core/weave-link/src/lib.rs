@@ -226,7 +226,8 @@ impl Link {
             "peers" => inner.peers_json(),
             "forget" => {
                 let id = cmd["id"].as_str().unwrap_or("");
-                if let Some(c) = inner.conns.lock().unwrap().get(id).cloned() {
+                let conn = { inner.conns.lock().unwrap().get(id).cloned() };
+                if let Some(c) = conn {
                     c.trusted.store(false, Ordering::SeqCst);
                     inner.conns.lock().unwrap().remove(id);
                     c.ch.shutdown();
