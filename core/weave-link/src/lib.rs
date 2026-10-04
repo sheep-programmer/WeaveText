@@ -127,6 +127,8 @@ struct Inner {
 pub struct Link {
     inner: Arc<Inner>,
     rx: Mutex<Receiver<Value>>,
+    wake_addr: SocketAddr,
+    accept_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Link {
@@ -134,7 +136,13 @@ impl Link {
         fs::create_dir_all(&cfg.state_dir).map_err(err)?;
         let me = Identity::load_or_create(&cfg.state_dir)?;
         let listener = bind(cfg.port)?;
-        let port = listener.local_addr().map_err(err)?.port();
+        let listen_addr = listener.local_addr().map_err(err)?;
+        let port = listen_addr.port();
+        let wake_addr = if listen_addr.is_ipv6() {
+            SocketAddr::from(([0u16, 0, 0, 0, 0, 0, 0, 1], port))
+        } else {
+            SocketAddr::from(([127, 0, 0, 1], port))
+        };
         let (tx, rx) = channel();
         let inner = Arc::new(Inner {
             id: me.id(),
@@ -154,13 +162,14 @@ impl Link {
             running: AtomicBool::new(true),
             discovery: Mutex::new(None),
         });
-        {
+        let accept_thread = {
             let inner = inner.clone();
             std::thread::Builder::new()
                 .name("weavelink-accept".into())
                 .spawn(move || accept_loop(inner, listener))
-                .map_err(err)?;
-        }
+                .map_err(err)?
+        };
+        let link = Link { inner: inner.clone(), rx: Mutex::new(rx), wake_addr, accept_thread: Mutex::new(Some(accept_thread)) };
         if cfg.mdns {
             let weak = Arc::downgrade(&inner);
             match Discovery::start(&inner.id, &cfg.name, &cfg.platform, port, move |seen| {
@@ -176,7 +185,7 @@ impl Link {
             let inner = inner.clone();
             std::thread::Builder::new().name("weavelink-timer".into()).spawn(move || timer_loop(inner)).map_err(err)?;
         }
-        Ok(Link { inner, rx: Mutex::new(rx) })
+        Ok(link)
     }
 
     /// 取下一个事件（最多等 timeout）；停止后返回 None。 Next event, waiting up to `timeout`; None once stopped.
@@ -280,20 +289,25 @@ impl Link {
 
     pub fn stop(&self) {
         let inner = &self.inner;
-        if !inner.running.swap(false, Ordering::SeqCst) {
-            return;
+        if inner.running.swap(false, Ordering::SeqCst) {
+            if let Some(d) = inner.discovery.lock().unwrap().take() {
+                d.stop();
+            }
+            for (_, c) in inner.conns.lock().unwrap().drain() {
+                c.ch.shutdown();
+            }
+            // 按监听器的地址族唤醒 accept，避免 IPv4 请求被同端口的另一监听器接走。
+            // Wake accept through its own address family, not a shadow listener on the same port.
+            let _ = TcpStream::connect_timeout(&self.wake_addr, Duration::from_millis(300));
+            // 断开事件通道：poll 返回 None。 Close the event channel so poll returns None.
+            let (dead, _) = channel();
+            *inner.tx.lock().unwrap() = dead;
         }
-        if let Some(d) = inner.discovery.lock().unwrap().take() {
-            d.stop();
+        // 等监听线程退出并释放端口，重启才不会回退到随机端口、让记住的地址失效。
+        // Wait for the listener to release its port before a restart can reuse the remembered address.
+        if let Some(thread) = self.accept_thread.lock().unwrap().take() {
+            let _ = thread.join();
         }
-        for (_, c) in inner.conns.lock().unwrap().drain() {
-            c.ch.shutdown();
-        }
-        // 叫醒阻塞在 accept 上的线程。 Wake the thread blocked in accept.
-        let _ = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], inner.port)), Duration::from_millis(300));
-        // 断开事件通道：poll 返回 None。 Close the event channel so poll returns None.
-        let (dead, _) = channel();
-        *inner.tx.lock().unwrap() = dead;
     }
 }
 
@@ -830,12 +844,14 @@ mod tests {
     use super::*;
 
     fn cfg(tag: &str, dir: &Path) -> Config {
+        let reserved = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reserved.local_addr().unwrap().port();
         Config {
             name: format!("dev-{tag}"),
             platform: tag.into(),
             state_dir: dir.join(tag).join("state"),
             inbox_dir: dir.join(tag).join("inbox"),
-            port: 1, // 1 被占用 / 无权限 → 随机端口。 Port 1 is unavailable → a random port.
+            port,
             mdns: false,
         }
     }
@@ -893,6 +909,7 @@ mod tests {
         drop(mac);
         wait(&phone, "disconnected");
         let mac = Link::start(Config { port: port as u16, ..cfg("mac", &dir) }).unwrap();
+        assert_eq!(mac.call(&json!({"op": "info"}))["port"], port, "restart must reclaim the remembered port");
         let id = p["id"].as_str().unwrap();
         phone.call(&json!({"op": "connect", "id": id}));
         wait(&phone, "connected");
@@ -905,6 +922,22 @@ mod tests {
         assert_eq!(phone.call(&json!({"op": "forget", "id": id}))["ok"], true);
         drop(mac);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_releases_the_listener_before_returning() {
+        let dir = std::env::temp_dir().join(format!("weave-link-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let reserved = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let config = Config { port, ..cfg("restart", &dir) };
+        for _ in 0..32 {
+            let link = Link::start(config.clone()).unwrap();
+            assert_eq!(link.inner.port, port, "the stopped listener still owns the port");
+            link.stop();
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
