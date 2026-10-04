@@ -363,7 +363,8 @@ fn neighbours(c: u8) -> &'static [u8] {
 pub fn typo_variants(s: &str, at_end: bool) -> Vec<(SyllableId, u16)> {
     let b = s.as_bytes();
     let mut out: Vec<(SyllableId, u16)> = Vec::new();
-    if !(2..=6).contains(&b.len()) || syllable::id_of(s).is_some() || (at_end && syllable::is_prefix(s)) {
+    if !(1..=6).contains(&b.len()) || (b.len() == 1 && (at_end || !b"iu".contains(&b[0])))
+        || syllable::id_of(s).is_some() || (at_end && syllable::is_prefix(s)) {
         return out;
     }
     let mut add = |t: &[u8], pen: u16| {
@@ -401,6 +402,14 @@ pub fn typo_variants(s: &str, at_end: bool) -> Vec<(SyllableId, u16)> {
             }
         }
         t[p] = b[p];
+    }
+    // 漏打零声母的 y、w（ing → ying，u → wu/yu）。 A dropped zero-initial y or w.
+    if b"iuv".contains(&b[0]) {
+        for &c in b"yw" {
+            let mut ins = b.to_vec();
+            ins.insert(0, c);
+            add(&ins, penalty::TYPO_EDIT);
+        }
     }
     for p in 1..=b.len() {
         for &c in MISSABLE {
@@ -683,6 +692,17 @@ mod tests {
         assert!(typo_variants("shang", false).is_empty());
         assert_eq!(neighbours(b'q'), b"qw");
         assert_eq!(neighbours(b'g'), b"fgh");
+    }
+
+    #[test]
+    fn a_missing_zero_initial_can_be_restored_inside_input() {
+        for (typed, expected) in [("u", "wu"), ("u", "yu"), ("i", "yi"), ("ing", "ying")] {
+            let variants = typo_variants(typed, false);
+            assert!(variants.iter().any(|&(id, _)| syllable::spelling(id) == expected), "{typed} → {expected}: {variants:?}");
+        }
+        assert!(typo_variants("u", true).is_empty());
+        assert!(typo_variants("i", true).is_empty());
+        assert!(typo_variants("n", false).is_empty());
     }
 
     #[test]

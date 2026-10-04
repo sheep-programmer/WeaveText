@@ -17,6 +17,9 @@ use weave_dict::syllable::SyllableId;
 use crate::graph::{EdgeKind, SyllableGraph};
 use crate::userdict::{UNodeId, UserDict, UserEntry, UROOT};
 
+/// 夹在拼音里的三个字母的英文词多半是打错的拼音碰巧拼出来的（ragdajia 的 rag），额外加价。
+/// A three-letter English word inside pinyin is usually a mistyped syllable that happens to spell one (rag in ragdajia).
+const SHORT_LATIN: u32 = 2500;
 /// 一个词最多多少个音节。 Max syllables per word.
 const MAX_WORD_SYLLABLES: usize = 10;
 /// 单个起点的深搜预算（防简拼组合爆炸）。 DFS budget per start (guards abbreviation blow-up).
@@ -355,7 +358,9 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    pub fn decode_with_latin(&self,english:Option<&Lexicon>,original:&[u8],raw_input:&str,english_user:Option<&UserDict>)->Lattice {
+    /// `correcting`：纠错时不把偶然拼出的短英文当成中英混打。
+    /// `correcting`: do not let accidental short English fragments block pinyin correction.
+    pub fn decode_with_latin(&self,english:Option<&Lexicon>,original:&[u8],raw_input:&str,english_user:Option<&UserDict>,correcting:bool)->Lattice {
         let mut lat=self.decode();
         if original.len()!=self.graph.len{return lat;}
         if !original.iter().any(u8::is_ascii_uppercase) && self.graph.spells_fully() {return lat;}
@@ -384,10 +389,12 @@ impl<'a> Decoder<'a> {
                     && weave_dict::syllable::id_of(&spelling).is_none());
                 let learned=english_user.is_some_and(|u|crate::table::code_key(&spelling).is_some_and(|key|u.get(&key,&spelling).is_some()));
                 if !capitals && known.is_none() && !learned {continue;}
+                let short_latin=end-start==3 && end-start<original.len() && !learned && !slice.iter().any(u8::is_ascii_uppercase);
+                if correcting && short_latin {continue;}
                 let text=if positions.len()==original.len(){raw_input[positions[start]..positions[end-1]+1].to_string()}else{String::from_utf8_lossy(slice).into_owned()};
                 let si=lat.spans.len();
                 lat.spans.push(Span{start,end,key:Vec::new(),cuts:vec![end],penalty:0,sys:Nodes::EMPTY,usr:None,raw:true,
-                    literal:Some((text,if capitals{3500}else{6200})),cut_short:false});
+                    literal:Some((text,if capitals{3500}else if short_latin {6200+SHORT_LATIN}else{6200})),cut_short:false});
                 lat.by_start[start].push(si);
             }
         }

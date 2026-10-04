@@ -477,6 +477,16 @@ const CAND_FIRST: usize = 120;
 const TYPO_MARGIN: u32 = 500;
 /// 只是句中有零声母音节时，纠错读法要好得多才换。 When only a mid-input zero-initial syllable hints at a typo.
 const TYPO_MARGIN_VOWEL: u32 = 5000;
+/// 只是句中有不照打的音节（简拼、错拼）时：可能是故意的简拼（mingtjian 的「明天见」），纠错读法要好出更多才换。
+/// When only a mid-input syllable is not spelled out (abbreviation, misspelling): it may be a deliberate abbreviation
+/// (明天见 for mingtjian), so the corrected reading must be clearly better.
+const TYPO_MARGIN_UNSPELLED: u32 = 1500;
+/// 错拼可能被拆成多个合法词（jintina 的「浸提那」）；要有很大的优势才合回常见词。
+/// A typo can split into valid words (浸提那 for jintina); require a large gain to merge it into a common word.
+const TYPO_MARGIN_FRAGMENTED: u32 = 9000;
+/// 纠错读法胜出、但原读法只差这么多以内时，原读法的首选留作第二候选。
+/// When the corrected reading wins but the plain one is within this much, the plain top choice is kept second.
+const KEEP_UNCORRECTED: u32 = 9000;
 /// 手写每次给出的候选数。 Candidates per handwriting recognition.
 pub const HAND_CANDIDATES: usize = 12;
 
@@ -1748,11 +1758,10 @@ impl Engine {
         true
     }
 
-    /// 最优读法像不像打错了，像的话纠错读法要好出多少才采用。根本读不出来，或用到了句中简拼（惩罚达到简拼一档）或原样按键、而输入里
-    /// 有韵母字母：多半打错了；句中出现零声母音节（字母颠倒常拼出 mina、dai'e 这样的读法）：可能打错了；否则不纠错。
-    /// Whether the best reading looks mistyped, and if so how much better a corrected reading must be. No reading at all, a mid-input
-    /// abbreviation (penalty at the abbreviation level) or raw keys while vowels were typed: probably a typo. A zero-initial
-    /// syllable mid-input (swapped letters often read as mi-na, dai-e): maybe a typo. Otherwise no correction.
+    /// 最优读法像不像打错了，像的话纠错读法要好出多少才采用。原样按键、句中简拼或非完整拼写多半是打错；
+    /// 句中零声母可能是颠倒；只拆成多个合法词时，要求更大的优势，完整词条则不纠错。
+    /// How much better a correction must be: raw keys, mid-input abbreviations or misspellings suggest a typo;
+    /// mid-input zero-initial syllables may come from a swap. Valid word fragments require a large gain; a whole literal word is protected.
     fn typo_margin(&self, lat: &Lattice, keys: &[u8]) -> Option<u32> {
         if !keys.iter().any(|b| b"aeiouv".contains(b)) {
             return None;
@@ -1761,19 +1770,48 @@ impl Engine {
         // A fully spelled dictionary word is deliberate; do not delete letters to turn it into another word.
         if lat.best.len() == 1 {
             let span = &lat.spans[lat.best[0].0];
-            if !span.raw && span.penalty == 0 && span.start == 0 && span.end == keys.len() {
-                return None;
+            if !span.raw && span.start == 0 && span.end == keys.len() {
+                if span.penalty == 0 {
+                    return None;
+                }
+                // 首音节只打声母、后面全拼的完整词（bdan 的「不但」）不能删掉声母变成「但」；紧随的零声母仍像打错
+                // （qeshi 可能是 queshi 漏了 u）。 Protect a leading abbreviation, except before a suspicious zero-initial syllable.
+                if span.key.len() >= 2 && span.key.len() == span.cuts.len() {
+                    let first = std::str::from_utf8(&keys[..span.cuts[0]]).unwrap_or("");
+                    let rest_full = span.cuts.windows(2).zip(span.key.iter().skip(1)).all(|(cut, &id)| {
+                        std::str::from_utf8(&keys[cut[0]..cut[1]]).ok().and_then(syllable::id_of) == Some(id)
+                    });
+                    if syllable::is_initial(first) && syllable::id_of(first).is_none()
+                        && !b"aoe".contains(&keys[span.cuts[0]])
+                        && syllable::spelling(span.key[0]).starts_with(first) && rest_full {
+                        return None;
+                    }
+                }
             }
         }
         let spans = || lat.best.iter().map(|(si, _)| &lat.spans[*si]);
+        // 句中某个音节不是照打的拼写（简拼、错拼纠正），哪怕整段被认成一个词（suhju 的「速汇聚」）也像打错了。
+        // A mid-input syllable that is not spelled out as typed (abbreviation, misspelling fix) looks like a typo, even
+        // when the whole input reads as one word (速汇聚 for suhju).
+        let unspelled = spans().any(|sp| {
+            std::iter::once(sp.start).chain(sp.cuts.iter().copied()).zip(sp.cuts.iter().copied())
+                .any(|(a, b)| b < keys.len() && std::str::from_utf8(&keys[a..b]).ok().and_then(syllable::id_of).is_none())
+        });
         if lat.best.is_empty() || spans().any(|sp| sp.raw || (sp.end < keys.len() && sp.penalty >= graph::penalty::ABBREV as u32)) {
             return Some(TYPO_MARGIN);
+        }
+        if unspelled {
+            return Some(TYPO_MARGIN_UNSPELLED);
         }
         let vowel_start = spans().any(|sp| {
             let cuts = &sp.cuts[..sp.cuts.len().saturating_sub(1)];
             std::iter::once(&sp.start).chain(cuts).any(|&p| p > 0 && b"aoe".contains(&keys[p]))
         });
-        vowel_start.then_some(TYPO_MARGIN_VOWEL)
+        if vowel_start {
+            Some(TYPO_MARGIN_VOWEL)
+        } else {
+            (lat.best.len() >= 2).then_some(TYPO_MARGIN_FRAGMENTED)
+        }
     }
 
     /// 输入恰为 rq / sj / xq 时，把日期时间插在首选之后。 Date/time after the first candidate for rq / sj / xq.
@@ -1815,20 +1853,31 @@ impl Engine {
             baseline: self.options.lm_baseline,
         });
         let original:Vec<u8>=self.rest_raw().bytes().filter(u8::is_ascii_alphabetic).collect();
-        let decode = |graph: &SyllableGraph| {
+        // 纠错时忽略偶然拼出的短英文（ragdajia 的 rag），但保留大写、学过的词和较长英文里的混输。
+        // Ignore accidental short English fragments during correction, but keep explicit capitals, learned words and longer English.
+        let decode = |graph: &SyllableGraph, correcting: bool| {
             let d=Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm };
-            if self.schema==Schema::Pinyin {d.decode_with_latin(self.english.as_ref(),&original,self.rest_raw(),self.user_english.learning.then_some(&self.user_english))} else {d.decode()}
+            if self.schema==Schema::Pinyin {d.decode_with_latin(self.english.as_ref(),&original,self.rest_raw(),self.user_english.learning.then_some(&self.user_english),correcting)} else {d.decode()}
         };
-        let lat1 = decode(&g1);
+        let lat1 = decode(&g1, false);
         // 加上纠错再解一次，明显更好才采用；正常读法要靠句中简拼或原样按键才读得通、而输入里又有韵母时多半是打错了，
         // 门槛更低。 Decode again with corrections and keep it if clearly better; the bar is lower when the plain reading
         // needs mid-input abbreviations or raw keys although vowels were typed (probably a typo, not deliberate abbreviation).
         let mut chosen = None;
+        // 纠错只是略好时，原读法的首选留作第二候选：可能是故意的简拼（woxzaimang 的「我现在忙」）；差得远的（suhju 的
+        // 「速汇聚」）不再往前放。 When the correction wins only narrowly, the plain reading's top choice stays second: it
+        // may be a deliberate abbreviation; a far worse one (速汇聚 for suhju) is not pulled forward.
+        let mut uncorrected = None;
         let margin = (self.schema == Schema::Pinyin && self.options.autocorrect).then(|| self.typo_margin(&lat1, &keys1));
         if let Some(margin) = margin.flatten() {
             let (g2, keys2) = self.build_graph_with(true);
-            let lat2 = decode(&g2);
+            let lat2 = decode(&g2, true);
             if lat2.best_cost.saturating_add(margin) < lat1.best_cost {
+                let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g1, context, lm };
+                let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&original[s..e]).into_owned();
+                if lat1.best_cost < lat2.best_cost.saturating_add(KEEP_UNCORRECTED) {
+                    uncorrected = plain.candidates(&lat1, &raw_text, 1).into_iter().find(|c| c.end == g1.len && c.kind != CandKind::Raw);
+                }
                 chosen = Some((g2, keys2, lat2));
             }
         }
@@ -1836,6 +1885,11 @@ impl Engine {
         let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
         let raw_text = |s: usize, e: usize| String::from_utf8_lossy(if self.schema==Schema::Pinyin {&original[s..e]}else{&keys[s..e]}).into_owned();
         let mut cands = dec.candidates(&lat, &raw_text, self.cand_cap);
+        if let Some(plain) = uncorrected.filter(|p| cands.first().is_some_and(|first| first.text != p.text)) {
+            cands.retain(|c| c.text != plain.text);
+            cands.insert(1.min(cands.len()), plain);
+            cands.truncate(self.cand_cap);
+        }
         // 补全或纠错胜出时，仍保留完整原拼写组出的词句（xiuba 不能只剩 xiuban 的「休班」）。
         // Keep literal full-spelling sentences when completion/correction wins (xiuba must still offer 修吧).
         if lat.best.iter().any(|(index, _)| lat.spans[*index].penalty > 0) {
@@ -2758,6 +2812,116 @@ mod typo_tests {
         assert_eq!(snapshot.candidates[0].text, "嗯嗯");
         assert_eq!(snapshot.preedit, "en'en");
         assert!(snapshot.marks.is_empty(), "the valid spelling must not lose its first e");
+    }
+
+    #[test]
+    fn corrections_prefer_a_common_word_over_a_rare_abbreviated_word() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("shu ju"), "数据", 100);
+        b.insert(&key("su hui ju"), "速汇聚", 12000);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        let snapshot = typing(&mut e, "suhju");
+        assert_eq!(snapshot.candidates[0].text, "数据");
+        assert_eq!(snapshot.preedit, "shu'ju");
+        e.options.autocorrect = false;
+        assert_eq!(typing(&mut e, "suhju").candidates[0].text, "速汇聚");
+    }
+
+    #[test]
+    fn a_narrow_correction_keeps_the_abbreviated_reading_selectable() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("wo zai mang"), "我在忙", 100);
+        b.insert(&key("wo xian zai mang"), "我现在忙", 3500);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        let snapshot = typing(&mut e, "woxzaimang");
+        assert_eq!(snapshot.candidates[0].text, "我在忙");
+        assert_eq!(snapshot.candidates[1].text, "我现在忙");
+        assert!(e.select(1));
+        assert_eq!(e.snapshot().commit, "我现在忙");
+        assert!(!e.is_composing());
+    }
+
+    #[test]
+    fn a_leading_abbreviation_is_not_deleted_for_a_cheaper_short_word() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        for (py, text, cost) in [("bu dan", "不但", 12000), ("dan", "但", 100),
+            ("ni xu yao", "你需要", 15000), ("xu yao", "需要", 100)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        for (typed, expected) in [("bdan", "不但"), ("nxuyao", "你需要")] {
+            let snapshot = typing(&mut e, typed);
+            assert_eq!(snapshot.candidates[0].text, expected);
+            assert!(snapshot.marks.is_empty());
+            assert!(e.select(0));
+            assert_eq!(e.snapshot().commit, expected);
+        }
+    }
+
+    #[test]
+    fn an_initial_before_a_zero_initial_syllable_can_still_be_a_typo() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("que shi"), "确实", 100);
+        b.insert(&key("qi e shi"), "企鹅时", 16000);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        assert_eq!(typing(&mut e, "qeshi").candidates[0].text, "确实");
+    }
+
+    #[test]
+    fn an_accidental_split_can_be_merged_but_explicit_boundaries_are_kept() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("jin tian"), "今天", 100);
+        b.insert(&key("jin ti"), "浸提", 16000);
+        b.insert(&key("na"), "那", 3000);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        let snapshot = typing(&mut e, "jintina");
+        assert_eq!(snapshot.candidates[0].text, "今天");
+        assert_eq!(snapshot.preedit, "jin'tian");
+        let snapshot = typing(&mut e, "jin'ti'na");
+        assert_eq!(snapshot.candidates[0].text, "浸提那");
+        assert!(snapshot.marks.is_empty());
+    }
+
+    #[test]
+    fn a_missing_zero_initial_is_fixed_in_a_common_word() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        b.insert(&key("wu qi"), "武器", 100);
+        b.insert(&key("qi"), "其", 3000);
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        let snapshot = typing(&mut e, "uqi");
+        assert_eq!(snapshot.candidates[0].text, "武器");
+        assert_eq!(snapshot.preedit, "wu'qi");
+        assert_eq!(marks(&snapshot), vec![(0, 1, MarkKind::Insert, String::new())]);
+    }
+
+    #[test]
+    fn english_fragments_survive_a_pinyin_correction() {
+        let mut e = engine();
+        let mut b = Builder::new(Kind::Letters);
+        b.insert(&table::code_key("school").unwrap(), "school", 100);
+        b.insert(&table::code_key("cat").unwrap(), "cat", 100);
+        e.english = Some(Lexicon::from_bytes(b.build()).unwrap());
+        for (typed, expected) in [("xainzaischool", "现在school"), ("xainzaiCat", "现在Cat"), ("xainzaicat", "现在cat")] {
+            if typed == "xainzaicat" {
+                e.user_english.learn(&table::code_key("cat").unwrap(), "cat");
+            }
+            let snapshot = typing(&mut e, typed);
+            assert_eq!(snapshot.candidates[0].text, expected, "{typed}");
+            assert!(e.select(0));
+            assert_eq!(e.snapshot().commit, expected);
+        }
     }
 
     #[test]
