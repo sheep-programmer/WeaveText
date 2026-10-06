@@ -5,7 +5,7 @@ version: 1.0.0
 type: translation
 entry: main.lua
 engine: apple-system
-min_host_version: 0.1.0-beta.20
+min_host_version: 0.1.0-beta.21
 min_os_version: 15
 permissions: []
 networkHosts: []
