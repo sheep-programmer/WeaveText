@@ -64,7 +64,11 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *Four variants per style, all under 80 ms.*
 - **全部原创**：声音由 `KeySoundSynth` 按公式生成（固定种子噪声，结果可复现），仓库里没有任何音频文件。
   *All original: generated from formulas with seeded noise; no audio files in the repo.*
-- 峰值归一化到 0.8 满幅，末尾 3 ms 淡出防爆音。*Normalized to 0.8 FS with a 3 ms fade-out.*
+- 末尾 3 ms 淡出防爆音，之后逐样本软限幅（不是整段按峰值归一化）：归一化会把每个变体的峰值都顶到满幅，
+  乱打时几十毫秒一个、连着放，听感和削波一样吵；软限幅保留瞬态自己的动态，各变体之间的相对轻重也在。
+  *3 ms fade-out, then a per-sample soft limiter instead of whole-file normalization: normalizing pins every
+  variant to full scale, which reads as clipping when dozens fire per second; soft limiting keeps the transients'
+  dynamics and the relative weight of the four variants.*
 
 ### 3.2 播放 / Playback
 
@@ -73,7 +77,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *WAVs are synthesized once into the cache and loaded into SoundPool.*
 - 放音在独立的反馈线程执行，按键路径只投递一个任务，不阻塞。*Playback is posted to the feedback thread.*
 - **静音 / 振动模式不发声**（`ringerMode != RINGER_MODE_NORMAL`）。*Silent in silent/vibrate ringer modes.*
-- 音量滑块 0–100，增益 = 0.6x² + 0.4x（低音量更细腻），默认 50。*Volume 0–100 with a gentle curve.*
+- 音量滑块 0–100，增益 = 0.6x² + 0.4x（低音量更细腻），默认 50；空格与回车再高 15% / 10%，听着是「按下去了」，
+  而不是比字母还轻。*Volume 0–100 with a gentle curve; space and enter play 15% / 10% above the letters.*
 - 兼容旧设置：旧版开过按键音（`sound` 1–4）而没选过风格的用户显示「跟随系统」，音量换算为 15 / 30 / 50 / 80。
   *Legacy sound levels map to "system" with the matching volume.*
 
@@ -96,9 +101,15 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 │ └──────────────────────────────────────┘ │
 ```
 
-- 震动档位保留原有的轻 / 中 / 强实现（01 §9.2）。旧版的「跟随系统」（值 1）不再提供但仍然生效，界面在标题右侧显示「跟随系统」、不选中任何分段。
-  *Light/medium/strong keep their implementations. Legacy value 1 still works and is labelled on the right.*
+- 震动档位轻 / 中 / 强见 01 §9.2。旧版的「跟随系统」（值 1）不再提供但仍然生效，界面在标题右侧显示「跟随系统」、不选中任何分段。
+  *Light/medium/strong as in 01 §9.2. Legacy value 1 still works and is labelled on the right.*
 - 键盘高度滑块刻度改为「紧凑 · 适中 · 较高 · 高」。*Height ticks: compact · medium · taller · tall.*
+- **点一下立刻看得见**：这一页的各块（按键音、按键震动、键盘预览）各自持有「活」的设置
+  （`rememberLivePrefs`），选中的风格、音量与档位当场重画；此前预览与卡片在 LookScreen 作用域里
+  一次性读到设置，改完要退出这一页再进来才更新。凡是自己读设置的可组合函数都要自己拿，见 `LivePrefs` 的注释。
+  *A tap shows at once: each block owns its live preferences, so the picked style, volume and level redraw on the
+  spot. Previously the preview and the card read the settings once in the LookScreen scope and only updated after
+  leaving and re-entering the page; see the note on `LivePrefs`.*
 
 ![外观与手感 / Look & feel](../../android/app/src/test/snapshots/settings_look.png)
 ![选了木质按键音 / Wood key sound selected](../../android/app/src/test/snapshots/settings_look_key_sound.png)
@@ -393,3 +404,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *`HardwareKeysTest` covers each rule with synthetic `KeyEvent`s (a consumed DOWN also consumes its UP).*
 
 ![实体键盘时的候选栏 / Candidate bar with a physical keyboard](../../android/app/src/test/snapshots/keyboard_hardware_candidates_light.png)
+- 2026 备忘（排查「导航栏挡住键盘」用）:
+  - `InputMethodService` 的 `SoftInputView`（即 our `view` 的父级）是 FrameLayout，API21+ 默认 `fitSystemWindows=true`，会**消耗 navigationBars**。child 收到的 insets.bottom 通常 = 0，**不能信；visible flag 也可能被清**。
+  - 必须**从 `service.window?.window?.decorView?.rootWindowInsets` 拿**（窗口级、未被消耗）；如果拿得到，取 `WindowInsets.Type.navigationBars()` + `WindowInsets.Type.ime()` 的 max，作为底部垫高。
+  - 不能依赖 root.onApplyWindowInsetsListener 收到的 insets——它是 child 视角，可能已被消耗；该回调只用做"重新读窗口级 insets"的触发信号。
+  - IME 显示期间 window insets 总会分发一次，但若分发顺序早于 attach，`root.requestApplyInsets()` in `onShown` 兜一帧；保险做法：**注册 attach-state + onShown + onApplyWindowInsets 三处都重新算**，且每次 `applyInsets` 都用 `host.window?.decorView?.rootWindowInsets` 为准。

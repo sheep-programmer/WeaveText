@@ -65,7 +65,7 @@ class OfflineModelSelectionTest {
     }
 
     @Test fun aSingleMixedStreamingModelUsesAnInstalledFinalCompanion() {
-        val repo = FakeModels(listOf("asr-stream-mixed-high", "asr-sensevoice", "asr-stream-small").associateWith { ModelState.Installed })
+        val repo = FakeModels(listOf("asr-stream-mixed-high", "asr-sensevoice", "asr-stream-small", "asr-final-small").associateWith { ModelState.Installed })
         val selection = OfflineModelSelection(ctx, repo)
         selection.select(listOf("asr-stream-mixed-high"))
         assertEquals("asr-sensevoice", selection.finalCompanion("asr-stream-mixed-high"))
@@ -73,7 +73,7 @@ class OfflineModelSelectionTest {
         assertNull(selection.finalCompanion("asr-stream-mixed-high"))
         selection.mode = VoiceLanguage.CHINESE
         selection.select(listOf("asr-stream-small"))
-        assertNull(selection.finalCompanion("asr-stream-small"))
+        assertEquals("asr-final-small", selection.finalCompanion("asr-stream-small"))
     }
 
     @Test fun mixedModeDoesNotReviveALegacyChineseOnlyFinalChoice() {

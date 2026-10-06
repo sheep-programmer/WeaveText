@@ -37,7 +37,8 @@ final class CandidatePanel {
     private let effect = NSVisualEffectView()
     private weak var owner: WeaveInputController?
     private var lastCaret = NSRect.zero
-    static let cornerRadius: CGFloat = 8
+    static let cornerRadius: CGFloat = 12
+    private var themeObserver:NSObjectProtocol?
 
     private init() {
         panel = InputPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
@@ -49,7 +50,11 @@ final class CandidatePanel {
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
+        // 候选窗要能被文档前的点击够到，所以不能带 .transient：transient 会被 WindowServer 从跨进程窗口列表与
+        // 命中测试里剔除，于是点不上候选也点不到展开键。语音面板不带它没事，因为它原本就要拿到自己的焦点。
+        // The candidate window must stay in the system-wide window list so the front app can forward clicks; a
+        // .transient window is dropped from that list and from cross-process hit-testing, making it unclickable.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         effect.material = .popover
         effect.state = .active
@@ -64,6 +69,10 @@ final class CandidatePanel {
         hosting.autoresizingMask = [.width, .height]
         effect.addSubview(hosting)
         panel.contentView = effect
+        WindowAppearance.shared.track(panel)
+        themeObserver=NotificationCenter.default.addObserver(forName:Preferences.didChange,object:Preferences.shared,queue:.main) {[weak self] _ in
+            self?.hosting.rootView.theme=Preferences.shared.colorTheme
+        }
     }
 
     /// 原地更新内容与位置，不重建窗口（换键不闪）。 Update in place, never rebuild (no flicker between keys).
@@ -73,13 +82,23 @@ final class CandidatePanel {
         hosting.rootView = CandidateBar(state: state, pick: { [weak self] i in self?.owner?.pick(pageIndex: i) }, policy: { [weak self] i,text,mode in self?.owner?.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) },
                                         toggle: { [weak self] in self?.owner?.toggleExpand() },
                                         pickExpanded: { [weak self] i in self?.owner?.pickExpanded(index: i) },
-                                        loadMore: { [weak self] in self?.owner?.loadMoreExpanded() })
+                                        loadMore: { [weak self] in self?.owner?.loadMoreExpanded() },
+                                        pageTurn: { [weak self] delta in self?.owner?.turnPage(delta) },theme:Preferences.shared.colorTheme)
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.fittingSize
         let caret = usable(caret)
         let screens = NSScreen.screens.map(\.visibleFrame)
-        let origin = PanelPlacement.origin(size: size, caret: caret, screens: screens)
-        let frame = NSRect(origin: origin, size: size).integral
+        let screen=screens.first(where:{$0.contains(caret.origin)}) ?? screens.first
+        let limit=min(900,max(240,(screen?.width ?? 924)-24))
+        var fitted=size
+        if size.width>limit {
+            var compact=state;compact.orientation = .vertical
+            var bar=hosting.rootView;bar.state=compact;bar.widthLimit=limit
+            hosting.rootView=bar
+            hosting.layoutSubtreeIfNeeded();fitted=hosting.fittingSize
+        }
+        let origin = PanelPlacement.origin(size: fitted, caret: caret, screens: screens)
+        let frame = NSRect(origin: origin, size: fitted).integral
         if panel.frame != frame {
             panel.setFrame(frame, display: true)
             hosting.frame = effect.bounds
@@ -139,12 +158,17 @@ extension CandidateState {
 /// The candidate bar: a preedit line and numbered candidates, the highlight tinted, page arrows at the end.
 struct CandidateBar: View {
     @ObservedObject var cloud=EngineHost.shared.cloud
-    let state: CandidateState
+    var state: CandidateState
     let pick: (Int) -> Void
     var policy: (Int,String,String) -> Void = {_,_,_ in}
     var toggle: () -> Void = {}
     var pickExpanded: (Int) -> Void = {_ in}
     var loadMore: () -> Void = {}
+    /// 点翻页箭头。 Click the page arrows. (delta: -1 上一页, +1 下一页)
+    var pageTurn: (Int) -> Void = { _ in }
+    var widthLimit:CGFloat? = nil
+    var theme:ColorTheme = .fresh
+    private var palette:ThemePalette {Theme.palette(theme)}
 
     private var font: Font { .system(size: state.fontSize) }
     private var small: Font { .system(size: max(10, state.fontSize * 0.72)) }
@@ -155,11 +179,15 @@ struct CandidateBar: View {
         VStack(alignment: .leading, spacing: 4) {
             if !state.preedit.isEmpty || !state.hint.isEmpty || (cloud.status.enabled && cloud.status.updating) {
                 HStack(spacing:6) {
-                Text(state.preedit.isEmpty ? state.hint : state.preedit)
+                Text(state.preedit.isEmpty ? state.hint : String(state.preedit.suffix(72)))
+                    .help(state.preedit)
                     .font(state.preedit.isEmpty ? note : small)
-                    .foregroundStyle(state.preedit.isEmpty ? Theme.hint : Theme.secondary)
+                    .foregroundStyle(state.preedit.isEmpty ? palette.hint : palette.secondary)
                     .padding(.horizontal, 6)
                     .lineLimit(1)
+                if !state.preedit.isEmpty && !state.hint.isEmpty {
+                    Text(state.hint).font(note).foregroundStyle(.red).lineLimit(1)
+                }
                 if cloud.status.enabled && cloud.status.updating {
                     ProgressView().controlSize(.mini).tint(.blue).help("正在加载云端热词")
                 }
@@ -186,24 +214,23 @@ struct CandidateBar: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 6)
-        .fixedSize()
+        .frame(maxWidth:widthLimit)
+        .fixedSize(horizontal:widthLimit==nil,vertical:true)
     }
 
     @ViewBuilder private var items: some View {
         ForEach(Array(state.candidates.enumerated()), id: \.offset) { i, c in
             let on = i == state.highlight
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
+            HStack(alignment: .lastTextBaseline, spacing: 4) {
                 Text("\(i + 1)")
                     .font(small.monospacedDigit())
-                    .foregroundStyle(on ? Theme.candidate : Theme.hint)
-                Text(c.text)
-                    .font(font)
-                    .foregroundStyle(on ? Theme.candidate : Theme.label)
+                    .foregroundStyle(on ? palette.candidate : palette.hint)
+                candidateLabel(c,primary:on)
                 if c.cloud {Image(systemName:"cloud.fill").font(note).foregroundStyle(.blue).help("来自已下载的云端热词库").accessibilityLabel("云端词")}
                 if !c.comment.isEmpty {
                     Text(c.comment)
                         .font(note)
-                        .foregroundStyle(Theme.hint)
+                        .foregroundStyle(palette.hint)
                         .padding(.leading, 1)
                 }
             }
@@ -211,15 +238,25 @@ struct CandidateBar: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .frame(maxWidth: state.orientation == .vertical ? .infinity : nil, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? Theme.accentSoft : .clear))
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? palette.accentSoft : .clear))
             .contentShape(Rectangle())
             .onTapGesture { pick(i) }
             .contextMenu {
-                Button("固定为首选") { policy(i,c.text,"pin") }
-                Button("取消固定／恢复排序") { policy(i,c.text,"") }
+                Button("恢复正常排序") { policy(i,c.text,"") }
                 Button("降低优先级") { policy(i,c.text,"down") }
                 if c.user {Button("删除学习记录") {policy(i,c.text,"forget")}}
             }
+        }
+    }
+
+    private func candidateLabel(_ c:Candidate,primary:Bool) -> some View {
+        VStack(alignment:.leading,spacing:2) {
+            if !c.pinyin.isEmpty {
+                Text(c.pinyin).font(note).foregroundStyle(palette.secondary)
+                    .lineLimit(nil).fixedSize(horizontal:false,vertical:true)
+            }
+            Text(c.text.count>48 ? String(c.text.prefix(47))+"…" : c.text)
+                .help(c.text).font(font).foregroundStyle(primary ? palette.candidate : palette.label)
         }
     }
 
@@ -229,15 +266,30 @@ struct CandidateBar: View {
             Button(action: toggle) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(palette.accent)
                     .frame(width: 22, height: 22)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.accentSoft))
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(palette.accentSoft))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("展开全部候选")
             .accessibilityLabel("展开全部候选")
         }
+    }
+
+    /// 可以点的翻页箭头：上一页、下一页。 Clickable page arrows: previous / next.
+    @ViewBuilder private func arrow(_ systemName: String, enabled: Bool, action: @escaping () -> Void, hint: String) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .foregroundStyle(enabled ? palette.accent : palette.hint.opacity(0.4))
+                .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
+                .frame(width: 18, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(hint)
+        .accessibilityLabel(hint)
     }
 
     /// 展开后的候选网格：滚动浏览，点选上屏，滚到底附近再取一批。 The expanded grid: scroll, click to pick, more load near the end.
@@ -247,15 +299,14 @@ struct CandidateBar: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 260), spacing: 2, alignment: .leading)],
                           alignment: .leading, spacing: 2) {
                     ForEach(Array(all.enumerated()), id: \.offset) { i, c in
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(c.text).font(font).foregroundStyle(i == 0 ? Theme.candidate : Theme.label)
+                        HStack(alignment: .lastTextBaseline, spacing: 4) {
+                            Text(c.text).font(font).foregroundStyle(i == 0 ? palette.candidate : palette.label)
                             if c.cloud { Image(systemName: "cloud.fill").font(note).foregroundStyle(.blue) }
-                            if !c.comment.isEmpty { Text(c.comment).font(note).foregroundStyle(Theme.hint) }
                         }
                         .lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(i == 0 ? Theme.accentSoft : .clear))
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(i == 0 ? palette.accentSoft : .clear))
                         .contentShape(Rectangle())
                         .onTapGesture { pickExpanded(i) }
                         .onAppear { if state.expandedMore, i >= all.count - 12 { loadMore() } }
@@ -264,13 +315,13 @@ struct CandidateBar: View {
             }
             .frame(width: 560, height: min(300, max(80, CGFloat((all.count + 4) / 5) * (state.fontSize + 14))))
             HStack {
-                Text("共 \(all.count)\(state.expandedMore ? "+" : "") 个 · 点选上屏，按任意键收起").font(note).foregroundStyle(Theme.hint)
+                Text("共 \(all.count)\(state.expandedMore ? "+" : "") 个 · 点选上屏，按任意键收起").font(note).foregroundStyle(palette.hint)
                 Spacer()
                 Button(action: toggle) {
                     Image(systemName: "chevron.up")
                         .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
-                        .foregroundStyle(Theme.accent).frame(width: 22, height: 22)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Theme.accentSoft))
+                        .foregroundStyle(palette.accent).frame(width: 22, height: 22)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(palette.accentSoft))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).help("收起").accessibilityLabel("收起")
             }.padding(.horizontal, 6)
@@ -280,12 +331,11 @@ struct CandidateBar: View {
     @ViewBuilder private func arrows(vertical: Bool) -> some View {
         if state.hasPrevious || state.hasNext {
             HStack(spacing: 2) {
-                Image(systemName: vertical ? "chevron.up" : "chevron.left")
-                    .foregroundStyle(state.hasPrevious ? Theme.accent : Theme.hint.opacity(0.4))
-                Image(systemName: vertical ? "chevron.down" : "chevron.right")
-                    .foregroundStyle(state.hasNext ? Theme.accent : Theme.hint.opacity(0.4))
+                arrow(vertical ? "chevron.up" : "chevron.left", enabled: state.hasPrevious,
+                      action: { pageTurn(-1) }, hint: "上一页")
+                arrow(vertical ? "chevron.down" : "chevron.right", enabled: state.hasNext,
+                      action: { pageTurn(1) }, hint: "下一页")
             }
-            .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
             .padding(.leading, 4)
             .padding(.trailing, 2)
         }

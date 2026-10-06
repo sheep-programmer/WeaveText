@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.view.Choreographer
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import com.weavetext.ime.R
@@ -21,6 +22,7 @@ import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.ime.KeyboardUi
 import com.weavetext.ime.ime.WeaveImeService
 import com.weavetext.ime.settings.WeavePrefs
+import com.weavetext.ime.settings.FloatingResizeSettings
 import com.weavetext.ime.style.KeyboardStyle
 import com.weavetext.ime.style.StyleRepository
 import com.weavetext.ime.style.ToolIds
@@ -96,13 +98,17 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 键盘卡片：常规模式下铺满底部；悬浮模式下是可拖动的小卡片（06 §5）。 Docked full width, or the floating card. */
     private val card = FrameLayout(service)
     private val handle = FloatHandle(service)
-    private val grip = ResizeGrip(service)
+    private val grips = FloatingResizeCorner.entries.map { ResizeGrip(service, it) }
+    private val floatClose = FloatCloseButton(service)
+    private val bottomHandle = FloatFooter(service)
+    private val resizeSession = FloatingResizeController()
     /** 悬浮卡片的缩放（按当前方向读取）。 Floating card scale for the current orientation. */
     private var floatScale = 1f
+    private var floatingViewportWidth = 0
+    private var floatingBaseMainHeight = 0f
+    private var floatingControlHeightDp = HANDLE_DP
     /** 正在拖动缩放：布局时保持右下角不动，不按保存的比例重新放置。 Resizing: layout keeps the bottom-right corner. */
     private var resizing = false
-    private var resizeRight = 0
-    private var resizeBottom = 0
     val board = FrameLayout(service)
     val topBar = TopBarView(service, this)
     val main = FrameLayout(service)
@@ -149,17 +155,44 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var navLeft = 0
     private var navRight = 0
     private var navigationBars = NavigationClearance.Edges()
-    private val navigationLayout = Runnable { updateNavigationClearance() }
+    private val navigationLayout = Runnable { refreshNavigationInsets() }
+    private var navigationObserver: ViewTreeObserver? = null
+    private val navigationGlobalLayout = ViewTreeObserver.OnGlobalLayoutListener { postNavigationRefresh() }
+    private var lastSignal: WindowInsets? = null
+
+    private fun postNavigationRefresh() {
+        root.removeCallbacks(navigationLayout)
+        root.post(navigationLayout)
+    }
+
+    private fun removeNavigationObserver() {
+        navigationObserver?.takeIf { it.isAlive }?.removeOnGlobalLayoutListener(navigationGlobalLayout)
+        navigationObserver = null
+        root.removeCallbacks(navigationLayout)
+    }
 
     /**
      * 按系统导航栏（底部或横屏时的侧边）留出空白，键不被三键导航或手势条盖住。
      * Keep clear of the system navigation bar (bottom, or the side in landscape) so no key sits under it.
+     * 窗口根边衬保留系统的原始值，父级可能消耗 dispatch 给子视图的那份。布局变化后也重读，避免沿用旧状态。
+     * Root window insets retain the original values; parents may consume the child's dispatched copy.
+     * Re-read after window layout changes as well as inset dispatches.
      */
-    private fun applyInsets(insets: WindowInsets) {
-        fun edges(source: WindowInsets): NavigationClearance.Edges = if (android.os.Build.VERSION.SDK_INT >= 30) {
+    private fun refreshNavigationInsets(signal: WindowInsets? = null) {
+        if (signal != null && !signal.isConsumed) lastSignal = signal
+        val source = host.window?.decorView?.rootWindowInsets ?: lastSignal ?: root.rootWindowInsets
+        // 未挂载时没有新信息，保留已经知道的占位。No new information while detached: retain known bars.
+        if (source != null) navigationBars = computeBarEdges(source)
+        updateNavigationClearance()
+    }
+
+    /** 从一份未被消耗的 insets 拿三条边的占位高度。 Bar sizes from an unconsumed insets source. */
+    private fun computeBarEdges(source: WindowInsets): NavigationClearance.Edges =
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
             val type = WindowInsets.Type.navigationBars()
             val current = source.getInsets(type)
-            // Consuming insets may zero their size while retaining the visibility flag.
+            // 显示中的导航栏可能暂时报零；隐藏时仍用即时值，不留下旧空白。
+            // A visible bar may temporarily report zero; a hidden bar must not retain its old space.
             val n = if (current == android.graphics.Insets.NONE && source.isVisible(type))
                 source.getInsetsIgnoringVisibility(type) else current
             NavigationClearance.Edges(n.bottom, n.left, n.right)
@@ -177,20 +210,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 NavigationClearance.legacyInset(source.systemWindowInsetRight, source.stableInsetRight, barSize("navigation_bar_width")),
             )
         }
-        navigationBars = edges(insets)
-        val visible = android.os.Build.VERSION.SDK_INT < 30 || insets.isVisible(WindowInsets.Type.navigationBars())
-        if (visible) {
-            // Read the window-level source when a framework parent consumed the child's insets.
-            val raw = host.window?.decorView?.rootWindowInsets ?: root.rootWindowInsets
-            raw?.let { source ->
-                val n = edges(source)
-                navigationBars = NavigationClearance.Edges(
-                    maxOf(navigationBars.bottom, n.bottom), maxOf(navigationBars.left, n.left), maxOf(navigationBars.right, n.right),
-                )
-            }
-        }
-        updateNavigationClearance()
-    }
 
     private fun updateNavigationClearance() {
         var clearance = navigationBars
@@ -254,7 +273,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         main.addView(oneHandButton)
         card.addView(handle)
         card.addView(board)
-        card.addView(grip)
+        card.addView(bottomHandle)
+        card.addView(floatClose)
+        grips.forEach(card::addView)
         root.addView(card)
         // 预览气泡在覆盖层之下（长按浮层、提示盖在它上面）。 The preview bubble sits below the overlay.
         root.addView(popup.bubbleView, FrameLayout.LayoutParams(0, 0, android.view.Gravity.TOP or android.view.Gravity.START))
@@ -265,14 +286,24 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         // below (lift-to-activate would type them).
         full.setOnHoverListener { _, _ -> true }
         root.setOnApplyWindowInsetsListener { _, insets ->
-            applyInsets(insets)
+            refreshNavigationInsets(insets)
+            postNavigationRefresh()
             insets
         }
         // 视图重建（旋转屏幕、重启输入法）后系统不一定再发一次边衬：挂到窗口上时主动要一次。
         // After the view is recreated (rotation, IME restart) the system may not resend insets: ask on attach.
         root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) { v.requestApplyInsets(); v.rootWindowInsets?.let(::applyInsets) }
-            override fun onViewDetachedFromWindow(v: View) {}
+            override fun onViewAttachedToWindow(v: View) {
+                removeNavigationObserver()
+                navigationObserver = v.viewTreeObserver.also { it.addOnGlobalLayoutListener(navigationGlobalLayout) }
+                v.requestApplyInsets()
+                refreshNavigationInsets()
+                postNavigationRefresh()
+            }
+            override fun onViewDetachedFromWindow(v: View) {
+                removeNavigationObserver()
+                lastSignal = null
+            }
         })
         prefs.registerOnSharedPreferenceChangeListener(this)
         applyAllPrefs()
@@ -292,6 +323,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         previewEnabled = WeavePrefs.keyPreview(prefs)
         keyboardView.splitWide = WeavePrefs.splitWide(prefs)
         applyHandPause(prefs)
+        keyboardView.handAppearance = HandInkPrefs.read(prefs)
         applyTheme()
         applyEngineOptions()
         applySchemaPref()
@@ -311,6 +343,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         oneHandButton.invalidate()
         handle.setBackgroundColor(palette.background)
         handle.invalidate()
+        bottomHandle.setBackgroundColor(palette.background)
+        floatClose.invalidate()
+        grips.forEach { it.invalidate() }
         engineSheet.invalidate()
         for (p in panels.values) p.applyTheme()
         applyGeometry()
@@ -329,8 +364,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val landscape = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         floatScale = FloatingGeometry.decodeScale(prefs.getString(if (landscape) WeavePrefs.FLOAT_SIZE_LAND else WeavePrefs.FLOAT_SIZE_PORT, null))
         val base = StyleRepository.get(ctx).resolve(ctx, prefs, FLOAT_LEVEL)
+        floatingBaseMainHeight = base.metrics.mainHeight
         if (floatScale == 1f) return base
-        val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(base.layout, base.overrides), floatScale)
+        val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(base.layout, base.overrides), floatScale, WeavePrefs.pinyinHint(prefs) != 0, base.layout.candidates.textSize)
         return KeyboardStyle(base.layout, base.theme, base.dark, base.overrides, base.palette, m)
     }
 
@@ -344,17 +380,28 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val m = metrics
         if (floating) {
             val kbH = m.kbHeight.toInt()
-            val handleH = m.dp(HANDLE_DP).toInt()
-            val available = ((root.width.takeIf { it > 0 } ?: ctx.resources.displayMetrics.widthPixels) - navLeft - navRight).coerceAtLeast(1)
+            val handleH = m.dp(floatingControlHeightDp).toInt()
+            val available = ((floatingViewportWidth.takeIf { it > 0 } ?: root.width.takeIf { it > 0 } ?: ctx.resources.displayMetrics.widthPixels) - navLeft - navRight).coerceAtLeast(1)
             val w = (FloatingGeometry.cardWidth(available, m.landscape, m.density) * floatScale).toInt()
-            card.layoutParams = FrameLayout.LayoutParams(w, handleH + kbH)
+            card.layoutParams = FrameLayout.LayoutParams(w, handleH * 2 + kbH)
             handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
             handle.visibility = View.VISIBLE
-            // 缩放手柄在拖动条左端，不压住任何按键。 The grip sits in the drag bar, clear of every key.
-            val g = FloatingGeometry.gripBox(handleH, m.density)
-            grip.layoutParams = FrameLayout.LayoutParams(g.width, g.height, android.view.Gravity.TOP or android.view.Gravity.START)
-            grip.visibility = View.VISIBLE
-            grip.bringToFront()
+            // Reserve both control bars: all four 48dp targets stay outside candidates and keys.
+            bottomHandle.layoutParams = FrameLayout.LayoutParams(-1, handleH, android.view.Gravity.BOTTOM)
+            bottomHandle.visibility = View.VISIBLE
+            val policy = FloatingResizeSettings.read(prefs)
+            for (grip in grips) {
+                val g = FloatingGeometry.gripBox(grip.corner, w, handleH * 2 + kbH, handleH, m.density)
+                grip.layoutParams = FrameLayout.LayoutParams(g.width, g.height, android.view.Gravity.TOP or android.view.Gravity.LEFT).apply {
+                    leftMargin = g.left; topMargin = g.top
+                }
+                grip.visibility = if (policy.allows(grip.corner)) View.VISIBLE else View.GONE
+                grip.bringToFront()
+            }
+            val close = FloatingGeometry.closeBox(w, handleH, m.density)
+            floatClose.layoutParams = FrameLayout.LayoutParams(close.width, close.height, android.view.Gravity.TOP or android.view.Gravity.LEFT).apply { leftMargin = close.left }
+            floatClose.visibility = View.VISIBLE
+            floatClose.bringToFront()
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH).apply { topMargin = handleH }
             board.setPadding(0, 0, 0, 0)
             card.outlineProvider = object : android.view.ViewOutlineProvider() {
@@ -372,7 +419,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             card.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
             card.elevation = 0f
             handle.visibility = View.GONE
-            grip.visibility = View.GONE
+            grips.forEach { it.visibility = View.GONE }
+            floatClose.visibility = View.GONE
+            bottomHandle.visibility = View.GONE
             board.layoutParams = FrameLayout.LayoutParams(-1, kbH)
             board.setPadding(navLeft, 0, navRight, navInset)
         }
@@ -446,15 +495,20 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             }
             WeavePrefs.KEY_PREVIEW -> previewEnabled = WeavePrefs.keyPreview(p)
             WeavePrefs.SPLIT_WIDE -> keyboardView.splitWide = WeavePrefs.splitWide(p)
-            WeavePrefs.HAND_PAUSE, WeavePrefs.HAND_LINE -> {
+            WeavePrefs.HAND_PAUSE, WeavePrefs.HAND_AUTO_COMMIT, WeavePrefs.HAND_GUIDE -> applyHandPause(p)
+            HandInkPrefs.STYLE, HandInkPrefs.WIDTH_DP, HandInkPrefs.COLOR -> keyboardView.handAppearance = HandInkPrefs.read(p)
+            WeavePrefs.HAND_LINE -> {
                 applyHandPause(p)
-                controller.reset();applyEngineOptions()
+                controller.setHandLineMode(p.getBoolean(WeavePrefs.HAND_LINE, false), keyboardView.hand?.strokes.orEmpty())
+                updateHandModeLabel()
             }
             WeavePrefs.SHUANGPIN_HINTS, WeavePrefs.WUBI_ROOT_HINTS -> { layoutSig = ""; refreshLayout() }
-            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.PREDICTION_DEPTH, WeavePrefs.PINYIN_HINT, WeavePrefs.AUTOCORRECT, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
+            WeavePrefs.PINYIN_HINT -> {applyEngineOptions();applyTheme();layoutSig = "";refreshLayout();updateCandidates(null)}
+            WeavePrefs.FUZZY, WeavePrefs.WUBI_PINYIN_MIX, WeavePrefs.TRADITIONAL, WeavePrefs.PREDICTION, WeavePrefs.PREDICTION_DEPTH, WeavePrefs.AUTOCORRECT, WeavePrefs.AUTO_PAIR -> applyEngineOptions()
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
             WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
+            FloatingResizeSettings.KEY_CORNERS -> applyGeometry()
             WeavePrefs.CLIPBOARD_CLEARED -> clipboard.clearHistory()
         }
         for (pn in panels.values) if (pn is PrefAware) pn.onPref(key)
@@ -470,10 +524,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.feature(org.json.JSONObject().put("op", "setPredictionDepth").put("depth", WeavePrefs.predictionDepth(prefs)))
         val hint = WeavePrefs.pinyinHint(prefs)
         controller.setOption("candidates.pinyin", hint != 0)
-        controller.setOption("candidates.pinyin_tones", hint != 2)
+        controller.setOption("candidates.pinyin_tones", true)
         controller.setOption("input.autocorrect", WeavePrefs.autocorrect(prefs))
         controller.feature(org.json.JSONObject().put("op","setHandLine").put("on",prefs.getBoolean(WeavePrefs.HAND_LINE,false)))
         controller.autoPair = WeavePrefs.autoPair(prefs)
+        controller.refreshEngineOptions()
     }
 
     private fun applySchemaPref() {
@@ -518,7 +573,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (s.privateField && topBar.clipChip != null) { topBar.clipChip = null; pendingClip = null }
         // 这个字已上屏或被丢弃：墨迹随即清掉（同步进行，下一笔不会混进旧笔画）。
         // The char was committed or dropped: clear its ink right away, so the next stroke never joins old ones.
-        if (!s.composing && keyboardView.hand?.strokes?.isNotEmpty() == true) keyboardView.clearInk()
+        keyboardView.handRecognizing = s.handRecognizing
+        keyboardView.handRecognitionFailed = s.schema == "hand" && s.composing && !s.handRecognizing && s.candidates.isEmpty()
+        if (!s.composing && !s.handRecognizing && keyboardView.hand?.strokes?.isNotEmpty() == true) keyboardView.clearInk()
         if (s.composing || s.candidates.isNotEmpty()) {
             localCands = null
             topBar.clipChip = null
@@ -701,7 +758,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 if (items != side.items) { side.items = items; side.scroll = 0f }
             }
         }
-        kv.keyOf(KeyCode.HAND_CLEAR)?.disabled = !composing
+        kv.keyOf(KeyCode.HAND_CLEAR)?.disabled = !composing && kv.hand?.hasInk != true
+        updateHandModeLabel()
         // 中/英 长按：已启用的方案 / enabled schemes on long-press
         kv.keyOf(KeyCode.LANG)?.let { k ->
             val names = WeavePrefs.keyboards(prefs).map { WeavePrefs.KEYBOARD_NAMES[it] ?: it }
@@ -720,10 +778,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             KeyCode.SHIFT -> onShift()
             KeyCode.DELETE -> {
                 // 手写有笔画时退一笔（内核同样退掉最后一笔并重新识别）。 Handwriting: undo the last stroke.
-                keyboardView.undoStroke()
-                controller.onBackspace()
+                if (keyboardView.undoStroke()) controller.replaceHandInk(keyboardView.hand?.strokes.orEmpty())
+                else controller.onBackspace()
             }
             KeyCode.HAND_CLEAR -> clearHand()
+            KeyCode.HAND_MODE -> prefs.edit().putBoolean(WeavePrefs.HAND_LINE, !prefs.getBoolean(WeavePrefs.HAND_LINE, false)).apply()
             KeyCode.SYMBOL -> showPanel("symbol")
             KeyCode.EMOJI -> { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji() }
             KeyCode.NUMBER -> {
@@ -741,7 +800,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             }
             KeyCode.ENTER -> controller.onEnter()
             KeyCode.T9_RESET -> if (s.composing) controller.reset() else controller.onText("@")
-            KeyCode.T9_ONE -> if (s.composing) controller.onChar('\''.code) else showLocalCandidates(T9_ONE_PUNCT)
+            KeyCode.T9_ONE -> if (s.composing) controller.onChar('\''.code) else showLocalCandidates((SymbolUsage.order(prefs).filter{it in T9_ONE_PUNCT}+T9_ONE_PUNCT).distinct())
             else -> onCharKey(key)
         }
         // 刚按的是 Shift：不马上按句首规则改回去（用户关掉的自动大写保持关）。 Don't undo a Shift tap right away.
@@ -843,19 +902,29 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         return true
     }
 
-    /**
-     * 单字：停笔 [WeavePrefs.handPauseMs] 后上屏；连写：字间留空不上屏，整行写完停笔更久（至少 1.6 秒）才上屏。
-     * Single char: commit after the pause. Spaced line: commit only after a longer idle, so gaps between chars stay.
-     */
+    /** 单字或连续连写都按停顿确认当前字；连续连写的下一次落笔会先确认上一字。 */
     private fun applyHandPause(p: android.content.SharedPreferences) {
         val pause = WeavePrefs.handPauseMs(p)
         val line = p.getBoolean(WeavePrefs.HAND_LINE, false)
-        keyboardView.handPauseMs = if (line) Long.MAX_VALUE else pause
-        keyboardView.handIdleMs = if (line) maxOf(pause * 2, 1600L) else pause
+        val auto = WeavePrefs.handAutoCommit(p)
+        keyboardView.handLineMode = line
+        keyboardView.handGuide = WeavePrefs.handGuide(p)
+        // 连写按“一个字完成 → 下一个字”处理：下一次落笔前达到停顿阈值就确认上一字，
+        // 而不是把两个字的笔画继续堆在同一块画布里。
+        keyboardView.handPauseMs = if (line) pause else if (!auto) Long.MAX_VALUE else pause
+        keyboardView.handIdleMs = if (!auto) 0L else pause
+    }
+
+    private fun updateHandModeLabel() {
+        keyboardView.keyOf(KeyCode.HAND_MODE)?.let { key ->
+            val label = if (prefs.getBoolean(WeavePrefs.HAND_LINE, false)) "连写" else "单字"
+            val hint = if (keyboardView.hand?.canRedo == true) "长按重做" else "切换"
+            if (key.label != label || key.hint != hint) { key.label = label; key.hint = hint; keyboardView.labelsChanged() }
+        }
     }
 
     private fun clearHand() {
-        controller.reset()
+        controller.replaceHandInk(emptyList())
         keyboardView.clearInk()
     }
 
@@ -864,7 +933,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.onHandStrokes(strokes)
     }
 
-    override fun onHandCommit() { controller.commitFirst() }
+    override fun onHandCommit(): Boolean = controller.commitFirst()
 
     override fun onDeleteClear() {
         val removed = controller.clearBeforeCursor() ?: return
@@ -872,6 +941,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onLongPressFunc(key: Key): Int = when (key.code) {
+        KeyCode.HAND_MODE -> {
+            if (keyboardView.redoStroke()) controller.replaceHandInk(keyboardView.hand?.strokes.orEmpty())
+            KeyboardView.LONG_CONSUMED
+        }
         KeyCode.SPACE -> if (startHoldVoice()) KeyboardView.LONG_VOICE else KeyboardView.LONG_CONSUMED
         KeyCode.SYMBOL -> { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji(); KeyboardView.LONG_CONSUMED }
         else -> 0
@@ -915,6 +988,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             ToolIds.EMOJI -> if (panel is SymbolPanel) closePanel() else { showPanel("symbol"); (panels["symbol"] as? SymbolPanel)?.selectEmoji() }
             ToolIds.SETTINGS -> openSettings(null)
             ToolIds.STICKERS -> togglePanel("stickers")
+            ToolIds.TRANSLATE -> togglePanel("translation")
         }
     }
 
@@ -936,6 +1010,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (lc != null) {
             val t = lc.getOrNull(index) ?: return
             localCands = null
+            if(t in T9_ONE_PUNCT && !controller.isSensitiveField) SymbolUsage.record(prefs,t)
             controller.onText(t)
             updateCandidates(null)
             return
@@ -965,7 +1040,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 setOnClickListener{popup.dismiss();operation()}
             })
         }
-        action(if(mode=="pin") "取消固定「${c.text}」" else "固定「${c.text}」为首选") {controller.candidatePolicy(index,c.text,if(mode=="pin") "" else "pin")}
+        if(mode=="pin") action("恢复正常排序") {controller.candidatePolicy(index,c.text,"")}
         action(if(mode=="down") "恢复正常排序" else "降低优先级") {controller.candidatePolicy(index,c.text,if(mode=="down") "" else "down")}
         if(c.isUser) action("删除学习记录") {if(controller.loadCandidates(index,1).firstOrNull()?.text==c.text)controller.onForgetCandidate(index)}
         popup.showAtLocation(view,android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL,0,metrics.dp(90f).toInt())
@@ -1007,6 +1082,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         "clipboard" -> ClipboardPanel(this, ClipboardPanel.Mode.CLIPBOARD)
         "stickers" -> StickerPanel(this)
         "phrases" -> ClipboardPanel(this, ClipboardPanel.Mode.PHRASES)
+        "translation" -> TranslationPanel(this)
         "toolbox" -> ToolboxPanel(this)
         "height" -> HeightPanel(this)
         "voice" -> VoicePanel(this)
@@ -1165,6 +1241,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     private fun setFloatingMode(on: Boolean) {
         if (on == floating) return
+        resizeSession.cancel()
+        resizing = false
         floating = on
         keyboardView.cancelTouch()
         popup.hideAll()
@@ -1179,6 +1257,26 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private fun floatMinTop() = metrics.dp(24f).toInt()
     private fun floatMaxBottom() = root.height - navInset - metrics.dp(8f).toInt()
     private fun floatAvailableWidth() = (root.width - navLeft - navRight).coerceAtLeast(1)
+
+    /** Fit control bars and the unscaled candidate strip before measuring a short window. */
+    private fun fitFloatingViewport(windowW: Int, windowH: Int) {
+        if (resizing || floatScale <= 0f) return
+        val m = metrics
+        val availableW = (windowW - navLeft - navRight).coerceAtLeast(1)
+        val baseW = FloatingGeometry.cardWidth(availableW, m.landscape, m.density).toFloat()
+        val baseBody = floatingBaseMainHeight.takeIf { it > 0f } ?: m.mainHeight
+        val candidateH = m.kbHeight - m.mainHeight
+        val availableH = windowH - navInset - m.dp(33f)
+        val minimumBody = m.dp(32f * 4)
+        val control = if (candidateH + m.dp(HANDLE_DP * 2) + minimumBody > availableH) 24f else HANDLE_DP
+        if (control != floatingControlHeightDp) { floatingControlHeightDp = control; applyGeometry() }
+        val fixedH = candidateH + m.dp(control * 2)
+        if (baseW <= 0 || baseBody <= 0 || availableH < fixedH + minimumBody) return
+        val hi = minOf(FloatingGeometry.MAX_SCALE, availableW * 0.95f / baseW, (availableH - fixedH) / baseBody)
+        val lo = maxOf(FloatingGeometry.MIN_SCALE, m.dp(220f) / baseW).coerceAtMost(hi)
+        val fitted = floatScale.coerceIn(lo, hi)
+        if (kotlin.math.abs(fitted - floatScale) > 0.002f) applyFloatScale(fitted, save = false)
+    }
 
     /** 按保存的比例放置卡片（窗口尺寸变化时也调用）。 Place the card from the stored fractions. */
     private fun placeCard() {
@@ -1235,15 +1333,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             contentDescription = "拖动悬浮键盘；双击停靠到底部"
         }
 
-        private fun dockButtonLeft() = FloatingGeometry.dockBox(width, height, metrics.density).left
-
         override fun onDraw(canvas: android.graphics.Canvas) {
             val m = metrics
             paint.color = palette.labelHint
             val w = m.dp(36f)
             val cy = height / 2f
             canvas.drawRoundRect(width / 2f - w / 2, cy - m.dp(2f), width / 2f + w / 2, cy + m.dp(2f), m.dp(2f), m.dp(2f), paint)
-            icons.draw(canvas, R.drawable.ic_float, palette.icon, width - m.dp(22f), cy, m.dp(18f))
         }
 
         @SuppressLint("ClickableViewAccessibility")
@@ -1263,7 +1358,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 }
                 android.view.MotionEvent.ACTION_UP -> {
                     if (dragging) saveCardPosition()
-                    else if (e.x >= dockButtonLeft()) { feedback.key(this); toggleFloating() }
                     else {
                         val now = SystemClock.uptimeMillis()
                         if (now - lastTap < 300) { lastTap = 0; toggleFloating() } else lastTap = now
@@ -1273,6 +1367,26 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 android.view.MotionEvent.ACTION_CANCEL -> { if (dragging) saveCardPosition(); dragging = false }
             }
             return true
+        }
+    }
+
+    private inner class FloatCloseButton(c: Context) : View(c) {
+        init {
+            contentDescription = FloatingResizeAccessibility.CLOSE_DESCRIPTION
+            isFocusable = true
+            setOnClickListener { feedback.key(this); toggleFloating() }
+        }
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            icons.draw(canvas, R.drawable.ic_close, palette.icon, width / 2f, height / 2f, metrics.dp(20f))
+        }
+    }
+
+    private inner class FloatFooter(c: Context) : View(c) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { textAlign = android.graphics.Paint.Align.CENTER }
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            paint.color = palette.labelHint
+            paint.textSize = metrics.dp(11f)
+            canvas.drawText("拖动边角调整大小", width / 2f, (height - paint.fontMetrics.ascent - paint.fontMetrics.descent) / 2f, paint)
         }
     }
 
@@ -1294,7 +1408,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             applyTheme()
         } else {
             floatScale = s
-            val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(style.layout, style.overrides), s)
+            val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(style.layout, style.overrides), s, WeavePrefs.pinyinHint(prefs) != 0, style.layout.candidates.textSize)
             style = KeyboardStyle(style.layout, style.theme, style.dark, style.overrides, style.palette, m)
             metrics = m
             popup.applyStyle(style)
@@ -1310,10 +1424,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     /** 缩放中：保持右下角不动，再夹回屏幕内。 While resizing: keep the bottom-right corner, then clamp on screen. */
     private fun placeResizing() {
-        val (l, t) = FloatingGeometry.anchorBottomRight(resizeRight, resizeBottom, card.width, card.height)
-        val b = FloatingGeometry.clamp(l - navLeft, t, floatAvailableWidth(), card.width, card.height, floatMinTop(), floatMaxBottom())
-        card.translationX = (b.left + navLeft).toFloat()
-        card.translationY = b.top.toFloat()
+        val result = resizeSession.anchorMeasured(card.width, card.height, resizeBounds())
+        if (result == null) { resizing = false; placeCard(); return }
+        if (result.box.width != card.width || result.box.height != card.height) {
+            card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply { width = result.box.width; height = result.box.height }
+        }
+        card.translationX = result.box.left.toFloat()
+        card.translationY = result.box.top.toFloat()
         syncOverlayAnchor()
     }
 
@@ -1323,24 +1440,22 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
      * Resize grip at the left end of the top drag bar (outside the key area): drag up/left to grow,
      * down/right to shrink, with the bottom-right corner fixed; remembered per orientation.
      */
-    private inner class ResizeGrip(c: Context) : View(c) {
+    private fun resizeBounds() = FloatingGeometry.Box(navLeft, floatMinTop(), root.width - navRight, floatMaxBottom())
+
+    private inner class ResizeGrip(c: Context, val corner: FloatingResizeCorner) : View(c) {
         private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.STROKE; strokeCap = android.graphics.Paint.Cap.ROUND
         }
-        private var downX = 0f
-        private var downY = 0f
-        private var startScale = 1f
-        private var startW = 0
-        private var dragScale = 1f
-        private var startH = 0
+        private var pointer = -1
 
-        init { contentDescription = "拖动调整悬浮键盘大小" }
+        init { contentDescription = corner.contentDescription }
 
         override fun onDraw(canvas: android.graphics.Canvas) {
             val m = metrics
             paint.color = palette.labelHint
             paint.strokeWidth = m.dp(1.5f)
-            // 左上角的双层直角标记。 Two nested corner marks pointing to the top-left.
+            canvas.save()
+            canvas.scale(if (corner.horizontalSign > 0) -1f else 1f, if (corner.verticalSign > 0) -1f else 1f, width / 2f, height / 2f)
             val l = width / 2f - m.dp(6f)
             val t = height / 2f - m.dp(6f)
             for (i in 0..1) {
@@ -1349,32 +1464,50 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 canvas.drawLine(l + o, t + o, l + o + len, t + o, paint)
                 canvas.drawLine(l + o, t + o, l + o, t + o + len, paint)
             }
+            canvas.restore()
         }
 
         @SuppressLint("ClickableViewAccessibility")
         override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
             when (e.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY
-                    startScale = floatScale; dragScale = floatScale; startW = card.width; startH = card.height
-                    resizeRight = card.translationX.toInt() + card.width
-                    resizeBottom = card.translationY.toInt() + card.height
+                    if (resizeSession.active) return true
+                    val start = FloatingGeometry.Box(card.translationX.toInt(), card.translationY.toInt(), card.translationX.toInt() + card.width, card.translationY.toInt() + card.height)
+                    val fixed = (card.height - metrics.mainHeight.toInt()).coerceIn(0, card.height - 1)
+                    if (!resizeSession.begin(corner, start, floatScale, resizeBounds(), metrics.density, e.rawX, e.rawY, FloatingResizeSettings.read(prefs), fixed, allowSlideAtEdge = true)) return false
+                    pointer = e.getPointerId(0)
                     resizing = true
                     keyboardView.cancelTouch()
                     popup.hideAll()
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val raw = FloatingGeometry.resizeScale(startScale, startW, startH, e.rawX - downX, e.rawY - downY)
-                    val dm = ctx.resources.displayMetrics
-                    val baseW = (startW / startScale).toInt()
-                    val baseH = (startH / startScale).toInt()
-                    val s = FloatingGeometry.clampScale(raw, root.width.takeIf { it > 0 } ?: dm.widthPixels, root.height.takeIf { it > 0 } ?: dm.heightPixels, baseW, baseH, dm.density)
-                    if (kotlin.math.abs(s - dragScale) >= 0.02f) { dragScale = s; applyFloatScale(s, save = false) }
+                    val i = e.findPointerIndex(pointer)
+                    if (i < 0) return true
+                    val result = resizeSession.update(e.getX(i) + e.rawX - e.x, e.getY(i) + e.rawY - e.y, resizeBounds())
+                    if (result == null) { resizing = false; pointer = -1; placeCard(); return true }
+                    if (kotlin.math.abs(result.scale - floatScale) >= 0.01f) applyFloatScale(result.scale, save = false)
                 }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    if (dragScale != startScale) applyFloatScale(dragScale, save = true)
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_POINTER_UP -> {
+                    if (e.getPointerId(e.actionIndex) != pointer) return true
+                    val result = resizeSession.current ?: return true
+                    applyFloatScale(result.scale, save = true)
+                    val lp = card.layoutParams as FrameLayout.LayoutParams
+                    val final = resizeSession.anchorMeasured(lp.width, lp.height, resizeBounds()) ?: result
+                    resizeSession.finish()
                     resizing = false
-                    saveCardPosition()
+                    pointer = -1
+                    card.translationX = final.box.left.toFloat(); card.translationY = final.box.top.toFloat()
+                    val relative = final.box.copy(left = final.box.left - navLeft, right = final.box.right - navLeft)
+                    prefs.edit().putString(posKey(), FloatingGeometry.encode(FloatingGeometry.fractions(relative, floatAvailableWidth(), floatMinTop(), floatMaxBottom()))).apply()
+                }
+                android.view.MotionEvent.ACTION_CANCEL -> {
+                    if (pointer < 0) return true
+                    val restored = resizeSession.cancel()
+                    pointer = -1; resizing = false
+                    if (restored != null) {
+                        applyFloatScale(restored.scale, save = false)
+                        card.translationX = restored.box.left.toFloat(); card.translationY = restored.box.top.toFloat()
+                    }
                 }
             }
             return true
@@ -1392,9 +1525,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun onShown(restarting: Boolean) {
         com.weavetext.ime.stickers.StickerSending.activate(controller)
         root.post {val loc=IntArray(2);card.getLocationOnScreen(loc);if(card.height>0)com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(loc[1])}
-        // 每次弹出都按当前边衬校一遍（导航方式、横竖屏可能已变）。 Re-check insets on every show.
-        root.rootWindowInsets?.let(::applyInsets)
+        // 重用输入视图时也请求最新边衬，再于窗口定位后校正。Refresh reused input views and recheck after positioning.
+        refreshNavigationInsets()
         root.requestApplyInsets()
+        postNavigationRefresh()
         if (!restarting) {
             numberMode = false
             shift.reset()
@@ -1412,6 +1546,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onHidden() {
+        root.removeCallbacks(navigationLayout)
         com.weavetext.ime.stickers.StickerSending.deactivate(controller)
         com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(null)
         keyboardView.cancelTouch()
@@ -1435,7 +1570,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun dispose() {
         com.weavetext.ime.stickers.StickerSending.deactivate(controller)
         com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(null)
-        root.removeCallbacks(navigationLayout)
+        removeNavigationObserver()
+        root.setOnApplyWindowInsetsListener(null)
         Choreographer.getInstance().removeFrameCallback(frameRender)
         renderPending = false
         controller.removeListener(stateListener)
@@ -1478,13 +1614,17 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) resources.displayMetrics.heightPixels
                 else MeasureSpec.getSize(heightMeasureSpec)
             } else (metrics.bubbleSpace + metrics.kbHeight).toInt() + navInset
+            if (floating) {
+                val width = MeasureSpec.getSize(widthMeasureSpec)
+                if (floatingViewportWidth != width) { floatingViewportWidth = width; applyGeometry() }
+                fitFloatingViewport(width, h)
+            }
             super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
         }
         override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
             super.onLayout(changed, left, top, right, bottom)
             // Recheck after the framework positions the IME, without changing layout mid-pass.
-            removeCallbacks(navigationLayout)
-            post(navigationLayout)
+            postNavigationRefresh()
             if (floating) { if (resizing) placeResizing() else placeCard() } else syncOverlayAnchor()
         }
     }
@@ -1492,7 +1632,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     companion object {
         /** 悬浮卡片使用的键高档位。 Height level used by the floating card. */
         const val FLOAT_LEVEL = 0
-        private const val HANDLE_DP = 22f
+        private const val HANDLE_DP = 48f
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

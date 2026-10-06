@@ -81,14 +81,12 @@ jobs:
       - name: Upload Mac assets
         run: |
           assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          if printf '%s\n' "$assets" | grep -Fxq "WeaveText-$VERSION-mac.pkg" &&
-             printf '%s\n' "$assets" | grep -Fxq "WeaveText-$VERSION-mac.dmg" &&
+          if printf '%s\n' "$assets" | grep -Fxq "WeaveText-$VERSION-mac.dmg" &&
              printf '%s\n' "$assets" | grep -Fxq SHA256SUMS-mac.txt; then
             echo "Mac assets already uploaded for $TAG"
             exit 0
           fi
           mkdir -p dist
-          cp "macos/build/WeaveText-$VERSION.pkg" "dist/WeaveText-$VERSION-mac.pkg"
           cp "macos/build/WeaveText-$VERSION.dmg" "dist/WeaveText-$VERSION-mac.dmg"
-          (cd dist && shasum -a 256 *-mac.pkg *-mac.dmg > SHA256SUMS-mac.txt)
+          (cd dist && shasum -a 256 *-mac.dmg > SHA256SUMS-mac.txt)
           gh release upload "$TAG" dist/*

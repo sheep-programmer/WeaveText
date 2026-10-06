@@ -111,4 +111,21 @@ class FloatingGeometryTest {
         assertEquals(FloatingGeometry.MAX_SCALE, FloatingGeometry.decodeScale("9"), 0f)
         assertEquals(0.8f, FloatingGeometry.decodeScale("0.800"), 1e-4f)
     }
+
+    @Test fun oversizedCardsAreClippedToSmallUsableWindows() {
+        val expected = Box(0, 30, 200, 130)
+        assertEquals(expected, FloatingGeometry.place(1f, 1f, 200, 800, 700, 30, 130))
+        assertEquals(expected, FloatingGeometry.clamp(1000, -500, 200, 800, 700, 30, 130))
+        // Layout must apply the returned dimensions too; clamping only translations cannot fit.
+        assertEquals(200, expected.width)
+        assertEquals(100, expected.height)
+    }
+
+    @Test fun degenerateBoundsAndNonfiniteInputsDoNotThrow() {
+        assertEquals(Box(0, 30, 0, 30), FloatingGeometry.clamp(-100, -100, 0, 800, 700, 30, 10))
+        assertEquals(FloatingGeometry.place(0.5f, 1f, w, 810, 700, minTop, maxBottom),
+            FloatingGeometry.place(Float.NaN, Float.NaN, w, 810, 700, minTop, maxBottom))
+        assertEquals(0f, FloatingGeometry.clampScale(1f, 0, 0, 810, 700, 1f), 0f)
+        assertTrue(FloatingGeometry.clampScale(Float.NaN, w, h, 810, 700, 1f).isFinite())
+    }
 }

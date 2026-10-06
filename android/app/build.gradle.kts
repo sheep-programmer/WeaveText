@@ -22,10 +22,11 @@ val coreDir = rootProject.projectDir.resolve("../core")
 val rustJniDir = layout.buildDirectory.dir("rustJniLibs").get().asFile
 val dictAssetsDir = layout.buildDirectory.dir("dictAssets").get().asFile
 val cargo = "${System.getProperty("user.home")}/.cargo/bin/cargo"
-/** 可选：构建时内置的插件包目录（*.xipk）。不传则 APK 不含任何插件。
- *  Optional directory of *.xipk packages to bundle; without it the APK ships no plugins. */
+/** 可选：构建时内置的插件包目录（按 ZIP 内容识别）。不传则 APK 不含任何插件。
+ *  Optional directory of plugin archives; filenames do not determine the format. */
 val bundledPluginsDir: String? = (findProperty("weave.bundledPlugins") as String?)?.takeIf { it.isNotBlank() }
 val pluginAssetsDir = layout.buildDirectory.dir("pluginAssets").get().asFile
+val expressionAssetsDir = layout.buildDirectory.dir("expressionAssets").get().asFile
 
 // ---------------------------------------------------------------- 端侧模型 / on-device models
 // 语音识别运行时 sherpa-onnx（Apache-2.0）与内置模型在构建时下载，经多个 GitHub 镜像回退并校验 SHA-256。
@@ -212,6 +213,7 @@ android {
     sourceSets["main"].jniLibs.srcDir(rustJniDir)
     sourceSets["main"].assets.srcDir(dictAssetsDir)
     sourceSets["main"].assets.srcDir(pluginAssetsDir)
+    sourceSets["main"].assets.srcDir(expressionAssetsDir)
     if (bundleSpeechModels) sourceSets["main"].assets.srcDir(modelAssetsDir)
     // 端侧语音适配层：轻量版换成空实现，不依赖 sherpa-onnx。 Lite swaps the ASR adapter for a stub.
     sourceSets["main"].java.srcDir(if (liteBuild) "src/nosherpa/java" else "src/sherpa/java")
@@ -265,6 +267,7 @@ val buildRust by tasks.registering(Exec::class) {
     inputs.dir(coreDir.resolve("weave-dict/src"))
     inputs.dir(coreDir.resolve("weave-ffi/src"))
     inputs.dir(coreDir.resolve("weave-plugin/src"))
+    inputs.dir(coreDir.resolve("weave-link/src"))
     outputs.dir(rustJniDir)
 }
 
@@ -315,10 +318,18 @@ val syncDicts by tasks.registering(Sync::class) {
 val bundlePlugins by tasks.registering(Sync::class) {
     group = "weave"
     into(pluginAssetsDir.resolve("plugins"))
-    bundledPluginsDir?.let { from(it) { include("*.xipk") } }
+    bundledPluginsDir?.let { from(it) {
+        include { entry -> entry.isDirectory || (entry.file.isFile && entry.file.inputStream().use { input ->
+            input.readNBytes(4).contentEquals(byteArrayOf(80, 75, 3, 4))
+        }) }
+    } }
 }
 
-tasks.named("preBuild") { dependsOn(buildRust, syncDicts, bundlePlugins, fetchSherpa, fetchBuiltinModels) }
+val bundleExpressions by tasks.registering(Sync::class) {
+    from(rootDir.resolve("../data/expressions")) { include("catalog.json", "UNICODE-LICENSE.txt") }
+    into(expressionAssetsDir.resolve("expressions"))
+}
+tasks.named("preBuild") { dependsOn(buildRust, syncDicts, bundlePlugins, bundleExpressions, fetchSherpa, fetchBuiltinModels) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.04.01")
@@ -327,6 +338,9 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    implementation(project(":translation-contract"))
+    // Offline camera QR scanning; no external scanner app or Play Services required.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")

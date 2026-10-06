@@ -19,6 +19,8 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 use weave_engine::session::{paths_in, CandidateView, Engine, Schema, Snapshot};
 
+mod plugin;
+
 /// 不透明句柄。 Opaque handle.
 pub struct WeaveEngine(Mutex<Engine>);
 
@@ -49,7 +51,7 @@ fn out(v: Value) -> *mut c_char {
 }
 
 fn cand_json(c: &CandidateView) -> Value {
-    json!({ "text": c.text, "comment": c.comment, "user": c.user, "cloud": c.cloud })
+    json!({ "text": c.text, "comment": c.comment, "pinyin": c.pinyin, "user": c.user, "cloud": c.cloud })
 }
 
 #[no_mangle]

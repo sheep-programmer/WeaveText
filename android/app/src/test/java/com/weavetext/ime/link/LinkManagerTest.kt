@@ -67,6 +67,36 @@ class LinkManagerTest {
 
     private fun event(json: String) { m.onEvent(JSONObject(json)); ShadowLooper.idleMainLooper() }
 
+    @Test fun directConnectionLifecycleAndErrorsAreVisible() {
+        m.setEnabled(true)
+        m.openDirect()
+        assertTrue(m.state.value.directBusy)
+        assertEquals("openDirect", backend.calls.last().getString("op"))
+        event("""{"type":"directReady","ticket":"weavelink://direct/test","expiresIn":300,"public":true}""")
+        assertFalse(m.state.value.directBusy)
+        assertEquals("weavelink://direct/test", m.state.value.directTicket)
+        m.joinDirect(" weavelink://direct/other ")
+        assertTrue(m.state.value.directBusy)
+        assertEquals("weavelink://direct/other", backend.calls.last().getString("ticket"))
+        event("""{"type":"directFailed","reason":"connection code expired"}""")
+        assertFalse(m.state.value.directBusy)
+        assertTrue(m.state.value.directMessage!!.contains("过期"))
+        event("""{"type":"connected","transport":"direct-udp"}""")
+        assertEquals("", m.state.value.directTicket)
+        assertTrue(m.state.value.directMessage!!.contains("不经过中转"))
+        m.setEnabled(false)
+        assertNull(m.state.value.directMessage)
+    }
+
+    @Test fun expiringAnOldTicketDoesNotClearANewerTicket() {
+        m.setEnabled(true)
+        event("""{"type":"directReady","ticket":"old","expiresIn":1,"public":true}""")
+        event("""{"type":"directReady","ticket":"new","expiresIn":300,"public":true}""")
+        ShadowLooper.idleMainLooper(2, TimeUnit.SECONDS)
+        assertEquals("new", m.state.value.directTicket)
+        m.setEnabled(false)
+    }
+
     @Test fun offByDefaultAndStartsWhenEnabled() {
         m.ensureRunning()
         assertNull(backend.config)

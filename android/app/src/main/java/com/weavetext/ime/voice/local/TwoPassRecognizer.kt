@@ -156,7 +156,10 @@ class TwoPassRecognizer(
         }
         if (text.isEmpty()) return
         val punct = punctuator
-        if (punct != null && !hasPunctuation(text)) {
+        // A model may already emit an internal comma while omitting the sentence terminator. Still
+        // restore punctuation in that case; only skip the external model when the text already ends
+        // with a sentence mark (Whisper commonly returns fully punctuated text).
+        if (punct != null && !hasFinalPunctuation(text)) {
             val before = text
             text = runCatching { punct.punctuate(before) }.getOrDefault(before)
         }
@@ -214,7 +217,10 @@ class TwoPassRecognizer(
             return if (ascii(previous) && ascii(next.firstOrNull())) " $next" else next
         }
 
-        private fun hasPunctuation(s: String) = s.any { it in "，。？！、；：,.?!" }
+        private fun hasFinalPunctuation(s: String): Boolean {
+            val last = s.trimEnd().lastOrNull() ?: return false
+            return last in "。？！.!?"
+        }
 
         /** 语音输入多是往输入框里填半句，句末句号通常多余。 A trailing full stop is usually unwanted. */
         fun stripTrailingPeriod(s: String): String = s.trimEnd('。', '.')

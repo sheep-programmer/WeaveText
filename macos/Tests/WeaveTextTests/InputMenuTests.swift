@@ -17,6 +17,9 @@ import WeaveCore
         let voice = try! #require(menu.items.first { $0.title == "打开语音悬浮窗…" })
         #expect(voice.action == #selector(WeaveInputController.openVoice(_:)))
         #expect(voice.target === target)
+        let translation = try! #require(menu.items.first { $0.title == "翻译所选文字…" })
+        #expect(translation.action == #selector(WeaveInputController.openTranslation(_:)))
+        #expect(translation.target === target)
         let schemes = menu.items.filter { $0.action == #selector(WeaveInputController.selectScheme(_:)) }
         #expect(schemes.contains { $0.title == InputScheme.named("pinyin").name && $0.state == .on })
         #expect(menu.items.first { $0.title == InputScheme.named("wubi86").name }?.action == nil)

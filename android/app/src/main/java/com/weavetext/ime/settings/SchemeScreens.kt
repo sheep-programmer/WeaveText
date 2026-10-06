@@ -39,9 +39,6 @@ import kotlin.math.roundToInt
 
 /** 手写停笔判字的三档名称，与 [WeavePrefs.HAND_PAUSE_MS] 对应。 Names of the three pause levels. */
 private val HAND_PAUSE_NAMES = listOf("快", "中", "慢")
-/** 候选拼音的三档，与 [WeavePrefs.PINYIN_HINT] 对应。 Names and samples of the three pinyin-hint levels. */
-private val PINYIN_HINT_NAMES = listOf("关闭", "带声调", "不带声调")
-private val PINYIN_HINT_SAMPLES = listOf("只显示汉字", "你好  nǐ hǎo", "你好  ni hao")
 
 private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "hand", "wubi86", "english")
 
@@ -52,7 +49,6 @@ fun SchemesScreen() {
     val nav = LocalNav.current
     val p by rememberLivePrefs(deps.prefs)
     var showScheme by remember { mutableStateOf(false) }
-    var showHint by remember { mutableStateOf(false) }
     var showDepth by remember { mutableStateOf(false) }
     var showHand by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
@@ -104,8 +100,8 @@ fun SchemesScreen() {
                 }
             }
             RowDivider(false)
-            SettingRow("候选显示拼音", "在候选字后面用小字标出读音，方便认字和学拼音", onClick = { showHint = true }) {
-                ValueChevron(PINYIN_HINT_NAMES[WeavePrefs.pinyinHint(p)])
+            SwitchRow("词语上方拼音注音", "默认开启，显示完整带声调拼音，例如 nǐ hǎo；轻声按规范不标调", checked = WeavePrefs.pinyinHint(p) != 0, subtitleMaxLines = 2) {
+                p.edit().putInt(WeavePrefs.PINYIN_HINT, if (it) 1 else 0).apply()
             }
             RowDivider(false)
             SwitchRow("成对符号", "输入“（《【时自动补上另一半", checked = WeavePrefs.autoPair(p)) {
@@ -116,14 +112,23 @@ fun SchemesScreen() {
         GroupCard {
             ClearHandLearningRow()
             RowDivider(false)
-            SwitchRow("多字连写", "从左到右写 2–4 个字，字间留空；写完停笔约 2 秒自动上屏，也可点候选", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
+            SwitchRow("连续连写", "一个字完成后再写下一个，前一个字的墨迹会慢慢淡出；键盘右侧也可切换", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
                 p.edit().putBoolean(WeavePrefs.HAND_LINE,it).apply()
+            }
+            RowDivider(false)
+            SwitchRow("停笔自动上屏", "关闭后保留笔迹与候选，点选、空格或回车才上屏，适合慢写与仔细选字", checked = WeavePrefs.handAutoCommit(p), subtitleMaxLines = 3) {
+                p.edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, it).apply()
+            }
+            RowDivider(false)
+            SwitchRow("书写参考线", "显示书写区的中心参考线", checked = WeavePrefs.handGuide(p)) {
+                p.edit().putBoolean(WeavePrefs.HAND_GUIDE, it).apply()
             }
             RowDivider(false)
             SettingRow("停笔判字", "停笔多久算写完一个字；写得慢选「慢」", onClick = { showHand = true }) {
                 ValueChevron(HAND_PAUSE_NAMES[WeavePrefs.handPause(p)])
             }
         }
+        HandwritingAppearanceSettings(p)
         GroupTitle("五笔")
         GroupCard {
             SwitchRow("显示字根提示", checked = WeavePrefs.wubiRootHints(p)) { p.edit().putBoolean(WeavePrefs.WUBI_ROOT_HINTS, it).apply() }
@@ -155,33 +160,6 @@ fun SchemesScreen() {
                 }
             },
             confirmButton = { TextButton(onClick = { showDepth = false }) { Text("取消") } },
-        )
-    }
-
-    if (showHint) {
-        AlertDialog(
-            onDismissRequest = { showHint = false },
-            title = { Text("候选显示拼音") },
-            text = {
-                Column {
-                    for (i in PINYIN_HINT_NAMES.indices) {
-                        val sel = i == WeavePrefs.pinyinHint(p)
-                        Row(
-                            Modifier.fillMaxWidth().height(56.dp).selectable(sel) {
-                                p.edit().putInt(WeavePrefs.PINYIN_HINT, i).apply(); showHint = false
-                            },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = sel, onClick = null)
-                            Column(Modifier.padding(start = 16.dp)) {
-                                Text(PINYIN_HINT_NAMES[i], style = MaterialTheme.typography.bodyLarge)
-                                Text(PINYIN_HINT_SAMPLES[i], style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showHint = false }) { Text("取消") } },
         )
     }
 

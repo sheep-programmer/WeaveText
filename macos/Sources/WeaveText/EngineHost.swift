@@ -18,7 +18,7 @@ final class EngineHost {
     let cloud: CloudWords
     private var cloudTimer: Timer?
 
-    /// 中文模式；false 时启用英文补全。 Chinese mode; false enables English completion.
+    /// 中文模式；false 时切换到英文输入。 Chinese mode; false switches to English input.
     private(set) var chinese = true
 
     private init() {
@@ -77,6 +77,8 @@ final class EngineHost {
     }
 
     private var appliedSchema: String?
+    private var appliedOptions: [String:Bool] = [:]
+    private var appliedLearning: Bool?
 
     /// 把偏好写进内核；方案变了先收尾组合。 Push preferences into the engine; finish composing on a scheme change.
     private func apply() {
@@ -90,8 +92,16 @@ final class EngineHost {
                 NSLog("WeaveText: scheme %@ has no dictionary, keeping %@", prefs.schema, appliedSchema ?? "-")
             }
         }
-        for (key, on) in prefs.engineOptions { engine.setOption(key, on) }
+        var changed = false
+        for (key, on) in prefs.engineOptions where appliedOptions[key] != on {
+            engine.setOption(key, on); appliedOptions[key] = on; changed = true
+        }
+        if appliedLearning != prefs.learning {
+            engine.setLearning(prefs.learning); appliedLearning = prefs.learning; changed = true
+        }
+        if changed { _ = engine.features(["op":"refreshOptions"]) }
         engine.features(["op": "setPredictionDepth", "depth": prefs.predictionDepth])
+        activeController?.inputOptionsDidChange()
     }
 
     /// 本地时区给内核（rq / sj / xq）；夏令时切换也会变，所以每次激活时也同步。

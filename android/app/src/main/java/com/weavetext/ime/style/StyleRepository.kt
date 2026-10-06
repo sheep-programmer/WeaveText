@@ -142,7 +142,7 @@ class StyleRepository private constructor(private val app: Context) {
     fun resolve(ctx: Context, prefs: SharedPreferences, level: Int = WeavePrefs.heightLevel(prefs)): KeyboardStyle {
         val layoutId = WeavePrefs.styleLayout(prefs)
         val themeId = WeavePrefs.styleTheme(prefs)
-        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), level, prefs.getLong(WeavePrefs.STYLE_STAMP, 0))
+        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), level, prefs.getLong(WeavePrefs.STYLE_STAMP, 0), WeavePrefs.pinyinHint(prefs) != 0)
     }
 
     fun overrides(prefs: SharedPreferences): StyleOverrides =
@@ -150,11 +150,11 @@ class StyleRepository private constructor(private val app: Context) {
             .getOrDefault(StyleOverrides.NONE)
 
     fun resolve(
-        ctx: Context, layoutId: String, themeId: String, o: StyleOverrides, dark: Boolean, level: Int, stamp: Long = 0,
+        ctx: Context, layoutId: String, themeId: String, o: StyleOverrides, dark: Boolean, level: Int, stamp: Long = 0, pinyinAbove: Boolean = true,
     ): KeyboardStyle = synchronized(this) {
         val cfg = ctx.resources.configuration
         val dm = ctx.resources.displayMetrics
-        val sig = listOf(layoutId, themeId, o.toJson(), dark, level, stamp, cfg.fontScale, cfg.orientation, dm.widthPixels, dm.heightPixels, dm.density).joinToString("|")
+        val sig = listOf(layoutId, themeId, o.toJson(), dark, level, stamp, pinyinAbove, cfg.fontScale, cfg.orientation, dm.widthPixels, dm.heightPixels, dm.density).joinToString("|")
         lastStyle?.let { if (sig == lastSig) return it }
         val layout = runCatching { layout(layoutId) }.getOrElse { layout(DEFAULT_LAYOUT) }
         val tid = if (themeId == AUTO) layout.theme else themeId
@@ -163,7 +163,7 @@ class StyleRepository private constructor(private val app: Context) {
         val bgSpec = o.background ?: theme.background(dark)
         val bgDir = if (o.background != null) currentDir else themeDir(tid)
         backdrop(bgSpec, bgDir, dm.density)?.let { palette = palette.copy(backdrop = it) }
-        val metrics = KbMetrics(ctx, level, KeyboardStyle.geometry(layout, o))
+        val metrics = KbMetrics(ctx, level, KeyboardStyle.geometry(layout, o), pinyinAbove = pinyinAbove, candidateTextSize = layout.candidates.textSize)
         return KeyboardStyle(layout, theme, dark, o, palette, metrics).also { lastSig = sig; lastStyle = it }
     }
 

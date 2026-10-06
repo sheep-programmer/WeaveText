@@ -77,24 +77,28 @@ fn typing_resets_the_chain() {
 #[test]
 fn pinyin_hints_follow_the_option_and_the_lexicon_syllables() {
     let Some(mut e) = engine("hint") else { return };
-    let comments = |e: &mut Engine| e.snapshot().candidates.iter().map(|c| (c.text.clone(), c.comment.clone())).collect::<Vec<_>>();
+    let annotations = |e: &mut Engine| e.snapshot().candidates.iter().map(|c| (c.text.clone(), c.pinyin.clone())).collect::<Vec<_>>();
     for c in "yinhang".chars() {
         e.input_char(c);
     }
-    assert!(comments(&mut e).iter().all(|(_, c)| c.is_empty()), "off by default");
+    assert_eq!(annotations(&mut e)[0], ("银行".into(), "yín háng".into()), "toned by default");
+    assert!(e.options.set_flag("candidates.pinyin", false));
+    e.clear();
+    for c in "yinhang".chars() {e.input_char(c);}
+    assert!(annotations(&mut e).iter().all(|(_, p)| p.is_empty()));
     assert!(e.options.set_flag("candidates.pinyin", true));
     e.clear();
     for c in "yinhang".chars() {
         e.input_char(c);
     }
-    let list = comments(&mut e);
+    let list = annotations(&mut e);
     assert_eq!(list[0], ("银行".to_string(), "yín háng".to_string()));
     assert!(e.options.set_flag("candidates.pinyin_tones", false));
     e.clear();
     for c in "yinhang".chars() {
         e.input_char(c);
     }
-    assert_eq!(comments(&mut e)[0], ("银行".to_string(), "yin hang".to_string()));
+    assert_eq!(annotations(&mut e)[0], ("银行".to_string(), "yin hang".to_string()));
 }
 
 #[test]

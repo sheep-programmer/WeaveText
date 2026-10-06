@@ -59,13 +59,13 @@ pub fn plain(toned: &str) -> String {
 }
 
 /// `text` 的拼音（音节以空格分隔）。`key` 是词库给这个候选用的音节（长度与字数一致时据此挑读音）。
-/// 含非汉字、或有生僻到没有读音的字时为 `None`。
+/// 中英混输保留非汉字片段；纯英文、数字、表情不注音。
 /// Pinyin of `text`, syllables separated by spaces. `key` is the lexicon's syllables for this candidate (used to choose
 /// readings when its length matches the char count). `None` if it has non-Han chars or a char without a reading.
 pub fn pinyin(text: &str, key: Option<&[SyllableId]>, tones: bool) -> Option<String> {
     let t = table();
     let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() || chars.len() > 24 {
+    if chars.is_empty() || chars.len() > 256 {
         return None;
     }
     let key = key.filter(|k| k.len() == chars.len());
@@ -93,23 +93,28 @@ pub fn pinyin(text: &str, key: Option<&[SyllableId]>, tones: bool) -> Option<Str
         }
     }
     let mut parts: Vec<String> = Vec::with_capacity(chars.len());
+    let mut literal = String::new();
+    let mut has_reading = false;
     for (i, c) in chars.iter().enumerate() {
+        let Some(readings) = t.chars.get(c) else {literal.push(*c);continue};
+        has_reading = true;
+        if !literal.is_empty() {parts.push(std::mem::take(&mut literal));}
         let toned = match out[i].take() {
             Some(r) => r,
             None => {
-                let readings = t.chars.get(c)?;
                 match spelled.as_ref().map(|s| s[i]) {
                     Some(want) if !want.is_empty() => readings
                         .iter()
                         .find(|r| plain(r) == want)
-                        .map_or_else(|| want.to_string(), |r| (*r).to_string()),
+                        .map_or_else(|| readings[0].to_string(), |r| (*r).to_string()),
                     _ => readings[0].to_string(),
                 }
             }
         };
         parts.push(if tones { toned } else { plain(&toned) });
     }
-    Some(parts.join(" "))
+    if !literal.is_empty() {parts.push(literal);}
+    has_reading.then(|| parts.join(" "))
 }
 
 #[cfg(test)]
@@ -141,7 +146,7 @@ mod tests {
         assert_eq!(pinyin("中奖", Some(&ids("zhong jiang")), true).as_deref(), Some("zhòng jiǎng"));
         assert_eq!(pinyin("中国", Some(&ids("zhong guo")), true).as_deref(), Some("zhōng guó"));
         // 覆盖表和词库用的音节对不上时不采用。 An override that disagrees with the lexicon's syllables is ignored.
-        assert_eq!(pinyin("爱好", Some(&ids("ai hou")), true).as_deref(), Some("ài hou"));
+        assert_eq!(pinyin("爱好", Some(&ids("ai hou")), true).as_deref(), Some("ài hǎo"));
         // 句子里夹着词：最长匹配。 A word inside a longer run.
         assert_eq!(pinyin("我爱好看书", None, true).as_deref(), Some("wǒ ài hào kàn shū"));
     }
@@ -153,5 +158,15 @@ mod tests {
         assert_eq!(pinyin("", None, true), None);
         // key 长度和字数对不上就不用它。 A key of the wrong length is ignored.
         assert_eq!(pinyin("你好", Some(&ids("ni")), true).as_deref(), Some("nǐ hǎo"));
+    }
+
+    #[test]
+    fn annotations_cover_long_words_and_keep_mixed_input_intact() {
+        let sentence = "你好世界".repeat(10);
+        let annotated = pinyin(&sentence, None, true).unwrap();
+        assert_eq!(annotated.split_whitespace().count(), 40);
+        assert!(annotated.starts_with("nǐ hǎo shì jiè"));
+        assert_eq!(pinyin("今天review这个PR", None, true).as_deref(), Some("jīn tiān review zhè gè PR"));
+        assert_eq!(pinyin("123", None, true), None);
     }
 }

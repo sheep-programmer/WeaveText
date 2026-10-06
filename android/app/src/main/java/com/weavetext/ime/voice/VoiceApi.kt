@@ -129,9 +129,9 @@ interface VoiceEngines {
      */
     fun selectionSatisfiesMode(): Boolean = true
 
-    /** 读取 .xipk 的信息但不安装（导入前确认）。 Read a package without installing it. */
+    /** 读取插件包内容的信息但不安装（导入前确认）。 Read a package without installing it. */
     fun inspect(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException())
-    /** 从 .xipk 文件导入。 Import a .xipk package. */
+    /** 从插件 ZIP 包导入。 Import a plugin ZIP archive. */
     fun install(xipkPath: String): Result<VoicePlugin>
     fun uninstall(id: String): Result<Unit>
     fun getConfig(id: String, key: String): String?

@@ -7,7 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 多引擎结果汇总：累积、结束、超时、默认行、一致即上屏。 Multi-engine result aggregation. */
+/** 多引擎结果汇总：累积、结束、超时、默认行；相同文字可比较，是否上屏由会话的用户确认决定。 */
 class MultiEngineResultsTest {
     @Test fun englishSegmentsKeepSpacesAndChineseDoesNotAcquireSpaces() {
         val r = res()
@@ -85,7 +85,7 @@ class MultiEngineResultsTest {
         assertEquals(Status.TIMEOUT, r.rows()[1].status)
     }
 
-    @Test fun unanimousCommitsDirectly() {
+    @Test fun detectsMatchingResultsWithoutCommittingThem() {
         val r = res()
         for (id in listOf("local", "a", "b")) r.final(id, "一样的结果 ")
         r.stop(0)

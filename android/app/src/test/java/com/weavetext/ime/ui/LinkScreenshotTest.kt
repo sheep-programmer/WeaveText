@@ -3,6 +3,8 @@ package com.weavetext.ime.ui
 import android.app.Application
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -26,6 +28,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
+import org.junit.Assert.assertEquals
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
@@ -77,4 +81,13 @@ class LinkScreenshotTest {
     @Test fun linkOnDark() = show("link_on_dark", on, dark = true)
     @Test fun linkSearching() = show("link_searching", on.copy(trusted = emptyList(), nearby = emptyList(), transfers = emptyList()))
     @Test fun linkPairFromQr() = show("link_pair_qr", on.copy(pendingPair = PendingPair("会议室 Mac mini", listOf("192.168.1.20:47811"), "482913")), dialog = true)
+
+    @Test fun scannerIsAvailableBeforeEnablingLinkAndOpensTheBuiltInCamera() {
+        val deps = SettingsDeps(app, status = { ImeStatus(true, true, true) }, link = { FakeLink() })
+        compose.setContent { SettingsApp(deps, Navigator(listOf(Route.Home, Route.Link))) }
+        compose.onNodeWithText("扫描二维码").performClick()
+        compose.runOnIdle {
+            assertEquals("com.weavetext.ime.link.LinkScanActivity", Shadows.shadowOf(app).nextStartedActivity.component!!.className)
+        }
+    }
 }

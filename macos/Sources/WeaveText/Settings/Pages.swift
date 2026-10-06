@@ -183,6 +183,7 @@ struct GeneralPage: View {
                 }
                 if voiceRecorder.recording { Text(voiceRecorder.message).foregroundStyle(.orange) }
                 Button("打开表情收纳袋…") { StickerWindow.shared.show() }
+                Button("Emoji 与颜文字…") { ExpressionsWindow.shared.show() }
             } header: {
                 Text("语音")
             } footer: {
@@ -222,30 +223,46 @@ struct SchemesPage: View {
             }
             .disabled(!pinyinFamily)
             Section {
-                Toggle("联想词", isOn: $prefs.prediction)
+                Toggle("自动纠错", isOn: $prefs.autocorrect)
+            } header: {
+                Text("拼音纠错")
+            } footer: {
+                Footnote("默认开启。全拼的换位、漏字母、多字母会自动纠正，改动标红；候选窗同时提示已纠错。回车仍可提交原始输入。")
+            }
+            .disabled(prefs.schema != "pinyin")
+            Section {
+                Toggle("联想词（默认关闭）", isOn: $prefs.prediction)
                 Picker("联想深度", selection: $prefs.predictionDepth) {
                     ForEach(Array(Preferences.predictionDepths), id: \.self) { Text($0 == 3 ? "\($0) 次（默认）" : "\($0) 次").tag($0) }
                 }
                 .disabled(!prefs.prediction)
+                Toggle("英文单词补全（默认关闭）", isOn: $prefs.englishCompletion)
             } footer: {
-                Footnote("写到一定长度才推荐下一个词，句子像说完了就不再出。联想深度是连着选联想词最多接几次，越往后越要求有把握。按数字选，空格、回车或 Esc 收起。")
+                Footnote("联想与英文补全默认关闭，可按需开启。英文补全关闭时，输入什么就保留什么，空格、数字和标点也原样输入。开启联想后按数字选词，空格、回车或 Esc 收起；联想深度决定最多连续推荐几次。")
             }
             Section {
-                Picker("候选显示拼音", selection: $prefs.pinyinHint) {
-                    Text("关闭").tag(PinyinHint.off)
-                    Text("带声调（nǐ hǎo）").tag(PinyinHint.toned)
-                    Text("不带声调（ni hao）").tag(PinyinHint.plain)
-                }
+                Toggle("词语上方拼音注音（默认开启）", isOn: Binding(get: {prefs.pinyinHint != .off}, set: {prefs.pinyinHint = $0 ? .toned : .off}))
             } header: {
                 Text("拼音提示")
             } footer: {
-                Footnote("在候选字后面用小字标出读音，方便认字和学拼音；读音按词库实际用的音节挑选，「银行」是 yín háng。")
+                Footnote("在每个候选词上方显示完整带声调拼音，例如 nǐ hǎo、yín háng。关闭后立即隐藏注音；轻声按规范不添加声调符号。")
             }
             Section("输出") {
+                Toggle("自动学习用户词", isOn: $prefs.learning)
+                Toggle("中文全角标点", isOn: $prefs.fullWidthPunctuation)
+                Toggle("成对符号", isOn: $prefs.autoPair).disabled(!prefs.fullWidthPunctuation)
                 Toggle("繁体输出", isOn: $prefs.traditional)
                 Toggle("表情候选", isOn: $prefs.emoji)
             }
             Section {
+                Toggle("四码唯一时自动上屏", isOn: $prefs.wubiAutoCommit)
+                Toggle("z 键拼音反查", isOn: $prefs.wubiPinyinLookup)
+                Toggle("编码补全提示", isOn: $prefs.wubiCompletion)
+            } header: { Text("五笔") } footer: {
+                Footnote("输入 z 后接拼音，可查不熟悉的字；编码补全显示尚未输入的编码。")
+            }.disabled(prefs.schema != "wubi86")
+            Section {
+                Toggle("多字连写", isOn: $prefs.handLine)
                 Picker("停笔自动上屏", selection: $prefs.handPause) {
                     Text("快").tag(HandPause.fast)
                     Text("中").tag(HandPause.medium)
@@ -266,10 +283,24 @@ struct AppearancePage: View {
 
     var body: some View {
         Form {
+            Section {
+                LazyVGrid(columns:[GridItem(.adaptive(minimum:125),spacing:12)],spacing:12) {
+                    ForEach(ColorTheme.allCases,id:\.self) {theme in
+                        ThemeChoice(theme:theme,selected:prefs.colorTheme==theme) {prefs.colorTheme=theme}
+                    }
+                }.padding(.vertical,6)
+                Picker("明暗模式",selection:$prefs.appearance) {
+                    Text("跟随系统").tag(AppearanceMode.system)
+                    Text("浅色").tag(AppearanceMode.light)
+                    Text("深色").tag(AppearanceMode.dark)
+                }.pickerStyle(.segmented)
+            } header: {Text("主题")} footer: {
+                Footnote("配色和明暗模式会立即应用到设置、候选窗及各个工具窗口。")
+            }
             Section("预览") {
                 HStack {
                     Spacer()
-                    CandidateBar(state: sample, pick: { _ in })
+                    CandidateBar(state: sample, pick: { _ in },theme:prefs.colorTheme)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: CandidatePanel.cornerRadius))
                         .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                         .environment(\.colorScheme, previewScheme ?? .light)
@@ -285,11 +316,6 @@ struct AppearancePage: View {
                 .pickerStyle(.segmented)
                 Stepper(value: $prefs.fontSize, in: Preferences.fontSizes) {
                     LabeledContent("字号", value: "\(prefs.fontSize) pt")
-                }
-                Picker("深浅色", selection: $prefs.appearance) {
-                    Text("跟随系统").tag(AppearanceMode.system)
-                    Text("浅色").tag(AppearanceMode.light)
-                    Text("深色").tag(AppearanceMode.dark)
                 }
             }
         }
@@ -308,8 +334,32 @@ struct AppearancePage: View {
 
     private var sample: CandidateState {
         let words = ["织文", "知闻", "之文", "只闻", "支文", "职位", "直闻", "至文", "止闻"]
-        return CandidateState(preedit: "zhi'wen", candidates: words.prefix(prefs.pageSize).map { Candidate(text: $0) },
+        let readings=["zhī wén","zhī wén","zhī wén","zhǐ wén","zhī wén","zhí wèi","zhí wén","zhì wén","zhǐ wén"]
+        return CandidateState(preedit: "zhi'wen", candidates: Array(words.prefix(min(prefs.pageSize,5)).enumerated()).map { Candidate(text: $0.element,pinyin:prefs.pinyinHint == .off ? "" : readings[$0.offset]) },
                               highlight: 0, hasPrevious: false, hasNext: true, orientation: prefs.orientation,
                               fontSize: CGFloat(prefs.fontSize))
+    }
+}
+
+private struct ThemeChoice:View {
+    let theme:ColorTheme
+    let selected:Bool
+    let choose:()->Void
+    private var palette:ThemePalette {Theme.palette(theme)}
+    var body:some View {
+        Button(action:choose) {
+            VStack(alignment:.leading,spacing:10) {
+                VStack(alignment:.leading,spacing:7) {
+                    HStack(spacing:3) {ForEach(0..<3) {_ in Circle().fill(palette.secondary.opacity(0.3)).frame(width:4,height:4)};Spacer()}
+                    HStack(spacing:5) {
+                        Text("织文").font(.system(size:14,weight:.medium)).foregroundStyle(palette.accent)
+                            .padding(.horizontal,6).padding(.vertical,4).background(palette.accentSoft,in:RoundedRectangle(cornerRadius:5))
+                        Text("你好").font(.system(size:13)).foregroundStyle(palette.label)
+                    }
+                }.padding(10).frame(maxWidth:.infinity).background(palette.canvas,in:RoundedRectangle(cornerRadius:8))
+                HStack {Text(theme.title).font(.system(size:13,weight:.medium));Spacer();Image(systemName:selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? palette.accent : palette.secondary.opacity(0.35))}
+            }.padding(10).background(palette.surface,in:RoundedRectangle(cornerRadius:12))
+                .overlay(RoundedRectangle(cornerRadius:12).stroke(selected ? palette.accent : palette.divider,lineWidth:selected ? 1.5 : 1))
+        }.buttonStyle(.plain).help("使用\(theme.title)主题").accessibilityLabel("\(theme.title)主题").accessibilityValue(selected ? "已选择" : "")
     }
 }

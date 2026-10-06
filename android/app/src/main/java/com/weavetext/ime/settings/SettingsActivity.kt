@@ -36,6 +36,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -51,9 +52,11 @@ sealed class Route {
     data object Fuzzy : Route()
     data object Voice : Route()
     data class VoiceDetail(val id: String) : Route()
+    data object PluginRepositories : Route()
     data object Models : Route()
     data object VoiceUpgrade : Route()
     data object Look : Route()
+    data object Translation : Route()
     data object Styles : Route()
     data object StyleTweak : Route()
     data object Dictionary : Route()
@@ -77,12 +80,15 @@ sealed class Route {
             return when (parts.firstOrNull()) {
                 "voice" -> listOf(Voice) + when (val sub = parts.getOrNull(1)) {
                     null -> emptyList()
+                    "plugins" -> listOf(PluginRepositories)
                     "upgrade" -> listOf(VoiceUpgrade)
                     else -> listOf(VoiceDetail(sub))
                 }
                 "models" -> if (runtimeReady) listOf(Voice, Models) else listOf(Voice, VoiceUpgrade)
+                "plugins" -> listOf(Voice, PluginRepositories)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
+                "translation" -> listOf(Look, Translation)
                 "dictionary" -> listOf(Dictionary) + if (parts.getOrNull(1) == "packs") listOf(DictPacks) else emptyList()
                 "link" -> listOf(Link)
                 "toolbar" -> listOf(Look, Toolbar)
@@ -108,6 +114,7 @@ val LocalNav = staticCompositionLocalOf<Navigator> { error("Navigator not provid
 /** 设置 App 根。 Settings app root. */
 @Composable
 fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
+    val pluginListState = rememberSaveableStateHolder()
     val p by rememberLivePrefs(deps.prefs)
     val theme = WeavePrefs.theme(p)
     val night = (deps.ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -121,11 +128,13 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Home -> HomeScreen(statusVersion)
                     Route.Schemes -> SchemesScreen()
                     Route.Fuzzy -> FuzzyScreen()
-                    Route.Voice -> VoiceListScreen()
-                    is Route.VoiceDetail -> VoiceDetailScreen(r.id)
+                    Route.Voice -> pluginListState.SaveableStateProvider("voice") { VoiceListScreen(statusVersion) }
+                    is Route.VoiceDetail -> VoiceDetailScreen(r.id, statusVersion)
+                    Route.PluginRepositories -> pluginListState.SaveableStateProvider("plugin_repositories") { PluginRepositoriesScreen() }
                     Route.Models -> ModelsScreen()
                     Route.VoiceUpgrade -> VoiceUpgradeScreen()
                     Route.Look -> LookScreen()
+                    Route.Translation -> TranslationSettingsScreen()
                     Route.Styles -> StylesScreen()
                     Route.StyleTweak -> StyleTweakScreen()
                     Route.Dictionary -> DictionaryScreen()
@@ -213,9 +222,13 @@ class SettingsActivity : ComponentActivity() {
      */
     private fun linkIntent(i: Intent?): List<Route>? {
         val u = i?.data ?: return null
-        if (u.scheme != "weavelink" || u.host != "pair") return null
-        val pair = com.weavetext.ime.link.LinkUri.parse(u.toString())
-        if (pair != null) com.weavetext.ime.link.LinkManager.get(this).offerPair(pair)
+        if (u.scheme != "weavelink" || u.host !in listOf("pair", "direct")) return null
+        val link = com.weavetext.ime.link.LinkManager.get(this)
+        when (val payload = com.weavetext.ime.link.LinkQrPayload.parse(u.toString())) {
+            is com.weavetext.ime.link.LinkQrPayload.Pairing -> link.offerPair(payload.request)
+            is com.weavetext.ime.link.LinkQrPayload.Direct -> link.offerDirect(payload.ticket)
+            null -> {}
+        }
         return listOf(Route.Link)
     }
 

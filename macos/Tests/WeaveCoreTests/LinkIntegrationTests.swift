@@ -26,6 +26,29 @@ import Testing
         return nil
     }
 
+    @Test func directUdpPairAndFileThroughTheCABI() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-direct-\(getpid())")
+        try? FileManager.default.removeItem(at: dir)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = try start("UDP Mac", platform: "mac-a", in: dir)
+        let b = try start("UDP phone", platform: "mac-b", in: dir)
+        defer { a.stop(); b.stop() }
+        #expect(a.call(["op":"openDirect", "stun": [String]()]).bool("ok"))
+        #expect(b.call(["op":"openDirect", "stun": [String]()]).bool("ok"))
+        let ta = try #require(wait(a, "directReady")).str("ticket")
+        let tb = try #require(wait(b, "directReady")).str("ticket")
+        #expect(a.call(["op":"joinDirect", "ticket":tb]).bool("ok"))
+        #expect(b.call(["op":"joinDirect", "ticket":ta]).bool("ok"))
+        #expect(try #require(wait(a, "connected")).str("transport") == "direct-udp")
+        #expect(try #require(wait(b, "connected")).str("transport") == "direct-udp")
+        let data = Data((0..<200_000).map { UInt8($0 % 251) })
+        let file = dir.appendingPathComponent("direct.bin")
+        try data.write(to: file)
+        #expect(a.call(["op":"sendFile", "path":file.path, "name":"direct.bin"]).bool("ok"))
+        let done = try #require(wait(b, "fileDone"))
+        #expect(try Data(contentsOf: URL(fileURLWithPath: done.str("path"))) == data)
+    }
+
     @Test func pairSendTextAndFile() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("weave-mac-link-\(getpid())")
         try? FileManager.default.removeItem(at: dir)

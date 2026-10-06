@@ -22,6 +22,12 @@ import org.robolectric.annotation.GraphicsMode
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
+import org.junit.Assert.assertEquals
 import java.io.File
 
 /**
@@ -70,6 +76,29 @@ class StickerManagerScreenshotTest {
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("整理").performClick()
         compose.onNodeWithText("开心").performClick()
+    }
+
+    @Test fun singleDeleteConfirmationCanBeCancelledBeforeAnyOriginalIsRemoved() {
+        shot("sticker_manager_delete_confirmation_light", false, act = {
+            compose.onNodeWithText("开心").performTouchInput { longClick() }
+            compose.onNodeWithText("删除").performClick()
+            compose.onNodeWithText("删除这张表情？").assertExists()
+            assertEquals(3, StickerRepository.get(app).store.list().size)
+        })
+        compose.onNodeWithText("取消").performClick(); compose.waitForIdle()
+        assertEquals(3, StickerRepository.get(app).store.list().size)
+    }
+    @Test fun batchDeleteAlsoWaitsForConfirmation() {
+        shot("sticker_manager_batch_delete_confirmation_dark", true, act = {
+            selectOne()
+            compose.onNodeWithText("晚安").performClick()
+            compose.onNodeWithText("删除").performClick()
+            compose.onNodeWithText("删除 2 张表情？").assertExists()
+            assertEquals(3, StickerRepository.get(app).store.list().size)
+        })
+        compose.onNode(hasText("删除") and hasAnyAncestor(isDialog())).performClick()
+        StickerRepository.io.submit {}.get(); compose.waitForIdle()
+        assertEquals(1, StickerRepository.get(app).store.list().size)
     }
 
     @Test fun managerLight() = shot("sticker_manager_light", false)

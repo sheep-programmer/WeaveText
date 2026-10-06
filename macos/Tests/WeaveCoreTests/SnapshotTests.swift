@@ -20,6 +20,11 @@ import Testing
         #expect(s.candidates[1].cloud && s.candidates[1].user)
         #expect(!s.candidates[2].cloud)
     }
+    @Test func pronunciationAndOtherCandidateNotesAreIndependent() throws {
+        let s=try #require(Snapshot.decode(#"{"candidates":[{"text":"你好","pinyin":"nǐ hǎo","comment":"已固定","user":true},{"text":"银行","pinyin":"yín háng","cloud":true}]}"#))
+        #expect(s.candidates[0].pinyin == "nǐ hǎo" && s.candidates[0].comment == "已固定")
+        #expect(s.candidates[1].pinyin == "yín háng" && s.candidates[1].cloud)
+    }
     @Test func decodesPredictions() throws {
         let json = #"{"commit":"今天","preedit":"","composing":false,"predicting":true,"total":2,"candidates":[{"text":"晚上"},{"text":"下午"}]}"#
         let s = try #require(Snapshot.decode(json))

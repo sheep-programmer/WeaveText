@@ -22,6 +22,9 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     @Published private(set) var serviceError: String?
     @Published private(set) var personalProfiles:[String]=[]
     @Published var selectedTarget = ""
+    @Published private(set) var directTicket = ""
+    @Published private(set) var directBusy = false
+    @Published private(set) var directMessage = ""
     private let bonjour = LinkBonjour()
     private var appliedInbox: String?
     private var queueTarget: String?
@@ -123,6 +126,7 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
     /// 关掉内核（关开关、退出时）。 Stop the core (switch off, quit).
     func shutdown() {
         guard let h = handle else { return }
+        directTicket = ""; directBusy = false; directMessage = ""
         bonjour.stop()
         handle = nil
         h.stop()
@@ -146,6 +150,20 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     private func receive(_ e: LinkEvent, from h: LinkHandle) {
         guard h === handle else { return }
+        switch e {
+        case .directReady(let ticket, let expiresIn, let publicMapping):
+            directTicket = ticket; directBusy = false
+            directMessage = publicMapping ? "连接码已生成，5 分钟内有效" : "连接码已生成；公网地址探测未成功，跨网直连可能失败"
+            DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(max(1, min(300, expiresIn)))) { [weak self] in
+                guard let self, self.directTicket == ticket else { return }
+                self.directTicket = ""; self.directMessage = "连接码已过期，请两端重新生成"
+            }
+        case .directFailed(let reason):
+            directBusy = false; directMessage = Self.directReason(reason)
+        case .directConnected:
+            directTicket = ""; directBusy = false; directMessage = "已建立 P2P 直连，文件不经过中转"
+        default: break
+        }
         if case .error(let m) = e { serviceError = m }
         if case .pairFailed(let reason) = e { serviceError = "配对失败：" + reason }
         if case .fileFailed(_, _, let reason) = e { serviceError = "传输失败：" + reason }
@@ -222,6 +240,29 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
         let r = h.call(command)
         guard !r.isEmpty, r["code"] is String else { serviceError = "本机公网地址无效，请使用 IPv4:端口 或 [IPv6]:端口"; return }
         state.pairing = LinkPairing(json: r)
+    }
+
+    private static func directReason(_ reason: String) -> String {
+        if reason.contains("expired") { return "连接码已过期，请两端重新生成" }
+        if reason.contains("own connection") { return "请粘贴对方的连接码" }
+        if reason.contains("generate your") { return "请先生成本机连接码" }
+        if reason.contains("already") { return "正在准备或连接，请稍候" }
+        if reason.contains("invalid") || reason.contains("certificate") { return "连接码无效，请完整复制对方的连接码" }
+        return "直连失败：请确认两端已互换连接码。当前网络可能限制 UDP 或打洞；没有使用中转"
+    }
+
+    func openDirect() {
+        guard let h = handle else { return }
+        directBusy = true; directMessage = "正在准备跨网连接…"
+        let result = h.call(["op": "openDirect"])
+        if !result.bool("ok") { directBusy = false; directMessage = Self.directReason(result.str("error")) }
+    }
+
+    func joinDirect(_ ticket: String) {
+        guard let h = handle else { return }
+        directBusy = true; directMessage = "正在尝试 P2P 直连…"
+        let result = h.call(["op": "joinDirect", "ticket": ticket.trimmingCharacters(in: .whitespacesAndNewlines)])
+        if !result.bool("ok") { directBusy = false; directMessage = Self.directReason(result.str("error")) }
     }
 
     func closePairing() {

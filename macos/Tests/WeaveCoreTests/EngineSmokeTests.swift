@@ -6,6 +6,106 @@ private let dataDir = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().appendingPathComponent("../../../data/build").standardized.path
 
 @Suite(.serialized) struct EngineSmokeTests {
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func commonTyposAndLiteralParticlesUseTheSharedRankingPolicy() throws {
+        let user = try tempDir("ranking-policy")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setLearning(false)
+        e.setOption("candidates.prediction", false)
+        for (input, expected) in [("xiuba", "修吧"), ("mingtinajian", "明天见"),
+                                  ("shagnhai", "上海"), ("jintina", "今天")] {
+            e.clear(); e.setContext(nil)
+            for c in input { #expect(e.input(c)) }
+            #expect(e.snapshot().candidates.first?.text == expected)
+            #expect(e.select(0))
+            #expect(e.snapshot().commit == expected)
+        }
+        e.clear(); e.setContext(nil)
+        e.setOption("input.autocorrect", false)
+        for c in "mingtinajian" { #expect(e.input(c)) }
+        #expect(e.snapshot().candidates.first?.text != "明天见")
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func correctionSettingsRefreshTheCurrentCompositionAndPreserveRawReturn() throws {
+        let user=try tempDir("correction-parity")
+        defer {try? FileManager.default.removeItem(at:user)}
+        let e=try #require(WeaveSession(dataDir:dataDir,userDir:user.path))
+        e.setOption("input.autocorrect",true)
+        for c in "suhju" {#expect(e.input(c))}
+        let corrected=e.snapshot()
+        #expect(corrected.candidates.first?.text=="数据")
+        #expect(!corrected.marks.isEmpty)
+        e.setOption("input.autocorrect",false)
+        #expect(e.features(["op":"refreshOptions"]).bool("ok"))
+        #expect(e.snapshot().marks.isEmpty)
+        e.setOption("input.autocorrect",true)
+        _=e.features(["op":"refreshOptions"])
+        #expect(!e.snapshot().marks.isEmpty)
+        e.commitRaw();#expect(e.snapshot().commit=="suhju")
+        #expect(e.setSchema("shuangpin:sogou"))
+    }
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
+    func longMashingThroughTheMacABIHasBoundedComposition() throws {
+        let user=try tempDir("long-mash-parity")
+        defer {try? FileManager.default.removeItem(at:user)}
+        let e=try #require(WeaveSession(dataDir:dataDir,userDir:user.path))
+        e.setOption("candidates.prediction",false)
+        var longest=0,run=0,committed=0
+        for c in String(repeating:"qazwsxedcrfvtgbyhnujmikolp",count:22) {
+            #expect(e.input(c));let snapshot=e.snapshot()
+            #expect(snapshot.preedit.count<=200)
+            if snapshot.commit.isEmpty {run+=1;longest=max(longest,run)} else {committed+=snapshot.commit.count;run=0}
+        }
+        #expect(committed>0 && longest<=200)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))
+    func macDefaultsDoNotPredictUntilTheSettingIsEnabled() throws {
+        let user = try tempDir("prediction-default")
+        let name = "weave-prediction-default-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer {
+            try? FileManager.default.removeItem(at: user)
+            defaults.removePersistentDomain(forName: name)
+        }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        let prefs = Preferences(defaults: defaults)
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        for c in "womenjintian" { #expect(e.input(c)) }
+        e.commitFirst()
+        let committed = e.snapshot()
+        #expect(committed.commit == "我们今天")
+        #expect(!committed.predicting && committed.candidates.isEmpty)
+        prefs.prediction = true
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        e.setContext(nil)
+        for c in "womenjintian" { #expect(e.input(c)) }
+        e.commitFirst()
+        #expect(e.snapshot().predicting)
+        prefs.prediction = false
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        #expect(!e.snapshot().predicting)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/english.wvz")))
+    func digitTwoCommitsTheSecondEnglishCandidateWithoutAppendingTheDigit() throws {
+        let user = try tempDir("english-digit-pick")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setSchema("english")
+        e.setOption("candidates.prediction", false)
+        for c in "hel" { #expect(e.input(c)) }
+        let second = try #require(e.snapshot().candidates.dropFirst().first?.text)
+        let action = KeyMapper.action(for: KeyInput(keyCode: 19, characters: "2"),
+                                     in: KeyContext(composing: true, chinese: false, englishCompletion: true))
+        #expect(action == .select(1))
+        if case .select(let index) = action { #expect(e.select(index)) }
+        let result = e.snapshot()
+        #expect(result.commit == second)
+        #expect(!result.composing)
+    }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func mixedInputPinningReconversionAndIndependentHandRecognition() throws {
@@ -138,19 +238,26 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
         e.setSchema("pinyin")
         for c in "yinhang" { #expect(e.input(c)) }
-        #expect(e.snapshot().candidates.allSatisfy { $0.comment.isEmpty })
+        #expect(e.snapshot().candidates.first?.pinyin == "yín háng")
         e.clear()
         let prefs = Preferences(defaults: UserDefaults(suiteName: "weave-hint-\(getpid())")!)
         prefs.pinyinHint = .toned
         for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
         for c in "yinhang" { #expect(e.input(c)) }
         let first = try #require(e.snapshot().candidates.first)
-        #expect(first.text == "银行" && first.comment == "yín háng")
+        #expect(first.text == "银行" && first.pinyin == "yín háng")
+        prefs.pinyinHint = .off
+        for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
+        _ = e.features(["op":"refreshOptions"])
+        #expect(e.snapshot().candidates.allSatisfy { $0.pinyin.isEmpty })
         e.clear()
-        prefs.pinyinHint = .plain
+        prefs.pinyinHint = .toned
         for (key, on) in prefs.engineOptions { #expect(e.setOption(key, on)) }
         for c in "nihao" { #expect(e.input(c)) }
-        #expect(e.snapshot().candidates.first?.comment == "ni hao")
+        #expect(e.snapshot().candidates.first?.pinyin == "nǐ hǎo")
+        #expect(e.features(["op":"policy","index":0,"text":"你好","mode":"pin"]).bool("ok"))
+        let pinned = try #require(e.snapshot().candidates.first)
+        #expect(pinned.pinyin == "nǐ hǎo" && !pinned.comment.contains("固定"))
     }
 
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/follow.wvz")))

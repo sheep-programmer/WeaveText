@@ -3,7 +3,7 @@ import SwiftUI
 import WeaveCore
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, schemes, appearance, dictionary, link, about
+    case general, schemes, appearance, dictionary, plugins, translation, tools, link, about
 
     var id: String { rawValue }
 
@@ -13,6 +13,9 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .schemes: return "输入方案"
         case .appearance: return "外观"
         case .dictionary: return "词库"
+        case .plugins: return "插件与语音"
+        case .translation: return "翻译"
+        case .tools: return "输入工具"
         case .link: return "互联"
         case .about: return "关于"
         }
@@ -24,8 +27,24 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .schemes: return "keyboard"
         case .appearance: return "paintbrush"
         case .dictionary: return "character.book.closed"
+        case .plugins: return "puzzlepiece.extension"
+        case .translation: return "character.bubble"
+        case .tools: return "tray.full"
         case .link: return "iphone.and.arrow.forward"
         case .about: return "info.circle"
+        }
+    }
+    var subtitle:String {
+        switch self {
+        case .general:return "按你的习惯调整切换方式与快捷键"
+        case .schemes:return "选择方案，管理注音、纠错与学习"
+        case .appearance:return "选择主题与明暗模式，改动立即生效"
+        case .dictionary:return "管理常用词、快捷短语与专业词库"
+        case .plugins:return "添加插件仓库，配置你的语音引擎"
+        case .translation:return "配置翻译服务，选中文字后翻译并确认写回"
+        case .tools:return "整理剪贴板、常用语与个人资料"
+        case .link:return "连接手机，直接传送文字与文件"
+        case .about:return "版本信息、隐私说明与开源许可"
         }
     }
 }
@@ -44,16 +63,17 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     func show(page: SettingsPage? = nil) {
         if let page { navigation.page = page }
         if window == nil {
-            let root = SettingsRoot(prefs: .shared, navigation: navigation).tint(Theme.accent)
+            let root = SettingsRoot(prefs: .shared, navigation: navigation)
             let w = NSWindow(contentViewController: NSHostingController(rootView: root))
             w.title = "织文输入法设置"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-            w.setContentSize(NSSize(width: 720, height: 520))
-            w.contentMinSize = NSSize(width: 620, height: 420)
+            w.setContentSize(NSSize(width: 880, height: 660))
+            w.contentMinSize = NSSize(width: 780, height: 560)
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.center()
             w.setFrameAutosaveName("WeaveTextSettings")
+            WindowAppearance.shared.track(w)
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -65,35 +85,69 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
 struct SettingsRoot: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject var navigation: SettingsNavigation
+    var pluginModel:PluginCenter? = nil
+    var toolsModel:ToolsModel? = nil
 
     var body: some View {
-        NavigationSplitView {
-            List(SettingsPage.allCases, selection: $navigation.page) { page in
-                Label(page.title, systemImage: page.symbol).tag(page)
+        HStack(spacing:0) {
+            VStack(alignment:.leading,spacing:22) {
+                HStack(spacing:9) {
+                    Image(systemName:"character.cursor.ibeam").font(.system(size:21,weight:.medium))
+                        .foregroundStyle(palette.accent).frame(width:40,height:40).background(palette.accentSoft,in:RoundedRectangle(cornerRadius:12))
+                    VStack(alignment:.leading,spacing:3) {Text("织文").font(.system(size:20,weight:.semibold));Text("输入法设置").font(.caption).foregroundStyle(.secondary)}
+                }.padding(.top,12)
+                VStack(spacing:5) {
+                    ForEach(SettingsPage.allCases) {page in
+                        Button {navigation.page=page} label:{
+                            HStack(spacing:10) {
+                                Image(systemName:page.symbol).font(.system(size:14,weight:.medium)).frame(width:20)
+                                Text(page.title).font(.system(size:13,weight:selection==page ? .semibold : .regular))
+                                Spacer()
+                            }.padding(.horizontal,12).padding(.vertical,11)
+                                .foregroundStyle(selection==page ? palette.accent : palette.label)
+                                .background(selection==page ? palette.accentSoft : Color.clear,in:RoundedRectangle(cornerRadius:9))
+                        }.buttonStyle(.plain).accessibilityValue(selection==page ? "已选择" : "")
+                    }
+                }
+                Spacer(minLength:18)
+                VStack(alignment:.leading,spacing:8) {
+                    Text("明暗模式").font(.caption).foregroundStyle(.secondary)
+                    Picker("明暗模式",selection:$prefs.appearance) {
+                        Image(systemName:"circle.lefthalf.filled").tag(AppearanceMode.system)
+                        Image(systemName:"sun.max").tag(AppearanceMode.light)
+                        Image(systemName:"moon").tag(AppearanceMode.dark)
+                    }.pickerStyle(.segmented).labelsHidden().help("跟随系统 / 浅色 / 深色")
+                    Button("主题与外观") {navigation.page = .appearance}.font(.caption).buttonStyle(.plain).foregroundStyle(palette.accent)
+                }.padding(.bottom,12)
+            }.padding(.horizontal,18).frame(width:194).background(palette.sidebar)
+            Rectangle().fill(palette.divider).frame(width:1)
+            VStack(alignment:.leading,spacing:0) {
+                VStack(alignment:.leading,spacing:5) {
+                    Text(selection.title).font(.system(size:25,weight:.semibold))
+                    Text(selection.subtitle).font(.system(size:12)).foregroundStyle(.secondary)
+                }.frame(maxWidth:.infinity,alignment:.leading).padding(.horizontal,26).padding(.top,28).padding(.bottom,20)
+                detail.frame(maxWidth:.infinity,maxHeight:.infinity)
+                    .scrollContentBackground(.hidden)
             }
-            .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
-        } detail: {
+            .background(palette.canvas)
+        }.weaveStyle(prefs)
+    }
+    private var selection:SettingsPage {navigation.page ?? .general}
+    private var palette:ThemePalette {Theme.palette(prefs.colorTheme)}
+    @ViewBuilder private var detail:some View {
             Group {
-                switch navigation.page ?? .general {
+                switch selection {
                 case .general: GeneralPage(prefs: prefs)
                 case .schemes: SchemesPage(prefs: prefs)
                 case .appearance: AppearancePage(prefs: prefs)
                 case .dictionary: DictionaryPage(packs: EngineHost.shared.packs, cloud: EngineHost.shared.cloud)
+                case .plugins: PluginsPage(model: pluginModel ?? .shared, prefs: prefs)
+                case .translation: Form { TranslationSettingsView() }.formStyle(.grouped)
+                case .tools: ToolsPage(model: toolsModel ?? .shared, prefs: prefs)
                 case .link: LinkPage(prefs: prefs, link: .shared)
                 case .about: AboutPage()
                 }
             }
-            .navigationTitle((navigation.page ?? .general).title)
-        }
-        .preferredColorScheme(scheme)
-    }
-
-    private var scheme: ColorScheme? {
-        switch prefs.appearance {
-        case .system: return nil
-        case .light: return .light
-        case .dark: return .dark
-        }
     }
 }
 

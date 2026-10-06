@@ -352,7 +352,7 @@ impl UserDict {
     }
 
     pub fn preferred(&self, key: &[u16], text: &str) -> bool {
-        self.learning && self.choice(key).is_some_and(|c| c.text == text && c.repeats >= 2 && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
+        self.learning && self.choice(key).is_some_and(|c| c.text == text && c.repeats >= 1 && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
     }
 
     /// Called only for a chosen candidate; generated sentence components just receive normal counts.

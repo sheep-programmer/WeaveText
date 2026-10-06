@@ -61,6 +61,9 @@ public enum LinkEvent: Equatable, Sendable {
     case idle
     /// 发现、消失、连上、断开：重新读设备列表。 Found / lost / connected / disconnected: re-read the peers.
     case peersChanged
+    case directReady(ticket: String, expiresIn: Int64, publicMapping: Bool)
+    case directFailed(reason: String)
+    case directConnected
     case paired(id: String, name: String)
     case pairFailed(reason: String)
     /// 有人对本机的配对码做了一次尝试。 Someone tried our pairing code.
@@ -78,7 +81,10 @@ public enum LinkEvent: Equatable, Sendable {
         let incoming = o.bool("incoming")
         switch o.str("type") {
         case "idle": return .idle
-        case "peerFound", "peerLost", "connected", "disconnected": return .peersChanged
+        case "peerFound", "peerLost", "disconnected": return .peersChanged
+        case "connected": return o.str("transport") == "direct-udp" ? .directConnected : .peersChanged
+        case "directReady": return .directReady(ticket: o.str("ticket"), expiresIn: o.int("expiresIn"), publicMapping: o.bool("public"))
+        case "directFailed": return .directFailed(reason: o.str("reason"))
         case "paired": return .paired(id: o.str("id"), name: o.str("name"))
         case "pairFailed": return .pairFailed(reason: o.str("reason"))
         case "pairAttempt": return .pairAttempt(ok: o.bool("ok"), stillOpen: o.bool("stillOpen"))
@@ -266,9 +272,9 @@ public struct LinkState: Equatable, Sendable {
 
     public mutating func apply(_ e: LinkEvent) -> [LinkEffect] {
         switch e {
-        case .idle, .error, .unknown, .pairFailed:
+        case .idle, .error, .unknown, .pairFailed, .directReady, .directFailed:
             return []
-        case .peersChanged:
+        case .peersChanged, .directConnected:
             return [.refreshPeers]
         case .paired(_, let name):
             pairing?.pairedWith = name

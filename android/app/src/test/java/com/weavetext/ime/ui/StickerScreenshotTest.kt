@@ -11,6 +11,10 @@ import java.io.File
 import android.view.View
 import android.view.ViewGroup
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import android.widget.GridView
+import android.widget.TextView
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -36,4 +40,23 @@ class StickerScreenshotTest:KeyboardSnapshotSupport() {
     }
     @Test fun keyboardLight(){val (k,_)=keyboard(false);k.showPanel("stickers");idle();previews(k.view);snap("stickers_light")}
     @Test fun keyboardDark(){val (k,_)=keyboard(true);k.showPanel("stickers");idle();previews(k.view);snap("stickers_dark")}
+    private fun nodes(view:View):List<View> = listOf(view)+(if(view is ViewGroup)(0 until view.childCount).flatMap{nodes(view.getChildAt(it))}else emptyList())
+    @Test fun deleteFromKeyboardConfirmsAndCancelKeepsTheOriginalFile() {
+        val (k,_)=keyboard(false);k.showPanel("stickers");idle();previews(k.view)
+        val grid=nodes(k.view).filterIsInstance<GridView>().first()
+        val item=grid.adapter.getItem(0) as Sticker
+        grid.onItemLongClickListener!!.onItemLongClick(grid,grid.getChildAt(0),0,0)
+        idle()
+        nodes(k.view).first{it.contentDescription?.toString()=="删除"}.performClick();idle()
+        assertNotNull(StickerRepository.get(app).store.get(item.id))
+        snap("stickers_delete_confirmation_light")
+        nodes(k.view).filterIsInstance<TextView>().first{it.text.toString()=="取消"}.performClick();idle()
+        assertNotNull(StickerRepository.get(app).store.get(item.id))
+        assertTrue(StickerRepository.get(app).store.file(item).isFile)
+        nodes(k.view).first{it.contentDescription?.toString()=="删除"}.performClick();idle()
+        nodes(k.view).filterIsInstance<TextView>().first{it.text.toString()=="删除"}.performClick()
+        StickerRepository.io.submit{}.get();idle()
+        assertEquals(null,StickerRepository.get(app).store.get(item.id))
+        assertEquals(false,StickerRepository.get(app).store.file(item).isFile)
+    }
 }

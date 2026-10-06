@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 use std::time::Instant;
+use std::io::Write;
 
 use weave_dict::blob::Source;
 use weave_dict::syllable;
@@ -168,10 +169,18 @@ fn main() {
     let mut by_len: [(usize, usize); 4] = [(0, 0); 4];
     let mut shown = 0;
     let started = Instant::now();
+    let mut report = arg(&args, "--report").map(|path| {
+        let mut file = std::fs::File::create(path).expect("create report");
+        writeln!(file, "keys\ttarget\ttop1\ttop2\ttop3\tpreedit").unwrap();
+        file
+    });
     for line in text.lines().take(limit) {
-        let Some((sentence, pinyin)) = line.split_once('\t') else {
+        let mut fields = line.split('\t');
+        let Some((sentence, pinyin)) = fields.next().zip(fields.next()) else {
             continue;
         };
+        // Optional third column: an explicit typed spelling, for reproducible correction cases.
+        let supplied_keys = fields.next();
         let Some(ids) = syllable::parse_seq(pinyin) else {
             continue;
         };
@@ -223,7 +232,7 @@ fn main() {
                 }
                 parts.concat()
             }
-            None => keys,
+            None => supplied_keys.unwrap_or(&keys).to_string(),
         };
         e.clear();
         for c in keys.chars() {
@@ -246,6 +255,10 @@ fn main() {
             .first()
             .map(|c| c.text.clone())
             .unwrap_or_default();
+        if let Some(file) = report.as_mut() {
+            let at = |i: usize| snap.candidates.get(i).map_or("", |c| c.text.as_str());
+            writeln!(file, "{keys}\t{sentence}\t{}\t{}\t{}\t{}", at(0), at(1), at(2), snap.preedit).unwrap();
+        }
         let target: Vec<char> = sentence.chars().collect();
         n += 1;
         let ok = got == sentence;

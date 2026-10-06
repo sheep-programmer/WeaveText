@@ -1,0 +1,11 @@
+id: com.weavetext.translation.apple
+name: Apple 离线翻译
+description: macOS 15+ 系统翻译适配插件。语言包由 macOS 单独下载和管理，不包含在此插件中。
+version: 1.0.0
+type: translation
+entry: main.lua
+engine: apple-system
+min_host_version: 0.1.0-beta.20
+min_os_version: 15
+permissions: []
+networkHosts: []

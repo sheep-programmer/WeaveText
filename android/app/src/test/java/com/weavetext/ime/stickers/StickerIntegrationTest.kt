@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.view.ContentInfo
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.text.InputType
 import android.widget.GridView
@@ -30,7 +31,7 @@ import java.util.concurrent.TimeUnit
 class StickerIntegrationTest {
     private val app get()=ApplicationProvider.getApplicationContext<Application>()
     private val root get()=generateSequence(File(checkNotNull(System.getProperty("user.dir")))) {it.parentFile}.first {File(it,"tests/fixtures/stickers").isDirectory}
-    private fun awaitImports(){StickerRepository.io.submit {}.get(15,TimeUnit.SECONDS);ShadowLooper.idleMainLooper()}
+    private fun awaitImports(){ShadowLooper.idleMainLooper();repeat(2){StickerRepository.io.submit {}.get(15,TimeUnit.SECONDS);ShadowLooper.idleMainLooper()}}
     @Before fun setup(){awaitImports();StickerRepository.reset();File(app.filesDir,"stickers").deleteRecursively()}
     @After fun cleanup(){awaitImports();StickerRepository.reset()}
     private fun source(name:String):Uri {
@@ -61,7 +62,9 @@ class StickerIntegrationTest {
         val controller=InputController {null};controller.onStartInput(EditorInfo().apply {inputType=InputType.TYPE_CLASS_TEXT},false)
         val activity=Robolectric.buildActivity(Activity::class.java).setup().get()
         val shelf=StickerShelfView(activity,{}, {}, {}, {}, {}, {!controller.isSensitiveField})
-        val grid=(shelf.getChildAt(shelf.childCount-1) as android.widget.FrameLayout).getChildAt(0) as GridView
+        fun gridIn(view:View):GridView? = if(view is GridView)view else if(view is ViewGroup)
+            (0 until view.childCount).firstNotNullOfOrNull {gridIn(view.getChildAt(it))} else null
+        val grid=checkNotNull(gridIn(shelf))
         assertEquals(1,grid.adapter.count)
         controller.onStartInput(EditorInfo().apply {inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD},false)
         shelf.reload();assertEquals(0,grid.adapter.count)

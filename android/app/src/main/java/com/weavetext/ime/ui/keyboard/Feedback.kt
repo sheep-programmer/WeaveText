@@ -40,12 +40,45 @@ class Feedback(ctx: Context) {
     private val thread = HandlerThread("weave-feedback").apply { start() }
     private val handler = Handler(thread.looper)
 
+    /** 反馈线程的 Looper（测试里要把它跑起来才能看到振动与放音）。 The feedback looper, so tests can run its queue. */
+    @androidx.annotation.VisibleForTesting
+    internal val looper get() = thread.looper
+
     /** 0 关 1 系统 2 轻 3 中 4 强。振动效果在 feedback 线程预先建好。 Effects are prebuilt on the feedback thread. */
     var vibration = WeavePrefs.VIBRATION_DEFAULT
         set(v) {
             field = v
             if (v >= 1 && vibrator != null) handler.post { effect(v) }
         }
+
+    /**
+     * 用触感原语（Android 11+）自建振动：系统预置的 TICK / CLICK / HEAVY_CLICK 各家长短不一，听起来更像
+     * 一次点击事件而不是「按键下去的那一下」；自己用原语拼出来，档位之间只差在力度与一点点时长，质感统一。
+     * Prefer primitives (Android 11+) over the platform's TICK / CLICK / HEAVY_CLICK presets, whose lengths vary
+     * by vendor: a composition of a click plus a touch tick reads as one even key strike across levels.
+     */
+    private fun prefersPrimitives(v: Vibrator) =
+        Build.VERSION.SDK_INT >= 30 &&
+            v.areAllPrimitivesSupported(
+                VibrationEffect.Composition.PRIMITIVE_CLICK,
+                VibrationEffect.Composition.PRIMITIVE_TICK,
+            )
+
+    /** 各档的（点击力度, 尾随刻度力度, 尾随延迟 ms）。 Per level: (click scale, tick scale, tick delay ms). */
+    private fun strike(lv: Int): Triple<Float, Float, Int> = when (lv) {
+        2 -> Triple(0.35f, 0f, 0)
+        3 -> Triple(0.65f, 0.25f, 22)
+        else -> Triple(1f, 0.45f, 30)
+    }
+
+    /** 自建振动效果。 Composition of a click and an optional trailing tick. Requires API 30 (see [prefersPrimitives]). */
+    @android.annotation.TargetApi(30)
+    private fun composed(lv: Int): VibrationEffect {
+        val (click, tick, delay) = strike(lv)
+        val c = VibrationEffect.startComposition().addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, click)
+        if (tick > 0f) c.addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, tick, delay)
+        return c.compose()
+    }
 
     /** [WeavePrefs.SOUND_STYLE] 的取值。 A [WeavePrefs.SOUND_STYLE] value. */
     @Volatile var soundStyle: String = WeavePrefs.SOUND_OFF
@@ -60,9 +93,32 @@ class Feedback(ctx: Context) {
     private val effects = arrayOfNulls<VibrationEffect>(5)
     /** 预先分配的投递任务：按键路径上零分配。 Preallocated tasks: no allocation on the key path. */
     private val soundTasks = Array(Sound.entries.size) { i -> Runnable { play(Sound.entries[i]) } }
-    private val vibrateTasks = Array(5) { lv -> Runnable { vibrate(lv) } }
+    /**
+     * 一次只排一次振动。连打时按键比振动本身还密，若一键一个任务排下去，马达会先安静、再成串补震，
+     * 手感就「散」了；上一次还没发出去就跳过这一次，节奏才是均匀的（系统触摸反馈也是这么做的）。
+     * At most one vibration in flight: when keys arrive faster than the vibration lasts, queuing every one
+     * makes the motor fall silent and then fire in bursts, which reads as a scattered feel. Skipping while
+     * one is pending keeps the rhythm even (the platform's own touch feedback coalesces the same way).
+     */
+    @Volatile private var vibratePending = false
+    private val vibrateTask = Runnable {
+        vibratePending = false
+        vibrate(vibration)
+    }
     /** 触摸反馈用途（遵从系统的触摸振动开关与强度）。 Touch usage, honouring the system touch-haptics setting. */
     private val touchAttrs: Any? = if (Build.VERSION.SDK_INT >= 33) android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_TOUCH) else null
+
+    /**
+     * 系统的「触摸振动」总开关。关掉时界面不再擅自动马达——键盘里的「按键震动」是键盘自己的设置，
+     * 系统那一个是全机的，用户在系统里关掉就是不想任何界面震，这一层必须听。
+     * The system-wide touch-haptics switch. Ours is a keyboard setting, theirs is device-wide: when they turn
+     * it off they mean nothing should buzz, so the keyboard must not keep vibrating on its own.
+     */
+    private fun systemTouchHapticsOn(): Boolean = runCatching {
+        android.provider.Settings.System.getInt(
+            app.contentResolver, android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED, 1,
+        ) != 0
+    }.getOrDefault(true)
 
     // 以下只在 feedback 线程访问。 Accessed on the feedback thread only.
     private var pool: SoundPool? = null
@@ -102,7 +158,15 @@ class Feedback(ctx: Context) {
             return
         }
         val id = samples[style]?.get(s.ordinal) ?: 0
-        if (id != 0 && id in loaded) pool?.play(id, gain, gain, 1, 0, 1f)
+        if (id != 0 && id in loaded) {
+            // 空格与回车比字母重一点，听着更像真的按了那一下。 Space and enter sit a touch above the letters.
+            val g = gain * when (s) {
+                Sound.SPACE -> 1.15f
+                Sound.RETURN -> 1.1f
+                else -> 1f
+            }
+            pool?.play(id, g, g, 1, 0, 1f)
+        }
     }
 
     /** 设置页试听：样本还在加载时，加载完成后补放一次。 Settings preview; plays once loading finishes. */
@@ -156,6 +220,7 @@ class Feedback(ctx: Context) {
     fun haptic(view: View) {
         val lv = vibration
         if (lv == 0) return
+        if (!systemTouchHapticsOn()) return
         if (lv == 1 && (Build.VERSION.SDK_INT < 33 || vibrator == null)) {
             view.performHapticFeedback(
                 if (Build.VERSION.SDK_INT >= 27) HapticFeedbackConstants.KEYBOARD_PRESS else HapticFeedbackConstants.KEYBOARD_TAP,
@@ -163,7 +228,9 @@ class Feedback(ctx: Context) {
             return
         }
         if (vibrator == null) return
-        handler.post(vibrateTasks[lv])
+        if (vibratePending) return
+        vibratePending = true
+        handler.post(vibrateTask)
     }
 
     /**
@@ -172,7 +239,7 @@ class Feedback(ctx: Context) {
      * level; nothing when vibration is off.
      */
     fun tick(view: View) {
-        if (vibration == 0) return
+        if (vibration == 0 || !systemTouchHapticsOn()) return
         val v = vibrator
         if (v == null) {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -205,6 +272,10 @@ class Feedback(ctx: Context) {
         if (lv == 1 && Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes) else v.vibrate(e)
     }
 
+    /** 测试用：按某档建一个效果（与按键路径同一套逻辑）。 Test hook: build the effect for a level. */
+    @androidx.annotation.VisibleForTesting
+    internal fun buildEffect(lv: Int): VibrationEffect? = vibrator?.let { build(it, lv) }
+
     /** 取（必要时新建）某档的效果；feedback 线程。 Get or build the effect for a level, on the feedback thread. */
     private fun effect(lv: Int): VibrationEffect? {
         effects[lv]?.let { return it }
@@ -218,15 +289,18 @@ class Feedback(ctx: Context) {
     }
 
     private fun build(v: Vibrator, lv: Int): VibrationEffect {
+        if (prefersPrimitives(v)) return composed(lv)
         if (Build.VERSION.SDK_INT >= 29 && v.hasAmplitudeControl()) {
             return VibrationEffect.createPredefined(
                 when (lv) { 2 -> VibrationEffect.EFFECT_TICK; 3 -> VibrationEffect.EFFECT_CLICK; else -> VibrationEffect.EFFECT_HEAVY_CLICK },
             )
         }
+        // 老设备：明确按毫秒与振幅给一击，而不是交给系统预置（长短不可控）。
+        // Older devices: an explicit one-shot with our own duration and amplitude.
         return if (v.hasAmplitudeControl()) {
-            when (lv) { 2 -> VibrationEffect.createOneShot(8, 40); 3 -> VibrationEffect.createOneShot(12, 90); else -> VibrationEffect.createOneShot(18, 160) }
+            when (lv) { 2 -> VibrationEffect.createOneShot(9, 60); 3 -> VibrationEffect.createOneShot(14, 130); else -> VibrationEffect.createOneShot(20, 255) }
         } else {
-            VibrationEffect.createOneShot(when (lv) { 2 -> 6L; 3 -> 10L; else -> 15L }, VibrationEffect.DEFAULT_AMPLITUDE)
+            VibrationEffect.createOneShot(when (lv) { 2 -> 8L; 3 -> 13L; else -> 20L }, VibrationEffect.DEFAULT_AMPLITUDE)
         }
     }
 
@@ -237,7 +311,7 @@ class Feedback(ctx: Context) {
 
     companion object {
         /** 合成公式变化时递增，让旧缓存失效。 Bump when the synthesis changes to invalidate the cache. */
-        private const val CACHE_VERSION = 1
+        private const val CACHE_VERSION = 2
 
         /** 滑块 0–100 → 播放增益（略带曲线，低音量更细腻）。 Slider value → playback gain, gently curved. */
         fun gain(volume: Int): Float {

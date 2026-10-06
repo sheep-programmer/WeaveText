@@ -145,16 +145,79 @@ class HandwritingTest {
     @Test fun handSchemeShowsPadAndKeys() {
         assertEquals("hand", engine.schema)
         assertNotNull(kv.hand)
-        for (c in intArrayOf(KeyCode.DELETE, KeyCode.HAND_CLEAR, KeyCode.ENTER, KeyCode.SYMBOL, KeyCode.NUMBER, ','.code, KeyCode.SPACE, '.'.code, KeyCode.LANG)) {
+        for (c in intArrayOf(KeyCode.DELETE, KeyCode.HAND_CLEAR, KeyCode.HAND_MODE, KeyCode.ENTER, KeyCode.SYMBOL, KeyCode.NUMBER, ','.code, KeyCode.SPACE, '.'.code, KeyCode.LANG)) {
             assertNotNull("key $c", kv.keyOf(c))
         }
         val r = pad.rect
         assertTrue(r.width() > kv.width * 0.6f && r.height() > kv.height * 0.6f)
         for (k in kv.keys) assertFalse("${k.label} overlaps the pad", android.graphics.RectF.intersects(k.rect, r))
-        // 回车在右列跨两行，底行按 符 / 123 / ， / 空格 / 。 / 中英 的顺序。 Enter spans two rows; bottom row order.
-        assertTrue(key(KeyCode.ENTER).rect.top < key(KeyCode.SPACE).rect.top)
-        val bottom = kv.keys.filter { it.rect.top >= r.bottom }.sortedBy { it.rect.left }.map { it.code }
+        // The right column now includes the mode key; Enter keeps a dedicated cell below it.
+        assertTrue(key(KeyCode.ENTER).rect.top > key(KeyCode.HAND_MODE).rect.bottom)
+        val bottom = kv.keys.filter { it.rect.top >= r.bottom && it.code != KeyCode.ENTER }.sortedBy { it.rect.left }.map { it.code }
         assertEquals(listOf(KeyCode.SYMBOL, KeyCode.NUMBER, ','.code, KeyCode.SPACE, '.'.code, KeyCode.LANG), bottom)
+    }
+
+    @Test fun manualCommitKeepsInkAcrossLongPausesAndModeSwitches() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        idle()
+        stroke(0.1f, 0.5f, 0.4f, 0.5f)
+        hold(10000)
+        assertEquals("", ic.text)
+        assertEquals(1, pad.strokes.size)
+        tap(KeyCode.HAND_MODE)
+        idle()
+        assertTrue(WeavePrefs.of(app).getBoolean(WeavePrefs.HAND_LINE, false))
+        assertEquals("连写", key(KeyCode.HAND_MODE).label)
+        assertEquals(1, pad.strokes.size)
+        stroke(0.6f, 0.5f, 0.9f, 0.5f)
+        hold(10000)
+        assertEquals("1笔0", ic.text)
+        assertEquals(1, pad.strokes.size)
+        tap(KeyCode.SPACE)
+        assertEquals("1笔01笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+    }
+
+    @Test fun switchingOffAutoCommitCancelsAnAlreadyScheduledPause() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(200)
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        hold(3000)
+        assertEquals("", ic.text)
+        assertEquals(1, pad.strokes.size)
+        assertTrue(engine.isComposing())
+    }
+
+    @Test fun longPressModeRedoesAnUndoneStrokeWithoutChangingMode() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        val second = stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        tap(KeyCode.DELETE)
+        assertEquals(1, pad.strokes.size)
+        assertTrue(pad.canRedo)
+        val mode = key(KeyCode.HAND_MODE)
+        pressAt(9, mode.rect.centerX(), mode.rect.centerY())
+        hold(700)
+        release(9)
+        assertEquals(2, pad.strokes.size)
+        assertStroke(second, pad.strokes.last())
+        assertEquals(2, engine.hand.size)
+        assertFalse(WeavePrefs.of(app).getBoolean(WeavePrefs.HAND_LINE, false))
+    }
+
+    @Test fun noRecognitionResultKeepsTheInkForCorrection() {
+        val failing = object : com.weavetext.ime.core.KeyEngine by engine {
+            override fun snapshot() = engine.snapshot().copy(candidates = emptyList(), totalCandidates = 0)
+        }
+        controller.attachEngine(failing)
+        controller.setPreferredSchema("hand")
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(3000)
+        assertEquals("", ic.text)
+        assertEquals(1, pad.strokes.size)
+        assertTrue(kv.handRecognitionFailed)
+        tap(KeyCode.HAND_CLEAR)
+        assertTrue(pad.strokes.isEmpty())
     }
 
     @Test fun handInputOncePerStrokeWithPadPoints() {
@@ -225,16 +288,19 @@ class HandwritingTest {
         release(0)
     }
 
-    @Test fun spacedLineWaitsLongerThanASingleCharPause() {
-        kv.handPauseMs = Long.MAX_VALUE
-        kv.handIdleMs = 1600L
+    @Test fun continuousLineConfirmsThePreviousCharacterBeforeTheNextOne() {
+        WeavePrefs.of(app).edit()
+            .putBoolean(WeavePrefs.HAND_LINE, true)
+            .putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false)
+            .commit()
+        idle()
         stroke(0.1f, 0.5f, 0.4f, 0.5f)
-        hold(1000)
+        hold(HandPad.COMMIT_PAUSE_MS + 50)
+        assertEquals("manual continuous mode keeps the first char until the next stroke", "", ic.text)
         stroke(0.6f, 0.5f, 0.9f, 0.5f)
-        hold(1500)
-        assertEquals("a gap between characters must not commit the line", "", ic.text)
-        hold(200)
-        assertEquals("2笔0", ic.text)
+        assertEquals("the next char starts only after the first one is finished", "1笔0", ic.text)
+        assertEquals("the new char owns the live canvas", 1, pad.strokes.size)
+        assertTrue("the old char is removed from the live ink for the fade layer", pad.fadeStart >= 0L || !android.animation.ValueAnimator.areAnimatorsEnabled())
     }
 
     @Test fun commitKeysClearInk() {

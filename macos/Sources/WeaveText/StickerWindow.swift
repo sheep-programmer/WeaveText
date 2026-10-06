@@ -4,6 +4,12 @@ import UniformTypeIdentifiers
 import ApplicationServices
 import WeaveCore
 
+struct StickerDeletionRequest: Identifiable, Equatable {
+    let id = UUID()
+    let ids: Set<String>
+    var count: Int { ids.count }
+}
+
 final class StickerCollectionModel:ObservableObject {
     @Published var query="" {didSet {reload()}}
     @Published var filter="all" {didSet {reload()}}
@@ -15,6 +21,9 @@ final class StickerCollectionModel:ObservableObject {
     @Published var selecting=false
     @Published var highlighted=false
     @Published var compact=false
+    @Published private(set) var deletionRequest: StickerDeletionRequest?
+    @Published var confirmDelete = false
+    @Published private(set) var deleting = false
     private let queue=DispatchQueue(label:"WeaveText.stickers",qos:.userInitiated)
     private let store:StickerStore?
     weak var owner:WeaveInputController?
@@ -23,6 +32,7 @@ final class StickerCollectionModel:ObservableObject {
         do {store=try StickerStore(directory:directory)}catch {store=nil;message=error.localizedDescription}
         reload()
     }
+    init(store: StickerStore) { self.store = store; reload() }
     func reload() {items=store?.list(query:query,filter:filter) ?? [];groups=store?.groups() ?? [];selected.formIntersection(Set(items.map(\.id)))}
     func file(_ item:Sticker)->URL? {try? store?.file(item)}
     func collect(_ urls:[URL]) {
@@ -58,13 +68,36 @@ final class StickerCollectionModel:ObservableObject {
         catch {DispatchQueue.main.async {self?.message=error.localizedDescription}}}
     }
     func deleteSelected() {
-        guard let store,!selected.isEmpty else{return}
-        let alert=NSAlert();alert.messageText="删除 \(selected.count) 张表情？";alert.informativeText="原应用中的图片不受影响。"
-        alert.addButton(withTitle:"删除");alert.addButton(withTitle:"取消")
-        guard alert.runModal() == .alertFirstButtonReturn else{return}
-        let ids=selected
-        queue.async {[weak self] in do {try store.delete(ids);DispatchQueue.main.async {self?.selected=[];self?.reload();self?.message="已删除"}}
-        catch {DispatchQueue.main.async {self?.message=error.localizedDescription}}}
+        requestDeletion(selected)
+    }
+    func requestDeletion(_ ids: Set<String>) {
+        guard let store, !deleting, deletionRequest == nil else { return }
+        let targets = ids.intersection(Set(store.list().map(\.id)))
+        guard !targets.isEmpty else { return }
+        deletionRequest = StickerDeletionRequest(ids: targets)
+        confirmDelete = true
+    }
+    func cancelDeletion() {
+        guard !deleting else { return }
+        confirmDelete = false; deletionRequest = nil
+    }
+    func confirmDeletion(_ request: StickerDeletionRequest) {
+        guard let store, !deleting, deletionRequest?.id == request.id else { return }
+        // Consume the request before scheduling IO. A second click or a late alert cannot delete twice.
+        deleting = true; confirmDelete = false; deletionRequest = nil
+        let ids = request.ids
+        queue.async { [weak self] in
+            do {
+                try store.delete(ids)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.selected.subtract(ids); self.reload(); self.deleting = false
+                    self.message = "已删除 \(request.count) 张表情"
+                }
+            } catch {
+                DispatchQueue.main.async { self?.deleting = false; self?.message = error.localizedDescription }
+            }
+        }
     }
     func groupSelected() {
         guard let store,!selected.isEmpty else{return}
@@ -141,76 +174,208 @@ enum StickerPasteboard {
     }
 }
 
-final class StickerWindow {
-    static let shared=StickerWindow()
-    let model=StickerCollectionModel()
-    private var panel:NSPanel?
-    func show(owner:WeaveInputController? = nil) {
-        model.owner=owner
-        let front=NSWorkspace.shared.frontmostApplication
-        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {model.target=front}
-        if panel==nil {
-            let p=NSPanel(contentRect:NSRect(x:0,y:0,width:620,height:510),styleMask:[.titled,.closable,.resizable,.nonactivatingPanel],backing:.buffered,defer:false)
-            p.title="织文表情收纳袋";p.level = .floating;p.hidesOnDeactivate=false;p.isReleasedWhenClosed=false
-            p.contentMinSize=NSSize(width:340,height:300)
-            p.contentView=NSHostingView(rootView:StickerCollectionView(model:model));p.center();panel=p
-        }
-        model.reload();panel?.orderFrontRegardless()
-    }
-    func hideForPaste(){panel?.orderOut(nil)}
-    func toggleCompact(){model.compact.toggle();panel?.setContentSize(model.compact ? NSSize(width:340,height:360) : NSSize(width:620,height:510))}
+enum StickerWindowLayout {
+    static let minimumContentSize = NSSize(width: 340, height: 300)
+    static func usesNarrowHeader(width: CGFloat, compact: Bool) -> Bool { compact || width < 560 }
 }
-struct StickerCollectionView:View {
-    @ObservedObject var model:StickerCollectionModel
-    @Environment(\.colorScheme) private var colorScheme
-    var body:some View {
-        VStack(spacing:10) {
-            HStack(spacing:12) {
-                ZStack {Circle().fill(Color.accentColor.opacity(0.18));Image(systemName:"bag.fill").font(.title2).foregroundStyle(Color.accentColor)}.frame(width:42,height:42)
-                VStack(alignment:.leading,spacing:2) {Text("表情收纳袋 · \(model.items.count)").font(.headline);Text(model.compact ? "点按插入 · 长按管理" : "收藏、整理并快速发送你的图片").font(.caption).foregroundStyle(.secondary)}
-                Spacer()
-                Button("导入图片") {model.importPictures()}
-                Menu(model.compact ? "更多" : "收纳与备份") {Button("收纳剪贴板") {model.fromClipboard()};Button("导出表情备份") {model.exportArchive()};Button("导入表情备份") {model.importArchive()}}.fixedSize()
-                Button(model.compact ? "展开" : "小窗"){StickerWindow.shared.toggleCompact()}
-                if !model.compact {Toggle("整理",isOn:$model.selecting).toggleStyle(.button)}
-            }.padding(10).background(RoundedRectangle(cornerRadius:14).fill(Color.accentColor.opacity(colorScheme == .dark ? 0.13 : 0.09)))
-            .buttonStyle(.bordered).controlSize(.regular)
-            HStack {
-                if !model.compact {TextField("搜索名称、标签和分组",text:$model.query)}
-                Picker("分组",selection:$model.filter) {
-                    Text("全部").tag("all");Text("收藏").tag("favorites");Text("最近").tag("recent");Text("未分组").tag("ungrouped")
-                    ForEach(model.groups,id:\.self) {Text($0).tag("group:"+$0)}
-                }.frame(width:180)
-            }
-            if model.selecting {HStack {Text("已选 \(model.selected.count) 张");Button("全选") {model.selected=Set(model.items.map(\.id))};Button("分组"){model.groupSelected()};Button("删除",role:.destructive){model.deleteSelected()};Spacer()}}
-            ScrollView {
-                LazyVGrid(columns:[GridItem(.adaptive(minimum:110),spacing:10)],spacing:10) {
-                    ForEach(model.items) {item in
-                        VStack(spacing:5) {
-                            StickerThumbnail(url:model.file(item)).frame(height:90)
-                            Text((item.favorite ? "★ " : "")+item.name).font(.callout).lineLimit(2)
-                            if item.animated {Text("动图 · 原文件保留").font(.caption2).foregroundStyle(.secondary)}
-                        }.padding(8).frame(maxWidth:.infinity,minHeight:140)
-                        .background(RoundedRectangle(cornerRadius:12).fill(model.selected.contains(item.id) ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.06)))
-                        .overlay(RoundedRectangle(cornerRadius:12).stroke(Color.primary.opacity(0.08),lineWidth:1))
-                        .contentShape(Rectangle()).onTapGesture {if model.selecting {if !model.selected.insert(item.id).inserted {model.selected.remove(item.id)}}else {model.use(item)}}
-                        .onDrag {model.file(item).flatMap {NSItemProvider(contentsOf:$0)} ?? NSItemProvider()}
-                        .contextMenu {
-                            Button(item.favorite ? "取消收藏" : "收藏") {model.edit(item,name:item.name,group:item.group,tags:item.tags.joined(separator:"，"),favorite:!item.favorite)}
-                            Button("编辑名称、标签和分组") {model.editing=item}
-                            Button("复制并粘贴原图") {model.use(item)}
-                            Button("预览原图／动图") {if let url=model.file(item){NSWorkspace.shared.open(url)}}
-                            Button("删除",role:.destructive) {model.selected=[item.id];model.deleteSelected()}
-                        }
-                    }
+
+final class StickerWindow: NSObject, NSWindowDelegate {
+    static let shared = StickerWindow()
+    static let frameKey = "weave.stickers.windowFrame"
+    static let compactKey = "weave.stickers.compact"
+    let model: StickerCollectionModel
+    private let defaults: UserDefaults
+    private let prefs: Preferences
+    private let appearance: WindowAppearance
+    private var panel: NSPanel?
+    private var restoringFrame = false
+
+    init(model: StickerCollectionModel? = nil, defaults: UserDefaults = .standard, prefs: Preferences? = nil) {
+        self.model = model ?? StickerCollectionModel()
+        self.defaults = defaults
+        let prefs = prefs ?? .shared
+        self.prefs = prefs; appearance = WindowAppearance(prefs: prefs)
+        super.init()
+        self.model.compact = defaults.bool(forKey: Self.compactKey)
+    }
+
+    func show(owner: WeaveInputController? = nil) {
+        model.owner = owner
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { model.target = front }
+        let panel = makePanel()
+        model.reload(); panel.orderFrontRegardless()
+    }
+
+    /// Hosting's default intrinsic/min/max sizes can otherwise override a resizable AppKit window.
+    /// Keep the only minimum here, then let all edges/corners resize the hosting view with the panel.
+    func makePanel() -> NSPanel {
+        if let panel { return panel }
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 510),
+                        styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.title = "织文表情收纳袋"; p.level = .floating
+        p.hidesOnDeactivate = false; p.isReleasedWhenClosed = false
+        p.contentMinSize = StickerWindowLayout.minimumContentSize
+        p.isMovableByWindowBackground = true
+        let hosting = NSHostingView(rootView: StickerCollectionView(model: model, prefs: prefs, toggleCompact: { [weak self] in self?.toggleCompact() }))
+        hosting.sizingOptions = []
+        hosting.autoresizingMask = [.width, .height]
+        hosting.translatesAutoresizingMaskIntoConstraints = true
+        p.contentView = hosting
+        appearance.track(p)
+        panel = p
+        restoringFrame = true
+        if let saved = defaults.dictionary(forKey: Self.frameKey) as? [String: Double],
+           let x = saved["x"], let y = saved["y"], let width = saved["width"], let height = saved["height"],
+           [x, y, width, height].allSatisfy({ $0.isFinite }), width >= 340, height >= 300 {
+            p.setFrame(NSRect(x: x, y: y, width: width, height: height), display: false)
+        } else { p.center() }
+        restoringFrame = false
+        p.delegate = self
+        return p
+    }
+
+    func hideForPaste() { panel?.orderOut(nil) }
+    /// Compact is a density preference, not a width constraint or a repeated frame preset.
+    func toggleCompact() {
+        model.compact.toggle()
+        defaults.set(model.compact, forKey: Self.compactKey)
+    }
+    private func saveFrame(_ window: NSWindow) {
+        guard !restoringFrame else { return }
+        let frame = window.frame
+        defaults.set(["x": Double(frame.origin.x), "y": Double(frame.origin.y),
+                      "width": Double(frame.width), "height": Double(frame.height)], forKey: Self.frameKey)
+    }
+    func windowDidResize(_ notification: Notification) { if let window = notification.object as? NSWindow { saveFrame(window) } }
+    func windowDidMove(_ notification: Notification) { if let window = notification.object as? NSWindow { saveFrame(window) } }
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { saveFrame(window) }
+        model.cancelDeletion()
+    }
+}
+
+struct StickerCollectionView: View {
+    @ObservedObject var model: StickerCollectionModel
+    @ObservedObject var prefs: Preferences
+    private let toggleCompact: () -> Void
+    init(model: StickerCollectionModel, prefs: Preferences = .shared, toggleCompact: (() -> Void)? = nil) {
+        self.model = model; self.prefs = prefs
+        self.toggleCompact = toggleCompact ?? { model.compact.toggle() }
+    }
+    private var palette: ThemePalette { Theme.palette(prefs.colorTheme) }
+    var body: some View {
+        GeometryReader { geometry in
+            let narrow = StickerWindowLayout.usesNarrowHeader(width: geometry.size.width, compact: model.compact)
+            VStack(spacing: 8) {
+                header(narrow: narrow)
+                HStack(spacing: 8) {
+                    TextField("搜索名称、标签或分组", text: $model.query)
+                        .textFieldStyle(.roundedBorder).frame(minWidth: 0, maxWidth: .infinity)
+                        .accessibilityLabel("搜索表情")
+                    Picker("分组", selection: $model.filter) {
+                        Text("全部").tag("all"); Text("收藏").tag("favorites"); Text("最近").tag("recent"); Text("未分组").tag("ungrouped")
+                        ForEach(model.groups, id: \.self) { Text($0).tag("group:" + $0) }
+                    }.pickerStyle(.menu).labelsHidden().frame(width: narrow ? 112 : 160)
+                        .accessibilityLabel("表情分组")
                 }
-                if model.items.isEmpty {Text("把图片拖到这里收纳，或从文件／剪贴板导入").foregroundStyle(.secondary).padding(45)}
+                if model.selecting {
+                    HStack(spacing: 8) {
+                        Text("已选 \(model.selected.count) 张").font(.caption).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Button("全选") { model.selected = Set(model.items.map(\.id)) }
+                        Button("分组") { model.groupSelected() }.disabled(model.selected.isEmpty || model.deleting)
+                        Button("删除…", role: .destructive) { model.deleteSelected() }
+                            .disabled(model.selected.isEmpty || model.deleting || model.deletionRequest != nil)
+                    }.controlSize(.small)
+                }
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: model.compact ? 88 : 110), spacing: 10)], spacing: 10) {
+                        ForEach(model.items) { item in sticker(item) }
+                    }.padding(.bottom, 4)
+                    if model.items.isEmpty {
+                        Text("拖入图片收纳，或从文件／剪贴板导入")
+                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    }
+                }.frame(minHeight: 0, maxHeight: .infinity)
+                HStack(spacing: 6) {
+                    if model.deleting { ProgressView().controlSize(.small) }
+                    Text(model.message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading).help(model.message)
+                }
+            }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(palette.surface)
+        }.frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity).weaveStyle(prefs)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(model.highlighted ? palette.accent : .clear, lineWidth: 2))
+        .onDrop(of: [UTType.fileURL.identifier, UTType.png.identifier, UTType.jpeg.identifier, UTType.gif.identifier, UTType.webP.identifier],
+                isTargeted: $model.highlighted, perform: model.accept)
+        .sheet(item: $model.editing) { item in
+            StickerEditView(item: item, save: { name, group, tags in
+                model.edit(item, name: name, group: group, tags: tags, favorite: item.favorite); model.editing = nil
+            }, cancel: { model.editing = nil })
+        }
+        .alert("删除 \(model.deletionRequest?.count ?? 0) 张表情？", isPresented: $model.confirmDelete, presenting: model.deletionRequest) { request in
+            Button("取消", role: .cancel) { model.cancelDeletion() }
+            Button("删除", role: .destructive) { model.confirmDeletion(request) }
+        } message: { request in
+            Text("仅删除这次确认的 \(request.count) 张收纳图片。原应用中的图片不受影响。")
+        }
+        .onDisappear { model.cancelDeletion() }
+    }
+
+    private func header(narrow: Bool) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                WindowHeading(title: "表情收纳袋 · \(model.items.count)", subtitle: "原图收藏 · 拖入收纳 · 拖出发送", symbol: "bag", prefs: prefs)
+                    .lineLimit(1).frame(minWidth: 0, maxWidth: .infinity)
+                if narrow {
+                    Menu("操作") { collectionActions; Button("导入图片…") { model.importPictures() } }
+                        .frame(width: 72).accessibilityLabel("收纳袋操作")
+                }
             }
-            Text(model.message).font(.callout).foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)
-        }.padding(16).background(Color(nsColor:.windowBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius:12).stroke(model.highlighted ? Color.accentColor : .clear,lineWidth:2))
-        .onDrop(of:[UTType.fileURL.identifier,UTType.png.identifier,UTType.jpeg.identifier,UTType.gif.identifier,UTType.webP.identifier],isTargeted:$model.highlighted,perform:model.accept)
-        .sheet(item:$model.editing) {item in StickerEditView(item:item,save:{name,group,tags in model.edit(item,name:name,group:group,tags:tags,favorite:item.favorite);model.editing=nil},cancel:{model.editing=nil})}
+            if !narrow {
+                HStack(spacing: 8) {
+                    Button("导入图片…") { model.importPictures() }
+                    Menu("收纳与备份") { backupActions }.fixedSize()
+                    Spacer(minLength: 0)
+                    Button(model.compact ? "舒展布局" : "紧凑布局", action: toggleCompact)
+                    Toggle("整理", isOn: $model.selecting).toggleStyle(.button)
+                }
+            }
+        }.buttonStyle(.bordered).controlSize(.small)
+    }
+    @ViewBuilder private var backupActions: some View {
+        Button("收纳剪贴板") { model.fromClipboard() }
+        Button("导出表情备份…") { model.exportArchive() }
+        Button("导入表情备份…") { model.importArchive() }
+    }
+    @ViewBuilder private var collectionActions: some View {
+        backupActions
+        Divider()
+        Button(model.compact ? "舒展布局" : "紧凑布局", action: toggleCompact)
+        Button(model.selecting ? "结束整理" : "整理／多选") { model.selecting.toggle() }
+    }
+    private func sticker(_ item: Sticker) -> some View {
+        VStack(spacing: 5) {
+            StickerThumbnail(url: model.file(item)).frame(height: model.compact ? 72 : 90)
+            Text((item.favorite ? "★ " : "") + item.name).font(.callout).lineLimit(2)
+            if item.animated { Text("动图 · 原文件保留").font(.caption2).foregroundStyle(.secondary) }
+        }.padding(8).frame(maxWidth: .infinity, minHeight: model.compact ? 116 : 140)
+            .background(RoundedRectangle(cornerRadius: 12).fill(model.selected.contains(item.id) ? palette.accentSoft : Color.primary.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.divider, lineWidth: 1))
+            .contentShape(Rectangle()).onTapGesture {
+                if model.selecting { if !model.selected.insert(item.id).inserted { model.selected.remove(item.id) } }
+                else { model.use(item) }
+            }
+            .onDrag { model.file(item).flatMap { NSItemProvider(contentsOf: $0) } ?? NSItemProvider() }
+            .contextMenu {
+                Button(item.favorite ? "取消收藏" : "收藏") { model.edit(item, name: item.name, group: item.group, tags: item.tags.joined(separator: "，"), favorite: !item.favorite) }
+                Button("编辑名称、标签和分组") { model.editing = item }
+                Button("复制并粘贴原图") { model.use(item) }
+                Button("预览原图／动图") { if let url = model.file(item) { NSWorkspace.shared.open(url) } }
+                Button("删除…", role: .destructive) { model.requestDeletion([item.id]) }.disabled(model.deleting || model.deletionRequest != nil)
+            }
     }
 }
 private final class StickerEditModel:ObservableObject {
@@ -220,7 +385,7 @@ private struct StickerEditView:View {
     var item:Sticker;var save:(String,String,String)->Void;var cancel:()->Void
     @StateObject private var fields=StickerEditModel()
     var body:some View {VStack {Text("编辑表情").font(.title3);TextField("名称",text:$fields.name);TextField("分组",text:$fields.group);TextField("标签，用逗号分隔",text:$fields.tags)
-        HStack {Button("取消",action:cancel);Button("保存"){save(fields.name,fields.group,fields.tags)}}}.padding(20).frame(width:350).onAppear {fields.name=item.name;fields.group=item.group;fields.tags=item.tags.joined(separator:"，")}}
+        HStack {Button("取消",action:cancel);Button("保存"){save(fields.name,fields.group,fields.tags)}}}.padding(20).frame(minWidth:280,idealWidth:320,maxWidth:340).onAppear {fields.name=item.name;fields.group=item.group;fields.tags=item.tags.joined(separator:"，")}}
 }
 private final class StickerThumbnailModel:ObservableObject {@Published var image:NSImage?}
 private struct StickerThumbnail:View {

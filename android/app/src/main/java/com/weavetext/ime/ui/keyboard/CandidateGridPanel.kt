@@ -98,7 +98,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     override fun applyTheme() {
         kb.paintBackground(view)
-        header.invalidate(); grid.invalidate(); side.relayout()
+        header.invalidate(); grid.rebuild(); side.relayout()
     }
 
     override fun onShow() {
@@ -227,23 +227,23 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             while (i < nPinyin) {
                 val rowStart = i
                 while (i < nPinyin && i - rowStart < 4) i++
-                layoutRow(rowStart, i, IntArray(i - rowStart) { 1 }, y, rowH, unit)
-                y += rowH
+                y += layoutRow(rowStart, i, IntArray(i - rowStart) { 1 }, y, rowH, unit)
             }
             while (i < all.size) {
                 val rowStart = i
                 var used = 0
                 val spans = ArrayList<Int>()
                 while (i < all.size) {
-                    val w = text.measureText(all[i]) + m.dp(24f) + if(cands.getOrNull(i-nPinyin)?.isCloud==true) m.dp(18f) else 0f
+                    val cand = cands.getOrNull(i - nPinyin)
+                    val wordW = text.measureText(all[i]) + (if(cand?.isCloud==true) m.dp(18f) else 0f)
+                    val w = wordW + m.dp(24f)
                     val span = ceil(w / unit).toInt().coerceIn(1, 4)
                     if (used + span > 4) break
                     spans += span
                     used += span
                     i++
                 }
-                layoutRow(rowStart, i, spans.toIntArray(), y, rowH, unit)
-                y += rowH
+                y += layoutRow(rowStart, i, spans.toIntArray(), y, rowH, unit)
             }
             rowsBottom = y
             invalidate()
@@ -254,17 +254,22 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         override fun a11yRect(index: Int, out: android.graphics.RectF) {
             out.set(rects[index * 4], rects[index * 4 + 1], rects[index * 4 + 2], rects[index * 4 + 3])
         }
-        override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let { if (index < nPinyin) "拼音 $it" else it + if(cands.getOrNull(index-nPinyin)?.isCloud==true) "，云端词" else "" }
+        override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let {
+            val candidate = cands.getOrNull(index - nPinyin)
+            if (index < nPinyin) "拼音 $it" else it + if(candidate?.isCloud==true) "，云端词" else ""
+        }
 
-        private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float) {
+        private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float): Float {
             val used = spans.sum()
             val extra = (4 - used) * unit / spans.size.coerceAtLeast(1)
             var x = 0f
             for (j in from until to) {
                 val w = spans[j - from] * unit + extra
-                rects[j * 4] = x; rects[j * 4 + 1] = y; rects[j * 4 + 2] = x + w; rects[j * 4 + 3] = y + rowH
+                rects[j * 4] = x; rects[j * 4 + 1] = y; rects[j * 4 + 2] = x + w
                 x += w
             }
+            for (j in from until to) rects[j * 4 + 3] = y + rowH
+            return rowH
         }
 
         override fun contentHeight() = rowsBottom
@@ -309,8 +314,9 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 val label = labels[i].let { if (maxW > 0f && text.measureText(it) > maxW) TextUtils.ellipsize(it, text, maxW, TextUtils.TruncateAt.MIDDLE).toString() else it }
                 val badgeW=if(cloud)m.dp(18f)else 0f
                 val center=(l+r)/2-badgeW/2
-                c.drawText(label, center, (t + b) / 2 - (text.ascent() + text.descent()) / 2, text)
-                if(cloud) kb.icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),center+text.measureText(label)/2+m.dp(10f),(t+b)/2,m.dp(14f))
+                val base = (t + b) / 2 - (text.ascent() + text.descent()) / 2
+                c.drawText(label, center, base, text)
+                if(cloud) kb.icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),center+text.measureText(label)/2+m.dp(10f),base+(text.ascent()+text.descent())/2,m.dp(14f))
                 line.color = p.divider
                 c.drawRect(0f, b - hair / 2, width.toFloat(), b + hair / 2, line)
                 if (r < width - 1f) c.drawRect(r - hair / 2, t + m.dp(10f), r + hair / 2, b - m.dp(10f), line)
@@ -408,14 +414,6 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 val st = sub(list[i]) + if (sel) " ✓" else ""
                 fit(st, m.panel(11f), rect.width() - m.dp(8f))
                 c.drawText(st, rect.centerX(), subY, p)
-            }
-            if (list.size <= 4) {
-                p.textSize = m.dp(12f); p.color = pal.labelSecondary
-                c.drawText("方案细节在设置 App 里调整", width / 2f, height - m.dp(24f), p)
-            } else {
-                cell(list.size, rect)
-                p.textSize = m.dp(12f); p.color = pal.labelSecondary; p.textAlign = Paint.Align.LEFT
-                c.drawText("（方案细节在设置 App 里调整）", rect.left + m.dp(8f), rect.centerY(), p)
             }
         }
 

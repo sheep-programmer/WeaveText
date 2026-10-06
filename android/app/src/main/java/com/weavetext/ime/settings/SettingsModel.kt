@@ -35,6 +35,7 @@ class SettingsDeps(
     val link: () -> com.weavetext.ime.link.LinkController = { com.weavetext.ime.link.LinkManager.get(ctx) },
     val packs: () -> com.weavetext.ime.core.DictPackRepository = { com.weavetext.ime.core.DictPacks.get(ctx) },
     val cloud: () -> com.weavetext.ime.core.CloudWordsRepository = { com.weavetext.ime.core.CloudWords.get(ctx) },
+    val pluginRepositories: () -> com.weavetext.ime.plugins.GitHubPlugins = { com.weavetext.ime.plugins.GitHubPlugins(ctx.applicationContext) },
     val versionName: String = com.weavetext.ime.BuildConfig.VERSION_NAME,
     val versionCode: Int = com.weavetext.ime.BuildConfig.VERSION_CODE,
 ) {
@@ -55,6 +56,14 @@ class SettingsDeps(
  * 因此任何读取设置的 lambda 都会在设置变化时重组。
  * Live preferences: every read of the delegated property registers a snapshot-state read, so any
  * composable lambda reading settings recomposes when they change.
+ *
+ * 注意：只有**直接**读到 `p` 的那个可组合作用域会重组。把 `p`（即 [SharedPreferences]）当参数传给
+ * 子可组合函数后，子作用域读到的是原始 [SharedPreferences]，不会登记依赖——子函数里读到的设置就永远
+ * 停在第一次组合时的值。凡是自己读设置的可组合函数都要自己调 [rememberLivePrefs]，或者接收
+ * [LivePrefs] 而不是 [SharedPreferences]。
+ * Caveat: only the scope that reads `p` directly registers the dependency. Passing `p` (a plain
+ * [SharedPreferences]) into a child composable loses it, and the child then reads a stale value forever.
+ * A child that reads settings must take a [LivePrefs], or call [rememberLivePrefs] itself.
  */
 class LivePrefs(private val raw: SharedPreferences, private val tick: State<Int>) {
     operator fun getValue(thisRef: Any?, property: KProperty<*>): SharedPreferences {

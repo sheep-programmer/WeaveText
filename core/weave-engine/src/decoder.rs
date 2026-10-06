@@ -28,8 +28,10 @@ const DFS_BUDGET: usize = 40_000;
 const MAX_WORD_PENALTY: u32 = 9_000;
 /// 整句束宽。 Beam width.
 const BEAM: usize = 6;
-/// 每个 span 参与整句的前几个词。 Entries per span considered for sentences.
-const SPAN_TOP: usize = 4;
+/// 完整拼写的同音词保留更多选择，供上下文评分；模糊、简拼等扩展分支仍用小池限制成本。
+/// Keep more homophones for contextual scoring on exact spans; speculative branches stay small.
+const SPAN_TOP: usize = 8;
+const SPECULATIVE_TOP: usize = 4;
 /// 每个词额外代价，偏好更少更长的词。 Per-word cost, prefers fewer longer words.
 const WORD_COST: u32 = 600;
 /// 候选列表单个 span 最多展开多少词。 Max entries expanded from one span for listing.
@@ -701,7 +703,12 @@ impl<'a> Decoder<'a> {
             for &si in &by_start[pos] {
                 let span = &spans[si];
                 let words = words_cache.entry(si).or_insert_with(|| {
-                    let mut w = self.span_words(span, SPAN_TOP, &no_raw);
+                    let limit = if span.penalty == 0 && span.start == 0
+                        && self.context.is_some_and(|c| !c.is_empty())
+                        && (self.lm.is_some() || self.user.has_bigrams()) {
+                        SPAN_TOP
+                    } else { SPECULATIVE_TOP };
+                    let mut w = self.span_words(span, limit, &no_raw);
                     if span.raw && span.literal.is_none() {
                         w[0].text = String::new();
                     }
@@ -814,12 +821,15 @@ impl<'a> Decoder<'a> {
         let mut out: Vec<Candidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = Default::default();
 
-        // Complete, literal learned choices may lead the list; a partial single character never
-        // displaces a longer input's sentence. This also keeps a user-created phrase above a guess.
+        // 学过的完整选择可以排到最前；单个字的偏好不会把更长输入的整句候选挤走。选它时读法是不是原样
+        // 拼出来的（简拼、补全、纠错）都算数——用户既然选过，下次就该在前面；但必须覆盖整个输入。
+        // Complete learned choices may lead the list; a partial single character never displaces a longer
+        // input's sentence. How the reading was reached (abbreviation, completion, correction) does not
+        // matter — a word the user picked belongs in front next time — but it must cover the whole input.
         let mut preferred = Vec::new();
         for &si in &lat.by_start[0] {
             let span = &lat.spans[si];
-            if span.end != n || span.raw || span.penalty != 0 { continue; }
+            if span.end != n || span.raw { continue; }
             if let Some(choice) = self.user.choice(&span.key).filter(|c| self.user.preferred(&span.key, &c.text)) {
                 preferred.push((choice, span));
             }
@@ -832,7 +842,10 @@ impl<'a> Decoder<'a> {
                 kind: CandKind::Word, origin: Origin::User, words: vec![(span.key.clone(), choice.text.clone())], cost: 0 });
         }
 
-        // 1. 整句（及接近的次优整句）。 Sentence, plus a close runner-up.
+        // 1. 解码器选出的完整结果（及接近的次优结果）。也可能恰好是一个词；不能在这里
+        // 丢掉上下文/用户搭配的打分，再以裸词频重排首选。
+        // Keep the decoder's full result even when it is a single word: otherwise listing
+        // by dictionary frequency silently discards context and learned bigram scores.
         let sentence = |path: &[(usize, String)], cost: u32| {
             let mut text = String::new();
             let mut key = Vec::new();
@@ -850,18 +863,29 @@ impl<'a> Decoder<'a> {
                     words.push((span.key.clone(), t));
                 }
             }
+            let single = (path.len() == 1).then(|| &lat.spans[path[0].0]);
+            let kind = match single {
+                Some(span) if span.raw => CandKind::Raw,
+                Some(_) => CandKind::Word,
+                None => CandKind::Sentence,
+            };
+            let origin = match single {
+                Some(span) if span.raw => Origin::Raw,
+                Some(span) if self.user.get(&span.key, &text).is_some() => Origin::User,
+                _ => Origin::System,
+            };
             Candidate {
                 text,
                 comment: String::new(),
                 end: n,
                 key,
-                kind: CandKind::Sentence,
-                origin: Origin::System,
+                kind,
+                origin,
                 words,
                 cost,
             }
         };
-        if lat.best.len() >= 2 {
+        if !lat.best.is_empty() {
             let c = sentence(&lat.best, lat.best_cost);
             if seen.insert(c.text.clone()) && out.len() < cap { out.push(c); }
         }
@@ -875,8 +899,9 @@ impl<'a> Decoder<'a> {
             }
         }
         if let Some(c) = alt_sentence.take().filter(|_| !out.is_empty()) {
-            out.push(c);
+            if out.len() < cap { out.push(c); }
         }
+        if out.len() >= cap { return out; }
 
         // 2. 以 0 开头的词，覆盖长的优先。 Words from 0, longest coverage first.
         let mut ends: Vec<usize> = lat.by_start[0].iter().map(|&i| lat.spans[i].end).collect();
@@ -906,6 +931,7 @@ impl<'a> Decoder<'a> {
                 if out.len() == 1 {
                     if let Some(c) = pending_alt.take() {
                         out.push(c);
+                        if out.len() >= cap { return out; }
                     }
                 }
                 out.push(Candidate {
@@ -933,6 +959,87 @@ impl<'a> Decoder<'a> {
 mod debug_tests {
     use super::*;
     use crate::graph::{build_full_pinyin, FuzzyOptions, Letters};
+    use weave_dict::{gram::GramBuilder, lexicon::{Builder, Kind}, syllable};
+
+    fn homophones() -> Lexicon {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = syllable::parse_seq("shi jie").unwrap();
+        b.insert(&key, "世界", 14000);
+        b.insert(&key, "视界", 15000);
+        Lexicon::from_bytes(b.build()).unwrap()
+    }
+
+    #[test]
+    fn single_word_candidates_keep_the_decoders_contextual_winner() {
+        let lex = homophones();
+        let mut user = UserDict::in_memory();
+        for _ in 0..5 { user.learn_bigram("虚拟", "视界"); }
+        let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: Some("虚拟"), lm: None };
+        let lat = decoder.decode();
+        assert_eq!(lat.best[0].1, "视界");
+        let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
+        assert_eq!(candidates[0].text, "视界");
+        assert_eq!(candidates[0].kind, CandKind::Word);
+    }
+
+    #[test]
+    fn single_word_candidates_keep_the_language_models_winner() {
+        let lex = homophones();
+        let user = UserDict::in_memory();
+        let mut builder = GramBuilder::default();
+        builder.push("拟视界", 20.0);
+        builder.push("世界", 1.0);
+        let gram = weave_dict::gram::Gram::from_bytes(builder.build()).unwrap();
+        let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: Some("虚拟"),
+            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }) };
+        let lat = decoder.decode();
+        assert_eq!(lat.best[0].1, "视界");
+        assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 20)[0].text, "视界");
+    }
+
+    #[test]
+    fn contextual_scoring_can_reach_a_homophone_beyond_the_first_four() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = syllable::parse_seq("mai").unwrap();
+        for (i, word) in ["卖", "脉", "麦", "埋", "买"].iter().enumerate() {
+            b.insert(&key, word, 14000 + i as u16 * 100);
+        }
+        let lex = Lexicon::from_bytes(b.build()).unwrap();
+        let user = UserDict::in_memory();
+        let mut builder = GramBuilder::default();
+        builder.push("我买", 20.0);
+        let gram = weave_dict::gram::Gram::from_bytes(builder.build()).unwrap();
+        let graph = build_full_pinyin(&Letters::parse("mai"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: Some("我"),
+            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }) };
+        let lat = decoder.decode();
+        assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 20)[0].text, "买");
+    }
+
+    #[test]
+    fn a_single_word_and_sentence_runner_up_respect_a_one_candidate_limit() {
+        let mut builder = Builder::new(Kind::Pinyin);
+        for (py, text, cost) in [("xiu ba", "秀吧", 10), ("xiu", "修", 100), ("ba", "吧", 100)] {
+            builder.insert(&syllable::parse_seq(py).unwrap(), text, cost);
+        }
+        let lex = Lexicon::from_bytes(builder.build()).unwrap();
+        let user = UserDict::in_memory();
+        let graph = build_full_pinyin(&Letters::parse("xiuba"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user, graph: &graph, context: None, lm: None };
+        let lat = decoder.decode();
+        assert_eq!(lat.best.len(), 1);
+        assert_eq!(lat.alt.len(), 2);
+        assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 0).len(), 0);
+        let first = decoder.candidates(&lat, &|_, _| String::new(), 1);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].text, "秀吧");
+        assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 2).len(), 2);
+    }
 
     #[test]
     #[ignore]

@@ -211,8 +211,9 @@ public struct CandidateKeys: Codable, Equatable, Sendable {
 /// 按键时的输入法状态。 IME state when a key arrives.
 public struct KeyContext: Equatable, Sendable {
     public var composing: Bool
-    /// 中文模式；false 为英文单词补全。 Chinese mode; false = English word completion.
+    /// 中文模式；false 为英文输入。 Chinese mode; false = English input.
     public var chinese: Bool
+    public var englishCompletion: Bool
     public var pageSize: Int
     public var pageKeys: PageKeys
     /// 拼音 v 模式（v1234、v(1+2)*3）：数字与运算符进组合串，不选词。
@@ -222,11 +223,12 @@ public struct KeyContext: Equatable, Sendable {
     public var bindings = CandidateKeys()
 
     public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both,
-                vMode: Bool = false, bindings: CandidateKeys = CandidateKeys()) {
+                vMode: Bool = false, bindings: CandidateKeys = CandidateKeys(), englishCompletion: Bool = false) {
         self.bindings = bindings
         self.composing = composing
         self.vMode = vMode
         self.chinese = chinese
+        self.englishCompletion = englishCompletion
         self.pageSize = pageSize
         self.pageKeys = pageKeys
     }
@@ -312,6 +314,7 @@ public enum KeyMapper {
     public static func action(for key: KeyInput, in ctx: KeyContext) -> KeyAction {
         // 快捷键一律放行。 Shortcuts always go to the app.
         if key.command || key.control || key.option { return .pass }
+        if !ctx.chinese && !ctx.englishCompletion { return .pass }
         // 用户自定义的候选键优先于默认键，只在组合中生效。 Custom candidate keys beat the defaults, while composing only.
         if ctx.composing, let custom = ctx.bindings.action(for: key) { return custom }
         if !ctx.chinese { return englishAction(key, ctx) }
@@ -330,6 +333,9 @@ public enum KeyMapper {
     private static func englishAction(_ key: KeyInput, _ ctx: KeyContext) -> KeyAction {
         if let c = key.character, c.isASCII, c.isLetter { return .letter(c) }
         guard ctx.composing else { return .pass }
+        if let c = key.character, c.isASCII, let d = c.wholeNumberValue, d >= 1, d <= ctx.pageSize {
+            return .select(d - 1)
+        }
         switch key.keyCode {
         case KeyCode.space: return .commitEnglishWord
         case KeyCode.returnKey, KeyCode.keypadEnter: return .commitRaw

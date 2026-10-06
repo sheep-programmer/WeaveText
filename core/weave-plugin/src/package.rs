@@ -1,5 +1,5 @@
-//! 插件包：已解包目录与 `.xipk`（zip）的读取、安装。
-//! Plugin packages: unpacked directories and `.xipk` (zip) archives.
+//! 插件包：按目录内容或 ZIP 内容识别，不依赖文件后缀。
+//! Plugin packages are identified by directory/archive contents, regardless of filename.
 
 use std::fs;
 use std::io::Read;
@@ -20,7 +20,8 @@ pub fn read_dir_manifest(dir: &Path) -> Result<Manifest, String> {
     let text = fs::read_to_string(dir.join("manifest.yaml"))
         .map_err(|e| format!("{}: {e}", dir.join("manifest.yaml").display()))?;
     let m = Manifest::parse(&text)?;
-    if !dir.join(&m.entry).is_file() {
+    let entry = safe_relative(&m.entry).ok_or("plugin: unsafe entry script")?;
+    if !dir.join(entry).is_file() {
         return Err(format!("{}: entry {} not found", dir.display(), m.entry));
     }
     Ok(m)
@@ -44,7 +45,13 @@ pub fn safe_relative(name: &str) -> Option<PathBuf> {
 
 fn open_zip(xipk: &Path) -> Result<zip::ZipArchive<fs::File>, String> {
     let f = fs::File::open(xipk).map_err(|e| format!("{}: {e}", xipk.display()))?;
-    zip::ZipArchive::new(f).map_err(|e| format!("{}: not a valid xipk: {e}", xipk.display()))
+    zip::ZipArchive::new(f).map_err(|e| format!("{}: not a valid plugin archive: {e}", xipk.display()))
+}
+
+pub fn is_archive(path: &Path) -> bool {
+    let Ok(mut f) = fs::File::open(path) else { return false };
+    let mut signature = [0; 4];
+    f.read_exact(&mut signature).is_ok() && signature == *b"PK\x03\x04"
 }
 
 /// 找出包内公共前缀：有的打包工具会把所有文件放进一层目录。
@@ -67,15 +74,20 @@ fn manifest_prefix(names: &[String]) -> Option<String> {
 /// 只读 `.xipk` 里的 manifest。Read just the manifest out of a `.xipk`.
 pub fn read_xipk_manifest(xipk: &Path) -> Result<Manifest, String> {
     let mut z = open_zip(xipk)?;
+    if z.len() > MAX_ENTRIES { return Err("plugin archive: too many entries".into()); }
     let names: Vec<String> = z.file_names().map(str::to_string).collect();
-    let prefix = manifest_prefix(&names).ok_or("xipk: manifest.yaml not found")?;
+    let prefix = manifest_prefix(&names).ok_or("plugin archive: manifest.yaml not found")?;
     let mut text = String::new();
     z.by_name(&format!("{prefix}manifest.yaml"))
         .map_err(|e| e.to_string())?
         .take(1024 * 1024)
         .read_to_string(&mut text)
-        .map_err(|e| format!("xipk manifest: {e}"))?;
-    Manifest::parse(&text)
+        .map_err(|e| format!("plugin manifest: {e}"))?;
+    let manifest = Manifest::parse(&text)?;
+    let entry = safe_relative(&manifest.entry).ok_or("plugin archive: unsafe entry script")?;
+    let name = format!("{prefix}{}", entry.to_string_lossy().replace('\\', "/"));
+    if z.by_name(&name).is_err() { return Err(format!("plugin archive: entry {} not found", manifest.entry)); }
+    Ok(manifest)
 }
 
 /// 把 `.xipk` 解包到 `plugins_dir/<id>/`（先解到临时目录再替换，失败不留半截）。
@@ -85,7 +97,7 @@ pub fn install_xipk(xipk: &Path, plugins_dir: &Path) -> Result<(Manifest, PathBu
     let mut z = open_zip(xipk)?;
     if z.len() > MAX_ENTRIES {
         return Err(format!(
-            "xipk: too many entries ({} > {MAX_ENTRIES})",
+            "plugin archive: too many entries ({} > {MAX_ENTRIES})",
             z.len()
         ));
     }
@@ -110,7 +122,7 @@ pub fn install_xipk(xipk: &Path, plugins_dir: &Path) -> Result<(Manifest, PathBu
                 continue;
             }
             let rel =
-                safe_relative(rel_name).ok_or_else(|| format!("xipk: unsafe entry {name}"))?;
+                safe_relative(rel_name).ok_or_else(|| format!("plugin archive: unsafe entry {name}"))?;
             let out = tmp.join(rel);
             if let Some(parent) = out.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -122,10 +134,10 @@ pub fn install_xipk(xipk: &Path, plugins_dir: &Path) -> Result<(Manifest, PathBu
                 .map_err(|e| format!("{name}: {e}"))?;
             if n > limit {
                 return Err(if limit < MAX_ENTRY_BYTES {
-                    format!("xipk: package too large (> {} MiB)", MAX_TOTAL_BYTES >> 20)
+                    format!("plugin archive: package too large (> {} MiB)", MAX_TOTAL_BYTES >> 20)
                 } else {
                     format!(
-                        "xipk: entry {name} too large (> {} MiB)",
+                        "plugin archive: entry {name} too large (> {} MiB)",
                         MAX_ENTRY_BYTES >> 20
                     )
                 });
@@ -236,6 +248,29 @@ pub(crate) mod tests {
         let (_, dest) = install_xipk(&xipk, &dir.join("plugins")).unwrap();
         assert!(dest.join("main.lua").is_file());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn names_do_not_determine_whether_a_file_is_a_plugin() {
+        let dir = temp_dir("content-detection");
+        for (i, name) in ["plugin.zip", "plugin.custom", "plugin", "plugin.xipk"].iter().enumerate() {
+            let archive = dir.join(name);
+            let manifest = format!("id: org.example.content{i}\ntype: speech\nentry: start.lua\n");
+            make_xipk(&archive, &[("manifest.yaml", manifest.as_bytes()), ("start.lua", b"return {}")]);
+            assert!(is_archive(&archive));
+            assert_eq!(crate::inspect_package(&archive).unwrap().id, format!("org.example.content{i}"));
+        }
+        let fake = dir.join("fake.xipk");
+        fs::write(&fake, b"ordinary text").unwrap();
+        assert!(!is_archive(&fake));
+        assert!(crate::inspect_package(&fake).is_err());
+        let missing = dir.join("missing.zip");
+        make_xipk(&missing, &[("manifest.yaml", b"id: missing\ntype: speech\nentry: absent.lua\n")]);
+        assert!(crate::inspect_package(&missing).is_err());
+        let mut manager = crate::PluginManager::new(&dir, dir.join("config"));
+        assert_eq!(manager.scan().len(), 4);
+        assert_eq!(manager.scan().len(), 4);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
 

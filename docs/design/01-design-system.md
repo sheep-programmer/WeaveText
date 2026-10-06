@@ -310,12 +310,22 @@ keyHeight = rowPitch - keyGapV
 |---|---|---|
 | 0 | 关 Off（默认） | 不振动 |
 | 1 | 跟随系统 System（旧版选项，仍生效，界面不再提供） | `view.performHapticFeedback(KEYBOARD_TAP)`（API 27+ 用 `KEYBOARD_PRESS`），遵守系统触感开关 |
-| 2 | 轻 Light | `VibrationEffect.createPredefined(EFFECT_TICK)`（API 29+）；低版本 `createOneShot(8ms, 40)` |
-| 3 | 中 Medium | `EFFECT_CLICK`；低版本 `createOneShot(12ms, 90)` |
-| 4 | 强 Strong | `EFFECT_HEAVY_CLICK`；低版本 `createOneShot(18ms, 160)` |
+| 2 | 轻 Light | 原语组合：`PRIMITIVE_CLICK` 力度 0.35 |
+| 3 | 中 Medium | 原语组合：`PRIMITIVE_CLICK` 0.65 + `PRIMITIVE_TICK` 0.25（22 ms 后） |
+| 4 | 强 Strong | 原语组合：`PRIMITIVE_CLICK` 1.0 + `PRIMITIVE_TICK` 0.45（30 ms 后） |
 
-- 设备不支持振幅控制（`!hasAmplitudeControl()`）时，2/3/4 档改为时长 6/10/15ms。
-  *No amplitude control → durations 6/10/15ms.*
+- **优先自己用原语拼**（Android 11+，且设备支持这两种原语）：系统预置的 `EFFECT_TICK / _CLICK / _HEAVY_CLICK`
+  各家长短不一，听起来更像一次点击事件而不是「按键下去的那一下」；自建之后每档都只是「一记清晰的敲击」，
+  档位之间只差力度与一点点尾随刻度。不支持原语时退回预置效果，再退回按毫秒与振幅的一次振动
+  （有振幅控制 9/14/20 ms × 60/130/255；没有则 8/13/20 ms 默认振幅）。
+  *Prefer primitives (Android 11+ with both supported): the platform presets vary in length by vendor and read as a
+  click event rather than a key strike; a composition gives every level one clear strike differing only in weight.
+  Fall back to presets, then to an explicit one-shot (9/14/20 ms × 60/130/255, or 8/13/20 ms at default amplitude).*
+- **系统的「触摸振动」总开关优先**（`Settings.System.HAPTIC_FEEDBACK_ENABLED`）：关掉时键盘自己的档位再高也不震——
+  键盘里的「按键震动」是键盘的设置，系统那一个是全机的。*The device-wide touch-haptics switch wins.*
+- **同一时刻只排一次振动**：连打时按键比振动还密，若一键一个任务排下去，马达会先安静、再成串补震，手感就「散」了；
+  上一击还没发出去就跳过这一次。（测试里同时按 5 下只产生一记；见 `KeyHapticsTest`。）
+  *At most one vibration in flight, so a fast burst stays even instead of falling silent and then firing in bursts.*
 - 振动器调用放在独立 HandlerThread，不阻塞 UI 线程。*Vibrate off the UI thread.*
 
 ### 9.3 按键音 / Key sound

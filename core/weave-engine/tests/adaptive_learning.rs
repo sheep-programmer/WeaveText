@@ -135,6 +135,35 @@ fn undo_restores_the_previous_preference_and_does_not_learn_in_private_fields() 
 }
 
 #[test]
+fn an_old_manual_priority_yields_when_the_user_changes_their_choice() {
+    let dir=directory("superseded-priority");let paths=fixture(&dir);let mut e=Engine::new(&paths);
+    e.options.prediction=false;
+    let candidates=type_keys(&mut e,"shi");let i=candidates.iter().position(|s|s=="嗜").unwrap();
+    assert!(e.features(&serde_json::json!({"op":"policy","index":i,"text":"嗜","mode":"pin"}))["ok"].as_bool().unwrap());
+    assert_eq!(e.candidates(0,1)[0].text,"嗜");
+    assert!(e.candidates(0,1)[0].comment.is_empty());
+    for _ in 0..5 {choose(&mut e,"shi","时");}
+    assert_eq!(type_keys(&mut e,"shi")[0],"时");
+    drop(e);let mut e=Engine::new(&paths);assert_eq!(type_keys(&mut e,"shi")[0],"时");
+    drop(e);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn changing_the_word_for_an_abbreviation_supersedes_a_different_pinned_reading() {
+    let dir=directory("abbreviated-priority");let paths=fixture(&dir);
+    let mut builder=Builder::new(Kind::Pinyin);
+    builder.insert(&syllable::parse_seq("shi jian").unwrap(),"时间",10);
+    builder.insert(&syllable::parse_seq("shu ju").unwrap(),"数据",1000);
+    std::fs::write(dir.join("pinyin.wvl"),builder.build()).unwrap();
+    let mut e=Engine::new(&paths);e.options.prediction=false;
+    let candidates=type_keys(&mut e,"sj");let i=candidates.iter().position(|s|s=="时间").unwrap();
+    assert!(e.features(&serde_json::json!({"op":"policy","index":i,"text":"时间","mode":"pin"}))["ok"].as_bool().unwrap());
+    for _ in 0..5 {choose(&mut e,"sj","数据");}
+    assert_eq!(type_keys(&mut e,"sj")[0],"数据");
+    drop(e);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn chosen_generated_phrase_becomes_a_word_and_can_lead_the_next_candidates() {
     let dir = directory("phrase");
     let paths = fixture(&dir);
@@ -449,4 +478,48 @@ fn english_homographs_of_full_chinese_readings_do_not_steal_chinese() {
     for (input,text) in [("chile","吃了"),("women","我们"),("nile","你了")] {
         assert_eq!(type_keys(&mut e,input)[0],text);
     }
+}
+
+#[test]
+fn an_abbreviation_or_cloud_pick_leads_the_next_time_after_one_choice() {
+    let dir = directory("abbrev");
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [("shi jian", "时间", 100), ("shi jin", "使劲", 4000), ("shi ji", "实际", 150)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let lex = dir.join("pinyin.wvl");
+    std::fs::write(&lex, b.build()).unwrap();
+    let paths = Paths { pinyin_lexicon: Some(Source::file(lex)), user_dir: Some(dir.join("user")), ..Default::default() };
+    let mut e = Engine::new(&paths);
+    e.options.emoji = false;
+    e.options.prediction = false;
+
+    // 简拼选的词，选一次之后第二次就排到最前（在此之前只有整串拼出来才有这个待遇）。
+    // A word picked from an abbreviation leads the next time, after a single choice.
+    let before = type_keys(&mut e, "sj");
+    assert_ne!(before[0], "使劲", "使劲 must not already lead, or the test proves nothing");
+    let i = before.iter().position(|c| c == "使劲").expect("使劲 offered for sj");
+    assert!(e.select(i));
+    assert_eq!(e.snapshot().commit, "使劲");
+    assert_eq!(type_keys(&mut e, "sj")[0], "使劲", "a picked abbreviation must lead next time");
+
+    // 云词（只在扩展词库里、基础词库没有）也一样：简拼选中一次就排到最前。
+    // A cloud word (only in the extra pack) too: one abbreviation pick puts it in front.
+    let mut cloud = Builder::new(Kind::Pinyin);
+    cloud.insert(&syllable::parse_seq("shi jiao").unwrap(), "市郊", 900);
+    assert!(e.attach_pack("cloud", weave_dict::lexicon::Lexicon::from_bytes(cloud.build()).unwrap()));
+    let before = type_keys(&mut e, "sj");
+    let i = before.iter().position(|c| c == "市郊").expect("市郊 offered for sj");
+    assert!(e.select(i));
+    assert_eq!(type_keys(&mut e, "sj")[0], "市郊", "a picked cloud word must lead next time");
+
+    // 热词表换掉这个词之后，本机学过的选择仍在。
+    // After the hot-word list is refreshed without it, the local choice still stands.
+    let mut other = Builder::new(Kind::Pinyin);
+    other.insert(&syllable::parse_seq("shi jiao").unwrap(), "世交", 900);
+    assert!(e.attach_pack("cloud", weave_dict::lexicon::Lexicon::from_bytes(other.build()).unwrap()));
+    assert_eq!(type_keys(&mut e, "sj")[0], "市郊", "the learned choice outlives the hot-word list");
+
+    drop(e);
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -32,18 +32,33 @@ const ENTRY: usize = 12;
 /// 一笔：若干 (x, y) 点，坐标系任意（y 向下）。 One stroke: points in any frame, y pointing down.
 pub type Stroke = Vec<(f32, f32)>;
 
+pub(crate) fn next_model_id() -> u64 {
+    static ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Keep inference work bounded; coordinates are the raw centreline, independent of display nib width/tails.
+pub(crate) fn valid_ink(strokes: &[Stroke], max_strokes: usize) -> bool {
+    strokes.len() <= max_strokes && strokes.iter().all(|s| {
+        s.len() <= 4096 && s.iter().all(|&(x, y)| x.is_finite() && y.is_finite() && x.abs() <= 100_000.0 && y.abs() <= 100_000.0)
+    })
+}
+
 /// 按弧长把一笔重采样为 [`POINTS`] 个点；只有一个点时复制。 Resample a stroke to [`POINTS`] points by arc length.
 pub fn resample(s: &[(f32, f32)]) -> [(f32, f32); POINTS] {
     let mut out = [(0f32, 0f32); POINTS];
     if s.is_empty() {
         return out;
     }
-    let mut cum = Vec::with_capacity(s.len());
+    // Adjacent template joins have exactly 16 points: keep their cumulative lengths on the stack.
+    let mut short = [0f32; 2 * POINTS];
+    let mut heap;
+    let cum: &mut [f32] = if s.len() <= short.len() { &mut short[..s.len()] }
+        else { heap = vec![0f32; s.len()]; &mut heap };
     let mut total = 0f32;
-    cum.push(0f32);
-    for w in s.windows(2) {
+    for (i, w) in s.windows(2).enumerate() {
         total += ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
-        cum.push(total);
+        cum[i + 1] = total;
     }
     if total <= f32::EPSILON {
         return [s[0]; POINTS];
@@ -159,12 +174,16 @@ struct Template {
     strokes: std::ops::Range<usize>,
 }
 
-/// 手写识别器（模板整体读入内存，约 2 MB）。 Recognizer; templates are loaded into memory (~2 MB).
+/// 手写识别器；压缩前模板约 2 MB，运行时展开为浮点点阵与特征。
+/// Recognizer: ~2 MB of packed templates, expanded into floating-point trajectories and features at runtime.
 pub struct Recognizer {
+    pub(crate) model_id: u64,
     templates: Vec<Template>,
     points: Vec<[(f32, f32); POINTS]>,
     /// 与 points 一一对应的笔画特征（载入时算好）。 Per-stroke features, parallel to `points`, computed at load.
     feats: Vec<Feat>,
+    /// Cached adjacent-join headings: 24 bytes per stored stroke, no joined trajectory copies.
+    joined_feats: Vec<Feat>,
     /// 字 → 字频先验（查找用）。 Char → frequency prior, for lookups.
     priors: std::collections::HashMap<char, f32>,
 }
@@ -178,6 +197,47 @@ struct Feat {
 }
 
 const NO_DIR: u16 = u16::MAX;
+
+type Samples = [(f32, f32); POINTS];
+
+#[derive(Clone, Copy)]
+struct StrokeView<'a> {
+    points: &'a [Samples],
+    feats: &'a [Feat],
+    joined_feats: &'a [Feat],
+    joined_points: Option<&'a [Samples]>,
+}
+
+impl StrokeView<'_> {
+    fn adjacent(&self, i: usize) -> (Samples, Feat) {
+        let points = self.joined_points.map_or_else(|| join(&self.points[i], &self.points[i + 1]), |p| p[i]);
+        (points, self.joined_feats[i])
+    }
+}
+
+struct PreparedInk {
+    points: Vec<Samples>,
+    feats: Vec<Feat>,
+    joined_points: Vec<Samples>,
+    joined_feats: Vec<Feat>,
+}
+
+impl PreparedInk {
+    fn new(strokes: &[Stroke]) -> Option<Self> {
+        if !valid_ink(strokes, 64) { return None; }
+        let input: Vec<_> = strokes.iter().filter(|s| !s.is_empty()).map(|s| resample(s)).collect();
+        if input.is_empty() { return None; }
+        let points = normalise(&input);
+        let feats = points.iter().map(Feat::of).collect();
+        let joined_points: Vec<_> = points.windows(2).map(|p| join(&p[0], &p[1])).collect();
+        let joined_feats = joined_points.iter().map(Feat::of).collect();
+        Some(Self { points, feats, joined_points, joined_feats })
+    }
+
+    fn view(&self) -> StrokeView<'_> {
+        StrokeView { points: &self.points, feats: &self.feats, joined_points: Some(&self.joined_points), joined_feats: &self.joined_feats }
+    }
+}
 
 impl Feat {
     fn of(s: &[(f32, f32); POINTS]) -> Feat {
@@ -263,8 +323,14 @@ impl Recognizer {
             points[r].copy_from_slice(&renorm);
         }
         let feats = points.iter().map(Feat::of).collect();
+        let mut joined_feats = vec![Feat { c: (0.0, 0.0), ang: [NO_DIR; POINTS - 1] }; points.len()];
+        for t in &templates {
+            for i in t.strokes.clone().take(t.strokes.len().saturating_sub(1)) {
+                joined_feats[i] = Feat::of(&join(&points[i], &points[i + 1]));
+            }
+        }
         let priors = templates.iter().map(|t| (t.ch, t.prior)).collect();
-        Ok(Recognizer { templates, points, feats, priors })
+        Ok(Recognizer { model_id: next_model_id(), templates, points, feats, joined_feats, priors })
     }
 
     pub fn len(&self) -> usize {
@@ -288,24 +354,22 @@ impl Recognizer {
     /// 识别一个字，返回代价最小的 `top` 个候选（代价越小越像）。模板分成几段在多个线程上并行比对。
     /// Recognise one char; the `top` lowest-cost candidates. Templates are scanned in parallel chunks.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
-        let input: Vec<_> = strokes.iter().filter(|s| !s.is_empty()).map(|s| resample(s)).collect();
-        if input.is_empty() || top == 0 {
-            return Vec::new();
-        }
-        let input = normalise(&input);
-        let input_feats: Vec<Feat> = input.iter().map(Feat::of).collect();
+        if top == 0 { return Vec::new(); }
+        let top = top.min(self.templates.len());
+        if top == 0 { return Vec::new(); }
+        let Some(prepared) = PreparedInk::new(strokes) else { return Vec::new(); };
+        let input = prepared.view();
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(self.templates.len() / 1000).clamp(1, 4);
         let chunk = self.templates.len().div_ceil(threads);
         let mut all: Vec<(char, f32)> = if threads == 1 {
-            self.scan(&self.templates, &input, &input_feats, top)
+            self.scan(&self.templates, input, top, None, None)
         } else {
             std::thread::scope(|sc| {
                 let handles: Vec<_> = self
                     .templates
                     .chunks(chunk.max(1))
                     .map(|part| {
-                        let (input, feats) = (&input, &input_feats);
-                        sc.spawn(move || self.scan(part, input, feats, top))
+                        sc.spawn(move || self.scan(part, input, top, None, None))
                     })
                     .collect();
                 handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
@@ -316,20 +380,39 @@ impl Recognizer {
         all
     }
 
+    /// Boolean threshold query for ambiguous segmentation. It does not need a top-30 list or the best match:
+    /// use the strict ceiling from the first template, and stop at the first match below it.
+    pub(crate) fn has_strong_match(&self, strokes: &[Stroke], ceiling: f32) -> bool {
+        let Some(input) = PreparedInk::new(strokes) else { return false; };
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(self.templates.len() / 1000).clamp(1, 4);
+        if threads == 1 { return !self.scan(&self.templates, input.view(), 1, Some(ceiling), None).is_empty(); }
+        let found = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            for part in self.templates.chunks(self.templates.len().div_ceil(threads)) {
+                let (input, found) = (input.view(), &found);
+                sc.spawn(move || { self.scan(part, input, 1, Some(ceiling), Some(found)); });
+            }
+        });
+        found.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// 在一段模板里找最好的 `top` 个。 The best `top` within a slice of templates.
-    fn scan(&self, templates: &[Template], input: &[[(f32, f32); POINTS]], input_feats: &[Feat], top: usize) -> Vec<(char, f32)> {
+    fn scan(&self, templates: &[Template], ink: StrokeView<'_>, top: usize, ceiling: Option<f32>, stop: Option<&std::sync::atomic::AtomicBool>) -> Vec<(char, f32)> {
+        let (input, input_feats) = (ink.points, ink.feats);
         let n = input.len();
         let mut best: Vec<(char, f32)> = Vec::with_capacity(top + 1);
         let mut cost = vec![0f32; n * 64];
         for t in templates {
+            if stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) { break; }
             let m = t.strokes.len();
             // 连笔会让笔数变少，漏写、多写也常见：笔数相差太多的直接跳过。
             // Joined strokes reduce the count; skip templates whose stroke count is far off.
-            if n > m + 2 || m > n + 4 + n / 2 {
+            if m == 0 || n > m + 2 || m > n + 4 + n / 2 {
                 continue;
             }
             let tmpl = &self.points[t.strokes.clone()];
             let tf = &self.feats[t.strokes.clone()];
+            let tv = StrokeView { points: tmpl, feats: tf, joined_feats: &self.joined_feats[t.strokes.clone()], joined_points: None };
             if cost.len() < n * m {
                 cost.resize(n * m, 0.0);
             }
@@ -344,25 +427,30 @@ impl Recognizer {
             let fixed = penalty - PRIOR * t.prior;
             // 剪枝：每行（或每列）各取最小值之和是指派代价的下界；下界已比当前第 top 名差就不必精算。
             // Pruning: the sum of per-row (or per-column) minima bounds the assignment from below.
-            if best.len() == top {
+            let threshold = if best.len() == top { Some(best[top - 1].1) } else { ceiling };
+            if let Some(threshold) = threshold {
                 let k = n.min(m);
                 let lower = if n <= m {
                     (0..n).map(|i| cost[i * m..i * m + m].iter().copied().fold(f32::MAX, f32::min)).sum::<f32>()
                 } else {
                     (0..m).map(|j| (0..n).map(|i| cost[i * m + j]).fold(f32::MAX, f32::min)).sum::<f32>()
                 };
-                // 连笔 / 断笔修正最多能把笔数差异的惩罚全部抵掉。 The join/split pass can remove at most the whole count penalty.
-                if lower / k.max(1) as f32 + fixed - penalty >= best[top - 1].1 {
-                    continue;
+                // A join can reduce the matched distance as well as the count penalty. The single-stroke lower
+                // bound is only sufficient when counts agree; otherwise also bound the adjacent joined shapes.
+                if lower / k.max(1) as f32 + fixed - penalty >= threshold {
+                    let cutoff = (threshold - fixed + penalty) * k.max(1) as f32;
+                    if n == m || joined_lower(&cost[..n * m], n, m, ink, tv, cutoff) / k.max(1) as f32 + fixed - penalty >= threshold {
+                        continue;
+                    }
                 }
             }
             let (mut assigned, pairs) = assignment(&cost[..n * m], n, m);
             let mut fixed = fixed;
             if n != m {
                 let (gain, freed) = if n < m {
-                    joins(&cost, &pairs, n, m, input, input_feats, tmpl, false)
+                    joins(&cost, &pairs, n, m, ink, tv, false)
                 } else {
-                    joins(&cost, &pairs, n, m, input, input_feats, tmpl, true)
+                    joins(&cost, &pairs, n, m, ink, tv, true)
                 };
                 assigned -= gain;
                 fixed -= freed as f32 * if n < m { MISSING / m as f32 } else { EXTRA / n as f32 };
@@ -372,6 +460,13 @@ impl Recognizer {
             let k = pairs.len() as f32;
             let inv = inversions(&pairs) * (k - 1.0).max(0.0) / (k + 1.0);
             let score = assigned / n.min(m).max(1) as f32 + INVERSION * inv + fixed;
+            if let Some(ceiling) = ceiling {
+                if score < ceiling {
+                    if let Some(stop) = stop { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+                    return vec![(t.ch, score)];
+                }
+                continue;
+            }
             if best.len() < top || score < best.last().map_or(f32::MAX, |b| b.1) {
                 let pos = best.partition_point(|b| b.1 <= score);
                 best.insert(pos, (t.ch, score));
@@ -432,10 +527,61 @@ fn oct(a: f32, b: f32) -> f32 {
 
 /// 把两笔按书写顺序接成一笔并重采样。 Join two strokes in order and resample.
 fn join(a: &[(f32, f32); POINTS], b: &[(f32, f32); POINTS]) -> [(f32, f32); POINTS] {
-    let mut all = Vec::with_capacity(2 * POINTS);
-    all.extend_from_slice(a);
-    all.extend_from_slice(b);
+    let mut all = [(0f32, 0f32); 2 * POINTS];
+    all[..POINTS].copy_from_slice(a);
+    all[POINTS..].copy_from_slice(b);
     resample(&all)
+}
+
+/// Relax the assignment to independent row/column minima, allowing every adjacent two-stroke join.
+/// Every distance used by `joins` appears here, so this remains a lower bound even if a join frees a stroke.
+/// Only evaluated when the cheaper single-stroke bound would otherwise prune a candidate.
+fn joined_lower(
+    cost: &[f32], n: usize, m: usize,
+    input: StrokeView<'_>, tmpl: StrokeView<'_>, cutoff: f32,
+) -> f32 {
+    let (small, large) = if n < m { (input, tmpl) } else { (tmpl, input) };
+    let (sp, sf) = (small.points, small.feats);
+    let mut minima: Vec<f32> = (0..sp.len()).map(|i| {
+        if n < m { cost[i * m..(i + 1) * m].iter().copied().fold(f32::MAX, f32::min) }
+        else { (0..n).map(|j| cost[j * m + i]).fold(f32::MAX, f32::min) }
+    }).collect();
+    let original = minima.clone();
+    let base: f32 = original.iter().sum();
+    // `joins` can replace at most one matched distance per unmatched stroke. Allowing all rows to join
+    // made the old relaxation needlessly loose and sent many losing templates into Hungarian assignment.
+    let max_joins = n.abs_diff(m).min(sp.len());
+    let limited = |minima: &[f32]| {
+        let mut gain = [0f32; 64];
+        for (i, (&a, &b)) in original.iter().zip(minima).enumerate() { gain[i] = (a - b).max(0.0); }
+        let saved = if max_joins <= 2 {
+            let (mut first, mut second) = (0f32, 0f32);
+            for &g in &gain[..sp.len()] {
+                if g > first { second = first; first = g; } else { second = second.max(g); }
+            }
+            first + if max_joins == 2 { second } else { 0.0 }
+        } else {
+            gain[..sp.len()].select_nth_unstable_by(max_joins - 1, |a, b| b.total_cmp(a));
+            gain[..max_joins].iter().sum()
+        };
+        (base - saved - 1e-5 * sp.len() as f32).max(0.0)
+    };
+    for j in 0..large.points.len() - 1 {
+        let (joined, jf) = large.adjacent(j);
+        for (i, minimum) in minima.iter_mut().enumerate() {
+            // Position is a nonnegative term in every joined distance. Skip shape/direction work when even
+            // this cheaper bound cannot improve the minimum; reuse the already computed single-stroke features.
+            if W_POS * oct((sf[i].c.0 - jf.c.0).abs(), (sf[i].c.1 - jf.c.1).abs()) / 255.0 >= *minimum { continue; }
+            // Reversal penalties make stroke_distance asymmetric; preserve the input/template direction.
+            let d = if n < m { stroke_distance(&sp[i], &sf[i], &joined, &jf) }
+                else { stroke_distance(&joined, &jf, &sp[i], &sf[i]) };
+            *minimum = minimum.min(d);
+        }
+        // Once the lower bound drops below the pruning cutoff, more joins cannot restore it. A zero lower
+        // bound safely disables pruning and avoids the rest of this scan.
+        if minima.iter().sum::<f32>() < cutoff && limited(&minima) < cutoff { return 0.0; }
+    }
+    limited(&minima)
 }
 
 /// 连笔 / 断笔修正：指派之后，看没配上的笔能否与相邻、已配上的笔合成一笔来配。
@@ -451,9 +597,8 @@ fn joins(
     pairs: &[(usize, usize)],
     n: usize,
     m: usize,
-    input: &[[(f32, f32); POINTS]],
-    input_feats: &[Feat],
-    tmpl: &[[(f32, f32); POINTS]],
+    input: StrokeView<'_>,
+    tmpl: StrokeView<'_>,
     split: bool,
 ) -> (f32, usize) {
     let (total, share) = if split { (n, EXTRA / n as f32) } else { (m, MISSING / m as f32) };
@@ -465,34 +610,26 @@ fn joins(
     let k = n.min(m).max(1) as f32;
     for &(i, j) in pairs {
         let own = if split { i } else { j };
-        let mut best: Option<(f32, usize)> = None;
+        let mut best: Option<(f32, usize, f32)> = None;
         for q in [own.wrapping_sub(1), own + 1] {
             if q >= total || used[q] {
                 continue;
             }
-            let (lo, hi) = (own.min(q), own.max(q));
+            let lo = own.min(q);
             let d = if split {
-                let joined = join(&input[lo], &input[hi]);
-                stroke_distance(&joined, &Feat::of(&joined), &tmpl[j], &Feat::of(&tmpl[j]))
+                let (joined, jf) = input.adjacent(lo);
+                stroke_distance(&joined, &jf, &tmpl.points[j], &tmpl.feats[j])
             } else {
-                let joined = join(&tmpl[lo], &tmpl[hi]);
-                stroke_distance(&input[i], &input_feats[i], &joined, &Feat::of(&joined))
+                let (joined, jf) = tmpl.adjacent(lo);
+                stroke_distance(&input.points[i], &input.feats[i], &joined, &jf)
             };
             // 值得换：指派代价的变化（按配对数平均）加上省下的缺失 / 多余惩罚。 Worth it when it beats the penalty.
             let delta = (cost[i * m + j] - d) / k + share;
             if delta > 0.0 && best.is_none_or(|b| delta > b.0) {
-                best = Some((delta, q));
+                best = Some((delta, q, d));
             }
         }
-        if let Some((_, q)) = best {
-            let (lo, hi) = (own.min(q), own.max(q));
-            let d = if split {
-                let joined = join(&input[lo], &input[hi]);
-                stroke_distance(&joined, &Feat::of(&joined), &tmpl[j], &Feat::of(&tmpl[j]))
-            } else {
-                let joined = join(&tmpl[lo], &tmpl[hi]);
-                stroke_distance(&input[i], &input_feats[i], &joined, &Feat::of(&joined))
-            };
+        if let Some((_, q, d)) = best {
             used[q] = true;
             gain += cost[i * m + j] - d;
             freed += 1;
@@ -591,6 +728,25 @@ fn inversions(pairs: &[(usize, usize)]) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn strict_threshold_and_cached_join_features_agree_with_full_ranking() {
+        let r = tiny();
+        assert_eq!(std::mem::size_of::<Feat>(), 24);
+        for shift in 0..32 {
+            let f = shift as f32;
+            for ink in [
+                vec![vec![(20.0+f,20.0),(80.0,20.0),(0.0,80.0),(100.0,80.0)]],
+                vec![line(0.0,50.0,40.0+f,50.0),line(40.0+f,50.0,100.0,50.0),line(50.0,0.0,50.0,100.0)],
+            ] {
+                let full = r.recognize(&ink, r.len());
+                assert_eq!(r.recognize(&ink, 1), full[..1]);
+                for ceiling in [-0.05,0.0,0.08,0.25,0.5,1.0] {
+                    assert_eq!(r.has_strong_match(&ink, ceiling), full.iter().any(|&(_, cost)| cost < ceiling));
+                }
+            }
+        }
+    }
+
     fn line(x0: f32, y0: f32, x1: f32, y1: f32) -> Stroke {
         vec![(x0, y0), ((x0 + x1) / 2.0, (y0 + y1) / 2.0), (x1, y1)]
     }
@@ -628,6 +784,31 @@ mod tests {
         let joined: Stroke = vec![(20.0, 20.0), (50.0, 20.0), (80.0, 20.0), (40.0, 50.0), (0.0, 80.0), (50.0, 80.0), (100.0, 80.0)];
         let got = r.recognize(&[joined], 3);
         assert_eq!(got[0].0, '二', "{got:?}");
+    }
+
+    #[test]
+    fn joined_candidate_is_not_pruned_before_join_correction() {
+        let r = tiny();
+        let ink = vec![vec![(20.0, 20.0), (80.0, 20.0), (0.0, 80.0), (100.0, 80.0)]];
+        let full = r.recognize(&ink, r.len());
+        assert_eq!(full[0].0, '二', "{full:?}");
+        assert_eq!(r.recognize(&ink, 1), full[..1]);
+    }
+
+    #[test]
+    fn joined_and_broken_ink_has_the_same_ranking_at_every_candidate_limit() {
+        let r = tiny();
+        let cases = [
+            vec![vec![(20.0, 20.0), (80.0, 20.0), (0.0, 80.0), (100.0, 80.0)]],
+            vec![line(0.0, 50.0, 45.0, 50.0), line(45.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)],
+            vec![line(20.0, 20.0, 80.0, 20.0), line(0.0, 80.0, 35.0, 80.0), line(35.0, 80.0, 100.0, 80.0)],
+        ];
+        for ink in cases {
+            let exhaustive = r.recognize(&ink, r.len());
+            for top in 1..r.len() { assert_eq!(r.recognize(&ink, top), exhaustive[..top]); }
+        }
+        assert!(r.recognize(&[vec![(f32::NAN, 0.0)]], 1).is_empty());
+        assert!(r.recognize(&vec![vec![(0.0, 0.0)]; 65], 1).is_empty());
     }
 
     #[test]

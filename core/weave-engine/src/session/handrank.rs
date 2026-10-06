@@ -8,7 +8,10 @@
 use super::*;
 
 /// 连写时每组参与组合的候选数。 Candidates per group taken into the combinations.
-const COMBINE: usize = 4;
+const COMBINE: usize = weave_dict::handnet::LINE_PER_GROUP;
+/// Keep all 5^4 combinations for the supported 2–4-character mode. Longer externally supplied wire results
+/// (at most eight groups) use a bounded beam instead of enumerating 5^8 strings under the engine lock.
+const LONG_LINE_BEAM: usize = 128;
 
 impl Engine {
     /// 字 `c` 接在 `ctx` 之后的搭配分（nat）；没有搭配模型或没有上文时为 0，没命中为基线。
@@ -51,6 +54,10 @@ impl Engine {
                     next.push((grown, score + s + w * lm));
                 }
             }
+            if groups.len() > 4 {
+                next.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                next.truncate(LONG_LINE_BEAM);
+            }
             words = next;
         }
         let bonus = self.options.hand_word_bonus;
@@ -61,7 +68,7 @@ impl Engine {
                 }
             }
         }
-        words.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        words.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut out = Vec::new();
         for (word, _) in words.into_iter().take(HAND_CANDIDATES) {
             out.extend(word.chars());

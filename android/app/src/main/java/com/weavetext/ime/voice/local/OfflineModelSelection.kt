@@ -69,10 +69,12 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
     /** 单个双语实时模型用已装的 SenseVoice 补终稿，降低把英文猜成中文的概率。 */
     fun finalCompanion(id: String): String? {
         val spec = catalogModel(id) ?: return null
-        return "asr-sensevoice".takeIf {
-            mode == VoiceLanguage.MIXED && ids() == listOf(id) && spec.kind == ModelKind.ASR_STREAMING &&
-                supportsMixed(spec) && models.state(it).isReady
+        val companion = when {
+            mode == VoiceLanguage.MIXED && supportsMixed(spec) -> "asr-sensevoice"
+            mode == VoiceLanguage.CHINESE && id == "asr-stream-small" -> "asr-final-small"
+            else -> null
         }
+        return companion?.takeIf { ids() == listOf(id) && spec.kind == ModelKind.ASR_STREAMING && models.state(it).isReady }
     }
 
     private fun catalogModel(id: String): ModelSpec? = models.catalog.find(id)

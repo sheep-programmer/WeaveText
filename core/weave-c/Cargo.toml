@@ -13,4 +13,6 @@ crate-type = ["staticlib", "rlib"]
 weave-engine = { path = "../weave-engine" }
 weave-dict = { path = "../weave-dict" }
 weave-link = { path = "../weave-link" }
+weave-plugin = { path = "../weave-plugin" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = "1"

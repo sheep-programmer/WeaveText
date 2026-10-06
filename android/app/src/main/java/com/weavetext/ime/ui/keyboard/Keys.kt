@@ -24,6 +24,7 @@ object KeyCode {
     const val EMOJI = -12
     /** 手写：清掉这个字的笔画。 Handwriting: clear the strokes of the current char. */
     const val HAND_CLEAR = -13
+    const val HAND_MODE = -14
 }
 
 /** 按键风格。 Key styles. */
@@ -426,7 +427,8 @@ object Layouts {
         val keys = ArrayList<Key>(10)
         keys += func(KeyCode.DELETE, icon = com.weavetext.ime.R.drawable.ic_backspace).apply { large = true; gx = 4; gy = 0 }
         keys += func(KeyCode.HAND_CLEAR, "重写").apply { large = true; gx = 4; gy = 1 }
-        keys += t9Key("enter", labels).apply { gx = 4; gy = 2; gh = 2 }
+        keys += func(KeyCode.HAND_MODE, "单字").apply { large = true; gx = 4; gy = 2; hint = "切换" }
+        keys += t9Key("enter", labels).apply { gx = 4; gy = 3 }
         for (t in spec.bottom) {
             if (t.name == "delete" || t.name == "enter" || t.name == "reset" || t.name == "zero") continue
             if (t.name == "space") {
@@ -446,7 +448,7 @@ object Layouts {
         pad.rect.inset(m.insetH, m.insetV)
         pad.minStep = m.dp(1.5f)
         // 笔画基准宽 6dp（慢写处最粗，快写收到约一半）。 Base width 6dp: full when slow, about half when fast.
-        pad.strokeWidth = m.dp(6f) * m.iconScale.coerceIn(0.9f, 1.3f)
+        pad.density = m.density
         var units = 0f
         for (k in keys) if (k.row == 3) units += k.weight
         var x = xs[0]

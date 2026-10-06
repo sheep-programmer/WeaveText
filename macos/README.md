@@ -5,12 +5,12 @@
 
 ## 功能 / Features
 
-- 输入方案：全拼、双拼（小鹤 / 自然码 / 微软）、五笔 86、English；模糊音、繁体输出、表情候选。
-  *Schemes: full pinyin, double pinyin (Xiaohe / Ziranma / Microsoft), Wubi 86, English; fuzzy sounds, traditional output, emoji candidates.*
-- 按键：字母进内核；空格上屏高亮候选；`1`–`9` 选词；`-` `=` 与 `,` `.` 翻页（仅在输入中，可在设置里选）；
+- 输入方案：全拼、双拼（小鹤 / 自然码 / 微软 / 搜狗）、五笔 86、English；模糊音、繁体输出、表情候选。
+  *Schemes: full pinyin, double pinyin (Xiaohe / Ziranma / Microsoft / Sogou), Wubi 86, English; fuzzy sounds, traditional output, emoji candidates.*
+- 按键：中文模式下字母进内核；空格上屏高亮候选；`1`–`9` 选词；`-` `=` 与 `,` `.` 翻页（仅在输入中，可在设置里选）；
   `←` `→` `↑` `↓` 移动高亮；回车上屏原字母；Esc 清空；单击 Shift 切换中英；大写锁定时直接输入大写；
   中文模式下输出全角标点（引号自动成对交替，数字后的 `.` `,` `:` 保持半角）；带 ⌘ ⌃ ⌥ 的组合键原样交给应用。
-  *Keys: letters go to the engine; Space commits the highlight; `1`–`9` pick; `-` `=` and `,` `.` page while composing
+  *Keys: in Chinese mode letters go to the engine; Space commits the highlight; `1`–`9` pick; `-` `=` and `,` `.` page while composing
   (configurable); arrows move the highlight; Return commits the raw letters; Esc clears; tapping Shift toggles
   Chinese/English; Caps Lock types capitals; full-width punctuation in Chinese mode (paired quotes alternate,
   `.` `,` `:` after a digit stay half-width); ⌘ ⌃ ⌥ shortcuts go straight to the app.*
@@ -21,17 +21,23 @@
   1,234, `v(128+32)*4` → 640, with a small note after each candidate. Digits and `+ - * / ( ) . % ^` then go into the
   composition instead of picking; Space commits the highlight (the first by default), arrows move it, click to pick,
   Return commits the raw `v…`, and `=` `,` still page.*
-- 等号出结果：中英文模式下，光标前是算式（如 `单价 128*4`）时敲 `=`，候选窗给出结果，按 `1`、空格或点击接在等号后面，
+- 英文输入默认原样直通：字母、大小写、数字、空格与标点由当前应用直接处理，不自动补全或纠正单词；例如 `recieve` 保留为 `recieve`。
+  如需英文候选，可在「输入方案」里手动开启「英文单词补全」，与上屏后的联想词分别控制。
+  开启英文补全后，候选窗显示期间用 `1`–`9` 选对应项，选词数字不写入文本；没有英文组合串时数字照常输入。
+  *English input is literal by default: letters, case, digits, spaces and punctuation pass straight to the app;
+  `recieve` stays `recieve`. Opt into English word completion under Schemes, independently of next-word predictions.
+  With completion enabled, `1`–`9` select the displayed candidates without inserting the selection digit; idle digits type normally.*
+- 等号出结果：中文模式或开启英文补全时，光标前是算式（如 `单价 128*4`）时敲 `=`，候选窗给出结果，按 `1`、空格或点击接在等号后面，
   按其他键收起。读不到光标前文字的应用里不出现。 `rq` `sj` `xq` 给出日期、时间、星期（跟随系统时区）。
-  *Result after `=`: in either mode, typing `=` right after an expression (such as `单价 128*4`) shows the result;
+  *Result after `=`: in Chinese mode or with English completion enabled, typing `=` right after an expression (such as `单价 128*4`) shows the result;
   `1`, Space or a click appends it, any other key dismisses it. Apps that don't expose the text before the caret don't get
   it. `rq` `sj` `xq` give the date, time and weekday (following the system time zone).*
-- 联想词：上屏后候选窗给出下一个词（顶行小字「联想」，不高亮）。按 `1`–`9` 或点击选词并接着联想；空格（照常输入空格）、
-  回车、Esc、方向键、标点或点击文档都会收起；直接打字母照常开始新的输入。可在「输入方案」里关闭。
+- 联想词默认关闭，可在「输入方案」里手动开启。开启后，上屏后候选窗给出下一个词（顶行小字「联想」，不高亮）。按 `1`–`9` 或点击选词并接着联想；空格（照常输入空格）、
+  回车、Esc、方向键、标点或点击文档都会收起；直接打字母照常开始新的输入。关闭开关立即收起已有联想词。
   上屏后马上退格，除了删字，也会撤销这次上屏刚学到的词；中间打过标点、空格、数字或挪过光标就不撤销。
-  *Predictions: after a commit the panel offers the next word (a small 联想 hint, no highlight). `1`–`9` or a click picks
+  *Predictions are off by default; opt in under Schemes. After a commit the panel offers the next word (a small 联想 hint, no highlight). `1`–`9` or a click picks
   and predicts again; Space (which still types a space), Return, Esc, arrows, punctuation or a click in the document
-  dismiss them; typing letters starts new input as usual. Can be turned off under Schemes. A backspace right after a
+  dismiss them; typing letters starts new input as usual. Turning the switch off dismisses existing predictions immediately. A backspace right after a
   commit also undoes what that commit just learned; not after punctuation, a space, a digit or a caret move.*
 - 候选窗：跟随光标、到屏幕底边自动翻到上方、多屏正确；横排 / 竖排、字号、深浅色可调；可用鼠标点选。
   *Candidate window: follows the caret, flips above at the screen bottom, correct on multiple screens; horizontal or
@@ -52,19 +58,34 @@
   is downloaded when unchanged) and swapped in only after the engine verifies its signature; a bad signature keeps the
   old version. Mirrors are used here too when the direct URL fails, and their content must pass the same check; 重试
   shows when nothing is loaded. Download only. Turning it off detaches and deletes the files.*
-- 设置：常规、输入方案（含联想词开关）、外观、词库（用户词、专业词库、云端热词）、互联、关于（版本、隐私说明与开源许可）。
+- 拼音纠错默认开启，可在输入方案中开关；候选窗显示纠错提示，组合串改动标红，回车提交原始输入。五笔的四码自动上屏、z 键反查与补全可分别设置。
+- 插件与语音：与手机共用 Lua 宿主，支持 GitHub 私有仓库令牌登录（Mac 钥匙串）、完整链接、仓库数量和展开列表、任意后缀的有效 ZIP 包导入与配置。最多三个引擎共享一次录音，分别确认结果。Mac 离线识别使用系统语言资源。
+- 输入工具：剪贴板历史（默认不记录）、固定和删除、文字/图片/文件保存、常用语与快捷模板；支持用户词添加、导入/导出和两端个人资料备份。
+- 翻译：默认 Google 官方网页。Apple 离线适配插件是独立 ZIP，在翻译设置中手动导入、启用或卸载；macOS 15+ 支持，语言包仍由 macOS 管理，ZIP 本身不包含模型。仅已安装并启用时才调用系统翻译；卸载插件不删除其他应用使用的系统语言包。详见 [离线翻译插件](../docs/offline-translation-plugins.md)。
+- 设置：常规、输入方案、外观、词库、插件与语音、翻译、输入工具、互联、关于。功能对照见 [Mac 与手机功能对齐](../docs/mac-mobile-parity.md)。
   *Settings: General, Schemes (with the prediction switch), Appearance, Dictionary (user words, domain dictionaries,
   cloud hot words), Link, About (version, privacy notes, licences).*
 
+- 候选词上方默认显示完整带声调注音，可关闭；展开网格只显示候选词，不显示注音。候选不显示「已固定」，后续换选其他词会更新学习排序。
+- 新增「Emoji 与颜文字…」窗口，两端共用 1898 个 Emoji 和 132 个颜文字及中文名称。点击输入，长按显示名称，Mac 也支持悬停提示。
+
+- 外观：新增清爽、纸墨、薄荷、暮紫四套配色。侧栏底部可随时切换跟随系统、浅色、深色；设置页、候选窗和工具浮窗即时同步。设置布局统一为侧栏导航、页面标题与分组卡片。
+
 ## 织文互联 / WeaveLink
 
-与同一 Wi-Fi 下装了织文的 Android 手机配对，互传文字、剪贴板、图片与文件；端到端加密，不经过任何服务器，默认关闭。
-*Pair with an Android phone running WeaveText on the same Wi-Fi to exchange text, clipboard, images and files;
-end-to-end encrypted, no server involved, off by default.*
+跨网直传：手机和 Mac 分别打开设置 › 互联 › 跨网直传，生成本机连接码（5 分钟有效）、互相发送，
+各自粘贴对方连接码后点「连接对方」。连接后使用已有的发送文件功能。STUN 只探测公网地址，文件通过
+QUIC 端到端加密直传，不走中转。部分 NAT / 防火墙无法打洞时会提示失败；网络变化或重启后重新交换连接码。
+Mac 也可以点「显示连接二维码」，手机在互联页点「扫描二维码」读取；仍需把手机连接码发回 Mac。
+
+与装了织文的 Android 手机配对，互传文字、剪贴板、图片与文件；端到端加密，文件不经过中转，默认关闭。
+局域网可直接发现设备，跨网使用上面的连接码流程。
+*Pair with an Android phone running WeaveText to exchange text, clipboard, images and files;
+end-to-end encrypted, files never relayed, off by default. LAN discovery is automatic; across networks, exchange connection codes.*
 
 - 开启：设置 → 互联 → 打开「织文互联」。首次开启时系统会询问是否允许访问本地网络，请允许。
   *Enable: Settings → Link → turn on 织文互联. macOS asks for local network access the first time; allow it.*
-- 配对：点「配对手机…」，窗口里显示二维码、6 位配对码和本机地址，两分钟内有效；在手机的 织文 › 设置 › 互联 里扫码，
+- 配对：点「配对手机…」，窗口里显示二维码、6 位配对码和本机地址，两分钟内有效；在手机的 织文 › 设置 › 互联 里点「扫描二维码」，
   或在「附近的设备」里选这台 Mac 输入配对码，找不到时用「用地址配对」。配对成功后窗口自动关闭，以后同一网络下自动重连。
   *Pair: click 配对手机…; the sheet shows a QR code, the 6-digit code and this Mac's addresses for two minutes. On the
   phone, scan it under 织文 › 设置 › 互联, pick this Mac under 附近的设备 and type the code, or use 用地址配对. The sheet
@@ -82,12 +103,12 @@ end-to-end encrypted, no server involved, off by default.*
 
 ## 安装 / Install
 
-1. 下载 `WeaveText-<版本>.pkg`（或打开 `WeaveText-<版本>.dmg`，双击里面的 **双击安装织文输入法.pkg**），按「安装器」的提示点
+1. 下载并打开 `WeaveText-<版本>-mac.dmg`，双击里面的 **双击安装织文输入法.pkg**，按「安装器」的提示点
    「继续」「安装」，输入一次管理员密码。织文装到 `/Library/Input Methods/`（这台 Mac 的所有用户都能用）；安装前会退出正在
    运行的织文、删掉以前装在 `~/Library/Input Methods/` 里的旧副本（用户词与设置都在 Application Support 里，保留），
    装好后去掉隔离属性，并以当前登录用户的身份运行 `WeaveText --register`：登记、启用并选中「织文拼音」。
-   *Download `WeaveText-<version>.pkg` (or open `WeaveText-<version>.dmg` and double-click **双击安装织文输入法.pkg**
-   inside), follow Installer (Continue, Install) and enter an administrator password once. WeaveText goes into
+   *Open `WeaveText-<version>-mac.dmg` and double-click **双击安装织文输入法.pkg**
+   inside, follow Installer (Continue, Install) and enter an administrator password once. WeaveText goes into
    `/Library/Input Methods/` (for every user of this Mac); before installing, the running WeaveText is quit and an older
    copy in `~/Library/Input Methods/` is removed (words and settings live in Application Support and stay); afterwards the
    quarantine attribute is removed and `WeaveText --register` runs as the logged-in user to register, enable and select
@@ -144,7 +165,9 @@ WEAVE_CORE=/path/to/core macos/scripts/build-app.sh   # 用另一份内核源码
 ```
 
 产物 / Output: `macos/build/WeaveText.app`（arm64 + x86_64）、`macos/build/WeaveText-mac.zip`、
-`macos/build/WeaveText-<版本>.pkg`（发布时的主下载 / the main release download）与 `macos/build/WeaveText-<版本>.dmg`。
+`macos/build/WeaveText-<版本>.pkg`（磁盘映像内的安装包 / installer embedded in the disk image）与 `macos/build/WeaveText-<版本>.dmg`。
+发布只上传 `WeaveText-<版本>-mac.dmg` 与校验文件；Android 只上传 APK 与校验文件。
+*Releases upload only the Mac DMG and checksums; Android uploads the APK and checksums.*
 
 安装包只用系统自带的 `pkgbuild` 与 `productbuild` 生成（`macos/scripts/pkg/`：preinstall、postinstall 与它们共用的
 `weavetext-lib.sh`，Distribution 模板，中英双语的欢迎页与完成页）：装到 `/Library/Input Methods`，组件不可搬动（「安装器」
@@ -234,17 +257,17 @@ macos/scripts/uninstall.sh --purge    # 连同 ~/Library/Application Support/Wea
 - 安装包只为当时登录在屏幕前的用户登记并选中「织文拼音」；同一台 Mac 的其他用户登录后要在键盘设置里自己添加一次。
   *The package registers and selects 织文拼音 only for the user logged in at the screen; other users of the same Mac add it
   once in Keyboard settings.*
-- 深色模式下磁盘映像窗口里的文件名是浅色字，压在浅色背景上不太清楚（直接下载 .pkg 就不经过这个窗口）。
-  *In dark mode Finder draws the file names in the disk image window in a light colour over the light background
-  (downloading the .pkg directly skips that window).*
+- 深色模式下磁盘映像窗口里的文件名是浅色字，压在浅色背景上不太清楚。
+  *In dark mode Finder draws the file names in the disk image window in a light colour over the light background.*
 - 少数应用（部分终端、Electron / 跨平台框架）报不出光标位置，候选窗会沿用上一次的位置或出现在鼠标附近。
   *A few apps (some terminals, Electron / cross-platform toolkits) do not report the caret; the panel then reuses its
   last position or appears near the mouse.*
 - 系统「用大写锁定键切换 ABC」打开时，大写锁定会被系统拿去切换输入法。
   *When the system option "Use Caps Lock to switch to and from ABC" is on, the system takes Caps Lock for switching.*
-- 九键、手写与语音只在 Android 版提供。镜像按固定顺序逐个尝试，不像 Android 那样先测速、断点续传，也不能自选镜像；
+- 九键、14 键和软键盘的震动/气泡是 Android 的触屏布局功能。Mac 提供独立手写与语音悬浮窗；
+  离线语音使用系统资源，尚不加载 Android 的 sherpa 模型包。镜像按固定顺序逐个尝试，暂无测速、断点续传和自选镜像；
   专业词库的发布页还没发布时会显示「下载失败，请检查网络后重试」。
-  *T9, handwriting and voice are Android only. Mirrors are tried one by one in a fixed order, without Android's speed
+  *Touch-keyboard layouts are Android specific. Mac has handwriting and voice panels; offline voice uses system resources. Mirrors are tried in a fixed order, without Android's speed
   probe, resume or mirror choice; until the packs release is published, downloads show 下载失败，请检查网络后重试.*
 - 互联的 Mac 端只显示本机的配对码让手机来连，不能在 Mac 上输入手机的配对码（手机端不显示配对码）。
   *On the Mac, WeaveLink only shows its own code for the phone to dial in; it can't type a phone's code (phones don't

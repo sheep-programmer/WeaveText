@@ -14,7 +14,7 @@ import com.weavetext.ime.voice.local.LocalAsrEngine
 import com.weavetext.ime.voice.local.TwoPassListener
 import java.util.concurrent.Executors
 
-/** Voice input uses downloaded on-device models exclusively. */
+/** Offline models are the default; explicitly installed and selected plugins share the same capture. */
 internal object VoiceBackend {
     fun create(ctx: Context): Pair<VoiceEngines, VoiceRecognizer> {
         val engines = OfflineEngines(ctx)
@@ -30,32 +30,45 @@ internal fun isBuiltinEngine(id: String) = id == LOCAL_ENGINE_ID || id.startsWit
 private class OfflineEngines(private val ctx: Context) : VoiceEngines {
     private val models = com.weavetext.ime.models.ModelManager.get(ctx)
     private val selected = com.weavetext.ime.voice.local.OfflineModelSelection(ctx, models)
+    val plugins = NativePlugins(ctx)
+    private val pluginSelection = ctx.getSharedPreferences("weave_plugin_selection", Context.MODE_PRIVATE)
     override var language: VoiceLanguage
         get() = selected.mode
         set(value) { selected.mode = value }
     private val instances = java.util.concurrent.ConcurrentHashMap<String, LocalAsrEngine>()
     fun local(id: String) = instances.getOrPut(id) { LocalAsrEngine(ctx, id) }
-    override fun list(): List<VoicePlugin> = if (!com.weavetext.ime.models.AsrRuntime.ready(models)) emptyList() else selected.available().map { model ->
+    override fun list(): List<VoicePlugin> = offline() + plugins.list()
+    private fun offline(): List<VoicePlugin> = if (!com.weavetext.ime.models.AsrRuntime.ready(models)) emptyList() else selected.available().map { model ->
         VoicePlugin(model.id, model.name, com.weavetext.ime.voice.local.OfflineModelSelection.language(model) + " · " + model.description,
             "", null, listOf(ConfigField("punctuation", "智能标点", "switch", defaultValue = "true")))
     }
     override var activeId: String?
-        get() = selected.ids().firstOrNull()
+        get() = pluginSelection.getString("active", null)?.takeIf { id -> plugins.list().any { it.id == id } } ?: selected.ids().firstOrNull()
         set(value) {
             val id = if (value == LOCAL_ENGINE_ID) selected.ids().firstOrNull() else value
-            if (id != null) selected.select(listOf(id))
+            if (id != null) setSelection(listOf(id))
         }
     override var extraIds: Set<String>
-        get() = selected.ids().drop(1).toSet()
-        set(value) { selected.select(listOfNotNull(activeId) + value) }
-    override fun setSelection(ids: List<String>) { selected.select(ids) }
-    override fun selectionSatisfiesMode(): Boolean = selected.primaryOk()
+        get() = if (activeId?.let(::isBuiltinEngine) == false) pluginSelection.getStringSet("also", emptySet()).orEmpty()
+            else selected.ids().drop(1).toSet() + pluginSelection.getStringSet("also", emptySet()).orEmpty()
+        set(value) { setSelection(listOfNotNull(activeId) + value) }
+    override fun setSelection(ids: List<String>) {
+        val available = list().map { it.id }.toSet()
+        val valid = ids.filter { it in available }.distinct().take(3)
+        val primary = valid.firstOrNull() ?: return
+        if (isBuiltinEngine(primary)) {
+            selected.select(valid.filter(::isBuiltinEngine))
+            pluginSelection.edit().remove("active").putStringSet("also", valid.filterNot(::isBuiltinEngine).toSet()).apply()
+        } else pluginSelection.edit().putString("active", primary).putStringSet("also", valid.drop(1).toSet()).apply()
+    }
+    override fun selectionSatisfiesMode(): Boolean = activeId?.let(::isBuiltinEngine) == false || selected.primaryOk()
     override fun selection(): List<VoicePlugin> {
         val installed = list().associateBy { it.id }
-        return selected.ids().mapNotNull { installed[it] }
+        val primary = activeId ?: return emptyList()
+        return (listOf(primary) + extraIds).distinct().take(3).mapNotNull { installed[it] }
     }
     fun preload() {
-        val ids = selection().map { it.id }.toSet()
+        val ids = selection().map { it.id }.filter(::isBuiltinEngine).toSet()
         for ((id, engine) in instances) if (id !in ids) engine.releaseIdle()
         val ordered = ids.toList()
         val first = ordered.firstOrNull() ?: return
@@ -63,10 +76,13 @@ private class OfflineEngines(private val ctx: Context) : VoiceEngines {
             if (selection().map { it.id }.toSet() == ids) for (id in ordered.drop(1)) local(id).preload()
         }
     }
-    override fun install(xipkPath: String): Result<VoicePlugin> = Result.failure(UnsupportedOperationException("请在「语音包」下载离线模型"))
-    override fun uninstall(id: String): Result<Unit> = Result.failure(UnsupportedOperationException("请在「语音包」卸载模型"))
-    override fun getConfig(id: String, key: String): String? = if (id in list().map { it.id }) local(id).getConfig(key) else null
-    override fun setConfig(id: String, key: String, value: String) { if (id in list().map { it.id }) local(id).setConfig(key, value) }
+    override fun inspect(xipkPath: String) = plugins.inspect(xipkPath)
+    override fun install(xipkPath: String) = plugins.install(xipkPath)
+    override fun uninstall(id: String): Result<Unit> = if (isBuiltinEngine(id)) Result.failure(IllegalArgumentException("请在语音包页卸载模型")) else plugins.uninstall(id).onSuccess {
+        if (pluginSelection.getString("active", null) == id) pluginSelection.edit().remove("active").remove("also").apply()
+    }
+    override fun getConfig(id: String, key: String): String? = if (isBuiltinEngine(id)) local(id).getConfig(key) else plugins.getConfig(id, key)
+    override fun setConfig(id: String, key: String, value: String) { if (isBuiltinEngine(id)) local(id).setConfig(key, value) else plugins.setConfig(id, key, value) }
 }
 
 /** Capture and decode have separate lifetimes: a sentence endpoint never closes the microphone. */
@@ -120,7 +136,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
     }
 
     private inner class EngineRun(val plugin: VoicePlugin, val gen: Int, val multi: Boolean) {
-        var session: LocalAsrEngine.Session? = null
+        var session: EngineSession? = null
         var ended = false
         private fun emit(action: (VoiceListener) -> Unit) = post(gen) { if (!ended) action(it) }
         fun partial(text: String) = emit { if (multi) (it as MultiVoiceListener).onEnginePartial(plugin.id, text) else it.onPartial(text) }
@@ -141,7 +157,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
 
     override fun start(listener: VoiceListener): Boolean {
         cancel()
-        if (!hasEngine()) { listener.onError("请先下载离线语音包"); listener.onEnd(); return false }
+        if (!hasEngine()) { listener.onError("请选择语音引擎或下载离线语音包"); listener.onEnd(); return false }
         if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             listener.onError("需要麦克风权限"); listener.onEnd(); return false
         }
@@ -154,7 +170,20 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
         val started = selection.map { EngineRun(it, gen, multi) }
         runs = started
         for (run in started) {
-            run.session = engines.local(run.plugin.id).Session(
+            if (!isBuiltinEngine(run.plugin.id)) {
+                run.session = engines.plugins.session(run.plugin.id, object : NativeSpeechCallback {
+                    override fun onPartial(text: String) = run.partial(text)
+                    override fun onFinal(text: String) = run.final(text)
+                    override fun onReplace(old: String, new: String) = post(gen) {
+                        if (multi) (it as MultiVoiceListener).onEngineReplace(run.plugin.id, old, new) else it.onReplace(old, new)
+                    }
+                    override fun onError(message: String) = run.error(message)
+                    override fun onEnd() { main.post { run.end() } }
+                    override fun onLog(level: Int, message: String) {}
+                })
+                continue
+            }
+            val localSession = engines.local(run.plugin.id).Session(
                 listener = object : TwoPassListener {
                     override fun onPartial(text: String) = run.partial(text)
                     override fun onFinal(text: String) = run.final(text)
@@ -163,6 +192,11 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
                 onEnd = { main.post { run.end() } },
                 onError = { run.error(it) },
             )
+            run.session = object : EngineSession {
+                override fun feed(bytes: ByteArray, count: Int) = localSession.feed(bytes, count)
+                override fun stop() = localSession.stop()
+                override fun cancel() = localSession.cancel()
+            }
         }
         requestFocus()
         // Capture immediately, including cold starts and a hold released before loading finishes.

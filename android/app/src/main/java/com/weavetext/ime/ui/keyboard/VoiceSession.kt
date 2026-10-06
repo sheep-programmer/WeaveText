@@ -17,12 +17,12 @@ import com.weavetext.ime.voice.VoiceRecognizer
  * 一次语音输入会话的状态机（02 §12.1）：Idle → Connecting → Listening → Finalizing → Idle，出错 → Error。
  * 单引擎：识别中间结果作为 composing 文本上屏，最终结果 commit。
  * 多引擎（06 §6）：说话时只在面板里显示主引擎的文字、不上屏；停止后进入 Choosing，
- * 显示每个引擎一行的结果列表，点哪行上屏哪行；所有引擎结果一致时直接上屏。
+ * 显示每个引擎一行的结果列表，点哪行上屏哪行；结果相同也保留各行供确认。
  * 语音面板与浮动语音条共用同一个会话。
  * Voice session state machine shared by the voice panel and the floating strip. Single engine:
  * interim text is composing, finals commit. Multi-engine: the primary engine's text shows in the
  * panel only; after stopping, Choosing lists one row per engine and the tapped row is committed;
- * identical results commit directly.
+ * matching results still require a choice.
  */
 class VoiceSession(
     private val ctx: Context,
@@ -65,8 +65,6 @@ class VoiceSession(
     private var token = 0
     /** 识别器最近一次回调的时间：长时间没有回调说明它卡住了。 Last callback; a long silence means it is stuck. */
     private var lastActivity = 0L
-    /** 进入「识别中」的时间。 When FINALIZING began. */
-    private var finalizingSince = 0L
 
     /**
      * 没有任何可用引擎时调用（不报错）：默认打开设置里的引导页，语音面板在时改为在面板里给出办法。
@@ -106,25 +104,34 @@ class VoiceSession(
 
     /** 面板打开时预热识别器（如提前加载本地模型），失败不影响后续使用。 Warm up when the panel opens. */
     fun warmUp() {
+        if (!active && state != State.CHOOSING) runCatching { com.weavetext.ime.voice.VoiceAutoDownload.ensure(ctx) }
         runCatching { recognizerProvider().warmUp() }
+    }
+
+    /** 用户明确重录：丢弃未确认文字，取消旧识别，再开始；不受收尾等待时间限制。 */
+    fun restart(): Boolean {
+        cancel()
+        return start()
     }
 
     /** 开始；缺少权限返回 false。 Start; false without mic permission. */
     fun start(): Boolean {
+        // 面板、工具栏和空格按住入口再次开始都表示重录；先取消旧收尾，不再吞掉前八秒的点击。
+        if (state == State.FINALIZING) cancel()
         if (active) {
-            // 正常进行中：不重复开始。旧会话卡住（识别中已等了一会儿，或很久没有任何回调）：结束它，重新开始。
-            // Running normally: nothing to do. A stuck session (finalizing for a while, or no callback for long):
-            // end it and start over.
+            // 正常录音不重复开始；很久没有回调时落定已显示文字，再接管卡住的会话。
             val now = clock()
-            val stuck = (state == State.FINALIZING && now - finalizingSince > TAKEOVER_MS) || now - lastActivity > STALE_MS
+            val stuck = now - lastActivity > STALE_MS
             if (!stuck) return true
             settle()
         }
         if (state == State.CHOOSING) discard()
         if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
+        // 顶部语音键/空格按住可以绕过面板预热；已有模型也要检查后台补装。
+        // 只在真正开始新会话时检查，active 的重复 start 不改变当前 capture。
+        runCatching { com.weavetext.ime.voice.VoiceAutoDownload.ensure(ctx) }
         if (!hasEngine()) {
             error = null; state = State.IDLE
-            com.weavetext.ime.voice.VoiceAutoDownload.ensure(ctx)
             changed(); onNoEngine(); return false
         }
         val r = recognizerProvider()
@@ -269,7 +276,6 @@ class VoiceSession(
             return
         }
         state = State.FINALIZING
-        finalizingSince = clock()
         main.postDelayed(finalizeGuard, FINALIZE_LIMIT_MS)
         changed()
         rec?.stop()
@@ -333,7 +339,7 @@ class VoiceSession(
 
     private val timeoutCheck = Runnable { multiChanged() }
 
-    /** 结果有变化：检查超时、一致即上屏、收起状态下自动上屏。 Re-evaluate the multi-engine results. */
+    /** 结果有变化：检查超时；面板仍在时等用户选行，收起时确认默认行。 */
     private fun multiChanged() {
         val res = results ?: return
         res.tick(clock())
@@ -365,6 +371,7 @@ class VoiceSession(
     private fun discard() = finishMulti()
 
     private fun finishMulti() {
+        clearTimers()
         main.removeCallbacks(timeoutCheck)
         token++
         if (rec?.isRunning == true) rec?.cancel()
@@ -420,8 +427,6 @@ class VoiceSession(
         const val CONNECT_LIMIT_MS = 90_000L
         /** 停止后等结果的时限。 Limit for the result after stopping. */
         const val FINALIZE_LIMIT_MS = 60_000L
-        /** 「识别中」超过这么久，再点麦克风就不等了，重新开始。 After this long in FINALIZING a mic tap starts over. */
-        const val TAKEOVER_MS = 8_000L
         /** 这么久没有任何回调算卡住。 No callback for this long counts as stuck. */
         const val STALE_MS = 120_000L
         private const val NO_RESPONSE = "离线模型加载超时，请重试或换一个较小模型"

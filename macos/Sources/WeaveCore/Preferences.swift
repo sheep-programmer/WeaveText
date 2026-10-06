@@ -37,9 +37,9 @@ public enum CandidateOrientation: String, CaseIterable, Sendable {
     case horizontal, vertical
 }
 
-/// 候选后面的拼音提示。 Pinyin shown after each candidate.
+/// 候选上方的完整带声调注音。 Full toned pinyin above each candidate.
 public enum PinyinHint: String, CaseIterable, Sendable {
-    case off, toned, plain
+    case off, toned
 }
 
 /// 手写停笔多久自动上屏（单字；连写按 2 倍）。 How long a pause commits handwriting (spaced lines wait twice as long).
@@ -56,6 +56,13 @@ public enum HandPause: String, CaseIterable, Sendable {
 
 public enum AppearanceMode: String, CaseIterable, Sendable {
     case system, light, dark
+}
+
+public enum ColorTheme: String, CaseIterable, Sendable {
+    case fresh, paper, mint, violet
+    public var title:String {
+        switch self {case .fresh:return "清爽";case .paper:return "纸墨";case .mint:return "薄荷";case .violet:return "暮紫"}
+    }
 }
 
 /// 偏好设置（输入法与设置窗口在同一进程，改动即时生效）。
@@ -75,8 +82,20 @@ public final class Preferences: ObservableObject {
     @Published public var pageKeys: PageKeys { didSet { save(pageKeys.rawValue, "pageKeys") } }
     @Published public var traditional: Bool { didSet { save(traditional, "traditional") } }
     @Published public var emoji: Bool { didSet { save(emoji, "emoji") } }
-    /// 联想词：上屏后推荐下一个词，默认打开。 Next-word predictions after a commit, on by default.
+    /// 联想词：上屏后推荐下一个词，默认关闭。 Next-word predictions after a commit, off by default.
     @Published public var prediction: Bool { didSet { save(prediction, "prediction") } }
+    /// 英文单词补全，默认关闭；关闭时按键原样交给应用。 English word completion, off by default.
+    @Published public var englishCompletion: Bool { didSet { save(englishCompletion, "englishCompletion") } }
+    @Published public var autocorrect: Bool { didSet { save(autocorrect, "autocorrect") } }
+    @Published public var learning: Bool { didSet { save(learning, "learning") } }
+    @Published public var fullWidthPunctuation: Bool { didSet { save(fullWidthPunctuation, "fullWidthPunctuation") } }
+    @Published public var autoPair: Bool { didSet { save(autoPair, "autoPair") } }
+    @Published public var wubiAutoCommit: Bool { didSet { save(wubiAutoCommit, "wubiAutoCommit") } }
+    @Published public var wubiPinyinLookup: Bool { didSet { save(wubiPinyinLookup, "wubiPinyinLookup") } }
+    @Published public var wubiCompletion: Bool { didSet { save(wubiCompletion, "wubiCompletion") } }
+    @Published public var clipboardRecord: Bool { didSet { save(clipboardRecord, "clipboardRecord") } }
+    /// One recording can be sent to up to three explicitly selected engines.
+    @Published public var voiceEngines: [String] { didSet { save(voiceEngines, "voiceEngines") } }
     /// 联想深度：连着选联想词最多接几次（1–6），默认 3。 How many predictions may be picked in a row (1–6), 3 by default.
     @Published public var predictionDepth: Int { didSet { save(predictionDepth, "predictionDepth") } }
     public static let predictionDepths = 1...6
@@ -88,14 +107,16 @@ public final class Preferences: ObservableObject {
         didSet { save(voiceShortcut.flatMap { try? JSONEncoder().encode($0) } ?? Data(), "voiceShortcut") }
     }
     @Published public var voiceLanguage: String { didSet { save(voiceLanguage, "voiceLanguage") } }
-    /// 候选后显示拼音（可带声调），默认关闭。 Pinyin after candidates (optionally with tones), off by default.
+    /// 候选上方显示完整声调拼音，默认开启。 Full toned pinyin above candidates, on by default.
     @Published public var pinyinHint: PinyinHint { didSet { save(pinyinHint.rawValue, "pinyinHint") } }
     /// 手写停笔自动上屏的快慢。 How quickly a pause commits handwriting.
     @Published public var handPause: HandPause { didSet { save(handPause.rawValue, "handPause") } }
+    @Published public var handLine: Bool { didSet { save(handLine, "handLine") } }
     @Published public var fuzzy: Set<String> { didSet { save(fuzzy.sorted(), "fuzzy") } }
     @Published public var orientation: CandidateOrientation { didSet { save(orientation.rawValue, "orientation") } }
     @Published public var fontSize: Int { didSet { save(fontSize, "fontSize") } }
     @Published public var appearance: AppearanceMode { didSet { save(appearance.rawValue, "appearance") } }
+    @Published public var colorTheme: ColorTheme { didSet { save(colorTheme.rawValue, "colorTheme") } }
     /// 织文互联，默认关闭。 WeaveLink, off by default.
     @Published public var linkEnabled: Bool { didSet { save(linkEnabled, "linkEnabled") } }
     @Published public var linkClipSync: Bool { didSet { save(linkClipSync, "linkClipSync") } }
@@ -113,18 +134,31 @@ public final class Preferences: ObservableObject {
         pageKeys = defaults.string(forKey: "pageKeys").flatMap(PageKeys.init) ?? .both
         traditional = defaults.bool(forKey: "traditional")
         emoji = defaults.object(forKey: "emoji") as? Bool ?? true
-        prediction = defaults.object(forKey: "prediction") as? Bool ?? true
+        prediction = defaults.object(forKey: "prediction") as? Bool ?? false
+        englishCompletion = defaults.object(forKey: "englishCompletion") as? Bool ?? false
+        autocorrect = defaults.object(forKey: "autocorrect") as? Bool ?? true
+        learning = defaults.object(forKey: "learning") as? Bool ?? true
+        fullWidthPunctuation = defaults.object(forKey: "fullWidthPunctuation") as? Bool ?? true
+        autoPair = defaults.object(forKey: "autoPair") as? Bool ?? true
+        wubiAutoCommit = defaults.object(forKey: "wubiAutoCommit") as? Bool ?? true
+        wubiPinyinLookup = defaults.object(forKey: "wubiPinyinLookup") as? Bool ?? true
+        wubiCompletion = defaults.object(forKey: "wubiCompletion") as? Bool ?? true
+        clipboardRecord = defaults.object(forKey: "clipboardRecord") as? Bool ?? false
+        let engines = Array((defaults.stringArray(forKey: "voiceEngines") ?? ["system"]).uniqued().prefix(3))
+        voiceEngines = engines.isEmpty ? ["system"] : engines
         predictionDepth = Self.clamp(defaults.object(forKey: "predictionDepth") as? Int ?? 3, Self.predictionDepths)
         candidateKeys = defaults.data(forKey: "candidateKeys").flatMap { try? JSONDecoder().decode(CandidateKeys.self, from: $0) } ?? CandidateKeys()
         voiceShortcut = defaults.object(forKey: "voiceShortcut") == nil ? .defaultBinding :
             defaults.data(forKey: "voiceShortcut").flatMap { try? JSONDecoder().decode(VoiceShortcut.self, from: $0) }
         voiceLanguage = defaults.string(forKey: "voiceLanguage") == "en-US" ? "en-US" : "zh-CN"
-        pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
+        pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .toned
         handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium
+        handLine = defaults.object(forKey: "handLine") as? Bool ?? false
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])
         orientation = defaults.string(forKey: "orientation").flatMap(CandidateOrientation.init) ?? .horizontal
         fontSize = Self.clamp(defaults.object(forKey: "fontSize") as? Int ?? 16, Self.fontSizes)
         appearance = defaults.string(forKey: "appearance").flatMap(AppearanceMode.init) ?? .system
+        colorTheme = defaults.string(forKey: "colorTheme").flatMap(ColorTheme.init) ?? .fresh
         linkEnabled = defaults.bool(forKey: "linkEnabled")
         linkClipSync = defaults.object(forKey: "linkClipSync") as? Bool ?? true
         linkName = defaults.string(forKey: "linkName") ?? ""
@@ -143,7 +177,9 @@ public final class Preferences: ObservableObject {
         FuzzyPair.all.map { ($0.id, fuzzy.contains($0.id)) }
             + [("output.traditional", traditional), ("candidates.emoji", emoji),
                ("candidates.prediction", prediction),
-               ("candidates.pinyin", pinyinHint != .off), ("candidates.pinyin_tones", pinyinHint != .plain)]
+               ("input.autocorrect", autocorrect), ("wubi.auto_commit", wubiAutoCommit),
+               ("wubi.pinyin_lookup", wubiPinyinLookup), ("wubi.completion", wubiCompletion),
+               ("candidates.pinyin", pinyinHint != .off), ("candidates.pinyin_tones", true)]
     }
 
     private func save(_ value: Any, _ key: String) {
@@ -152,4 +188,8 @@ public final class Preferences: ObservableObject {
     }
 
     private static func clamp(_ v: Int, _ r: ClosedRange<Int>) -> Int { min(max(v, r.lowerBound), r.upperBound) }
+}
+
+private extension Array where Element: Hashable {
+    func uniqued() -> [Element] { var seen = Set<Element>(); return filter { seen.insert($0).inserted } }
 }

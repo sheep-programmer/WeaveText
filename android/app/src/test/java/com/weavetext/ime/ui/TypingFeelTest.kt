@@ -175,6 +175,22 @@ class TypingFeelTest {
         assertTrue("right edge must stay clear", card.translationX + card.width <= kb.view.width - 126)
     }
 
+    @Test fun floatingKeyboardFitsAConstrainedWindowWithoutShrinkingForever() {
+        kb.toggleFloating()
+        idle()
+        val width = app.resources.displayMetrics.widthPixels
+        val height = (300f * app.resources.displayMetrics.density).toInt()
+        repeat(3) {
+            kb.view.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY))
+            kb.view.layout(0, 0, width, height)
+        }
+        val card = kb.board.parent as android.view.View
+        assertTrue("card must keep readable keys", card.width >= 220 * app.resources.displayMetrics.density - 2)
+        assertTrue("card bottom must fit the usable window", card.translationY + card.height <= height - kb.navInset - kb.metrics.dp(8f) + 2)
+        assertTrue("card must stay below the upper edge", card.translationY >= kb.metrics.dp(24f) - 1)
+    }
+
     @Test fun borderTapsCarryTheNeighbourToTheEngine() {
         val z = key('z')
         val x = key('x')
@@ -315,15 +331,19 @@ class TypingFeelTest {
         org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.RECORD_AUDIO)
         val previousEngines = com.weavetext.ime.ui.VoiceAccess.enginesProvider
         val previousRecognizer = com.weavetext.ime.ui.VoiceAccess.recognizerProvider
+        val previousEnsure = com.weavetext.ime.voice.VoiceAutoDownload.ensureOverride
+        var preparations = 0
         val engines = com.weavetext.ime.testing.FakeEngines()
         val rec = com.weavetext.ime.testing.ScriptedRecognizer(engines)
         com.weavetext.ime.ui.VoiceAccess.enginesProvider = { engines }
         com.weavetext.ime.ui.VoiceAccess.recognizerProvider = { rec }
+        com.weavetext.ime.voice.VoiceAutoDownload.ensureOverride = { preparations++; false }
         try {
             press(0, key(KeyCode.SPACE))
             move(0, dp(10f), dp(6f))
             hold(550)
             assertTrue("long press starts microphone despite thumb drift", rec.isRunning)
+            assertEquals("空格按住绕过面板，也必须检查一次模型补装", 1, preparations)
             rec.listener!!.onReady(false)
             rec.listener!!.onLevel(0.5f)
             rec.listener!!.onPartial("hello下午见")
@@ -338,6 +358,7 @@ class TypingFeelTest {
         } finally {
             com.weavetext.ime.ui.VoiceAccess.enginesProvider = previousEngines
             com.weavetext.ime.ui.VoiceAccess.recognizerProvider = previousRecognizer
+            com.weavetext.ime.voice.VoiceAutoDownload.ensureOverride = previousEnsure
         }
     }
 

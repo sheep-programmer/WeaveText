@@ -83,7 +83,7 @@ class KbBackdrop(
  * 键盘尺寸（01 §4.3、§6、§7）。全部为 px，布局时一次算好。
  * Keyboard metrics (01 §4.3, §6, §7), precomputed in px.
  */
-class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, scale: Float = 1f) {
+class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, scale: Float = 1f, pinyinAbove: Boolean = true, candidateTextSize: Float = 19f) {
     val density: Float = ctx.resources.displayMetrics.density
     private val widthDp: Float
     val landscape: Boolean
@@ -146,7 +146,9 @@ class KbMetrics(ctx: Context, level: Int, geo: KbGeometry = KbGeometry.DEFAULT, 
         // Full system font scale (up to 2.0); letters are additionally capped by key height.
         val f = cfg.fontScale.coerceIn(1f, 2f)
         topScale = 1f + 0.55f * (f - 1f)
-        topBar = (if (landscape) 40f else 48f) * topScale * density
+        val baseTop = (if (landscape) 40f else 48f) * topScale
+        val annotatedTop = maxOf(baseTop + 14f * f, 18f * topScale + (candidateTextSize + 11f) * 1.3f * f + 4f)
+        topBar = (if (pinyinAbove) annotatedTop else baseTop) * density
         padTop = 2f * density
         padBottom = 4f * density
         padH = geo.padH * density
@@ -209,4 +211,3 @@ class KbGeometry(
  * language isn't Chinese or a bold weight falls through to another font.
  */
 fun <T : Paint> T.zh(): T = apply { textLocale = Locale.SIMPLIFIED_CHINESE }
-

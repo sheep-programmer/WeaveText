@@ -5,7 +5,7 @@ package com.weavetext.ime.ui.keyboard
  * Symbol panel data; emoji follow Unicode group order.
  */
 object SymbolData {
-    class Category(val name: String, val items: List<String>, val columns: Int = 6)
+    class Category(val name: String, val items: List<String>, val columns: Int = 6, val emoji: Boolean = false, val kaomoji: Boolean = false)
 
     private fun chars(s: String) = s.split(' ').filter { it.isNotEmpty() }
 
@@ -65,12 +65,11 @@ object SymbolData {
     val SKIN_TONES = listOf("", "🏻", "🏼", "🏽", "🏾", "🏿")
 
     /** 把肤色加到表情上（去掉 VS16）。 Apply a skin tone (drops VS16). */
-    fun withTone(base: String, tone: Int): String {
-        if (tone <= 0 || base !in SKIN_TONE_BASE) return base
-        val core = base.removeSuffix("️")
-        // 多码点（如 🙅 后接性别）暂不处理：只修饰第一个码点。 Modify the first code point only.
-        val first = String(Character.toChars(core.codePointAt(0)))
-        return first + SKIN_TONES[tone] + core.substring(first.length)
+    fun withTone(base: String, tone: Int, supported: Set<String> = SKIN_TONE_BASE): String {
+        if (tone !in 1..5 || base !in supported) return base
+        val first = String(Character.toChars(base.codePointAt(0)))
+        // Drop only the selector after the modified person/hand; retain ZWJ/gender selectors.
+        return first + SKIN_TONES[tone] + base.substring(first.length).removePrefix("️")
     }
 
     /** 成对符号：左 → 右。 Paired symbols: open → close. */
@@ -83,14 +82,15 @@ object SymbolData {
     const val TAB_EMOJI = 6
     const val TAB_KAOMOJI = 7
 
-    fun categories(recent: List<String>): List<Category> = listOf(
-        Category("常用", (recent + DEFAULT_COMMON).distinct().take(24 + DEFAULT_COMMON.size)),
+    fun categories(recent: List<String>, catalog: ExpressionCatalog? = null): List<Category> = listOf(
+        Category("常用", (recent + DEFAULT_COMMON).distinct().filter{catalog?.displayable(it) != false}.take(24 + DEFAULT_COMMON.size)),
         Category("中文", CHINESE),
         Category("英文", ENGLISH),
         Category("数学", MATH),
         Category("序号", ORDINAL),
         Category("箭头", ARROWS),
-        Category("表情", EMOJI, 8),
-        Category("颜文字", KAOMOJI, 2),
-    )
+        Category("表情", catalog?.supportedEmoji?.map{it.text} ?: EMOJI, 8, emoji = true),
+        Category("颜文字", catalog?.kaomoji?.map{it.text} ?: KAOMOJI, 2, kaomoji = true),
+    ) + (catalog?.supportedEmoji?.groupBy{it.group}?.map {(group,items)->Category(group,items.map{it.text},8,emoji = true)} ?: emptyList()) +
+        (catalog?.kaomoji?.groupBy{it.group}?.map {(group,items)->Category("颜·$group",items.map{it.text},2,kaomoji = true)} ?: emptyList())
 }

@@ -18,3 +18,9 @@ sha2 = "0.10"
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# UDP direct transport: QUIC handles loss, ordering and congestion; no relay transport.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util", "sync"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+base64 = "0.22"

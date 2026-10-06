@@ -45,7 +45,7 @@ interface KeyboardHost {
     /** 手写：一笔写完，[strokes] 为这个字的全部笔画。 Handwriting: a stroke ended; [strokes] are all of this char's. */
     fun onHandStroke(strokes: List<FloatArray>) {}
     /** 手写：停笔后又落笔，先上屏首选。 Handwriting: pen down after a pause; commit the top candidate first. */
-    fun onHandCommit() {}
+    fun onHandCommit(): Boolean = false
 }
 
 /**
@@ -72,20 +72,43 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     var hand: HandPad? = null
         private set
     private val handPad = HandPad()
+    var handAppearance = HandInkAppearance()
+        set(value) {
+            field = value
+            handPad.configure(value, if (::metrics.isInitialized) metrics.density else resources.displayMetrics.density)
+            invalidateInk()
+        }
     /** 手写停笔多久算写完一个字（毫秒，来自设置）。 Pause that ends a handwritten char, in ms (from settings). */
     var handPauseMs = HandPad.COMMIT_PAUSE_MS
     /**
-     * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。连写模式下字间的停顿不该上屏，所以比 [handPauseMs] 长得多。
-     * Idle time after the pen lifts before the top candidate commits by itself (ms); 0 = never. Spaced multi-char
-     * writing needs a much longer wait, so a pause between characters doesn't commit the line early.
+     * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。连续连写也按逐字确认，不等待整行。
+     * Idle time after the pen lifts before the top candidate commits by itself; 0 = never. Continuous writing
+     * confirms one character at a time instead of waiting for a whole line.
      */
     var handIdleMs = HandPad.COMMIT_PAUSE_MS
+        set(value) {
+            field = value.coerceAtLeast(0L)
+            removeCallbacks(handIdle)
+            val pad = hand
+            if (field > 0 && pad != null && !pad.drawing && pad.strokes.isNotEmpty()) {
+                postDelayed(handIdle, (field - pad.sinceLastStroke()).coerceAtLeast(0L))
+            }
+        }
+    var handLineMode = false
+        set(value) { if (field != value) { field = value; invalidate(); a11y.invalidate() } }
+    var handGuide = true
+        set(value) { if (field != value) { field = value; invalidate() } }
+    var handRecognizing = false
+        set(value) { if (field != value) { field = value; invalidate() } }
+    var handRecognitionFailed = false
+        set(value) { if (field != value) { field = value; invalidate() } }
     private val handIdle = Runnable { commitIdleInk() }
 
     private fun commitIdleInk() {
+        if (handIdleMs <= 0L) return
         val pad = hand ?: return
         if (inkOwner != null || pad.drawing || pad.strokes.isEmpty()) return
-        host?.onHandCommit()
+        if (host?.onHandCommit() != true) return
         pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
         invalidate()
     }
@@ -158,6 +181,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     fun applyStyle(s: KeyboardStyle, i: Icons) {
         palette = s.palette
         metrics = s.metrics
+        handPad.configure(handAppearance, metrics.density)
         layoutStyle = s.layout
         hintMode = s.hint
         icons = i
@@ -227,6 +251,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     /** 手写区退一笔。 Drop the pad's last stroke. */
     fun undoStroke(): Boolean = (hand?.undo() == true).also { if (it) invalidate() }
+    fun redoStroke(): Boolean = (hand?.redo() == true).also { if (it) invalidateInk(); invalidate() }
 
     fun keyOf(code: Int): Key? = keys.firstOrNull { it.code == code }
 
@@ -260,6 +285,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         KeyCode.T9_RESET -> if (k.label == "@") "艾特" else k.label
         KeyCode.T9_ONE -> if (k.medium) k.label else "1，标点"
         KeyCode.HAND_CLEAR -> "重写"
+        KeyCode.HAND_MODE -> "手写模式，当前${if (handLineMode) "多字连写" else "单字"}，点按切换${if (hand?.canRedo == true) "，长按重做上一笔" else ""}"
         else -> when {
             k.sub != null -> "${k.sub}，${k.label}"
             layoutKind == Layouts.T14 && k.code in 'A'.code..'N'.code -> k.label.lowercase().toList().joinToString("，")
@@ -295,7 +321,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
 
         override fun a11yLabel(id: Int): CharSequence? {
-            if (id == PAD_ID) return "手写区，用手指书写一个字"
+            if (id == PAD_ID) return if (handLineMode) "手写区，写完一个字再写下一个，前一个笔迹会淡出" else "手写区，用手指书写一个字"
             if (id >= SIDE_BASE) return side?.items?.getOrNull(id - SIDE_BASE)?.let { VirtualA11y.speak(it) }
             return keys.getOrNull(id)?.let { describe(it) }
         }
@@ -607,15 +633,24 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val cx = pad.rect.centerX()
         val cy = pad.rect.centerY()
         val inset = m.dp(12f)
-        c.drawLine(pad.rect.left + inset, cy, pad.rect.right - inset, cy, guidePaint)
-        c.drawLine(cx, pad.rect.top + inset, cx, pad.rect.bottom - inset, guidePaint)
+        if (handGuide) {
+            c.drawLine(pad.rect.left + inset, cy, pad.rect.right - inset, cy, guidePaint)
+            c.drawLine(cx, pad.rect.top + inset, cx, pad.rect.bottom - inset, guidePaint)
+        }
         if (!pad.hasInk) {
             text.textSize = m.label(13f)
             text.typeface = Typeface.DEFAULT
             text.color = p.labelHint
             text.textAlign = Paint.Align.LEFT
-            c.drawText("在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
+            c.drawText(if (handLineMode) "连续连写 · 写完再写下一个" else "单字 · 在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
             text.textAlign = Paint.Align.CENTER
+        }
+        if (handRecognizing || handRecognitionFailed) {
+            hintPaint.textSize = m.label(11f)
+            hintPaint.color = p.labelHint
+            hintPaint.textAlign = Paint.Align.RIGHT
+            c.drawText(if (handRecognizing) "识别中…" else "继续书写或重写", pad.rect.right - m.dp(10f), pad.rect.bottom - m.dp(8f), hintPaint)
+            hintPaint.textAlign = Paint.Align.CENTER
         }
         val layer = inkLayer
         if (layer == null) drawInk(c, 0f, 0f) else layer.invalidate()
@@ -637,15 +672,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         c.translate(dx, dy)
         c.clipRect(pad.rect)
         c.translate(pad.rect.left, pad.rect.top)
-        inkPaint.color = p.label
-        val fade = pad.fadeProgress()
-        if (fade >= 0f) {
-            inkPaint.alpha = ((1f - fade) * (p.label ushr 24)).toInt()
-            c.drawPath(pad.fading, inkPaint)
-            inkPaint.color = p.label
-            (inkLayer ?: this).postInvalidateOnAnimation()
-        }
-        c.drawPath(pad.ink, inkPaint)
+        if (pad.drawInk(c, inkPaint, p.label)) (inkLayer ?: this).postInvalidateOnAnimation()
         c.restore()
     }
 
@@ -763,12 +790,11 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             // 停笔够久后落笔：先上屏上一个字的首选。 Pen down after a pause commits the previous char first.
             // 按事件时刻算停顿：主线程忙时处理得晚，不会被误当成停笔。 Pause by event time, so a busy main thread doesn't fake one.
             if (pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
-                host?.onHandCommit()
-                pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+                if (host?.onHandCommit() == true) pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
             }
             // 书写要跟手：这根手指的移动不等下一帧批量送达。 Ink must follow the finger: moves are not batched per frame.
             requestUnbufferedDispatch(e)
-            pad.begin((x - pad.rect.left).coerceIn(0f, pad.rect.width()), (y - pad.rect.top).coerceIn(0f, pad.rect.height()), e.eventTime)
+            pad.begin((x - pad.rect.left).coerceIn(0f, pad.rect.width()), (y - pad.rect.top).coerceIn(0f, pad.rect.height()), e.eventTime, inkPressure(e, index))
             invalidate()
             return
         }
@@ -1004,9 +1030,14 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val pad = hand ?: return
         val l = pad.rect.left
         val t = pad.rect.top
-        for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t, e.getHistoricalEventTime(h))
-        pad.add(e.getX(i) - l, e.getY(i) - t, e.eventTime)
+        for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t, e.getHistoricalEventTime(h), inkPressure(e, i, h))
+        pad.add(e.getX(i) - l, e.getY(i) - t, e.eventTime, inkPressure(e, i))
         invalidateInk()
+    }
+
+    private fun inkPressure(event: MotionEvent, index: Int, history: Int = -1): Float {
+        if (event.getToolType(index) != MotionEvent.TOOL_TYPE_STYLUS) return 1f
+        return if (history < 0) event.getPressure(index) else event.getHistoricalPressure(index, history)
     }
 
     private fun onLongPress(p: Ptr) {

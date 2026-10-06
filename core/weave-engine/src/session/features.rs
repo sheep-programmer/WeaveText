@@ -73,13 +73,6 @@ impl Engine {
                 } else {
                     1
                 };
-                if mode == "pin" {
-                    c.view.comment = if c.view.comment.is_empty() {
-                        "已固定".into()
-                    } else {
-                        format!("{} · 已固定", c.view.comment)
-                    };
-                }
                 ((partial, score, i), c)
             })
             .collect();
@@ -94,7 +87,7 @@ impl Engine {
         {
             let text = expand(&template, self.options.utc_offset_min);
             let c = Cand {
-                view: CandidateView { cloud: false,
+                view: CandidateView { pinyin: if self.options.pinyin_hint {crate::tones::pinyin(&text,None,self.options.pinyin_tones).unwrap_or_default()} else {String::new()}, cloud: false,
                     text: text.clone(),
                     comment: "快捷短语".into(),
                     user: false,
@@ -104,8 +97,38 @@ impl Engine {
             self.cands.insert(0, c);
         }
     }
+    /// Legacy manual priorities yield to a subsequent explicit choice for the same reading.
+    pub(super) fn supersede_manual_priority(&mut self, candidate: &Cand) {
+        if !self.user_pinyin.learning {return;}
+        let scope = self.policy_scope(candidate);
+        let selected = match &candidate.action {Action::Pinyin(p)=>&p.text,Action::Table{text}=>text};
+        // A full abbreviation can represent several different readings (sj → 时间 / 数据).
+        // All whole-input priorities must yield, not only the selected word's pronunciation.
+        let total=self.graph_len();
+        let whole=matches!(&candidate.action,Action::Pinyin(p) if p.end>=total);
+        let mut scopes=vec![scope.clone()];
+        if whole {scopes.extend(self.cands.iter().filter(|c|matches!(&c.action,Action::Pinyin(p) if p.end>=total)).map(|c|self.policy_scope(c)));}
+        scopes.sort();scopes.dedup();
+        for scope in scopes {
+            let key=format!("pin:{scope}");let old=self.personal.get(&key);
+            if !old.is_empty() && old != *selected {self.personal.set(key,String::new());}
+        }
+        let stale:Vec<String> = self.cands.iter().filter(|c|self.policy_scope(c)==scope)
+            .map(|c|self.policy_key(c)).filter(|k|self.personal.get(k)=="pin").collect();
+        for key in stale {self.personal.set(key,String::new());}
+    }
     pub fn features(&mut self, cmd: &Value) -> Value {
         match cmd["op"].as_str().unwrap_or("") {
+            "refreshOptions" => {
+                if self.is_composing() { self.refresh(); }
+                else if self.predicting {
+                    if self.options.prediction { self.refresh_predictions(); }
+                    else { self.drop_predictions(); }
+                }
+                json!({"ok":true})
+            }
+            "expandSnippet" => json!({"ok":true,"text":expand(cmd["text"].as_str().unwrap_or(""),self.options.utc_offset_min)}),
+            "exportUserWords" => json!({"ok":true,"text":self.export_user_words()}),
             "policy" => {
                 let Some(c) = cmd["index"]
                     .as_u64()

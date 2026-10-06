@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use weave_dict::hand::{Recognizer, Stroke};
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 impl Rng {
     fn next(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
@@ -22,7 +22,7 @@ impl Rng {
     }
 }
 
-fn medians(line: &str) -> Option<(char, Vec<Stroke>)> {
+pub(crate) fn medians(line: &str) -> Option<(char, Vec<Stroke>)> {
     // 与 handgen 相同的格式：借用一个极简解析。 Same format as handgen.
     let ch = line.split("\"character\":\"").nth(1)?.chars().next()?;
     let med = line.split("\"medians\":").nth(1)?;
@@ -41,7 +41,7 @@ fn medians(line: &str) -> Option<(char, Vec<Stroke>)> {
     Some((ch, strokes))
 }
 
-fn perturb(src: &[Stroke], r: &mut Rng, level: u32) -> Vec<Stroke> {
+pub(crate) fn perturb(src: &[Stroke], r: &mut Rng, level: u32) -> Vec<Stroke> {
     let l = level as f32;
     let (sx, sy) = (r.range(0.85, 1.15), r.range(0.85, 1.15) * r.range(0.9, 1.1));
     let rot = r.range(-0.05, 0.05) * (1.0 + l);
@@ -110,7 +110,11 @@ fn realistic(strokes: Vec<Stroke>, r: &mut Rng, level: u32) -> Vec<Stroke> {
     let vertical = r.next() < 0.5;
     let mut groups = [(0f32, 0f32, 1f32), (0f32, 0f32, 1f32)];
     for g in &mut groups {
-        *g = (r.range(-0.08, 0.08) * k * size, r.range(-0.08, 0.08) * k * size, 1.0 + r.range(-0.18, 0.18) * k);
+        *g = (
+            r.range(-0.08, 0.08) * k * size,
+            r.range(-0.08, 0.08) * k * size,
+            1.0 + r.range(-0.18, 0.18) * k,
+        );
     }
     let mut out: Vec<Stroke> = Vec::new();
     for s in strokes {

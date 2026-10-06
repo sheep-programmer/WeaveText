@@ -8,10 +8,13 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -27,8 +30,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
@@ -37,6 +44,9 @@ import com.weavetext.ime.link.LinkNearby
 import com.weavetext.ime.link.LinkPeer
 import com.weavetext.ime.link.LinkTransfer
 import com.weavetext.ime.link.PairState
+import com.weavetext.ime.link.LinkQrImage
+import com.weavetext.ime.link.LinkQrPayload
+import com.weavetext.ime.link.LinkScanActivity
 
 private fun platformName(p: String) = when (p) {
     "mac" -> "Mac"
@@ -70,6 +80,20 @@ fun LinkScreen() {
     var manual by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var peerMenu by remember { mutableStateOf<LinkPeer?>(null) }
+    var directRemote by rememberSaveable { mutableStateOf("") }
+    var scannedDirect by remember { mutableStateOf<LinkQrPayload.Direct?>(null) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+    var showDirectQr by remember { mutableStateOf(false) }
+    val scanner = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val text = result.data?.getStringExtra(LinkScanActivity.RESULT_TEXT).orEmpty()
+            when (val payload = LinkQrPayload.parse(text)) {
+                is LinkQrPayload.Pairing -> link.offerPair(payload.request)
+                is LinkQrPayload.Direct -> link.offerDirect(payload.ticket)
+                null -> scanError = "二维码无效或已过期，请重新生成后扫描"
+            }
+        }
+    }
     // 一次只能有一个权限请求在途，通知与附近设备合并成一次申请。 Only one request may be in flight: ask for both at once.
     val perms = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result[Manifest.permission.NEARBY_WIFI_DEVICES] == true) link.rescan()
@@ -80,11 +104,21 @@ fun LinkScreen() {
             link.setReceiveDirectory(uri.toString())
         }
     }
+    fun enableLink() {
+        link.setEnabled(true)
+        val wanted = buildList {
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            if (Build.VERSION.SDK_INT == 36) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isNotEmpty()) perms.launch(wanted.toTypedArray())
+    }
     var reconnect by remember { mutableStateOf<LinkPeer?>(null) }
 
     // 扫码进来：弹出确认。 Opened from a scanned QR code: confirm first.
-    LaunchedEffect(s.pendingPair) { s.pendingPair?.let { target = PairTarget(it.name, it.addrs, it.code) } }
+    LaunchedEffect(s.pendingPair) { target = s.pendingPair?.let { PairTarget(it.name, it.addrs, it.code) } }
+    LaunchedEffect(s.pendingDirect) { scannedDirect = s.pendingDirect?.let { LinkQrPayload.parse(it) as? LinkQrPayload.Direct } }
     LaunchedEffect(s.pairing) { if (s.pairing is PairState.Done) { target = null; manual = false } }
+    LaunchedEffect(s.directTicket) { if (s.directTicket.isEmpty()) showDirectQr = false }
 
     SubPage("互联") {
         GroupCard(Modifier.padding(top = 8.dp)) {
@@ -92,21 +126,42 @@ fun LinkScreen() {
                 "织文互联", "设备间直传文字、图片和文件，支持局域网及可直连的远程地址，端到端加密",
                 checked = s.enabled, icon = R.drawable.ic_devices, subtitleMaxLines = 3,
             ) { on ->
-                link.setEnabled(on)
-                if (on) {
-                    val wanted = buildList {
-                        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-                        if (Build.VERSION.SDK_INT == 36) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                    }.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-                    if (wanted.isNotEmpty()) perms.launch(wanted.toTypedArray())
-                }
+                if (on) enableLink() else link.setEnabled(false)
             }
         }
+        Spacer(Modifier.height(12.dp))
+        GroupCard {
+            SettingRow("扫描二维码", "直接扫描电脑上的配对二维码或跨网连接二维码", subtitleMaxLines = 2,
+                onClick = { scanError = null; scanner.launch(Intent(ctx, LinkScanActivity::class.java)) }) { Chevron() }
+        }
+        scanError?.let { Hint(it) }
         if (!s.enabled) {
-            Hint("开启后，在电脑版织文里选「互联 › 配对手机」，用手机相机扫描二维码即可配对；也可以在这里输入电脑上显示的 6 位配对码。")
+            Hint("在电脑版织文里选「互联 › 配对手机」，点上面的「扫描二维码」。确认配对后会开启互联；也可以开启开关后输入电脑显示的 6 位配对码。")
             return@SubPage
         }
         if (!s.running) Hint("互联服务没有启动，请检查网络后重新打开开关。")
+
+        GroupTitle("跨网直传")
+        GroupCard {
+            SettingRow("生成连接码", "两端各生成一份，互相发送连接码", subtitleMaxLines = 2, onClick = { if (!s.directBusy) link.openDirect() }) {
+                if (s.directBusy) CircularProgressIndicator(Modifier.height(20.dp)) else Chevron()
+            }
+            if (s.directTicket.isNotEmpty()) {
+                RowDivider(false)
+                SettingRow("显示本机连接二维码", "让对方扫码读取连接码", onClick = { showDirectQr = true }) { Chevron() }
+                RowDivider(false)
+                SettingRow("复制本机连接码", "5 分钟内有效，请发给对方", onClick = {
+                    ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("织文跨网连接码", s.directTicket))
+                }) { Chevron() }
+            }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                OutlinedTextField(value = directRemote, onValueChange = { directRemote = it.take(16_384) }, label = { Text("粘贴对方的连接码") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
+                TextButton(enabled = s.running && !s.directBusy && s.directTicket.isNotEmpty() && directRemote.isNotBlank(), onClick = { link.joinDirect(directRemote) }) { Text("连接对方") }
+                s.directMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+        Hint("两端分别粘贴对方的连接码并点「连接对方」，连接后即可发送文件。文件加密直传，不经过中转；地址探测服务只帮助建立连接。部分网络无法打洞时会提示失败。")
 
         GroupTitle("本机")
         GroupCard {
@@ -176,7 +231,30 @@ fun LinkScreen() {
     }
 
     target?.let { t ->
-        PairDialog(t.name, t.code, s.pairing, onDismiss = { target = null; link.offerPair(null); link.resetPairing() }) { code -> link.pair(t.addrs, code) }
+        PairDialog(t.name, t.code, s.pairing, onDismiss = { target = null; link.offerPair(null); link.resetPairing() }) { code ->
+            if (!s.enabled) enableLink()
+            link.pair(t.addrs, code)
+        }
+    }
+    scannedDirect?.let { p ->
+        AlertDialog(onDismissRequest = { link.offerDirect(null) }, title = { Text("读取 ${p.name} 的连接码") }, text = {
+            Text("确认后会填入对方的跨网连接码，并准备本机连接码。请把本机连接码发给对方，在两端分别点「连接对方」。")
+        }, confirmButton = { TextButton(onClick = {
+            if (!s.enabled) enableLink()
+            directRemote = p.ticket
+            link.offerDirect(null)
+            if (s.directTicket.isEmpty() && !s.directBusy) link.openDirect()
+        }) { Text("使用连接码") } }, dismissButton = { TextButton(onClick = { link.offerDirect(null) }) { Text("取消") } })
+    }
+    if (showDirectQr && s.directTicket.isNotEmpty()) {
+        val image = remember(s.directTicket) { LinkQrImage.bitmap(s.directTicket) }
+        AlertDialog(onDismissRequest = { showDirectQr = false }, title = { Text("本机跨网连接二维码") }, text = {
+            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                if (image != null) Image(image.asImageBitmap(), "本机跨网连接二维码", Modifier.size(240.dp).background(Color.White), filterQuality = FilterQuality.None)
+                else Text("连接码较长，请复制并发送给对方")
+                Text("让对方扫码读取，5 分钟内有效", Modifier.padding(top = 12.dp))
+            }
+        }, confirmButton = { TextButton(onClick = { showDirectQr = false }) { Text("关闭") } })
     }
     if (manual) ManualPairDialog(s.pairing, onDismiss = { manual = false; link.resetPairing() }) { addr, code -> link.pair(listOf(addr), code) }
     if (renaming) RenameDialog(s.name, onDismiss = { renaming = false }) { renaming = false; link.rename(it) }

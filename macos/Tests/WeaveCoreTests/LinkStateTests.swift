@@ -3,6 +3,15 @@ import Testing
 @testable import WeaveCore
 
 @Suite struct LinkEventTests {
+    @Test func directTransportEventsAreRecognized() {
+        #expect(LinkEvent.parse(#"{"type":"directReady","ticket":"code","expiresIn":300,"public":true}"#)
+            == .directReady(ticket: "code", expiresIn: 300, publicMapping: true))
+        #expect(LinkEvent.parse(#"{"type":"directFailed","reason":"no relay"}"#) == .directFailed(reason: "no relay"))
+        let event = LinkEvent.parse(#"{"type":"connected","transport":"direct-udp"}"#)
+        #expect(event == .directConnected)
+        var state = LinkState()
+        #expect(state.apply(event) == [.refreshPeers])
+    }
     @Test func parsesEveryEventKind() {
         #expect(LinkEvent.parse(#"{"type":"idle"}"#) == .idle)
         for t in ["peerFound", "peerLost", "connected", "disconnected"] {

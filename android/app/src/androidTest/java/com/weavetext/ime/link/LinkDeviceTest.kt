@@ -18,6 +18,7 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class LinkDeviceTest {
@@ -42,10 +43,11 @@ class LinkDeviceTest {
         val a = start("Device A"); val b = start("Device B")
         val ai = info(a); val bi = info(b)
         val found = CountDownLatch(2)
+        val aFound = AtomicBoolean(false); val bFound = AtomicBoolean(false)
         lateinit var ad: LinkDiscovery; lateinit var bd: LinkDiscovery
         instrumentation.runOnMainSync {
-            ad = LinkDiscovery(ctx, { command -> if (command.optString("op") == "discovered" && JSONObject(a.call(command.toString())).optBoolean("ok")) found.countDown() }, { _, _ -> })
-            bd = LinkDiscovery(ctx, { command -> if (command.optString("op") == "discovered" && JSONObject(b.call(command.toString())).optBoolean("ok")) found.countDown() }, { _, _ -> })
+            ad = LinkDiscovery(ctx, { command -> if (command.optString("op") == "discovered" && JSONObject(a.call(command.toString())).optBoolean("ok") && command.optString("id") == bi.getString("id") && aFound.compareAndSet(false, true)) found.countDown() }, { _, _ -> })
+            bd = LinkDiscovery(ctx, { command -> if (command.optString("op") == "discovered" && JSONObject(b.call(command.toString())).optBoolean("ok") && command.optString("id") == ai.getString("id") && bFound.compareAndSet(false, true)) found.countDown() }, { _, _ -> })
             ad.start(ai); bd.start(bi)
         }
         try {
@@ -59,15 +61,25 @@ class LinkDeviceTest {
     }
     @Test fun macToPhoneImageFileClipboardDownloadsAndPhoneReturn() {
         val args = InstrumentationRegistry.getArguments()
-        org.junit.Assume.assumeTrue("Requires tools/link-device-check.py", args.getString("hostAddress") != null)
-        val address = args.getString("hostAddress")!!
-        val code = args.getString("hostCode") ?: error("hostCode missing")
+        val directTicket = args.getString("hostTicket")
+        org.junit.Assume.assumeTrue("Requires tools/link-device-check.py", args.getString("hostAddress") != null || directTicket != null)
         ActivityScenario.launch(SmokeActivity::class.java).use {
             val phone = start("WeaveLink test phone")
             try {
                 WeavePrefs.of(ctx).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-                assertTrue(JSONObject(phone.call(JSONObject().put("op","pair").put("addrs",JSONArray(listOf(address))).put("code",code).toString())).optBoolean("ok"))
+                if (directTicket != null) {
+                    assertTrue(JSONObject(phone.call(JSONObject().put("op", "openDirect").put("stun", JSONArray(listOf(args.getString("stunAddress")!!))).toString())).optBoolean("ok"))
+                    val local = await(phone, "directReady")
+                    assertTrue("The STUN mapping through the emulator NAT is required", local.getBoolean("public"))
+                    instrumentation.sendStatus(1, android.os.Bundle().apply { putString("directTicket", local.getString("ticket")) })
+                    assertTrue(JSONObject(phone.call(JSONObject().put("op", "joinDirect").put("ticket", directTicket).toString())).optBoolean("ok"))
+                } else {
+                    val address = args.getString("hostAddress")!!
+                    val code = args.getString("hostCode") ?: error("hostCode missing")
+                    assertTrue(JSONObject(phone.call(JSONObject().put("op","pair").put("addrs",JSONArray(listOf(address))).put("code",code).toString())).optBoolean("ok"))
+                }
                 await(phone,"paired")
+                if (directTicket != null) assertEquals("direct-udp", await(phone, "connected").getString("transport"))
                 phone.call("""{"op":"sendText","text":"device-ready","clip":false}""")
                 val cm = ctx.getSystemService(ClipboardManager::class.java)
                 val sink = AndroidLinkSink(ctx)

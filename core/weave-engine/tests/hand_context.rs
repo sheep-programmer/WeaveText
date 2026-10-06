@@ -75,3 +75,25 @@ fn spaced_line_picks_the_known_combination() {
     assert!(e.hand_apply_wire(stroke, &wire));
     assert_eq!(texts(&mut e)[0], "天气");
 }
+
+#[test]
+fn line_context_can_use_the_fifth_candidate_retained_by_the_recognizer() {
+    let mut e = engine("fifth");
+    e.options.hand_lm_weight = 0.25;
+    let wire = encode_wire(&[vec![('天', -0.5)], vec![('汽', -1.0), ('池', -1.05), ('汁', -1.1), ('汕', -1.15), ('气', -1.4)]]);
+    assert!(e.hand_apply_wire(vec![vec![(0.0, 0.0), (10.0, 10.0)]], &wire));
+    assert_eq!(texts(&mut e)[0], "天气");
+}
+
+#[test]
+fn long_wire_line_produces_bounded_complete_candidates() {
+    let mut e = engine("eight");
+    e.options.hand_lm_weight = 0.0;
+    e.options.hand_word_bonus = 0.0;
+    let wire = encode_wire(&vec![vec![('天', 0.0), ('大', -1.0), ('夭', -2.0), ('太', -3.0), ('夫', -4.0)]; 8]);
+    assert!(e.hand_apply_wire(vec![vec![(0.0, 0.0), (10.0, 10.0)]], &wire));
+    let got = texts(&mut e);
+    assert_eq!(got[0], "天天天天天天天天");
+    assert_eq!(got.len(), weave_engine::session::HAND_CANDIDATES);
+    assert!(got.iter().all(|s| s.chars().count() == 8));
+}

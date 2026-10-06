@@ -65,6 +65,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
     private var altPivotX = 0f
     private var altPivotY = 0f
     val altShown get() = altItems.isNotEmpty()
+    fun alternativeBounds(out: RectF) {out.set(altBox)}
 
     // 提示气泡 / info bubble
     private val info = RectF()
@@ -376,7 +377,7 @@ class PopupOverlay(ctx: Context) : View(ctx) {
 
     // ------------------------------------------------------------ info bubble
 
-    fun showInfo(anchor: RectF, msg: String, danger: Boolean = false) {
+    fun showInfo(anchor: RectF, msg: String, danger: Boolean = false, keepInBounds: Boolean = false, gapDp: Float = 8f, below: Boolean = false) {
         val m = metrics
         text.textSize = m.dp(13f)
         infoMaxWidth = width - m.dp(24f)
@@ -395,8 +396,13 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         val h = (m.dp(32f)).coerceAtLeast(infoLines.size * lineH + m.dp(14f))
         var left = anchor.centerX() - w / 2
         left = clampLeft(left, w, width.toFloat(), m.dp(8f))
-        val bottom = anchor.top - m.dp(8f)
+        val bottom = if(below) anchor.bottom+m.dp(gapDp)+h else anchor.top - m.dp(gapDp)
         info.set(left, bottom - h, left + w, bottom)
+        if(keepInBounds) {
+            val margin=m.dp(4f)
+            if(info.top<margin) info.offset(0f,margin-info.top)
+            if(info.bottom>height-margin) info.offset(0f,height-margin-info.bottom)
+        }
         infoText = msg
         infoDanger = danger
         syncUnder()
@@ -408,6 +414,8 @@ class PopupOverlay(ctx: Context) : View(ctx) {
         infoText = ""
         invalidate()
     }
+    @get:androidx.annotation.VisibleForTesting
+    val infoLabel: String get() = infoText
 
     /** 浮动组合串（键盘上方左侧的小条）；null 隐藏。 Floating composing text above the keyboard; null hides. */
     fun showPreedit(text: String?) {

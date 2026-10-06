@@ -85,6 +85,26 @@ char *weave_link_call(WeaveLink *h, const char *command_json);
 void weave_link_stop(WeaveLink *h);
 void weave_link_destroy(WeaveLink *h);
 
+/* Lua plugins share the Android host and .xipk format. Returned strings use weave_string_free. */
+typedef struct WeavePluginHost WeavePluginHost;
+typedef struct WeaveSpeech WeaveSpeech;
+WeavePluginHost *weave_plugin_create(const char *plugins_dir, const char *config_dir);
+void weave_plugin_destroy(WeavePluginHost *h);
+char *weave_plugin_inspect(const char *path);
+char *weave_plugin_command(WeavePluginHost *h, const char *json);
+/* Build .xipk from a downloaded source directory; returns NULL on success or an error. */
+char *weave_plugin_package(const char *source_dir, const char *output);
+/* Callback context ownership transfers to Rust, even on failure. free_context runs only after
+ * every callback is finished, including replacements arriving after end. Callbacks can be concurrent.
+ * event_json is borrowed for the duration of the callback; never destroy a host/session in a callback. */
+typedef void (*WeaveSpeechEvent)(void *context, const char *event_json);
+typedef void (*WeaveSpeechFree)(void *context);
+WeaveSpeech *weave_plugin_speech(WeavePluginHost *h, const char *id, void *context,
+                               WeaveSpeechEvent event, WeaveSpeechFree free_context);
+void weave_speech_feed(WeaveSpeech *s, const uint8_t *pcm, size_t length);
+void weave_speech_stop(WeaveSpeech *s);
+void weave_speech_destroy(WeaveSpeech *s);
+
 #ifdef __cplusplus
 }
 #endif

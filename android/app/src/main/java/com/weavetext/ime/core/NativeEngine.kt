@@ -236,7 +236,7 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
 data class UserWord(val text: String, val pinyin: String, val count: Int)
 
 /** 候选项。 A candidate. */
-data class Candidate(val text: String, val comment: String, val isUser: Boolean, val isCloud: Boolean = false)
+data class Candidate(val text: String, val comment: String, val isUser: Boolean, val isCloud: Boolean = false, val pinyin: String = "")
 
 /**
  * 预编辑里一处自动纠错改动，[start]..[end] 是 preedit 的字符下标（UTF-16，左闭右开）。
@@ -274,7 +274,8 @@ data class EngineSnapshot(
             val n = b.int
             return List(n) {
                 val text=b.str();val comment=b.str();val flags=b.get().toInt() and 255
-                Candidate(text,comment,flags and 1 != 0,flags and 2 != 0)
+                val pinyin = if (flags and 4 != 0) b.str() else ""
+                Candidate(text,comment,flags and 1 != 0,flags and 2 != 0,pinyin)
             }
         }
 

@@ -30,9 +30,10 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
 
     private val longPress = Runnable {
         if (pressed >= 0) {
-            longFired = true
             val idx = pressed
-            if (onItemLong(idx)) onLongFeedback?.invoke()
+            if (!onItemLong(idx)) return@Runnable
+            longFired = true
+            onLongFeedback?.invoke()
             pressed = -1
             invalidate()
         }
@@ -92,6 +93,12 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
 
     /** 内容变化后通知无障碍服务。 Notify accessibility of content changes. */
     fun a11yChanged() { a11y.invalidate() }
+    fun cancelPress() {
+        removeCallbacks(longPress)
+        if(longFired) onLongUp(true)
+        longFired=false;pressed = -1;dragging=false;invalidate()
+    }
+    protected fun movedSincePress(x:Float,y:Float,slop:Float)=abs(x-downX)>slop || abs(y-downY)>slop
 
     override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider = a11y
     override fun dispatchHoverEvent(event: MotionEvent): Boolean = a11y.onHover(event) || super.dispatchHoverEvent(event)

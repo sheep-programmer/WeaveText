@@ -107,7 +107,8 @@ fun StickerManagerScreen(onBack: () -> Unit, editId: String? = null, onEditShown
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var editing by remember { mutableStateOf<Sticker?>(null) }
     var grouping by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<Set<String>?>(null) }
+    var deleting by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var addMenu by remember { mutableStateOf(false) }
 
@@ -215,7 +216,7 @@ fun StickerManagerScreen(onBack: () -> Unit, editId: String? = null, onEditShown
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         SelectionAction(R.drawable.ic_edit, "分组", selected.isNotEmpty(), Modifier.weight(1f)) { grouping = true }
-                        SelectionAction(R.drawable.ic_delete, "删除", selected.isNotEmpty(), Modifier.weight(1f), danger = true) { confirmDelete = true }
+                        SelectionAction(R.drawable.ic_delete, "删除", selected.isNotEmpty(), Modifier.weight(1f), danger = true) { pendingDelete = selected.toSet() }
                     }
                 }
             }
@@ -287,12 +288,7 @@ fun StickerManagerScreen(onBack: () -> Unit, editId: String? = null, onEditShown
                             onEdit = { editing = item },
                             onShare = { StickerSending.share(ctx, item); notify("已打开分享") },
                             onFavorite = { repository.edit(item.id, item.name, item.group, item.tags, !item.favorite) { notify(it) } },
-                            onDelete = {
-                                scope.launch {
-                                    withContext(Dispatchers.IO) { runCatching { repository.store.delete(setOf(item.id)) } }
-                                    repository.changed(); notify("已删除「${item.name}」")
-                                }
-                            },
+                            onDelete = { pendingDelete = setOf(item.id) },
                         )
                     }
                 }
@@ -323,22 +319,25 @@ fun StickerManagerScreen(onBack: () -> Unit, editId: String? = null, onEditShown
             },
         )
     }
-    if (confirmDelete) {
+    pendingDelete?.let { ids ->
         AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("删除 ${selected.size} 张表情？") },
-            text = { Text("会同时删除收纳的原图，无法撤销。") },
+            onDismissRequest = { if (!deleting) pendingDelete = null },
+            icon = { Icon(painterResource(R.drawable.ic_delete), null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text(if (ids.size == 1) "删除这张表情？" else "删除 ${ids.size} 张表情？") },
+            text = { Text("会删除收纳袋中的原图，无法撤销。原应用中的图片不受影响。") },
             confirmButton = {
-                TextButton(onClick = {
-                    val ids = selected
-                    confirmDelete = false
+                TextButton(enabled = !deleting, onClick = {
+                    if (deleting || pendingDelete != ids) return@TextButton
+                    deleting = true
                     scope.launch {
-                        withContext(Dispatchers.IO) { runCatching { repository.store.delete(ids) } }
-                        repository.changed(); notify("已删除 ${ids.size} 张"); leaveSelection()
+                        val result = withContext(Dispatchers.IO) { runCatching { repository.store.delete(ids) } }
+                        repository.changed(); deleting = false; pendingDelete = null
+                        if (result.isSuccess) { selected = selected - ids; notify("已删除 ${ids.size} 张"); if (selected.isEmpty()) selecting = false }
+                        else notify("删除失败，请重试")
                     }
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+                }) { Text(if (deleting) "删除中…" else "删除", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+            dismissButton = { TextButton(enabled = !deleting, onClick = { pendingDelete = null }) { Text("取消") } },
         )
     }
 }

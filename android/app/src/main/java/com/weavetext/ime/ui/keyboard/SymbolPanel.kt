@@ -45,16 +45,20 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     /** 左侧分类 + 翻页网格。 Side categories with a paged grid. */
     private var sideMode = false
 
-    private var cats = SymbolData.categories(recent())
+    private val catalog = ExpressionCatalog.load(kb.ctx)
+    private var cats = SymbolData.categories(recent(), catalog)
+    private val toneBases get() = catalog?.skinToneBases ?: SymbolData.SKIN_TONE_BASE
     private var tab = 0
     private val tmp = RectF()
 
     private fun recent(): List<String> =
-        kb.prefs.getString(WeavePrefs.SYMBOL_RECENT, "").orEmpty().split('\u0001').filter { it.isNotEmpty() }
+        SymbolUsage.order(kb.prefs)
 
     private fun remember(s: String) {
-        val list = (listOf(s) + recent().filter { it != s }).take(24)
-        kb.prefs.edit().putString(WeavePrefs.SYMBOL_RECENT, list.joinToString("\u0001")).apply()
+        if(kb.controller.isSensitiveField)return
+        SymbolUsage.record(kb.prefs,s)
+        cats=SymbolData.categories(recent(),catalog)
+        if(tab==SymbolData.TAB_COMMON){grid.rebuild();grid.scrollToTop()}
     }
 
     private val locked get() = kb.prefs.getBoolean(WeavePrefs.SYMBOL_LOCK, false)
@@ -76,8 +80,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     }
 
     override fun onShow() {
-        cats = SymbolData.categories(recent())
-        if (tab != SymbolData.TAB_EMOJI) tab = 0
+        cats = SymbolData.categories(recent(), catalog)
+        if (!cats[tab].emoji && !cats[tab].kaomoji) tab = 0
         grid.rebuild()
         grid.scrollToTop()
         side.ensureVisible()
@@ -85,12 +89,13 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         bottomRow.invalidate()
     }
 
-    override fun onHide() { tab = 0 }
+    override fun onHide() { grid.cancelPress();grid.hidePreview();tab = 0 }
 
     /** 定位到「表情」Tab（符长按、工具箱「表情」）。 Jump to the emoji tab. */
     fun selectEmoji() = selectTab(SymbolData.TAB_EMOJI)
 
     fun selectTab(i: Int) {
+        grid.cancelPress();grid.hidePreview()
         tab = i
         grid.rebuild()
         grid.scrollToTop()
@@ -103,8 +108,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private fun output(s: String, single: Boolean) {
         val close = if (single) null else SymbolData.PAIRS[s]
         if (close != null) kb.controller.onPairedText(s, close) else kb.controller.onText(s)
-        if (tab != SymbolData.TAB_COMMON) remember(s)
-        val stay = locked || tab == SymbolData.TAB_EMOJI || tab == SymbolData.TAB_KAOMOJI
+        remember(s)
+        val stay = locked || cats[tab].emoji || cats[tab].kaomoji
         if (!stay) kb.closePanel()
     }
 
@@ -122,10 +127,17 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         /** 长按时的原表情：松手前可能已经换了分类。 The pressed base emoji; the tab may change before release. */
         private var altBase = ""
         private var shownPage = -1
+        private fun nameAnchor(index:Int,out:RectF) {
+            cellRect(index,out)
+            p.typeface=Typeface.DEFAULT;p.textSize=kb.metrics.dp(if(cats[tab].emoji)26f else 16f)
+            val h=p.descent()-p.ascent();val center=out.centerY()
+            out.top=center-h/2;out.bottom=center+h/2
+            out.offset(0f,-scroll);kb.overlay?.map(this,out,out)
+        }
 
         fun rebuild() {
             val cat = cats[tab]
-            items = if (tab == SymbolData.TAB_EMOJI) cat.items.map { SymbolData.withTone(it, skinTone) } else cat.items
+            items = if (cat.emoji) cat.items.map { SymbolData.withTone(it, skinTone, toneBases) } else cat.items
             // 左列占去一格多，多列分类少排一列。 The side column takes a column's worth of width.
             cols = if (sideMode && cat.columns > 2) cat.columns - 1 else cat.columns
             layoutRows()
@@ -193,24 +205,38 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onItemTap(index: Int) {
             val s = items.getOrNull(index) ?: return
+            hidePreview()
             output(s, single = false)
         }
 
         override fun a11yCount() = items.size
         override fun a11yRect(index: Int, out: RectF) = cellRect(index, out)
-        override fun a11yLabel(index: Int): CharSequence? = items.getOrNull(index)?.let { VirtualA11y.speak(it) }
+        override fun a11yLabel(index: Int): CharSequence? = items.getOrNull(index)?.let {catalog?.name(it) ?: VirtualA11y.speak(it)}
+        override fun a11yLongLabel(index: Int): CharSequence? = items.getOrNull(index)?.let {if(catalog?.entry(it)!=null) "查看表情名称" else null}
 
         override fun onItemLong(index: Int): Boolean {
             val s = items.getOrNull(index) ?: return false
             val base = cats[tab].items[index]
-            if (tab == SymbolData.TAB_EMOJI && base in SymbolData.SKIN_TONE_BASE) {
+            val entry=catalog?.entry(s)
+            val emojiBase=entry?.text ?: base
+            if ((cats[tab].emoji || entry?.text in toneBases) && emojiBase in toneBases) {
                 val ov = kb.overlay ?: return false
                 cellRect(index, tmp)
                 tmp.offset(0f, -scroll)
                 ov.map(this, tmp, tmp)
                 altFor = index
-                altBase = base
-                ov.showAlternatives(tmp, SymbolData.SKIN_TONES.indices.map { SymbolData.withTone(base, it) }, skinTone)
+                altBase = emojiBase
+                ov.showAlternatives(tmp, SymbolData.SKIN_TONES.indices.map { SymbolData.withTone(emojiBase, it, toneBases) }, skinTone, selected = -1)
+                nameAnchor(index,tmp)
+                ov.showInfo(tmp, catalog?.name(s) ?: s, keepInBounds = true, gapDp = 3f, below = true)
+                return true
+            }
+            val name=catalog?.name(s)
+            if(name!=null) {
+                val ov=kb.overlay ?: return false
+                nameAnchor(index,tmp)
+                ov.showInfo(tmp,name,keepInBounds = true,gapDp = 3f)
+                announceForAccessibility(name)
                 return true
             }
             if (SymbolData.PAIRS.containsKey(s)) {
@@ -223,11 +249,12 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onLongMove(x: Float, y: Float) {
             val ov = kb.overlay ?: return
-            if (altFor >= 0 && ov.moveAlternatives(ov.mapX(this, x), ov.mapY(this, y))) kb.feedback.haptic(this)
+            if (altFor >= 0 && movedSincePress(x,y,kb.metrics.dp(12f)) && ov.moveAlternatives(ov.mapX(this, x), ov.mapY(this, y))) kb.feedback.haptic(this)
         }
 
         override fun onLongUp(cancel: Boolean) {
             val ov = kb.overlay ?: return
+            ov.hideInfo()
             if (altFor < 0) return
             val sel = ov.altSelected
             val base = altBase
@@ -237,16 +264,20 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             // 记住肤色选择。 Remember the chosen tone.
             kb.prefs.edit().putInt(WeavePrefs.EMOJI_SKIN, sel).apply()
             rebuild()
-            output(SymbolData.withTone(base, sel), single = true)
+            output(SymbolData.withTone(base, sel, toneBases), single = true)
         }
+
+        fun hidePreview() {kb.overlay?.hideInfo();kb.overlay?.hideAlternatives();altFor = -1;altBase = ""}
 
         override fun drawContent(c: Canvas) {
             val pal = kb.palette
             val m = kb.metrics
-            val emoji = tab == SymbolData.TAB_EMOJI
-            val kao = tab == SymbolData.TAB_KAOMOJI
+            val emoji = cats[tab].emoji
+            val kao = cats[tab].kaomoji
             p.typeface = Typeface.DEFAULT
-            for (i in items.indices) {
+            val first=if(rowsPerPage>0) (scroll/height).toInt()*perPage else (scroll/cellH).toInt()*cols
+            val visible=if(rowsPerPage>0) perPage*2 else (ceil(height/cellH).toInt()+2)*cols
+            for (i in first.coerceAtLeast(0) until (first+visible).coerceAtMost(items.size)) {
                 cellRect(i, tmp)
                 if (tmp.bottom < scroll || tmp.top > scroll + height) continue
                 if (i == pressed) {

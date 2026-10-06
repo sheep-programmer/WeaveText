@@ -145,13 +145,25 @@ object KeySoundSynth {
         for (i in o.indices.reversed()) if (i >= d) o[i] += gain * o[i - d]
     }
 
-    /** 归一化到 0.8 满幅，末尾 3 ms 淡出防爆音。 Normalize to 0.8 FS; 3 ms fade-out avoids clicks. */
+    /**
+     * 末端 3 ms 淡出防爆音，再逐个样本限幅（不是整段按峰值归一化）。
+     * 归一化会让每种的峰值都顶满：乱打时几十毫秒一个、连着放，听感和削波一样吵。改成绝对值软限幅之后，
+     * 短促的瞬态保留自己的动态，各变体（字母 / 删除 / 空格 / 回车）之间也保持原有的相对轻重。
+     * A 3 ms fade-out to avoid clicks, then a per-sample soft limiter rather than whole-file normalization:
+     * normalizing pins every variant to full scale, which reads as clipping when dozens fire per second.
+     * Soft limiting keeps the transients' own dynamics and the relative weight of the four variants.
+     */
     private fun finish(o: DoubleArray): ShortArray {
         val fade = (0.003 * RATE).toInt().coerceAtMost(o.size)
         for (k in 0 until fade) o[o.size - 1 - k] *= k.toDouble() / fade
-        val peak = o.maxOf { abs(it) }.coerceAtLeast(1e-9)
-        val g = 0.8 * Short.MAX_VALUE / peak
-        return ShortArray(o.size) { (o[it] * g).roundToInt().coerceIn(-32767, 32767).toShort() }
+        val fs = Short.MAX_VALUE.toDouble()
+        val knee = 0.7 * fs
+        return ShortArray(o.size) {
+            val x = o[it] * fs
+            val a = abs(x)
+            val y = if (a <= knee) x else (knee + (a - knee) / (1 + (a - knee) / (fs - knee))) * (if (x < 0) -1.0 else 1.0)
+            y.roundToInt().coerceIn(-32767, 32767).toShort()
+        }
     }
 
     /** 固定种子的白噪声（每次生成结果一致）。 Seeded white noise, deterministic. */

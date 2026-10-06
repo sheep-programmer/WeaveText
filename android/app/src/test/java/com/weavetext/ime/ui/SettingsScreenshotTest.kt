@@ -2,7 +2,10 @@ package com.weavetext.ime.ui
 
 import android.app.Application
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.weavetext.ime.settings.ImeStatus
@@ -38,6 +41,7 @@ import java.io.File
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-port-420dpi")
 class SettingsScreenshotTest {
+    @Test fun pluginRepositories() = show("plugin_repositories", Route.Home, Route.Voice, Route.PluginRepositories)
     @get:Rule val compose = createComposeRule()
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
     private val dir = File(System.getProperty("weave.snapshotDir") ?: "build/snapshots")
@@ -101,6 +105,9 @@ class SettingsScreenshotTest {
         engines.activeId = LOCAL.id
         engines.extraIds = setOf("org.example.asr.cloud", "org.example.asr.b")
         show("voice_list_combine", Route.Home, Route.Voice)
+        compose.onNodeWithText("多引擎识别").performScrollTo().performClick()
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(dir, "settings_voice_list_combine.png").path)
     }
     @Test fun voiceListEmpty() {
         engines.plugins = emptyList()

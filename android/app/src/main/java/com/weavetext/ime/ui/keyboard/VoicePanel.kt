@@ -168,6 +168,8 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         @androidx.annotation.VisibleForTesting fun captionCenter() = floatArrayOf(captionRect.centerX(), captionRect.centerY())
         @androidx.annotation.VisibleForTesting fun captionVerticalBounds() =
             floatArrayOf(languageRects.maxOf { it.bottom }, capInk.top, capInk.bottom, captionRect.bottom)
+        @androidx.annotation.VisibleForTesting fun noEngineActionBounds() =
+            listOf(RectF(offlineBtn), RectF(importBtn))
 
         fun refreshEngine() {
             val e = runCatching { VoiceAccess.engines(kb.ctx) }.getOrNull()
@@ -309,16 +311,14 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             text.textSize = titleSize
             c.drawText(title, area.centerX(), titleY, text)
             clearPills()
-            val labels = mutableListOf(offlineBtn to "下载离线语音包")
+            val labels = listOf(offlineBtn to "下载离线语音包", importBtn to "导入语音插件")
             text.textSize = m.dp(13f); text.typeface = medium
             var pad = m.dp(12f); val gap = m.dp(8f); val bh = m.dp(32f)
             fun width() = labels.sumOf { (text.measureText(it.second) + 2 * pad).toDouble() }.toFloat() + gap * (labels.size - 1)
-            // 窄屏放不下一行：先缩小到 0.85 倍，仍放不下就去掉末尾的次要项（导入插件在设置里也能找到）。
-            // Too narrow for one row: shrink to 0.85×, then drop trailing secondary pills (import is also in settings).
+            // 两个入口都保留，窄屏按可用宽度缩放，不把导入入口藏起来。
             if (width() > area.width()) {
-                val k = max(0.85f, area.width() / width())
+                val k = (area.width() - gap) / (width() - gap)
                 text.textSize *= k; pad *= k
-                while (labels.size > 1 && width() > area.width()) labels.removeAt(labels.size - 1)
             }
             val total = width()
             var x = area.centerX() - total / 2
@@ -326,7 +326,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             for ((rect, label) in labels) {
                 val bw = text.measureText(label) + 2 * pad
                 rect.set(x, top, x + bw, top + bh)
-                val id = OFFLINE
+                val id = if (rect === offlineBtn) OFFLINE else IMPORT
                 fill.color = if (pressed == id) pal.keyPressed else pal.card
                 c.drawRoundRect(rect, bh / 2, bh / 2, fill)
                 text.color = pal.candidateFirst
@@ -340,12 +340,13 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             transcriptArea(area)
             if (engines == 0) {
+                captionRect.setEmpty(); fullText = false
                 val auto = com.weavetext.ime.voice.VoiceAutoDownload.state
                 val label = VoiceAccess.engines(kb.ctx).language.label
                 drawNoEngine(c, when (auto) {
                     com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading -> "正在自动下载「$label」语音…"
                     is com.weavetext.ime.voice.VoiceAutoDownload.State.Failed -> auto.message
-                    else -> "正在准备「$label」语音"
+                    else -> "「$label」还没有可用引擎，请下载或导入"
                 })
                 return
             }
@@ -534,22 +535,27 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 listening -> kb.icons.draw(c, R.drawable.ic_stop, pal.onAccent, cx, cy, m.dp(32f))
                 else -> kb.icons.draw(c, R.drawable.ic_mic, pal.onAccent, cx, cy, m.dp(32f))
             }
+            text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(12f)
+            text.color = if ((st == VoiceSession.State.ERROR) || holdCancel) pal.danger else pal.labelSecondary
+            c.drawText(microphoneHint(), cx, mic.bottom + m.dp(6f) - text.ascent(), text)
+        }
+
+        @androidx.annotation.VisibleForTesting fun microphoneHint(): String {
+            val st = session.state
+            val hold = holdMode
             val downloading = com.weavetext.ime.voice.VoiceAutoDownload.state == com.weavetext.ime.voice.VoiceAutoDownload.State.Downloading
-            val hint = when {
+            return when {
                 holdCancel -> "松手取消"
                 st == VoiceSession.State.ERROR -> (session.error ?: "识别失败") + "，点击重试"
                 st == VoiceSession.State.CONNECTING -> "正在加载离线模型…"
-                st == VoiceSession.State.FINALIZING -> "识别中…"
-                listening -> if (hold) "松手结束，上滑取消" else "正在聆听 · 可以停顿，点击结束"
+                st == VoiceSession.State.FINALIZING -> if (hold) "识别中 · 按住取消并重录" else "识别中 · 点击取消并重录"
+                st == VoiceSession.State.LISTENING -> if (hold) "松手结束，上滑取消" else "正在聆听 · 可以停顿，点击结束"
                 // 缺模型时不再与上方文字重复报同一句：下载中就说明进度，否则指向下载按钮。
                 // When no model is usable, do not repeat the same line shown above.
-                engines == 0 -> if (downloading) "正在下载语音模型…" else "点上方按钮下载当前档位的语音模型"
+                engines == 0 -> if (downloading) "正在下载语音模型…" else "点上方按钮下载或导入语音插件"
                 hold -> "按住 说话"
                 else -> "点击开始说话"
             }
-            text.textAlign = Paint.Align.CENTER; text.typeface = Typeface.DEFAULT; text.textSize = m.dp(12f)
-            text.color = if ((st == VoiceSession.State.ERROR) || holdCancel) pal.danger else pal.labelSecondary
-            c.drawText(hint, cx, mic.bottom + m.dp(6f) - text.ascent(), text)
         }
 
         private fun drawSeg(c: Canvas) {
@@ -799,7 +805,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                             val index = if (previewId == null) session.defaultRow else session.results?.rows()?.indexOfFirst { it.id == previewId } ?: -1
                             if (index >= 0) session.choose(index)
                         }
-                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { previewId = null; listScroll = 0f; session.start() }
+                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { previewId = null; listScroll = 0f; session.restart() }
                         p != NONE && p == hitAt(e.x, e.y) -> onTap(p)
                     }
                     listDrag = false
@@ -850,8 +856,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                     pressed = hitAt(e.x, e.y)
                     downY = e.y
                     if (pressed != NONE) kb.feedback.key(this)
-                    if (pressed == MIC && holdMode && engines > 0) {
-                        holdActive = session.start()
+                    if (pressed == MIC && holdMode) {
+                        // 没有引擎也走 start 的下载/导入引导，只有成功开始才接管松手。
+                        holdActive = if (session.state == VoiceSession.State.FINALIZING) session.restart() else session.start()
                         holdCancel = false
                     }
                     if (pressed == DEL) postDelayed(repeatDel, 400)
@@ -925,9 +932,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 OFFLINE -> kb.openSettings("voice/upgrade")
                 MIC -> if (!holdMode) {
                     when {
-                        engines == 0 -> session.start()
-                        // 「识别中」等了一会儿还没结果：不再等，重新开始。 Finalizing for a while: start over.
-                        session.state == VoiceSession.State.FINALIZING -> session.start()
+                        session.state == VoiceSession.State.FINALIZING -> session.restart()
                         session.active -> session.stop()
                         else -> session.start()
                     }

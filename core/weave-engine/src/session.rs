@@ -94,7 +94,7 @@ pub struct Options {
     pub prediction: bool,
     /// 联想深度：连着选联想词最多接几次（1–6）。 Prediction depth: how many predictions may be picked in a row (1–6).
     pub prediction_depth: u8,
-    /// 候选后面显示拼音（小字），以及是否带声调。 Show pinyin after each candidate, and whether with tone marks.
+    /// 候选上方显示完整拼音；默认带声调。 Full pinyin above each candidate, toned by default.
     pub pinyin_hint: bool,
     pub pinyin_tones: bool,
     /// 手写候选按上文重排的权重（0 关闭），与连写时词库里确有的词的奖励。
@@ -120,7 +120,7 @@ impl Default for Options {
             utc_offset_min: 480,
             prediction: true,
             prediction_depth: DEFAULT_PREDICTION_DEPTH,
-            pinyin_hint: false,
+            pinyin_hint: true,
             pinyin_tones: true,
             hand_lm_weight: 0.25,
             hand_word_bonus: 2.0,
@@ -185,6 +185,8 @@ pub struct CandidateView {
     pub cloud: bool,
     pub text: String,
     pub comment: String,
+    /// Full pronunciation, separate from code completions and other candidate notes.
+    pub pinyin: String,
     /// 是否来自用户词库（可删除）。 Learned from the user (deletable).
     pub user: bool,
 }
@@ -292,6 +294,9 @@ struct Selection {
     text: String,
     words: Vec<(Vec<SyllableId>, String)>,
     consumed_before: usize,
+    /// 选它之前键盘上已有的原始输入长度（撤销与退格要按这个还原）。
+    /// Raw input length before this pick (what undo and backspace restore).
+    raw_before: usize,
     intentional: bool,
 }
 
@@ -488,7 +493,11 @@ const TYPO_MARGIN_FRAGMENTED: u32 = 9000;
 /// When the corrected reading wins but the plain one is within this much, the plain top choice is kept second.
 const KEEP_UNCORRECTED: u32 = 9000;
 /// 手写每次给出的候选数。 Candidates per handwriting recognition.
-pub const HAND_CANDIDATES: usize = 12;
+pub const HAND_CANDIDATES: usize = 30;
+/// 全拼等键盘方案里，键盘上尚未变成字词的最长原始输入；再长就顶屏（[Engine::push_long_composition]）。
+/// 乱打一整串时组合串会无上限地长，每次按键都要重解，越长越卡；真实输入连续打这么多字母还不选词是极少的。
+/// Longest raw input before [Engine::push_long_composition] commits what it can; see there.
+const MAX_COMPOSITION_RAW: usize = 96;
 
 impl Engine {
     pub fn new(paths: &Paths) -> Self {
@@ -639,23 +648,19 @@ impl Engine {
             .unwrap_or_else(|| s.to_owned())
     }
 
-    /// 给没有注释的汉字候选配上拼音（词库给这个候选用的音节决定读音）；要在繁体转换之前做。
-    /// Give Han candidates without a comment their pinyin (the lexicon's syllables decide the reading); before traditional conversion.
+    /// Add pronunciation independently of other notes, before traditional conversion.
     fn add_pinyin_hints(&mut self) {
         if !self.options.pinyin_hint || self.schema == Schema::English {
             return;
         }
         let tones = self.options.pinyin_tones;
         for cand in &mut self.cands {
-            if !cand.view.comment.is_empty() {
-                continue;
-            }
             let hint = match &cand.action {
                 Action::Pinyin(p) => crate::tones::pinyin(&p.text, Some(&p.key), tones),
                 Action::Table { text } => crate::tones::pinyin(text, None, tones),
             };
             if let Some(h) = hint {
-                cand.view.comment = h;
+                cand.view.pinyin = h;
             }
         }
     }
@@ -683,7 +688,7 @@ impl Engine {
                         continue;
                     }
                     let c = Cand {
-                        view: CandidateView { cloud: false,
+                        view: CandidateView { pinyin: String::new(), cloud: false,
                             text: e.clone(),
                             comment: String::new(),
                             user: false,
@@ -944,6 +949,7 @@ impl Engine {
                         return true;
                     }
                     self.raw.push(c);
+                    self.push_long_composition();
                     self.refresh();
                     return true;
                 }
@@ -953,6 +959,7 @@ impl Engine {
                 let c = c.to_ascii_lowercase();
                 if c.is_ascii_lowercase() || (c == ';' && !self.raw.is_empty()) {
                     self.raw.push(c);
+                    self.push_long_composition();
                     self.refresh();
                     return true;
                 }
@@ -1003,6 +1010,7 @@ impl Engine {
             Schema::English => {
                 if c.is_ascii_alphabetic() || (c == '\'' && !self.raw.is_empty()) {
                     self.raw.push(c);
+                    self.push_long_composition();
                     self.refresh();
                     return true;
                 }
@@ -1034,6 +1042,7 @@ impl Engine {
         if rest_empty {
             if let Some(sel) = self.selected.pop() {
                 self.consumed = sel.consumed_before;
+                self.raw.truncate(sel.raw_before);
             }
         } else if let Schema::Keypad(g) = self.schema {
             if let Some(T9Unit::Syllable { id, .. }) = self.t9_units.pop() {
@@ -1067,6 +1076,7 @@ impl Engine {
         let Some(c) = self.cands.get(index).cloned() else {
             return false;
         };
+        if intentional {self.supersede_manual_priority(&c);}
         if self.predicting {
             // 选了联想词：上屏、记住这对搭配，再接着联想。 A prediction: commit it, learn the pair, predict again.
             let Action::Table { text } = c.action else { return false };
@@ -1120,6 +1130,7 @@ impl Engine {
                     text: cand.text.clone(),
                     words: cand.words.clone(),
                     consumed_before: self.consumed,
+                    raw_before: self.raw.len(),
                     intentional,
                 };
                 if cand.end >= total {
@@ -1272,7 +1283,7 @@ impl Engine {
             .into_iter()
             .map(|p| {
                 let text = self.out(&p.text);
-                Cand { view: CandidateView { cloud: false, text, comment: String::new(), user: p.user }, action: Action::Table { text: p.text } }
+                Cand { view: CandidateView { pinyin: String::new(), cloud: false, text, comment: String::new(), user: p.user }, action: Action::Table { text: p.text } }
             })
             .collect();
         self.predicting = true;
@@ -1447,6 +1458,43 @@ impl Engine {
 
     fn rest_raw(&self) -> &str {
         &self.raw[self.consumed.min(self.raw.len())..]
+    }
+
+    /// 键盘上还没变成字词的原始输入（含已选定部分吃掉的按键）；组合串长了就以它为限。
+    /// Raw input not turned into words yet, including keys a partial selection consumed. The composition
+    /// cap counts this, not just [rest_raw].
+    fn unconsumed_raw(&self) -> usize {
+        self.raw.len().saturating_sub(self.selected.last().map_or(0, |s| s.raw_before))
+    }
+
+    /// 组合串过长时顶屏：先把首选（或原样输入）上屏，让键盘继续可用。
+    /// 乱打时整串既读不出词、又一直待在组合里，每次按键都要重解一遍，越长越卡；真实输入很少有人
+    /// 一口气打这么多字母而一个词都不选，所以到限就收尾，与五笔满四码顶屏同一思路。
+    /// Commit the top choice (or the raw keys) once the composition is too long to be useful: mashing
+    /// would otherwise keep re-decoding one string that never turns into a word, getting slower each key.
+    fn push_long_composition(&mut self) {
+        if self.unconsumed_raw() <= MAX_COMPOSITION_RAW {
+            return;
+        }
+        let Some(first) = self.cands.first().cloned() else {
+            return;
+        };
+        match first.action {
+            Action::Pinyin(cand) => {
+                let sel = Selection {
+                    text: cand.text.clone(),
+                    words: cand.words.clone(),
+                    consumed_before: self.consumed,
+                    raw_before: self.raw.len(),
+                    intentional: false,
+                };
+                self.selected.push(sel);
+                self.commit_selected();
+                // 只上屏到一半：剩下的按键留在组合里继续拼，保留正常输入的手感。
+                // Commit only what was consumed; the remaining keys stay in the composition.
+            }
+            Action::Table { .. } => {}
+        }
     }
 
     /// 未上屏部分的邻键，与 [Letters::parse] 的字母一一对应（分隔符跳过）；没有或不同步时为空。
@@ -1726,13 +1774,13 @@ impl Engine {
         }
         self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
         if !self.hand_words.is_empty(){
-            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{ cloud: false,text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
+            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{ pinyin: String::new(), cloud: false,text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
             return;
         }
         for &c in &self.hand_cands.0 {
             let text = c.to_string();
             self.cands.push(Cand {
-                view: CandidateView { cloud: false, text: text.clone(), comment: String::new(), user: false },
+                view: CandidateView { pinyin: String::new(), cloud: false, text: text.clone(), comment: String::new(), user: false },
                 action: Action::Table { text },
             });
         }
@@ -1751,7 +1799,7 @@ impl Engine {
         self.cands = crate::special::v_candidates(body)
             .into_iter()
             .map(|(text, comment)| Cand {
-                view: CandidateView { cloud: false, text: text.clone(), comment, user: false },
+                view: CandidateView { pinyin: String::new(), cloud: false, text: text.clone(), comment, user: false },
                 action: Action::Table { text },
             })
             .collect();
@@ -1828,7 +1876,7 @@ impl Engine {
             .into_iter()
             .enumerate()
         {
-            let c = Cand { view: CandidateView { cloud: false, text: text.clone(), comment, user: false }, action: Action::Table { text } };
+            let c = Cand { view: CandidateView { pinyin: String::new(), cloud: false, text: text.clone(), comment, user: false }, action: Action::Table { text } };
             self.cands.insert(at + k, c);
         }
     }
@@ -1872,6 +1920,29 @@ impl Engine {
         if let Some(margin) = margin.flatten() {
             let (g2, keys2) = self.build_graph_with(true);
             let lat2 = decode(&g2, true);
+            // tina 可被切成 ti'na，接上后文后，词数优势会被抹平（明天见 → 命题那件）。
+            // 若只是词内部一对相邻字母颠倒，可采用较低但仍保守的门槛；不放宽删字、
+            // 多处改写、或整个词本身已经合法的情况，显式隔音符仍由音节图保护。
+            // An adjacent swap can look like two valid syllables (tina → ti'na). When a
+            // multi-syllable word fixes exactly one swap, use the conservative vowel margin.
+            let margin = if margin > TYPO_MARGIN_VOWEL
+                && lat2.best_cost.saturating_add(TYPO_MARGIN_VOWEL) < lat1.best_cost
+                && !lat2.best.iter().any(|(si, _)| lat2.spans[*si].raw)
+            {
+                let spelling: Vec<u8> = lat2.best.iter().flat_map(|(si, _)| lat2.spans[*si].key.iter())
+                    .flat_map(|&id| syllable::spelling(id).bytes()).collect();
+                let mut differences = spelling.iter().zip(&keys1).enumerate().filter(|(_, (a, b))| a != b);
+                let swap = match (differences.next(), differences.next(), differences.next()) {
+                    (Some((a, _)), Some((b, _)), None) => spelling.len() == keys1.len()
+                        && b == a + 1 && spelling[a] == keys1[b] && spelling[b] == keys1[a]
+                        && lat2.best.iter().any(|(si, _)| {
+                            let span = &lat2.spans[*si];
+                            span.key.len() >= 2 && span.start <= a && b < span.end
+                        }),
+                    _ => false,
+                };
+                if swap { TYPO_MARGIN_VOWEL } else { margin }
+            } else { margin };
             if lat2.best_cost.saturating_add(margin) < lat1.best_cost {
                 let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g1, context, lm };
                 let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&original[s..e]).into_owned();
@@ -1900,11 +1971,29 @@ impl Engine {
             if !literal.best.is_empty() {
                 let alternatives = plain.candidates(&literal, &raw_text, 3).into_iter()
                     .filter(|c| c.end == full.len && c.kind != CandKind::Raw);
-                // 保留原首选，原拼写放在紧随其后的候选，用户可以直接选整句。
-                // Keep the existing top choice and put full literal readings directly after it.
-                let mut at = 1.min(cands.len());
+                // 最后一个音节已完整（che）时，分数接近则优先原拼写，句末语气词也不随意补长。
+                // 更有把握的补全仍能纠正漏打末尾字母；用户明确选择过的词、未打完的 zhon / sh 仍照常。
+                // Prefer the literal reading when scores are close, and protect common closing
+                // particles. A much better completion may still fix a missing last letter.
+                let extends_full = self.schema == Schema::Pinyin && lat.best.last().is_some_and(|(si, _)| {
+                    let span = &lat.spans[*si];
+                    let start = span.cuts.iter().rev().nth(1).copied().unwrap_or(span.start);
+                    let typed = std::str::from_utf8(&keys[start..g.len]).unwrap_or("");
+                    span.key.last().is_some_and(|&id| {
+                        let full = syllable::spelling(id);
+                        syllable::id_of(typed).is_some() && full != typed && full.starts_with(typed)
+                    })
+                });
+                let learned = cands.first().is_some_and(|c| self.user_pinyin.preferred(&c.key, &c.text));
+                let closing = literal.best.last().is_some_and(|(si, text)| {
+                    let span = &literal.spans[*si];
+                    span.key.len() == 1 && matches!(text.as_str(), "吧" | "吗" | "呢" | "啊" | "呀" | "嘛")
+                });
+                let close_score = literal.best_cost <= lat.best_cost.saturating_add(graph::penalty::EXTEND_END as u32);
+                let mut at = if extends_full && !learned && (closing || close_score) { 0 } else { 1.min(cands.len()) };
                 for candidate in alternatives.take(2) {
                     if cands.first().is_some_and(|first| first.text == candidate.text) {
+                        at = at.max(1);
                         continue;
                     }
                     cands.retain(|existing| existing.text != candidate.text);
@@ -1937,7 +2026,7 @@ impl Engine {
         self.cands = cands
             .into_iter()
             .map(|c| Cand {
-                view: CandidateView { cloud: false,
+                view: CandidateView { pinyin: String::new(), cloud: false,
                     text: c.text.clone(),
                     comment: c.comment.clone(),
                     user: c.origin == crate::decoder::Origin::User && c.kind == CandKind::Word,
@@ -2022,7 +2111,7 @@ impl Engine {
             return;
         };
         let cand = Cand {
-            view: CandidateView { cloud: false,
+            view: CandidateView { pinyin: String::new(), cloud: false,
                 text: text.clone(),
                 comment: String::new(),
                 user: false,
@@ -2138,7 +2227,7 @@ impl Engine {
             for c in found {
                 let code = self.wubi_code_of(&c.text);
                 self.cands.push(Cand {
-                    view: CandidateView { cloud: false,
+                    view: CandidateView { pinyin: String::new(), cloud: false,
                         text: c.text.clone(),
                         comment: code,
                         user: false,
@@ -2156,7 +2245,7 @@ impl Engine {
         };
         for c in table::lookup(lex, &self.raw, limit) {
             self.cands.push(Cand {
-                view: CandidateView { cloud: false,
+                view: CandidateView { pinyin: String::new(), cloud: false,
                     text: c.text.clone(),
                     comment: c.comment,
                     user: false,
@@ -2174,7 +2263,7 @@ impl Engine {
         let mut seen = std::collections::HashSet::new();
         seen.insert(typed.to_ascii_lowercase());
         self.cands.push(Cand {
-            view: CandidateView { cloud: false,
+            view: CandidateView { pinyin: String::new(), cloud: false,
                 text: typed.clone(),
                 comment: String::new(),
                 user: false,
@@ -2220,7 +2309,7 @@ impl Engine {
                 continue;
             }
             self.cands.push(Cand {
-                view: CandidateView { cloud: false,
+                view: CandidateView { pinyin: String::new(), cloud: false,
                     text: text.clone(),
                     comment: c.comment,
                     user: self.user_english.learning && self.user_english.get(&table::code_key(&c.text.replace('\'', "")).unwrap_or_default(), &c.text).is_some(),
@@ -2281,7 +2370,7 @@ impl Engine {
         let mut seen = std::collections::HashSet::new();
         for (text, user) in history.into_iter().map(|(t,_)|(t,true)).chain(common.iter().map(|t|(t.to_string(),false))) {
             if !seen.insert(text.clone()) { continue; }
-            self.cands.push(Cand { view: CandidateView { cloud: false, text: text.clone(), comment: String::new(), user }, action: Action::Table { text } });
+            self.cands.push(Cand { view: CandidateView { pinyin: String::new(), cloud: false, text: text.clone(), comment: String::new(), user }, action: Action::Table { text } });
             if self.cands.len() >= 8 { break; }
         }
         self.predicting = !self.cands.is_empty();
@@ -2785,6 +2874,7 @@ mod typo_tests {
         e.options.emoji = false;
         for input in ["xiuba", "xiu'ba"] {
             let snapshot = typing(&mut e, input);
+            assert_eq!(snapshot.candidates[0].text, "修吧", "fully typed ba must precede the completion ban");
             let i = snapshot.candidates.iter().position(|c| c.text == "修吧").expect("literal chat phrase must be offered");
             assert!(i < 3, "literal phrase must stay in the visible row");
             assert!(e.select(i));
@@ -2796,6 +2886,26 @@ mod typo_tests {
         // A learned word and a rare but valid literal word must not trigger a deletion correction.
         e.user_pinyin.learn(&key("nen"), "嫩");
         assert_eq!(typing(&mut e, "enen").candidates[0].text, "嗯嗯");
+    }
+
+    #[test]
+    fn deliberate_learned_completion_can_lead_but_unfinished_input_still_completes() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        for (py, text, cost) in [("xiu", "修", 9000), ("ba", "吧", 6000), ("xiu ban", "休班", 10)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        e.options.prediction = false;
+        assert_eq!(typing(&mut e, "xiub").candidates[0].text, "休班");
+        for _ in 0..3 {
+            let s = typing(&mut e, "xiuba");
+            let index = s.candidates.iter().position(|c| c.text == "休班").unwrap();
+            assert!(e.select(index));
+            assert_eq!(e.snapshot().commit, "休班");
+        }
+        assert_eq!(typing(&mut e, "xiuba").candidates[0].text, "休班");
     }
 
     #[test]
@@ -2843,6 +2953,27 @@ mod typo_tests {
         assert!(e.select(1));
         assert_eq!(e.snapshot().commit, "我现在忙");
         assert!(!e.is_composing());
+    }
+
+    #[test]
+    fn one_swapped_word_can_be_corrected_before_a_fully_spelled_suffix() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        for (py, text, cost) in [("ming ti", "命题", 12000), ("na jian", "那件", 14000),
+            ("ming tian jian", "明天见", 18000)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        let snapshot = typing(&mut e, "mingtinajian");
+        assert_eq!(snapshot.candidates[0].text, "明天见");
+        assert_eq!(snapshot.preedit, "ming'tian'jian");
+        assert!(snapshot.candidates.iter().take(3).any(|c| c.text == "命题那件"));
+        let explicit = typing(&mut e, "ming'ti'na'jian");
+        assert_eq!(explicit.candidates[0].text, "命题那件");
+        assert!(explicit.marks.is_empty());
+        e.options.autocorrect = false;
+        assert_eq!(typing(&mut e, "mingtinajian").candidates[0].text, "命题那件");
     }
 
     #[test]

@@ -17,20 +17,57 @@ private let busy = KeyContext(composing: true)
         #expect(KeyMapper.action(for: key("h"), in: busy) == .letter("h"))
     }
 
-    @Test func shortcutsPassAndEnglishLettersOfferCompletions() {
+    @Test func shortcutsPassAndEnglishLettersOfferCompletionsWhenEnabled() {
         #expect(KeyMapper.action(for: key("c", command: true), in: busy) == .pass)
         #expect(KeyMapper.action(for: key("a", control: true), in: idle) == .pass)
         #expect(KeyMapper.action(for: key("å", option: true), in: idle) == .pass)
         var en = idle
         en.chinese = false
+        en.englishCompletion = true
         #expect(KeyMapper.action(for: key("n"), in: en) == .letter("n"))
         #expect(KeyMapper.action(for: key(","), in: en) == .pass)
         en.composing = true
         #expect(KeyMapper.action(for: key(" ", code: KeyCode.space), in: en) == .commitEnglishWord)
         #expect(KeyMapper.action(for: key(","), in: en) == .punctuation(","))
-        #expect(KeyMapper.action(for: key("1"), in: en) == .punctuation("1"))
+        #expect(KeyMapper.action(for: key("1"), in: en) == .select(0))
         #expect(KeyMapper.action(for: key("H", shift: true), in: en) == .letter("H"))
         #expect(KeyMapper.action(for: key("", code: KeyCode.left), in: en) == .finishEnglishAndPass)
+    }
+
+    @Test func englishKeysPassThroughByDefaultIncludingMisspellingsAndSeparators() {
+        let en = KeyContext(composing: false, chinese: false)
+        for c in "recieve MixedCASE user_name@example.com C++ 3.14=2" {
+            #expect(KeyMapper.action(for: key(String(c)), in: en) == .pass)
+        }
+        for code in [KeyCode.space, KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.delete, KeyCode.escape,
+                     KeyCode.tab, KeyCode.up, KeyCode.down, KeyCode.left, KeyCode.right, KeyCode.home,
+                     KeyCode.end, KeyCode.forwardDelete] {
+            #expect(KeyMapper.action(for: key("", code: code), in: en) == .pass)
+        }
+        #expect(KeyMapper.action(for: key("É", shift: true), in: en) == .pass)
+        #expect(KeyMapper.action(for: key("N", caps: true), in: en) == .pass)
+    }
+
+    @Test func disablingEnglishCompletionAlsoBypassesStaleCandidateShortcuts() {
+        var keys = CandidateKeys()
+        keys.assign(KeyBinding(keyCode: KeyCode.down, character: nil, label: "↓"), to: .expand)
+        let en = KeyContext(composing: true, chinese: false, bindings: keys)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.down), in: en) == .pass)
+        #expect(KeyMapper.action(for: key(" ", code: KeyCode.space), in: en) == .pass)
+        #expect(KeyMapper.action(for: key("1"), in: en) == .pass)
+    }
+
+    @Test func digitsChooseEnglishCandidatesOnlyWhenCompletionIsEnabledAndComposing() {
+        var en = KeyContext(composing: true, chinese: false, englishCompletion: true)
+        #expect(KeyMapper.action(for: key("2"), in: en) == .select(1))
+        #expect(KeyMapper.action(for: key("7"), in: en) == .select(6))
+        #expect(KeyMapper.action(for: key("0"), in: en) == .punctuation("0"))
+        #expect(KeyMapper.action(for: key("8"), in: en) == .punctuation("8"))
+        #expect(KeyMapper.action(for: key("2", command: true), in: en) == .pass)
+        en.pageSize = 9
+        #expect(KeyMapper.action(for: key("9"), in: en) == .select(8))
+        en.composing = false
+        #expect(KeyMapper.action(for: key("2"), in: en) == .pass)
     }
 
     @Test func capsLockAndShiftTypeCapitals() {

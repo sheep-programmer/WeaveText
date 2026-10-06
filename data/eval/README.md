@@ -19,6 +19,7 @@ under CC0.
 
 - `sentences.tsv` — 评测集本体，每行 `句子<TAB>拼音`。 One sentence per line, `sentence<TAB>pinyin`.
 - `check.py` — 自检脚本。 Self-check script.
+- `correction-common.tsv` — 50 个常见拼写、颠倒／漏字／重按用例；第三列指定实际按键。包含合法歧义和显式隔音符，不用于训练。
 
 ## 格式 / Format
 
@@ -69,6 +70,18 @@ python3 data/eval/check.py
 ```
 
 全部通过时退出码为 0，输出各类别条数、句长分布与音节表大小。
+
+候选质量与错拼检查（在 `core/` 下运行）：
+
+```sh
+cargo run --release -p weave-engine --example eval -- --data ../data/build --eval ../data/eval/sentences.tsv --gram ../data/build/grammar.wvg --report /tmp/ranking.tsv
+cargo run --release -p weave-engine --example eval -- --data ../data/build --eval ../data/eval/correction-common.tsv --gram ../data/build/grammar.wvg --show 50
+```
+
+`--report` 输出每句的按键、目标、前三候选与预编辑拼音。`--typo swap|drop|extra|sub --seed 1` 可在
+普通评测集上重现相邻字母颠倒、漏字母、重复按键及左右邻键误触；`--no-autocorrect` 用于对照。
+`correction-common.tsv` 前 30 行是正确拼写，后 20 行是有意错拼。部分错拼也有合理的原样读法，
+如 `zhidaoo` 可以是「知道哦」；此类输入应保留原样与纠正选择，不要求猜测一律获胜。
 
 英文：The script reads the `SYLLABLES` table from `core/weave-dict/src/syllable.rs` and validates
 each line: format, legal syllables, character/syllable count equality, duplicate sentences, plus

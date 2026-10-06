@@ -522,6 +522,14 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         snap("layout_picker_dark")
     }
 
+    @Config(qualifiers = "w320dp-h640dp-port-xhdpi")
+    @Test fun layoutPickerNarrowLargeFont() {
+        fontScale(1.3f)
+        val (k, _) = keyboard(false) { putString(WeavePrefs.KEYBOARDS, "pinyin,t9,t14,hand,shuangpin,wubi86,english") }
+        k.showPanel("picker")
+        snap("layout_picker_narrow_font13")
+    }
+
     @Test fun oneHand() {
         val (_, _) = keyboard(false) { putInt(WeavePrefs.ONE_HAND, 2) }
         snap("one_hand_right_light")

@@ -4,7 +4,7 @@
 //! pairing first turns the 6-digit code into a strong key with SPAKE2 and uses it as the Noise XXpsk3 PSK,
 //! so the code can only be guessed online, once per attempt, and a captured handshake can't be brute-forced.
 
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -20,12 +20,47 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const SPAKE_A: &[u8] = b"weavelink-initiator";
 const SPAKE_B: &[u8] = b"weavelink-responder";
 
+enum Socket {
+    Tcp(TcpStream),
+    Direct(crate::p2p::Stream),
+}
+
+impl Socket {
+    fn addr(&self) -> Result<SocketAddr, String> {
+        match self { Self::Tcp(s) => s.peer_addr().map_err(err), Self::Direct(s) => Ok(s.addr()) }
+    }
+    fn try_clone(&self) -> Result<Self, String> {
+        match self { Self::Tcp(s) => s.try_clone().map(Self::Tcp).map_err(err), Self::Direct(s) => Ok(Self::Direct(s.clone())) }
+    }
+    fn read_timeout(&mut self, timeout: Duration) -> Result<(), String> {
+        match self { Self::Tcp(s) => s.set_read_timeout(Some(timeout)).map_err(err), Self::Direct(s) => { s.read_timeout = timeout; Ok(()) } }
+    }
+    fn shutdown(&self) {
+        match self { Self::Tcp(s) => { let _ = s.shutdown(std::net::Shutdown::Both); }, Self::Direct(s) => s.shutdown() }
+    }
+}
+
+impl Read for Socket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self { Self::Tcp(s) => s.read(buf), Self::Direct(s) => s.read(buf) }
+    }
+}
+impl Write for Socket {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self { Self::Tcp(s) => s.write(buf), Self::Direct(s) => s.write(buf) }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self { Self::Tcp(s) => s.flush(), Self::Direct(s) => s.flush() }
+    }
+}
+
 pub struct Channel {
-    reader: Mutex<TcpStream>,
-    writer: Mutex<TcpStream>,
+    reader: Mutex<Socket>,
+    writer: Mutex<Socket>,
     noise: Mutex<snow::TransportState>,
     pub remote_key: Vec<u8>,
     pub addr: SocketAddr,
+    pub direct: bool,
 }
 
 impl Channel {
@@ -51,12 +86,12 @@ impl Channel {
 
     pub fn shutdown(&self) {
         if let Ok(w) = self.writer.lock() {
-            let _ = w.shutdown(std::net::Shutdown::Both);
+            w.shutdown();
         }
     }
 }
 
-fn spake_key(stream: &mut TcpStream, code: &str, initiator: bool) -> Result<Vec<u8>, String> {
+fn spake_key(stream: &mut Socket, code: &str, initiator: bool) -> Result<Vec<u8>, String> {
     let pw = Password::new(code.as_bytes());
     let (a, b) = (SpakeId::new(SPAKE_A), SpakeId::new(SPAKE_B));
     let (state, msg) = if initiator {
@@ -69,20 +104,30 @@ fn spake_key(stream: &mut TcpStream, code: &str, initiator: bool) -> Result<Vec<
     state.finish(&other).map_err(|e| format!("pairing: {e:?}"))
 }
 
-fn finish(stream: TcpStream, hs: snow::HandshakeState, addr: SocketAddr) -> Result<Channel, String> {
+fn finish(mut stream: Socket, hs: snow::HandshakeState, addr: SocketAddr) -> Result<Channel, String> {
     let remote_key = hs.get_remote_static().ok_or("no remote key")?.to_vec();
     let noise = hs.into_transport_mode().map_err(err)?;
-    stream.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(err)?;
-    let _ = stream.set_nodelay(true);
-    let reader = stream.try_clone().map_err(err)?;
-    Ok(Channel { reader: Mutex::new(reader), writer: Mutex::new(stream), noise: Mutex::new(noise), remote_key, addr })
+    stream.read_timeout(IDLE_TIMEOUT)?;
+    let direct = matches!(stream, Socket::Direct(_));
+    if let Socket::Tcp(s) = &stream { let _ = s.set_nodelay(true); }
+    let reader = stream.try_clone()?;
+    Ok(Channel { reader: Mutex::new(reader), writer: Mutex::new(stream), noise: Mutex::new(noise), remote_key, addr, direct })
 }
 
 /// 主动方：`pair_code` 为 Some 时走配对。 Initiator; pairs when `pair_code` is given.
 pub fn connect(addr: SocketAddr, me: &Identity, pair_code: Option<&str>) -> Result<Channel, String> {
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map_err(err)?;
-    s.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(err)?;
+    let s = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map_err(err)?;
     s.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(err)?;
+    initiate(Socket::Tcp(s), me, pair_code)
+}
+
+pub fn connect_direct(stream: crate::p2p::Stream, me: &Identity, code: &str) -> Result<Channel, String> {
+    initiate(Socket::Direct(stream), me, Some(code))
+}
+
+fn initiate(mut s: Socket, me: &Identity, pair_code: Option<&str>) -> Result<Channel, String> {
+    let addr = s.addr()?;
+    s.read_timeout(HANDSHAKE_TIMEOUT)?;
     let mode = if pair_code.is_some() { MODE_PAIR } else { MODE_CONNECT };
     s.write_all(&[&MAGIC[..], &[mode]].concat()).map_err(err)?;
     let mut hs = match pair_code {
@@ -103,16 +148,24 @@ pub fn connect(addr: SocketAddr, me: &Identity, pair_code: Option<&str>) -> Resu
     hs.read_message(&m2, &mut buf).map_err(|_| "handshake rejected (wrong code?)".to_string())?;
     let n = hs.write_message(&[], &mut buf).map_err(err)?;
     write_frame(&mut s, &buf[..n]).map_err(err)?;
-    s.set_write_timeout(None).map_err(err)?;
+    if let Socket::Tcp(s) = &s { s.set_write_timeout(None).map_err(err)?; }
     finish(s, hs, addr)
 }
 
 /// 被动方。[pair_code] 在收到配对请求时调用，返回当前有效的配对码（未开放配对时返回 None 即拒绝）。
 /// Responder. [pair_code] is asked when a pairing request arrives and returns the open code, or None to refuse.
-pub fn accept(mut s: TcpStream, me: &Identity, pair_code: impl FnOnce() -> Option<String>) -> Result<(Channel, bool), String> {
-    let addr = s.peer_addr().map_err(err)?;
-    s.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(err)?;
+pub fn accept(s: TcpStream, me: &Identity, pair_code: impl FnOnce() -> Option<String>) -> Result<(Channel, bool), String> {
     s.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).map_err(err)?;
+    respond(Socket::Tcp(s), me, pair_code)
+}
+
+pub fn accept_direct(s: crate::p2p::Stream, me: &Identity, pair_code: impl FnOnce() -> Option<String>) -> Result<(Channel, bool), String> {
+    respond(Socket::Direct(s), me, pair_code)
+}
+
+fn respond(mut s: Socket, me: &Identity, pair_code: impl FnOnce() -> Option<String>) -> Result<(Channel, bool), String> {
+    let addr = s.addr()?;
+    s.read_timeout(HANDSHAKE_TIMEOUT)?;
     let mut pre = [0u8; 5];
     std::io::Read::read_exact(&mut s, &mut pre).map_err(err)?;
     if &pre[..4] != MAGIC {
@@ -137,7 +190,7 @@ pub fn accept(mut s: TcpStream, me: &Identity, pair_code: impl FnOnce() -> Optio
     write_frame(&mut s, &buf[..n]).map_err(err)?;
     let m3 = read_frame(&mut s).map_err(err)?;
     hs.read_message(&m3, &mut buf).map_err(|_| "handshake failed (wrong code?)".to_string())?;
-    s.set_write_timeout(None).map_err(err)?;
+    if let Socket::Tcp(s) = &s { s.set_write_timeout(None).map_err(err)?; }
     Ok((finish(s, hs, addr)?, pairing))
 }
 

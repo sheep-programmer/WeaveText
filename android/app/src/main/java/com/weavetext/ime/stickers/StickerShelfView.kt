@@ -18,6 +18,9 @@ import android.widget.GridView
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.LinearLayout.LayoutParams as ShelfLayoutParams
+import android.widget.LinearLayout.VERTICAL
+import android.widget.ScrollView
 import android.widget.TextView
 import com.weavetext.ime.R
 import java.io.File
@@ -50,10 +53,14 @@ class StickerShelfView(
     ctx: Context, private val pick: (Sticker) -> Unit,
     private val manage: () -> Unit, private val import: () -> Unit, private val overlay: () -> Unit,
     private val notice: (String) -> Unit, private val allowed: () -> Boolean = { true },
-) : LinearLayout(ctx) {
+) : FrameLayout(ctx) {
     private val repository = StickerRepository.get(ctx)
     private var filter = "all"
     private var items = emptyList<Sticker>()
+    private val content = LinearLayout(ctx)
+    private val confirmation = FrameLayout(ctx)
+    private var pendingDelete: Sticker? = null
+    private var deleting = false
     private val nav = LinearLayout(ctx)
     private val tabs = LinearLayout(ctx)
     private val tools = LinearLayout(ctx)
@@ -77,7 +84,8 @@ class StickerShelfView(
     private val c get() = colors ?: if (dark) ShelfColors.DARK else ShelfColors.LIGHT
 
     init {
-        orientation = VERTICAL
+        content.orientation = LinearLayout.VERTICAL
+        addView(content, FrameLayout.LayoutParams(-1, -1))
         setPadding(dp(8), dp(6), dp(8), dp(4))
         // 第一行：分组标签（可横滑）+ 右侧图标按钮；长按某张后换成操作条。
         // Row one: scrolling group chips + icon buttons on the right; replaced by the action bar after a long-press.
@@ -86,17 +94,17 @@ class StickerShelfView(
         tabs.gravity = Gravity.CENTER_VERTICAL
         nav.addView(HorizontalScrollView(ctx).apply {
             isHorizontalScrollBarEnabled = false; isFillViewport = false; addView(tabs)
-        }, LayoutParams(0, -1, 1f))
+        }, ShelfLayoutParams(0, -1, 1f))
         tools.gravity = Gravity.CENTER_VERTICAL
         tools.addView(iconButton(R.drawable.ic_plus, "导入图片") { import() })
         tools.addView(iconButton(R.drawable.ic_float, "悬浮收纳窗") { overlay() })
         tools.addView(iconButton(R.drawable.ic_settings, "管理表情") { manage() })
-        nav.addView(tools, LayoutParams(-2, -1))
+        nav.addView(tools, ShelfLayoutParams(-2, -1))
         top.addView(nav, FrameLayout.LayoutParams(-1, -1))
         actionBar.gravity = Gravity.CENTER_VERTICAL
         actionBar.visibility = GONE
         top.addView(actionBar, FrameLayout.LayoutParams(-1, -1))
-        addView(top, LayoutParams(-1, dp(40)))
+        content.addView(top, ShelfLayoutParams(-1, dp(40)))
 
         val body = FrameLayout(ctx)
         grid.numColumns = GridView.AUTO_FIT
@@ -117,7 +125,11 @@ class StickerShelfView(
         body.addView(grid, FrameLayout.LayoutParams(-1, -1))
         buildEmpty()
         body.addView(empty, FrameLayout.LayoutParams(-1, -1))
-        addView(body, LayoutParams(-1, 0, 1f))
+        content.addView(body, ShelfLayoutParams(-1, 0, 1f))
+        confirmation.visibility = GONE
+        confirmation.isClickable = true
+        confirmation.setOnClickListener { if (!deleting) dismissDelete() }
+        addView(confirmation, FrameLayout.LayoutParams(-1, -1))
         StickerDrop.bind(this, repository, notice)
         applyColors()
     }
@@ -127,14 +139,14 @@ class StickerShelfView(
         empty.gravity = Gravity.CENTER
         emptyIcon.setImageResource(R.drawable.ic_sticker_bag)
         emptyIcon.setPadding(dp(14), dp(14), dp(14), dp(14))
-        empty.addView(emptyIcon, LayoutParams(dp(56), dp(56)))
+        empty.addView(emptyIcon, ShelfLayoutParams(dp(56), dp(56)))
         emptyTitle.textSize = 15f; emptyTitle.setTypeface(null, Typeface.BOLD); emptyTitle.gravity = Gravity.CENTER
-        empty.addView(emptyTitle, LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        empty.addView(emptyTitle, ShelfLayoutParams(-2, -2).apply { topMargin = dp(10) })
         emptyText.textSize = 12f; emptyText.gravity = Gravity.CENTER; emptyText.setLineSpacing(0f, 1.15f)
-        empty.addView(emptyText, LayoutParams(-2, -2).apply { topMargin = dp(4); leftMargin = dp(24); rightMargin = dp(24) })
+        empty.addView(emptyText, ShelfLayoutParams(-2, -2).apply { topMargin = dp(4); leftMargin = dp(24); rightMargin = dp(24) })
         emptyButton.text = "导入图片"; emptyButton.textSize = 13f; emptyButton.gravity = Gravity.CENTER
         emptyButton.setPadding(dp(18), 0, dp(18), 0); emptyButton.setOnClickListener { import() }
-        empty.addView(emptyButton, LayoutParams(-2, dp(34)).apply { topMargin = dp(12) })
+        empty.addView(emptyButton, ShelfLayoutParams(-2, dp(34)).apply { topMargin = dp(12) })
     }
 
     fun reload() {
@@ -144,7 +156,7 @@ class StickerShelfView(
         if (filter.startsWith("group:") && filter.removePrefix("group:") !in repository.store.groups()) filter = "all"
         actionItem = actionItem?.let { a -> repository.store.get(a.id) }
         items = if (permitted) repository.store.list("", filter) else emptyList()
-        if (!permitted) actionItem = null
+        if (!permitted) { actionItem = null; dismissDelete() }
         nav.visibility = if (actionItem == null) VISIBLE else INVISIBLE
         tools.visibility = if (permitted) VISIBLE else GONE
         updateActions()
@@ -178,11 +190,11 @@ class StickerShelfView(
         if (item == null) return
         actionBar.background = rounded(c.accentSoft, dp(14))
         actionBar.setPadding(dp(6), 0, dp(2), 0)
-        actionBar.addView(StickerImageView(context).apply { bind(repository.store.file(item), item.id) }, LayoutParams(dp(30), dp(30)))
+        actionBar.addView(StickerImageView(context).apply { bind(repository.store.file(item), item.id) }, ShelfLayoutParams(dp(30), dp(30)))
         actionBar.addView(TextView(context).apply {
             text = item.name; textSize = 13f; setTextColor(c.label); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(8), 0, dp(4), 0)
-        }, LayoutParams(0, -2, 1f))
+        }, ShelfLayoutParams(0, -2, 1f))
         actionBar.addView(iconButton(if (item.favorite) R.drawable.ic_star_filled else R.drawable.ic_star,
             if (item.favorite) "取消收藏" else "收藏", tint = if (item.favorite) FAVORITE else c.label) {
             repository.edit(item.id, item.name, item.group, item.tags, !item.favorite) { notice(if (item.favorite) "已取消收藏" else "已收藏") }
@@ -191,9 +203,65 @@ class StickerShelfView(
         actionBar.addView(iconButton(R.drawable.ic_edit, "编辑名称、标签与分组") { edit(item) })
         actionBar.addView(iconButton(R.drawable.ic_share, "分享原图") { StickerSending.share(context, item); actionItem = null; reload() })
         actionBar.addView(iconButton(R.drawable.ic_delete, "删除", tint = c.danger) {
-            repository.delete(setOf(item.id)) { notice("已删除「${item.name}」") }; actionItem = null; reload()
+            requestDelete(item)
         })
         actionBar.addView(iconButton(R.drawable.ic_close, "关闭") { actionItem = null; reload() })
+    }
+
+    private fun requestDelete(item: Sticker) {
+        if (!allowed() || deleting || pendingDelete != null) return
+        pendingDelete = item
+        buildDeleteConfirmation()
+        content.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        confirmation.visibility = VISIBLE
+    }
+
+    private fun dismissDelete() {
+        pendingDelete = null; confirmation.visibility = GONE
+        content.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_AUTO
+    }
+
+    /** A modal layer works in both the IME and overlay window, without taking editor focus. */
+    private fun buildDeleteConfirmation() {
+        val item = pendingDelete ?: return
+        confirmation.removeAllViews()
+        confirmation.setBackgroundColor(0x66000000)
+        val card = LinearLayout(context).apply {
+            orientation = VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(8))
+            background = rounded(c.surface, dp(20)); isClickable = true
+        }
+        val message = LinearLayout(context).apply { orientation = VERTICAL }
+        message.addView(TextView(context).apply {
+            text = "删除这张表情？"; textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(c.label)
+        }, ShelfLayoutParams(-1, -2))
+        message.addView(TextView(context).apply {
+            text = "「${item.name}」将从收纳袋中移除，无法撤销。原应用中的图片不受影响。"
+            textSize = 13f; setTextColor(c.muted); setLineSpacing(0f, 1.12f)
+        }, ShelfLayoutParams(-1, -2).apply { topMargin = dp(10); bottomMargin = dp(6) })
+        // Shrink the scrollable message first; keep both actions visible even in the smallest floating window.
+        card.addView(ScrollView(context).apply {
+            isFillViewport = false; addView(message)
+        }, ShelfLayoutParams(-1, -2, 1f))
+        val buttons = LinearLayout(context).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
+        fun button(label: String, color: Int, action: () -> Unit) = TextView(context).apply {
+            text = label; textSize = 14f; setTextColor(color); gravity = Gravity.CENTER
+            setPadding(dp(14), 0, dp(14), 0); isClickable = true; isFocusable = true
+            background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(c.stroke), null, rounded(c.surface, dp(12)))
+            isEnabled = !deleting; setOnClickListener { action() }
+            layoutParams = ShelfLayoutParams(-2, dp(44))
+        }
+        buttons.addView(button("取消", c.muted) { dismissDelete() })
+        buttons.addView(button("删除", c.danger) {
+            if (deleting || !allowed()) return@button
+            deleting = true; buildDeleteConfirmation()
+            repository.delete(setOf(item.id)) { message ->
+                deleting = false; dismissDelete(); actionItem = null; reload(); notice(message)
+            }
+        })
+        card.addView(buttons, ShelfLayoutParams(-1, dp(44)))
+        confirmation.addView(card, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply {
+            leftMargin = dp(8); rightMargin = dp(8)
+        })
     }
 
     /**
@@ -213,7 +281,7 @@ class StickerShelfView(
         background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(c.stroke), null, rounded(Color.WHITE, dp(12)))
         isClickable = true; isFocusable = true
         setOnClickListener { action() }
-        layoutParams = LayoutParams(dp(36), dp(36))
+        layoutParams = ShelfLayoutParams(dp(36), dp(36))
     }
 
     private fun chip(text: String, active: Boolean, action: () -> Unit) = TextView(context).apply {
@@ -223,7 +291,7 @@ class StickerShelfView(
         setPadding(dp(12), 0, dp(12), 0)
         background = rounded(if (active) c.accent else c.chip, dp(15))
         setOnClickListener { action() }
-        layoutParams = LayoutParams(-2, dp(30)).apply { rightMargin = dp(6) }
+        layoutParams = ShelfLayoutParams(-2, dp(30)).apply { rightMargin = dp(6) }
     }
 
     private fun rounded(color: Int, radius: Int, stroke: Int = Color.TRANSPARENT, width: Int = 1) = GradientDrawable().apply {
@@ -239,11 +307,13 @@ class StickerShelfView(
         emptyTitle.setTextColor(c.label); emptyText.setTextColor(c.muted)
         emptyButton.setTextColor(c.onAccent); emptyButton.background = rounded(c.accent, dp(17))
         reload()
+        if (pendingDelete != null) buildDeleteConfirmation()
     }
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); repository.observe(changed); reload() }
     override fun onDetachedFromWindow() {
         repository.unobserve(changed)
+        dismissDelete()
         for (i in 0 until grid.childCount) (grid.getChildAt(i).tag as? Tile)?.image?.stop()
         super.onDetachedFromWindow()
     }

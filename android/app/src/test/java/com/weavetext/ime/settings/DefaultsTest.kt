@@ -28,6 +28,13 @@ class DefaultsTest {
         assertEquals(0, WeavePrefs.vibration(p))
         assertEquals(WeavePrefs.SOUND_OFF, WeavePrefs.soundStyle(p))
         assertEquals(WeavePrefs.SOUND_VOLUME_DEFAULT, WeavePrefs.soundVolume(p))
+        assertEquals(1, WeavePrefs.pinyinHint(p))
+    }
+    @Test fun tonedAnnotationsKeepOffChoicesAndUpgradeLegacyPlainHints() {
+        p.edit().putInt(WeavePrefs.PINYIN_HINT, 0).commit()
+        assertEquals(0, WeavePrefs.pinyinHint(p))
+        p.edit().putInt(WeavePrefs.PINYIN_HINT, 2).commit()
+        assertEquals(1, WeavePrefs.pinyinHint(p))
     }
 
     @Test fun explicitChoicesAreKept() {

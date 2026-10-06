@@ -23,7 +23,7 @@ pub use manifest::Manifest;
 
 /// 只读取 `.xipk` 的 manifest，不安装（用于导入前确认）。 Read a package manifest without installing.
 pub fn inspect_package(xipk: &std::path::Path) -> Result<Manifest, String> {
-    package::read_xipk_manifest(xipk)
+    if xipk.is_dir() { package::read_dir_manifest(xipk) } else { package::read_xipk_manifest(xipk) }
 }
 pub use runtime::{
     SpeechSession, HOST_VERSION, LOG_DEBUG, LOG_ERROR, LOG_INFO, LOG_WARN, SDK_VERSION,
@@ -128,10 +128,7 @@ impl PluginManager {
                         Ok(m) => seen.push(self.register(m, p, false).id),
                         Err(e) => self.log_host(&format!("skip {}: {e}", p.display())),
                     }
-                } else if p
-                    .extension()
-                    .is_some_and(|x| x.eq_ignore_ascii_case("xipk"))
-                {
+                } else if p.is_file() && package::is_archive(&p) {
                     xipks.push(p);
                 }
             }

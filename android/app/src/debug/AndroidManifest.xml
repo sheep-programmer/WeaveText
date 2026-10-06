@@ -3,6 +3,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <activity
+            android:name="com.weavetext.ime.debug.SettingsTestActivity"
+            android:exported="false" />
+        <activity
             android:name="com.weavetext.ime.debug.SmokeActivity"
             android:exported="true"
             android:windowSoftInputMode="stateAlwaysVisible|adjustResize" />

@@ -26,6 +26,115 @@ class NativeAsrTest {
     private val models = File(System.getProperty("weave.models"))
     private val wav = File(System.getProperty("weave.testWavs"), "0.wav")
 
+    /**
+     * Same audio set, same timing and character error-rate calculation for the installed final models.
+     * The transcripts are the ground truth published with Sherpa's Paraformer model card; this is a
+     * reproducible slice of its Sichuan/Chuanyu test set, not a claim about overall accuracy.
+     */
+    @Test fun officialChineseModelBenchmarkReportsTextAndLatency() = benchmarkChineseModels(false)
+
+    @Test fun officialChineseStreamingBaselineReportsTextAndLatency() = benchmarkChineseModels(true)
+
+    private fun benchmarkChineseModels(streamingOnly: Boolean) {
+        val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
+        val paraformerDir = root.resolve("sherpa-onnx-paraformer-zh-int8-2025-10-07")
+        val senseDir = root.resolve("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09")
+        val zipformerDir = File(models, "asr-final-small")
+        assumeTrue(File(runtime, "libsherpa-onnx-c-api.dylib").isFile)
+        assumeTrue(paraformerDir.resolve("model.int8.onnx").isFile && senseDir.resolve("model.int8.onnx").isFile)
+        assumeTrue(zipformerDir.resolve("model.int8.onnx").isFile)
+        NativeAsrModels.load(runtime)
+
+        val truth = linkedMapOf(
+            "1.wav" to "来哥哥再给你唱首歌好儿哎呦把伴奏给我放起来放就放嘛还要躲人家钩子",
+            "2.wav" to "对不起只有二娃才能让我真正体会作为女人的快乐",
+            "3.wav" to "我想去逛街欢迎进入直播间晚上好那我的名字是怎么说的呢",
+            "4.wav" to "梦见的就是你不行啊有四川话根本唱不起来根本唱不起来呀",
+            "5.wav" to "就临走那天挑了个飘了一下嗨呀弟弟灵魂儿就飞上九霄云就飘着一下魂都飞了对不对",
+            "6.wav" to "是不是给人感觉后头是青花亮色的然后说话是很平和的眼神是不慌乱的不散的",
+            "7.wav" to "他坐在椅子上挺直起腰杆脸上展现出灿烂的笑容",
+            "8.wav" to "唤起路由无限的感慨使他更加痛恨官场的欺诈污浊",
+            "9.wav" to "看面貌约五十左右却自称活了两百多岁在清顺治时出家当过和尚还有杜蝶为证",
+            "10.wav" to "其言曰士大夫以其见闻之广反各有所偏自有负担杀者有负良骑者",
+            "11.wav" to "据说有网友坐飞机的时候呢广播全程播报",
+            "12.wav" to "将溃疡两周以上都应该及时就医据了解啊小云平时呢都喜欢吃比较烫的饭菜也喜欢吃麻辣烫火锅之类的高温食物",
+            "13.wav" to "绝佳好位置好像我被看到了就问你敢不敢进来吧你一套带走猪脚亮",
+            "14.wav" to "两岸猿声啼不住有家难回车里住",
+            "15.wav" to "杨大人一律就退还会再要求以关注货币来补助这个差额天宝年间杨胜坚转任",
+            "16.wav" to "做钱的速度还快这真的是一个经济爆发式增长的时代",
+        )
+        val audioDir = paraformerDir.resolve("test_wavs")
+        val candidates: List<Pair<String, () -> com.weavetext.ime.voice.local.OfflineAsr>> = if (streamingOnly) {
+            val dir = File(models, "asr-stream-small")
+            assumeTrue(dir.resolve("model.int8.onnx").isFile)
+            listOf("stream-small" to {
+                val stream = NativeAsrModels.streaming("zipformer2-ctc", dir.resolve("model.int8.onnx").path, dir.resolve("tokens.txt").path)
+                object : com.weavetext.ime.voice.local.OfflineAsr {
+                    override fun decode(samples: FloatArray): String {
+                        stream.startSession()
+                        var offset = 0
+                        while (offset < samples.size) {
+                            val end = minOf(samples.size, offset + 640)
+                            stream.accept(samples.copyOfRange(offset, end)); offset = end
+                        }
+                        stream.finish()
+                        return stream.text()
+                    }
+                    override fun release() = stream.release()
+                }
+            })
+        } else listOf(
+            "paraformer" to { NativeAsrModels.offline("paraformer", paraformerDir.resolve("model.int8.onnx").path, paraformerDir.resolve("tokens.txt").path) },
+            "sensevoice-zh" to { NativeAsrModels.offline("sense-voice", senseDir.resolve("model.int8.onnx").path, senseDir.resolve("tokens.txt").path) },
+            "zipformer-ctc" to { NativeAsrModels.offline("zipformer-ctc", zipformerDir.resolve("model.int8.onnx").path, zipformerDir.resolve("tokens.txt").path) },
+        )
+        candidates.forEach { (model, create) ->
+            val recognizer = create()
+            try {
+                if (model == "sensevoice-zh") recognizer.setLanguage("zh")
+                var errors = 0
+                var totalReference = 0
+                var totalDistance = 0
+                truth.forEach { (name, expected) ->
+                    val audio = samples(audioDir.resolve(name))
+                    val start = System.nanoTime()
+                    val text = TwoPassRecognizer.clean(recognizer.decode(audio))
+                    val elapsedMs = (System.nanoTime() - start) / 1_000_000
+                    val reference = normalizeForCer(expected)
+                    val actual = normalizeForCer(text)
+                    val distance = editDistance(reference, actual)
+                    totalReference += reference.length
+                    totalDistance += distance
+                    if (distance != 0) errors++
+                    println("benchmark model=$model audio=$name durationMs=${audio.size * 1000 / 16000} elapsedMs=$elapsedMs cer=${"%.3f".format(distance.toDouble() / reference.length.coerceAtLeast(1))} text=$text")
+                    assertTrue("$model returned no text for $name", text.isNotEmpty())
+                }
+                println("benchmark summary model=$model files=${truth.size} filesWithErrors=$errors cer=${"%.3f".format(totalDistance.toDouble() / totalReference)}")
+            } finally {
+                recognizer.release()
+            }
+        }
+    }
+
+    private fun normalizeForCer(text: String): String = text.filter { it.isLetterOrDigit() || it in '\u4e00'..'\u9fff' }
+
+    private fun editDistance(expected: String, actual: String): Int {
+        var previous = IntArray(actual.length + 1) { it }
+        for (i in expected.indices) {
+            val current = IntArray(actual.length + 1)
+            current[0] = i + 1
+            for (j in actual.indices) {
+                current[j + 1] = minOf(
+                    previous[j + 1] + 1,
+                    current[j] + 1,
+                    previous[j] + if (expected[i] == actual[j]) 0 else 1,
+                )
+            }
+            previous = current
+        }
+        return previous.last()
+    }
+
     @Test fun whisperLanguageAndMixedAccuracyComparison() {
         val root = File(System.getProperty("weave.cache")).parentFile.resolve("sherpa")
         val sense = root.resolve("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09")

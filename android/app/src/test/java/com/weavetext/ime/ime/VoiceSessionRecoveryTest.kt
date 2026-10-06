@@ -2,6 +2,7 @@ package com.weavetext.ime.ime
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
@@ -13,6 +14,8 @@ import com.weavetext.ime.testing.ScriptedRecognizer
 import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.voice.VoiceListener
 import com.weavetext.ime.voice.VoiceRecognizer
+import com.weavetext.ime.voice.VoiceAutoDownload
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -46,13 +49,17 @@ class VoiceSessionRecoveryTest {
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
     private lateinit var edit: EditText
     private lateinit var controller: InputController
+    private var previousEnsure: ((Context) -> Boolean)? = null
 
     @Before fun setUp() {
+        previousEnsure = VoiceAutoDownload.ensureOverride
+        VoiceAutoDownload.ensureOverride = { false }
         shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
         edit = EditText(app)
         val ic = edit.onCreateInputConnection(EditorInfo())
         controller = InputController { ic }
     }
+    @After fun restoreDownloads() { VoiceAutoDownload.ensureOverride = previousEnsure }
 
     private fun idle(ms: Long) = ShadowLooper.idleMainLooper(ms, TimeUnit.MILLISECONDS)
 
@@ -80,18 +87,49 @@ class VoiceSessionRecoveryTest {
         assertEquals(2, rec.starts)
     }
 
-    @Test fun startTakesOverAStuckSession() {
+    @Test fun startingAgainDuringFinalizingImmediatelyBeginsANewRecording() {
         val rec = SilentRecognizer()
         val session = VoiceSession(app, controller, recognizerProvider = { rec })
         session.start()
         session.stop()
-        // 刚点停止时再点不打断（可能马上就出结果）。 Right after stop a second tap doesn't interrupt.
-        assertTrue(session.start())
-        assertEquals(1, rec.starts)
-        idle(VoiceSession.TAKEOVER_MS + 100)
+        // 工具栏/空格入口调用 start 也立即重录，与面板的 restart 行为一致。
         assertTrue(session.start())
         assertEquals(2, rec.starts)
+        assertEquals(1, rec.cancels)
         assertEquals(VoiceSession.State.CONNECTING, session.state)
+    }
+
+    @Test fun explicitRestartImmediatelyCancelsFinalizingAndDropsAllOldCallbacks() {
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val old = rec.listener!!
+        old.onFinal("已确定")
+        old.onPartial("未确认")
+        session.stop()
+        assertEquals(VoiceSession.State.FINALIZING, session.state)
+
+        assertTrue(session.restart()) // 不必等八秒，取消的同步 onEnd 也不能落定旧 partial。
+        assertEquals(1, rec.cancels)
+        assertEquals(VoiceSession.State.CONNECTING, session.state)
+        assertEquals("已确定", edit.text.toString())
+        old.onPartial("旧字幕")
+        old.onFinal("旧终稿")
+        old.onReplace("已确定", "不该覆写")
+        old.onError("旧错误")
+        old.onEnd()
+        assertEquals(VoiceSession.State.CONNECTING, session.state)
+        assertEquals("", session.partial)
+        assertEquals(null, session.error)
+        assertEquals("已确定", edit.text.toString())
+
+        rec.listener!!.onReady(false)
+        rec.listener!!.onPartial("重新录音")
+        idle(VoiceSession.FINALIZE_LIMIT_MS + 1)
+        assertEquals("旧收尾计时器不能结束新录音", VoiceSession.State.LISTENING, session.state)
+        rec.listener!!.onFinal("重新录音")
+        rec.endAll()
+        assertEquals("已确定重新录音", edit.text.toString())
     }
 
     @Test fun recognizerThatNeverConnectsEndsWithAnError() {
@@ -141,6 +179,19 @@ class VoiceSessionRecoveryTest {
         rec.endAll()
         session.start()
         assertEquals(null, session.notice)
+    }
+
+    @Test fun postHocCorrectionReplacesTheLastCommittedVoiceSegmentBeforeEnd() {
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller, recognizerProvider = { rec })
+        session.start()
+        val l = rec.listener!!
+        l.onFinal("识别错误")
+        l.onReplace("识别错误", "识别正确")
+
+        assertEquals("识别正确", edit.text.toString())
+        assertEquals("识别正确", session.committed.toString())
+        l.onEnd()
     }
 
     @Test fun thinkingPauseDoesNotStopRecordingOrLoseTheNextSentence() {

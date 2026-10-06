@@ -1,5 +1,6 @@
 /// 中文模式的全角标点，引号成对交替。 Full-width punctuation for Chinese mode, with alternating quotes.
 public struct Punctuation: Sendable {
+    public static let pairs: [String:String] = ["（":"）", "《":"》", "【":"】", "“":"”", "‘":"’"]
     static let table: [Character: String] = [
         ",": "，", ".": "。", "?": "？", "!": "！", ":": "：", ";": "；",
         "(": "（", ")": "）", "<": "《", ">": "》", "[": "【", "]": "】",

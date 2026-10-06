@@ -83,6 +83,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     // Buffers are reused and only grow; only the visible range plus one screen is measured, the rest on scroll.
     private val texts = ArrayList<String>(64)
     private val comments = ArrayList<String>(64)
+    private val pinyins = ArrayList<String>(64)
     private val cloudBadges = ArrayList<Boolean>(64)
     var cloudLoading=false
         set(value) {if(field!=value){field=value;invalidate()}}
@@ -112,6 +113,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val text = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).zh()
     private val small = Paint(Paint.ANTI_ALIAS_FLAG).zh()
+    private val annotation = Paint(Paint.ANTI_ALIAS_FLAG).zh()
     /** 候选右端渐隐：在图层里擦去文字（DST_OUT），透出真实背景。 Right-edge fade erases the text in a layer, showing the real backdrop. */
     private val fade = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT) }
     private var fadeShader: LinearGradient? = null
@@ -220,9 +222,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val marksChanged = marks != this.marks
         this.marks = marks
         var changed = preedit != this.preedit || items.size != texts.size
-        if (!changed) for (i in items.indices) if (items[i].text != texts[i] || items[i].isCloud != cloudBadges.getOrElse(i){false}) { changed = true; break }
-        texts.clear(); comments.clear(); cloudBadges.clear()
-        for (i in items.indices) { texts += items[i].text; comments += items[i].comment;cloudBadges += items[i].isCloud }
+        if (!changed) for (i in items.indices) if (items[i].text != texts[i] || items[i].comment != comments[i] || items[i].pinyin != pinyins[i] || items[i].isCloud != cloudBadges.getOrElse(i){false}) { changed = true; break }
+        texts.clear(); comments.clear(); pinyins.clear(); cloudBadges.clear()
+        for (i in items.indices) { texts += items[i].text; comments += items[i].comment;pinyins += items[i].pinyin;cloudBadges += items[i].isCloud }
         apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
@@ -231,8 +233,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val marksChanged = marks.isNotEmpty()
         marks = emptyList()
         val changed = preedit != this.preedit || items != texts
-        texts.clear(); comments.clear(); cloudBadges.clear()
-        for (t in items) { texts += t; comments += "";cloudBadges += false }
+        texts.clear(); comments.clear(); pinyins.clear(); cloudBadges.clear()
+        for (t in items) { texts += t; comments += "";pinyins += "";cloudBadges += false }
         apply(preedit, total, english, keepScroll, changed, marksChanged)
     }
 
@@ -269,7 +271,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
     /** 追加候选（分页）。 Append a page of candidates. */
     fun appendCandidates(items: List<Candidate>) {
-        for (c in items) { texts += c.text; comments += c.comment;cloudBadges += c.isCloud }
+        for (c in items) { texts += c.text; comments += c.comment;pinyins += c.pinyin;cloudBadges += c.isCloud }
         hasMore = total > texts.size || measured < texts.size || contentWidth > width - leadW() - expandW()
         ensureMeasured(scrollX0 + width * 2f)
         invalidate()
@@ -280,6 +282,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     /** 第 [i] 个候选的文字（测试用）。 Candidate text at [i] (for tests). */
     @androidx.annotation.VisibleForTesting
     fun candidateAt(i: Int): String? = texts.getOrNull(i)
+    @androidx.annotation.VisibleForTesting
+    fun candidatePinyinAt(i: Int): String? = pinyins.getOrNull(i)
     /** 已测量（可绘制）的候选数。 Candidates measured so far. */
     val measuredCount get() = measured
 
@@ -401,6 +405,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         if (measured >= n || contentWidth > x) { hasMore = total > n || measured < n || contentWidth > width - leadW() - expandW(); return }
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
+        annotation.textSize = m.dp(11f) * m.candScale
         val maxItem = (width - expandW()) * 0.7f - m.dp(42f)
         while (measured < n && contentWidth <= x) {
             val i = measured
@@ -413,6 +418,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             var w = tw + m.dp(24f) + if(cloudBadges.getOrElse(i){false}) m.dp(18f) else 0f
             val c = comments[i]
             if (c.isNotEmpty()) w += small.measureText(c) + m.dp(3f)
+            if (pinyins[i].isNotEmpty()) w = max(w, annotation.measureText(pinyins[i]) + m.dp(24f))
             w = max(w, m.dp(40f))
             shown[i] = out
             lefts[i] = contentWidth
@@ -564,6 +570,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         c.clipRect(lead, top, right, height.toFloat())
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
+        annotation.textSize = m.dp(11f) * m.candScale
+        annotation.color = p.labelSecondary
         val base = top + rowH / 2 - (text.ascent() + text.descent()) / 2
         for (i in 0 until measured) {
             val l = lead + lefts[i] - scrollX0
@@ -584,20 +592,29 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             text.typeface = if (first) mediumTf else Typeface.DEFAULT
             text.color = if (first) p.candidateFirst else p.label
             val sh = shown[i] ?: continue
-            c.drawText(sh, l + m.dp(12f), base, text)
+            val py = pinyins[i]
+            val annotated = !english && py.isNotEmpty()
+            val wordHeight = text.descent() - text.ascent()
+            val pyHeight = annotation.descent() - annotation.ascent()
+            val wordBase = if (annotated) top + (rowH - wordHeight - pyHeight - m.dp(1f)) / 2 + pyHeight + m.dp(1f) - text.ascent() else base
+            if (annotated) {
+                val pyBase = wordBase + text.ascent() - m.dp(1f) - annotation.descent()
+                c.drawText(py, l + m.dp(12f), pyBase, annotation)
+            }
+            c.drawText(sh, l + m.dp(12f), wordBase, text)
             // 英文：首项就是正在敲的单词，带上光标，每个字母当帧可见。 English: the first item is the word being typed, with a caret.
             if (i == 0 && english && cursorOn && preedit.isNotEmpty() && texts[0] == preedit) {
                 val cx = l + m.dp(12f) + text.measureText(sh) + m.dp(1f)
                 fill.color = p.candidateFirst
-                c.drawRect(cx, base + text.ascent() * 0.8f, cx + m.dp(1f), base + m.dp(1.5f), fill)
+                c.drawRect(cx, wordBase + text.ascent() * 0.8f, cx + m.dp(1f), wordBase + m.dp(1.5f), fill)
             }
             val badge=cloudBadges.getOrElse(i){false}
             val end=l+m.dp(12f)+text.measureText(sh)
-            if(badge) icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),end+m.dp(10f),top+rowH/2,m.dp(14f))
+            if(badge) icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),end+m.dp(10f),wordBase+(text.ascent()+text.descent())/2,m.dp(14f))
             val cm = comments[i]
             if (cm.isNotEmpty()) {
                 small.color = p.labelHint
-                c.drawText(cm, end + m.dp(if(badge) 21f else 3f), base, small)
+                c.drawText(cm, end + m.dp(if(badge) 21f else 3f), wordBase, small)
             }
         }
         c.restore()
@@ -723,7 +740,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             id == EXPAND -> if (expanded) "收起候选" else "展开更多候选"
             id >= CAND_BASE -> texts.getOrNull(id - CAND_BASE)?.let { t ->
                 val c = comments.getOrNull(id - CAND_BASE)
-                (if (c.isNullOrEmpty()) t else "$t，$c") + if(cloudBadges.getOrElse(id-CAND_BASE){false}) "，云端词" else ""
+                val py = pinyins.getOrNull(id - CAND_BASE)
+                t + (if (py.isNullOrEmpty()) "" else "，拼音 $py") + (if (c.isNullOrEmpty()) "" else "，$c") + if(cloudBadges.getOrElse(id-CAND_BASE){false}) "，云端词" else ""
             }
             id == CHIP -> "粘贴最近复制：${clipChip.orEmpty()}"
             else -> TOOL_NAMES.getOrNull(id)
@@ -746,7 +764,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
         override fun a11yLongClickLabel(id: Int): CharSequence? = when {
             id == ToolIds.MENU && clipChip == null && !candidateMode -> "打开设置"
-            id >= CAND_BASE -> "固定、降权或删除学习记录"
+            id >= CAND_BASE -> "调整优先级或删除学习记录"
             else -> null
         }
 
@@ -901,18 +919,20 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     }
 
     companion object {
-        private val TOOL_NAMES = arrayOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "收起键盘", "表情", "设置", "表情收纳袋")
+        private val TOOL_NAMES = arrayOf("工具箱", "切换键盘", "语音输入", "光标与编辑", "剪贴板", "收起键盘", "表情", "设置", "表情收纳袋", "翻译")
         /** 三格建议条中第 i 名所在的格。 Slot of the i-th suggestion in the strip. */
         private val STRIP_SLOTS = intArrayOf(1, 0, 2)
         private val OUTLINE_ICONS = mapOf(
             ToolIds.MENU to R.drawable.ic_logo, ToolIds.KEYBOARD to R.drawable.ic_keyboard, ToolIds.VOICE to R.drawable.ic_mic,
             ToolIds.CURSOR to R.drawable.ic_cursor, ToolIds.CLIPBOARD to R.drawable.ic_clipboard, ToolIds.HIDE to R.drawable.ic_chevron_down,
             ToolIds.EMOJI to R.drawable.ic_emoji, ToolIds.SETTINGS to R.drawable.ic_settings, ToolIds.STICKERS to R.drawable.ic_sticker_bag,
+            ToolIds.TRANSLATE to R.drawable.ic_globe,
         )
         private val FILLED_ICONS = mapOf(
             ToolIds.MENU to R.drawable.ic_logo_filled, ToolIds.KEYBOARD to R.drawable.ic_keyboard_filled, ToolIds.VOICE to R.drawable.ic_mic_filled,
             ToolIds.CURSOR to R.drawable.ic_cursor_filled, ToolIds.CLIPBOARD to R.drawable.ic_clipboard_filled, ToolIds.HIDE to R.drawable.ic_chevron_down_filled,
             ToolIds.EMOJI to R.drawable.ic_emoji_filled, ToolIds.SETTINGS to R.drawable.ic_settings_filled, ToolIds.STICKERS to R.drawable.ic_sticker_bag,
+            ToolIds.TRANSLATE to R.drawable.ic_globe,
         )
         private const val CHIP = 10
         private const val PREEDIT = 11

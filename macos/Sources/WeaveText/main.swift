@@ -25,6 +25,9 @@ if args.count > 1 {
             fputs("snapshot failed: \(error)\n", stderr)
             exit(1)
         }
+    case "--snapshot-themes" where args.count > 2:
+        do {try DevTools.snapshotThemes(into:URL(fileURLWithPath:args[2]));exit(0)}
+        catch {fputs("theme snapshot failed: \(error)\n",stderr);exit(1)}
     case "--render-dmg-background" where args.count > 2:
         do {
             try DiskImageBackground.render(into: URL(fileURLWithPath: args[2]))
@@ -55,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "com.weavetext.inputmethod.WeaveText_Connection"
         server = IMKServer(name: name, bundleIdentifier: Bundle.main.bundleIdentifier)
         EngineHost.shared.startBackground()
+        ToolsModel.shared.start()
         LinkService.shared.start()
         // 安装包更新前用 TERM 请旧副本退出：照常走退出流程，先写回用户词。
         // The package asks the old copy to quit with TERM before updating: go through the normal termination so the

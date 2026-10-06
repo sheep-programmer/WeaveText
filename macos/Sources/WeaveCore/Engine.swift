@@ -21,7 +21,11 @@ public final class WeaveSession {
     public func hasSchema(_ key: String) -> Bool { weave_has_schema(handle, key) }
 
     @discardableResult
-    public func setOption(_ key: String, _ on: Bool) -> Bool { weave_set_option(handle, key, on) }
+    public func setOption(_ key: String, _ on: Bool) -> Bool {
+        let applied = weave_set_option(handle, key, on)
+        if applied && key == "candidates.prediction" && !on { dismissPredictions() }
+        return applied
+    }
 
     /// 送一个字符；内核不收时返回 false。 Feed one character; false when the engine does not take it.
     public func input(_ c: Character) -> Bool {

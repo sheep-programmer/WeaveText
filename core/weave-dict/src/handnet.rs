@@ -38,6 +38,7 @@ enum Layer {
 }
 
 pub struct HandNet {
+    model_id: u64,
     size: usize,
     margin: f32,
     radius: f32,
@@ -150,7 +151,7 @@ impl HandNet {
         if !flat || ch != n {
             return Err(bad("network output does not match the classes"));
         }
-        Ok(HandNet { size, margin, radius, classes, layers })
+        Ok(HandNet { model_id: crate::hand::next_model_id(), size, margin, radius, classes, layers })
     }
 
     pub fn len(&self) -> usize {
@@ -169,6 +170,7 @@ impl HandNet {
     /// 识别一个字：概率最高的 `top` 个候选（概率 0..=1，从高到低）。
     /// Recognise one char: the `top` most likely candidates with probabilities 0..=1, best first.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
+        if top == 0 || !crate::hand::valid_ink(strokes, 64) { return Vec::new(); }
         let logits = match self.logits(strokes) {
             Some(l) => l,
             None => return Vec::new(),
@@ -209,6 +211,7 @@ impl HandNet {
 
     /// 网络输出（未归一化的对数概率）；没有笔迹时为 `None`。 Raw logits; `None` without ink.
     pub fn logits(&self, strokes: &[Stroke]) -> Option<Vec<f32>> {
+        if !crate::hand::valid_ink(strokes, 64) { return None; }
         let img = raster(strokes, self.size, self.margin, self.radius)?;
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
         let (mut x, mut ch, mut side) = (img, 1usize, self.size);
@@ -245,7 +248,8 @@ impl HandNet {
     }
 }
 
-/// 融合时模板代价的权重（真人笔迹评测上调出）。 Weight of the template cost in the fusion (tuned on real ink).
+/// 既有的模板融合权重；本轮不使用来源或许可未核实的笔迹重新调参。
+/// Existing template fusion weight; do not retune on ink whose provenance or permission is unverified.
 const FUSE_TEMPLATE: f32 = 12.0;
 /// 融合时字频先验的权重。 Weight of the frequency prior in the fusion.
 const FUSE_PRIOR: f32 = 2.0;
@@ -260,6 +264,16 @@ pub struct HandModels {
     corrections: std::sync::Mutex<Corrections>,
     personal_enabled: std::sync::atomic::AtomicBool,
     line_mode: std::sync::atomic::AtomicBool,
+    cache: std::sync::Mutex<std::collections::VecDeque<CachedInk>>,
+}
+
+/// Exact raw-ink keys: no quantization/hash aliasing. Eight entries, at most 16384 points each (1 MiB of points).
+/// Cache only immutable model scores and threshold answers; personal corrections are applied on every call.
+struct CachedInk {
+    ink: Vec<Stroke>,
+    models: (u64, u64),
+    scores: Option<Vec<(char, f32)>>,
+    strong: Option<bool>,
 }
 
 #[derive(Default)]
@@ -271,37 +285,132 @@ struct Corrections {
 
 impl HandModels {
     pub fn new(templates: Option<crate::hand::Recognizer>, net: Option<HandNet>) -> Self {
-        Self { templates, net, corrections: std::sync::Mutex::new(Corrections::default()), personal_enabled: std::sync::atomic::AtomicBool::new(true), line_mode: std::sync::atomic::AtomicBool::new(false) }
+        Self { templates, net, corrections: std::sync::Mutex::new(Corrections::default()), personal_enabled: std::sync::atomic::AtomicBool::new(true), line_mode: std::sync::atomic::AtomicBool::new(false), cache: std::sync::Mutex::new(std::collections::VecDeque::new()) }
+    }
+
+    fn model_ids(&self) -> (u64, u64) {
+        (self.templates.as_ref().map_or(0, |m| m.model_id), self.net.as_ref().map_or(0, |m| m.model_id))
+    }
+
+    fn cached(&self, ink: &[Stroke]) -> (Option<Vec<(char, f32)>>, Option<bool>) {
+        let ids = self.model_ids();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(i) = cache.iter().position(|e| e.models == ids && e.ink == ink) else { return (None, None); };
+        let entry = cache.remove(i).unwrap();
+        let result = (entry.scores.clone(), entry.strong);
+        cache.push_back(entry);
+        result
+    }
+
+    fn cache_result(&self, ink: &[Stroke], scores: Option<Vec<(char, f32)>>, strong: Option<bool>) {
+        if ink.iter().map(Vec::len).sum::<usize>() > 16384 { return; }
+        let ids = self.model_ids();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entry = if let Some(i) = cache.iter().position(|e| e.models == ids && e.ink == ink) {
+            cache.remove(i).unwrap()
+        } else { CachedInk { ink: ink.to_vec(), models: ids, scores: None, strong: None } };
+        if scores.is_some() { entry.scores = scores; }
+        if strong.is_some() { entry.strong = strong; }
+        cache.push_back(entry);
+        while cache.len() > 8 { cache.pop_front(); }
     }
 
     pub fn set_personal_enabled(&self, enabled: bool) {
         self.personal_enabled.store(enabled, std::sync::atomic::Ordering::Release);
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn samples(&self)->Vec<(char,Vec<Stroke>)> {
         self.corrections.lock().unwrap_or_else(|e|e.into_inner()).examples.clone()
     }
     pub fn set_line_mode(&self,on:bool){self.line_mode.store(on,std::sync::atomic::Ordering::Release);}
-    /// Separate characters by genuine horizontal whitespace, keeping close radicals together.
+    /// Separate up to four characters by horizontal whitespace. Keep original pen order within a group.
+    /// A smaller gap is accepted only between two character-sized shapes; narrow radicals stay together.
+    /// Touching ink or a stroke bridging two characters has no reliable whitespace boundary.
     pub fn line_groups(strokes:&[Stroke])->Vec<Vec<Stroke>> {
-        let mut bounds:Vec<_>=strokes.iter().enumerate().filter(|(_,s)|!s.is_empty()).map(|(i,s)| {
-            let left=s.iter().map(|p|p.0).fold(f32::INFINITY,f32::min);
-            let right=s.iter().map(|p|p.0).fold(f32::NEG_INFINITY,f32::max);(left,right,i)
-        }).collect();
-        bounds.sort_by(|a,b|a.0.total_cmp(&b.0));
-        let top=strokes.iter().flatten().map(|p|p.1).fold(f32::INFINITY,f32::min);
-        let bottom=strokes.iter().flatten().map(|p|p.1).fold(f32::NEG_INFINITY,f32::max);
-        let threshold=(bottom-top).max(0.01)*0.23;
-        let mut groups:Vec<Vec<Stroke>>=Vec::new();let mut edge=f32::NEG_INFINITY;
-        for (left,right,i) in bounds {
-            if groups.is_empty() || left-edge>threshold {groups.push(Vec::new());}
-            groups.last_mut().unwrap().push(strokes[i].clone());edge=edge.max(right);
+        if strokes.len() > 4 * 64 { return Vec::new(); }
+        // Validate and collect all four bounds in one pass, rather than rescanning long trajectories for
+        // validity, left/right, and top/bottom separately. Keep the same finite-coordinate and size limits.
+        let mut bounds = Vec::with_capacity(strokes.len());
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        for (i, stroke) in strokes.iter().enumerate() {
+            if stroke.len() > 4096 { return Vec::new(); }
+            let (mut left, mut right) = (f32::INFINITY, f32::NEG_INFINITY);
+            for &(x, y) in stroke {
+                if !x.is_finite() || !y.is_finite() || x.abs() > 100_000.0 || y.abs() > 100_000.0 { return Vec::new(); }
+                left = left.min(x); right = right.max(x); top = top.min(y); bottom = bottom.max(y);
+            }
+            if !stroke.is_empty() { bounds.push((left, right, i)); }
         }
-        if groups.len()>4{vec![strokes.to_vec()]}else{groups}
+        bounds.sort_by(|a,b|a.0.total_cmp(&b.0));
+        let height=(bottom-top).max(0.01);
+        // First collect ink components using a conservative small whitespace threshold. Work is O(points +
+        // strokes log strokes); no alternative segmentations or extra recognizer calls are generated.
+        let mut components:Vec<(f32,f32,Vec<usize>)>=Vec::new();
+        for (left,right,i) in bounds {
+            if components.last().is_none_or(|g| left-g.1>height*0.08) {
+                components.push((left,right,vec![i]));
+            } else {
+                let g=components.last_mut().unwrap();g.1=g.1.max(right);g.2.push(i);
+            }
+        }
+        let mut groups:Vec<(f32,f32,Vec<usize>)>=Vec::new();
+        for (i,component) in components.iter().enumerate() {
+            let split=groups.last().is_none_or(|g| {
+                let gap=component.0-g.1;
+                let left_width=g.1-g.0;
+                let right_width=component.1-component.0;
+                // Large whitespace retains the old behavior unless both sides are thin parts of a single
+                // roughly square character (e.g. separated left/right radicals).
+                let radicals=left_width<height*0.55 && right_width<height*0.55 && component.1-g.0<=height*1.15;
+                // Include nearby components of the right-hand glyph when assessing its width.
+                let mut right_edge=component.1;
+                for next in components.iter().skip(i+1).take(14) {
+                    if next.0-right_edge>height*0.23 || next.1-component.0>height*1.15 { break; }
+                    right_edge=next.1;
+                }
+                (gap>height*0.23 && !radicals) ||
+                    (gap>height*0.08 && left_width>=height*0.55 && right_edge-component.0>=height*0.55)
+            });
+            if split {groups.push(component.clone());}
+            else {let g=groups.last_mut().unwrap();g.1=g.1.max(component.1);g.2.extend(&component.2);}
+        }
+        if groups.len()>4 {return vec![strokes.to_vec()];}
+        groups.into_iter().map(|(_,_,mut indices)| {
+            indices.sort_unstable();indices.into_iter().map(|i|strokes[i].clone()).collect()
+        }).collect()
+    }
+    /// Whitespace alone cannot distinguish two close characters from a wide character with detached radicals.
+    /// Check only suspicious boundaries: close gaps, narrow/short pieces, few-stroke pieces, or a compact pair.
+    /// Clear full-sized groups skip the whole-character query. Threshold queries/cache never run a whole CNN.
+    fn input_groups(&self, strokes: &[Stroke]) -> Vec<Vec<Stroke>> {
+        let groups = Self::line_groups(strokes);
+        if groups.len() < 2 || strokes.len() > 64 { return groups; }
+        if self.corrected_char(strokes).is_some() { return vec![strokes.to_vec()]; }
+        if !Self::suspicious_groups(&groups) { return groups; }
+        let strong = self.cached(strokes).1.unwrap_or_else(|| {
+            let strong = self.templates.as_ref().is_some_and(|r| r.has_strong_match(strokes, 0.08));
+            self.cache_result(strokes, None, Some(strong));
+            strong
+        });
+        if strong { vec![strokes.to_vec()] } else { groups }
+    }
+
+    fn suspicious_groups(groups: &[Vec<Stroke>]) -> bool {
+        let bounds: Vec<_> = groups.iter().map(|g| g.iter().flatten().fold(
+            (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+            |b, &(x, y)| (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y)),
+        )).collect();
+        let height = (bounds.iter().map(|b| b.3).fold(f32::NEG_INFINITY, f32::max) -
+            bounds.iter().map(|b| b.1).fold(f32::INFINITY, f32::min)).max(0.01);
+        groups.iter().zip(&bounds).any(|(g, b)| g.len() < 3 || b.2-b.0 < height*0.55 || b.3-b.1 < height*0.55) ||
+            bounds.windows(2).any(|b| b[1].0-b[0].2 <= height*0.23) ||
+            (groups.len() == 2 && bounds[1].2-bounds[0].0 <= height*1.8)
     }
     pub fn recognize_input(&self,strokes:&[Stroke],top:usize)->Vec<char> {
+        if top == 0 || !crate::hand::valid_ink(strokes, 4 * 64) { return Vec::new(); }
         if !self.line_mode.load(std::sync::atomic::Ordering::Acquire){return self.recognize(strokes,top);}
-        let groups=Self::line_groups(strokes);
+        let groups=self.input_groups(strokes);
         if groups.len()<2{return self.recognize(strokes,top);}
         let choices:Vec<_>=groups.iter().map(|g|self.recognize(g,3)).collect();
         if choices.iter().any(Vec::is_empty){return Vec::new();}
@@ -312,7 +421,7 @@ impl HandModels {
         let mut result=Vec::new();for word in words.into_iter().take(top){result.extend(word.chars());result.push('\0');}result
     }
     pub fn correct_line(&self,text:&str,strokes:&[Stroke])->bool {
-        let groups=Self::line_groups(strokes);let chars:Vec<_>=text.chars().collect();
+        let groups=self.input_groups(strokes);let chars:Vec<_>=text.chars().collect();
         if chars.len()!=groups.len() || groups.len()<2{return false;}
         let before=self.samples();let mut changed=false;
         for (ch,ink) in chars.into_iter().zip(&groups){
@@ -374,11 +483,11 @@ impl HandModels {
 
     /// 识别一个字，返回最像的 `top` 个字（从好到差）。有网络时与模板匹配融合：
     /// 分数 = ln P(网络) − 12·模板代价 + 2·字频先验。网络擅长连笔、潦草，模板擅长工整、笔顺标准的书写，
-    /// 两者合起来在真人笔迹上的首选准确率比单用网络高约 3 个百分点。
+    /// 本轮准确率只能由带来源与许可说明的评测集支持；合成变形不能代表真人表现。
     /// Recognise one char: the `top` best, best first. With a network it is fused with the templates:
     /// score = ln P(net) − 12·template cost + 2·frequency prior. The network handles joined and sloppy writing,
-    /// the templates neat writing in standard stroke order; together they beat the network alone by about three
-    /// points of top-1 on real ink.
+    /// the templates neat writing in standard stroke order. Synthetic deformation scores do not establish
+    /// real-writer accuracy; that requires an evaluation set with verified provenance and permission.
     pub fn recognize(&self, strokes: &[Stroke], top: usize) -> Vec<char> {
         self.recognize_scored(strokes, top).into_iter().map(|x| x.0).collect()
     }
@@ -386,16 +495,24 @@ impl HandModels {
     /// 同 [`HandModels::recognize`]，并带上分数。个人纠正过的字排在最前，分数比第一名再高一点。
     /// Same as [`HandModels::recognize`] with scores; a personally corrected char goes first, scored just above the best.
     pub fn recognize_scored(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
-        if top == 0 { return Vec::new(); }
-        let tmpl = self.templates.as_ref().map(|t| t.recognize(strokes, FUSE_POOL.max(top))).unwrap_or_default();
-        let mut result = if let Some(net) = &self.net {
-            let probs = net.recognize_robust(strokes, FUSE_POOL.max(top));
+        if top == 0 || !crate::hand::valid_ink(strokes, 64) { return Vec::new(); }
+        let pool = FUSE_POOL.max(top);
+        let cached = if top <= FUSE_POOL { self.cached(strokes).0 } else { None };
+        let mut result = cached.unwrap_or_else(|| {
+        let tmpl = self.templates.as_ref().map(|t| t.recognize(strokes, pool)).unwrap_or_default();
+        let strong = tmpl.first().is_some_and(|&(_, cost)| cost < 0.08);
+        let result = if let Some(net) = &self.net {
+            let probs = net.recognize_robust(strokes, pool);
             let t = self.templates.as_ref();
-            fuse_scored(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), top)
+            fuse_scored(&probs, &tmpl, |c| t.map_or(0.0, |t| t.prior_of(c)), |c| t.is_some_and(|t| t.contains(c)), pool)
         } else {
             // 只有模板：代价越低越好，换成同方向的分数。 Templates only: lower cost is better; flip the sign.
-            tmpl.into_iter().take(top).map(|c| (c.0, -c.1 * 12.0)).collect()
+            tmpl.into_iter().take(pool).map(|c| (c.0, -c.1 * 12.0)).collect()
         };
+        if top <= FUSE_POOL { self.cache_result(strokes, Some(result.clone()), Some(strong)); }
+        result
+        });
+        result.truncate(top);
         if let Some(ch) = self.corrected_char(strokes) {
             let best = result.iter().map(|x| x.1).fold(f32::NEG_INFINITY, f32::max);
             result.retain(|&(c, _)| c != ch);
@@ -410,8 +527,9 @@ impl HandModels {
     /// Recognition of one ink: grouped per character. Single-char mode gives one group; spaced mode splits at the
     /// whitespace into 2–4 groups of five candidates each.
     pub fn recognize_groups(&self, strokes: &[Stroke], top: usize) -> Vec<Vec<(char, f32)>> {
+        if top == 0 || !crate::hand::valid_ink(strokes, 4 * 64) { return Vec::new(); }
         if self.line_mode.load(std::sync::atomic::Ordering::Acquire) {
-            let groups = Self::line_groups(strokes);
+            let groups = self.input_groups(strokes);
             if groups.len() >= 2 {
                 return groups.iter().map(|g| self.recognize_scored(g, LINE_PER_GROUP)).collect();
             }
@@ -655,6 +773,107 @@ fn pool2(x: &[f32], ch: usize, side: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_scores_do_not_cache_corrections_or_alias_changed_points_or_models() {
+        let cross = vec![vec![(0.0,50.0),(100.0,50.0)],vec![(50.0,0.0),(50.0,100.0)]];
+        let mut builder = crate::hand::Builder::default();
+        builder.push('十', 200, &cross);
+        builder.push('一', 255, &cross[..1]);
+        let bytes = builder.build();
+        let mut models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&bytes).unwrap()), None);
+        let original = models.recognize_scored(&cross, 5);
+        assert_eq!(models.recognize_scored(&cross, 1), original[..1]);
+        models.correct('土', &cross);
+        assert_eq!(models.recognize(&cross, 5)[0], '土');
+        models.undo_correction();
+        assert_eq!(models.recognize_scored(&cross, 5), original);
+        let changed = vec![vec![(0.0,50.0),(50.0,0.0),(100.0,50.0)],cross[1].clone()];
+        let fresh = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&bytes).unwrap()), None);
+        assert_eq!(models.recognize_scored(&changed, 5), fresh.recognize_scored(&changed, 5));
+        let mut builder = crate::hand::Builder::default();
+        builder.push('干', 255, &cross);
+        models.templates = Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap());
+        assert_eq!(models.recognize(&cross, 1), vec!['干']);
+    }
+
+    #[test]
+    fn threshold_queries_skip_clear_layouts_and_exact_ink_cache_is_bounded() {
+        let square = vec![vec![(0.0,0.0),(0.0,100.0)],vec![(0.0,0.0),(80.0,0.0),(80.0,100.0)],vec![(0.0,100.0),(80.0,100.0)]];
+        let right: Vec<Stroke> = square.iter().map(|s|s.iter().map(|&(x,y)|(x+140.0,y)).collect()).collect();
+        assert!(!HandModels::suspicious_groups(&[square.clone(),right]));
+        let close: Vec<Stroke> = square.iter().map(|s|s.iter().map(|&(x,y)|(x+90.0,y)).collect()).collect();
+        assert!(HandModels::suspicious_groups(&[square.clone(),close]));
+        let mut builder = crate::hand::Builder::default(); builder.push('口', 255, &square);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        for i in 0..20 {
+            let ink: Vec<Stroke> = square.iter().map(|s|s.iter().map(|&(x,y)|(x+i as f32,y)).collect()).collect();
+            assert_eq!(models.recognize(&ink, 1), vec!['口']);
+        }
+        assert!(models.cache.lock().unwrap().len() <= 8);
+        let large = vec![vec![(0.0,0.0);4096],vec![(1.0,1.0);4096],vec![(2.0,2.0);4096],vec![(3.0,3.0);4096],vec![(4.0,4.0)]];
+        models.recognize(&large, 1);
+        assert!(models.cached(&large).0.is_none());
+    }
+
+    #[test]
+    fn touching_cross_character_ink_and_overlong_rows_stay_unsplit() {
+        // A single pen-down across two shapes cannot be separated safely by whitespace alone.
+        let joined = vec![vec![(0.0, 0.0), (80.0, 100.0), (90.0, 0.0), (170.0, 100.0)]];
+        assert_eq!(HandModels::line_groups(&joined), vec![joined.clone()]);
+        let five: Vec<Stroke> = (0..5).map(|i| vec![(i as f32 * 160.0, 0.0), (i as f32 * 160.0 + 80.0, 100.0)]).collect();
+        assert_eq!(HandModels::line_groups(&five), vec![five.clone()]);
+    }
+
+    #[test]
+    fn a_complete_wide_character_is_not_split_into_its_radicals() {
+        let ink = vec![vec![(0.0, 0.0), (60.0, 100.0)], vec![(72.0, 0.0), (132.0, 100.0)]];
+        assert_eq!(HandModels::line_groups(&ink).len(), 2); // Geometry alone is ambiguous.
+        let mut builder = crate::hand::Builder::default();
+        builder.push('从', 255, &ink);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        models.set_line_mode(true);
+        let result = models.recognize_groups(&ink, 5);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0][0].0, '从');
+        // Additional strokes of the same character keep using single-character recognition.
+        assert_eq!(models.recognize_groups(&ink[..1], 5).len(), 1);
+        assert!(!models.correct_line("人人", &ink));
+    }
+
+    #[test]
+    fn inference_rejects_invalid_or_excessive_ink_and_zero_candidates() {
+        let net = HandNet::from_bytes(&tiny(&[127, -127, -127, 127])).unwrap();
+        let models = HandModels::new(None, Some(net));
+        for ink in [vec![vec![(f32::NAN, 0.0)]], vec![vec![(0.0, f32::INFINITY)]], vec![vec![(0.0, 0.0)]; 65], vec![vec![(0.0, 0.0); 4097]]] {
+            assert!(models.recognize(&ink, 5).is_empty());
+            assert!(models.net.as_ref().unwrap().logits(&ink).is_none());
+        }
+        models.set_line_mode(true);
+        assert!(models.recognize_groups(&[vec![(0.0, 0.0)]], 0).is_empty());
+        assert!(HandModels::line_groups(&vec![vec![(0.0, 0.0)]; 257]).is_empty());
+    }
+
+    #[test]
+    fn line_groups_preserve_pen_order_inside_each_character() {
+        let left = vec![vec![(40.0, 0.0), (40.0, 100.0)], vec![(0.0, 50.0), (80.0, 50.0)]];
+        let right: Vec<Stroke> = left.iter().map(|s| s.iter().map(|&(x, y)| (x + 130.0, y)).collect()).collect();
+        // Spatial sorting may find the character order, but must never rewrite the order used by template joins.
+        let all: Vec<Stroke> = left.iter().chain(&right).cloned().collect();
+        assert_eq!(HandModels::line_groups(&all), vec![left, right]);
+    }
+
+    #[test]
+    fn line_groups_separate_close_full_size_chars_and_keep_narrow_radicals() {
+        let square = vec![vec![(0.0, 0.0), (0.0, 100.0)], vec![(0.0, 0.0), (80.0, 0.0), (80.0, 100.0)], vec![(0.0, 100.0), (80.0, 100.0)]];
+        let shifted: Vec<Stroke> = square.iter().map(|s| s.iter().map(|&(x, y)| (x + 90.0, y)).collect()).collect();
+        let all: Vec<Stroke> = square.iter().chain(&shifted).cloned().collect();
+        assert_eq!(HandModels::line_groups(&all), vec![square.clone(), shifted]);
+        let narrow: Vec<Stroke> = square.iter().map(|s| s.iter().map(|&(x, y)| (x * 0.4, y)).collect()).collect();
+        let radical: Vec<Stroke> = narrow.iter().map(|s| s.iter().map(|&(x, y)| (x + 62.0, y)).collect()).collect();
+        let one: Vec<Stroke> = narrow.iter().chain(&radical).cloned().collect();
+        assert_eq!(HandModels::line_groups(&one), vec![one]);
+    }
+
     #[test]
     fn personal_corrections_generalize_to_scaled_ink_and_do_not_affect_private_fields() {
         let cross = vec![vec![(0.0,50.0),(100.0,50.0)],vec![(50.0,0.0),(50.0,100.0)]];

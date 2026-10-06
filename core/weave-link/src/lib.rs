@@ -1,12 +1,13 @@
 //! 织文互联（WeaveLink）：手机与电脑在同一局域网内配对，互传文字、剪贴板、图片与文件，全程端到端加密。
-//! WeaveLink: devices on the same LAN pair once, then exchange text, clipboard, images and files end-to-end
-//! encrypted. No server, no account; nothing leaves the local network.
+//! WeaveLink: encrypted TCP transfers on reachable networks, plus opt-in direct-only QUIC across networks.
+//! STUN discovers public UDP addresses; users exchange short-lived tickets. Files never use a relay.
 //!
 //! 宿主（Android / macOS）通过两条接口驱动：[Link::call] 发 JSON 命令，[Link::poll] 取 JSON 事件。
 //! Hosts drive it with JSON commands via [Link::call] and read JSON events via [Link::poll].
 //!
 //! 命令 / commands (`op`):
 //! `info` · `openPairing` → `{code, uri, expiresIn}` · `closePairing` · `pair {addrs, code}` · `peers` ·
+//! `openDirect {stun?}` → event `directReady {ticket, expiresIn, public}` · `joinDirect {ticket}` ·
 //! `forget {id}` · `connect {id}` · `rename {name}` · `sendText {to?, text, clip}` ·
 //! `sendFile {to?, path | fd, name?, mime?, clip}` → `{id}` · `cancel {id}` · `stop`
 //!
@@ -21,6 +22,7 @@
 
 pub mod discovery;
 pub mod secure;
+mod p2p;
 pub mod store;
 pub mod wire;
 
@@ -125,6 +127,10 @@ struct Inner {
     tx: Mutex<Sender<Value>>,
     running: AtomicBool,
     discovery: Mutex<Option<Discovery>>,
+    direct: Mutex<Option<Arc<p2p::Endpoint>>>,
+    direct_pending: AtomicBool,
+    direct_peers: Mutex<HashSet<String>>,
+    direct_pairing: Mutex<Option<Pairing>>,
 }
 
 pub struct Link {
@@ -164,6 +170,10 @@ impl Link {
             tx: Mutex::new(tx),
             running: AtomicBool::new(true),
             discovery: Mutex::new(None),
+            direct: Mutex::new(None),
+            direct_pending: AtomicBool::new(false),
+            direct_peers: Mutex::new(HashSet::new()),
+            direct_pairing: Mutex::new(None),
         });
         let accept_thread = {
             let inner = inner.clone();
@@ -206,6 +216,8 @@ impl Link {
         match cmd["op"].as_str().unwrap_or("") {
             "info" => inner.info(),
             "openPairing" => inner.open_pairing(cmd),
+            "openDirect" => open_direct(inner, cmd),
+            "joinDirect" => join_direct(inner, cmd),
             "closePairing" => {
                 *inner.pairing.lock().unwrap() = None;
                 json!({"ok": true})
@@ -296,6 +308,7 @@ impl Link {
     pub fn stop(&self) {
         let inner = &self.inner;
         if inner.running.swap(false, Ordering::SeqCst) {
+            if let Some(d) = inner.direct.lock().unwrap().take() { d.stop(); }
             if let Some(d) = inner.discovery.lock().unwrap().take() {
                 d.stop();
             }
@@ -515,6 +528,88 @@ fn send_file_body(
     conn.ch.send(&Message::new(Kind::FileDone, json!({"id": id, "sha256": hex(&hash.finalize()), "size": done})))
 }
 
+fn open_direct(inner: &Arc<Inner>, cmd: &Value) -> Value {
+    if inner.direct_pending.swap(true, Ordering::SeqCst) { return json!({"ok":false,"error":"already preparing"}); }
+    let servers: Vec<String> = cmd["stun"].as_array().map(|v| v.iter().filter_map(|v| v.as_str().map(String::from)).take(4).collect())
+        .unwrap_or_else(|| p2p::DEFAULT_STUN.iter().map(|s| s.to_string()).collect());
+    let inner = inner.clone();
+    std::thread::spawn(move || {
+        let existing = inner.direct.lock().unwrap().clone().filter(|_| inner.conns.lock().unwrap().values().any(|c| c.ch.direct));
+        let result = if let Some(ep) = existing { Ok(ep) } else {
+            let weak = Arc::downgrade(&inner);
+            p2p::Endpoint::start(&servers, Arc::new(move |stream| {
+                let Some(inner) = weak.upgrade() else { stream.shutdown(); return };
+                if let Ok((ch, pairing)) = secure::accept_direct(stream, &inner.me, || {
+                    let mut state = inner.direct_pairing.lock().unwrap();
+                    let p = state.as_mut()?;
+                    if Instant::now() >= p.expires || p.attempts >= PAIRING_ATTEMPTS { *state = None; return None; }
+                    p.attempts += 1;
+                    Some(p.code.clone())
+                }) {
+                    let peer = device_id(&ch.remote_key);
+                    let deadline = Instant::now() + Duration::from_secs(35);
+                    while !inner.direct_peers.lock().unwrap().contains(&peer) {
+                        if !inner.running.load(Ordering::SeqCst) || Instant::now() >= deadline { ch.shutdown(); return; }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    if let Err(e) = establish(&inner, ch, false, pairing) { inner.emit(json!({"type":"directFailed","reason":e})); }
+                }
+            }))
+        };
+        match result {
+            Ok(ep) if inner.running.load(Ordering::SeqCst) => {
+                *inner.direct.lock().unwrap() = Some(ep.clone());
+                inner.direct_peers.lock().unwrap().clear();
+                let code = secure::new_code();
+                *inner.direct_pairing.lock().unwrap() = Some(Pairing { code:code.clone(), expires:Instant::now()+p2p::WINDOW, attempts:0 });
+                let ticket = ep.ticket(&inner.id, &inner.name(), &code);
+                inner.emit(json!({"type":"directReady","ticket":ticket.encode(),"expiresIn":p2p::WINDOW.as_secs(),"public":ep.public,
+                    "note":if ep.public { "" } else { "Public mapping unavailable; global IPv6 or a reachable direct address is required" }}));
+            }
+            Ok(ep) => ep.stop(),
+            Err(e) => inner.emit(json!({"type":"directFailed","reason":e})),
+        }
+        inner.direct_pending.store(false, Ordering::SeqCst);
+    });
+    json!({"ok":true})
+}
+
+fn join_direct(inner: &Arc<Inner>, cmd: &Value) -> Value {
+    let ticket = match p2p::Ticket::decode(cmd["ticket"].as_str().unwrap_or("")) {
+        Ok(t) => t, Err(e) => return json!({"ok":false,"error":e}),
+    };
+    if ticket.id == inner.id { return json!({"ok":false,"error":"this is your own connection code"}); }
+    if !inner.direct_pairing.lock().unwrap().as_ref().is_some_and(|p| p.expires > Instant::now()) {
+        return json!({"ok":false,"error":"generate your connection code first"});
+    }
+    let Some(ep) = inner.direct.lock().unwrap().clone() else { return json!({"ok":false,"error":"generate your connection code first"}); };
+    if !inner.dialing.lock().unwrap().insert(ticket.id.clone()) { return json!({"ok":false,"error":"already connecting"}); }
+    inner.direct_peers.lock().unwrap().insert(ticket.id.clone());
+    ep.punch(&ticket.addrs);
+    let inner = inner.clone();
+    std::thread::spawn(move || {
+        // Only one initiator: simultaneous user actions must not consume both pairing windows.
+        let result = if inner.id < ticket.id {
+            ep.connect(&ticket).and_then(|s| secure::connect_direct(s, &inner.me, &ticket.code)).and_then(|ch| {
+                if device_id(&ch.remote_key) != ticket.id { ch.shutdown(); return Err("peer identity did not match the connection code".into()); }
+                establish(&inner, ch, true, true).map(|_| ())
+            })
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(35);
+            loop {
+                if inner.conns.lock().unwrap().get(&ticket.id).is_some_and(|c| c.ch.direct) { break Ok(()); }
+                if !inner.running.load(Ordering::SeqCst) || Instant::now() >= deadline { break Err("direct connection timed out; exchange connection codes on both devices; no relay was used".into()); }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        inner.dialing.lock().unwrap().remove(&ticket.id);
+        if let Err(e) = result {
+            if !inner.conns.lock().unwrap().get(&ticket.id).is_some_and(|c| c.ch.direct) { inner.emit(json!({"type":"directFailed","reason":e})); }
+        }
+    });
+    json!({"ok":true})
+}
+
 fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
     for s in listener.incoming() {
         if !inner.running.load(Ordering::SeqCst) {
@@ -567,12 +662,13 @@ fn establish(inner: &Arc<Inner>, ch: Channel, outbound: bool, pairing: bool) -> 
     {
         let mut store = inner.peers.lock().unwrap();
         store.upsert(peer.clone());
-        if outbound {
+        if outbound && !ch.direct {
             store.remember_addr(&rid, &ch.addr.to_string());
         }
     }
     if pairing {
-        *inner.pairing.lock().unwrap() = None;
+        if ch.direct { *inner.direct_pairing.lock().unwrap() = None; }
+        else { *inner.pairing.lock().unwrap() = None; }
     }
     let conn = Arc::new(Conn { peer, ch, outbound, trusted: AtomicBool::new(true), incoming: Mutex::new(HashMap::new()) });
     // 重复连接：保留「id 较小的一方发起」的那条，两端取舍一致。
@@ -592,7 +688,8 @@ fn establish(inner: &Arc<Inner>, ch: Channel, outbound: bool, pairing: bool) -> 
     if pairing {
         inner.emit(json!({"type": "paired", "id": rid, "name": conn.peer.name, "platform": conn.peer.platform}));
     }
-    inner.emit(json!({"type": "connected", "id": rid, "name": conn.peer.name, "platform": conn.peer.platform}));
+    inner.emit(json!({"type": "connected", "id": rid, "name": conn.peer.name, "platform": conn.peer.platform,
+        "transport": if conn.ch.direct { "direct-udp" } else { "tcp" }}));
     let (i2, c2) = (inner.clone(), conn.clone());
     std::thread::Builder::new().name("weavelink-read".into()).spawn(move || read_loop(i2, c2)).map_err(err)?;
     Ok(conn)
@@ -799,6 +896,19 @@ fn timer_loop(inner: Arc<Inner>) {
         if p.as_ref().is_some_and(|p| Instant::now() > p.expires) {
             *p = None;
         }
+        drop(p);
+        {
+            let mut p = inner.direct_pairing.lock().unwrap();
+            if p.as_ref().is_some_and(|p| Instant::now() >= p.expires) { *p = None; }
+        }
+        let direct_connected = inner.conns.lock().unwrap().values().any(|c| c.ch.direct);
+        if !direct_connected && !inner.direct_pending.load(Ordering::SeqCst) {
+            let mut endpoint = inner.direct.lock().unwrap();
+            if endpoint.as_ref().is_some_and(|ep| ep.ticket_expired()) {
+                if let Some(ep) = endpoint.take() { ep.stop(); }
+                inner.direct_peers.lock().unwrap().clear();
+            }
+        }
     }
 }
 
@@ -876,6 +986,38 @@ mod tests {
             }
         }
         panic!("no {ty} event");
+    }
+
+    #[test]
+    fn direct_udp_pairs_and_transfers_without_tcp_addresses_or_relays() {
+        let dir = std::env::temp_dir().join(format!("weave-link-udp-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let a = Link::start(cfg("udp-a", &dir)).unwrap();
+        let b = Link::start(cfg("udp-b", &dir)).unwrap();
+        assert_eq!(a.call(&json!({"op":"openDirect","stun":[]}))["ok"], true);
+        assert_eq!(b.call(&json!({"op":"openDirect","stun":[]}))["ok"], true);
+        let ta = wait(&a, "directReady")["ticket"].as_str().unwrap().to_string();
+        let tb = wait(&b, "directReady")["ticket"].as_str().unwrap().to_string();
+        // Opening the LAN QR code must not invalidate the separate direct pairing session.
+        a.call(&json!({"op":"openPairing"}));
+        b.call(&json!({"op":"openPairing"}));
+        assert_eq!(a.call(&json!({"op":"joinDirect","ticket":ta}))["ok"], false);
+        assert_eq!(a.call(&json!({"op":"joinDirect","ticket":tb}))["ok"], true);
+        assert_eq!(b.call(&json!({"op":"joinDirect","ticket":ta}))["ok"], true);
+        assert_eq!(wait(&a, "connected")["transport"], "direct-udp");
+        assert_eq!(wait(&b, "connected")["transport"], "direct-udp");
+        assert!(a.inner.pairing.lock().unwrap().is_some());
+        assert!(a.inner.peers.lock().unwrap().peers[0].addrs.is_empty(), "UDP addresses must not be remembered as TCP");
+        assert_eq!(a.call(&json!({"op":"sendText","text":"跨网直传","clip":false}))["ok"], true);
+        assert_eq!(wait(&b, "text")["text"], "跨网直传");
+        let data: Vec<u8> = (0..400_000).map(|n| (n % 251) as u8).collect();
+        let file = dir.join("direct.bin");
+        fs::write(&file, &data).unwrap();
+        assert_eq!(b.call(&json!({"op":"sendFile","path":file,"name":"direct.bin"}))["ok"], true);
+        let done = wait(&a, "fileDone");
+        assert_eq!(fs::read(done["path"].as_str().unwrap()).unwrap(), data);
+        a.stop(); b.stop();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

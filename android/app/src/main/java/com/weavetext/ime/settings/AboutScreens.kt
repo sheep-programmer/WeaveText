@@ -125,12 +125,14 @@ fun PrivacyScreen() = SubPage("隐私说明") {
     Paragraphs(
         listOf(
             "本机处理" to "拼音、五笔、联想与用户词学习全部在本机完成，织文不收集、不上传你的输入内容。",
-            "语音输入" to "语音由你选择并导入的插件识别。音频会发送到该插件对应的服务，插件只能访问其清单中声明的域名。",
+            "语音输入" to "默认使用本机离线模型。选用联网插件时，音频会发送到该插件对应的服务，插件只能访问其清单允许的网络地址。",
+            "GitHub 插件仓库" to "公开仓库可直接读取，私有仓库使用你提供的访问令牌。令牌通过 Android Keystore 加密保存在本机，不交给插件，不参与互联同步；退出 GitHub 登录后清除本机授权。",
             "剪贴板" to "剪贴板历史只保存在本机私有目录；来自密码框或标记为敏感的内容不会记录，未固定的记录 24 小时后自动删除。可在「外观与手感」中关闭记录。",
             "密码框" to "在密码框中输入时不学习用户词，也不记录剪贴板。",
             "云端热词" to "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开手机。",
             "专业词库" to "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。",
-            "织文互联" to "默认关闭。开启后只在同一局域网内与你配对过的设备直接通信，全程端到端加密，不经过任何服务器。",
+            "织文互联" to "默认关闭。文件与你配对过的设备端到端加密直传，不经过中转。跨网直传由你主动生成连接码，地址探测服务只获取公网映射，不接收文件内容。部分网络不能直连时会提示失败。",
+            "二维码扫码" to "仅在主动打开扫码页面时使用相机，二维码在本机识别。相机图像不会录制或上传，离开扫码页面后停止使用相机。",
         ),
     )
 }
@@ -154,11 +156,15 @@ fun LicensesScreen() = SubPage("开源许可") {
             Triple("Lua 5.4（mlua / lua-src）", "MIT", "插件运行时"),
             Triple("rustls、ring、webpki-roots", "Apache-2.0 / ISC / CDLA-Permissive-2.0", "插件网络 TLS"),
             Triple("snow、spake2、mdns-sd、ed25519-dalek 等", "MIT OR Apache-2.0 / BSD-3-Clause", "织文互联的加密、配对与发现；云端热词签名校验"),
+            Triple("quinn、rustls、rcgen、tokio", "MIT OR Apache-2.0 / MIT", "跨网 UDP 直传、临时证书与网络运行时"),
             Triple("memmap2、jni、serde_json、zip、tungstenite、ureq 等", "MIT OR Apache-2.0", "见仓库 docs/THIRD_PARTY.md"),
         ),
     )
     GroupTitle("Android")
-    LicenseCard(listOf(Triple("AndroidX、Jetpack Compose、Material 3", "Apache-2.0", "界面与基础组件")))
+    LicenseCard(listOf(
+        Triple("AndroidX、Jetpack Compose、Material 3", "Apache-2.0", "界面与基础组件"),
+        Triple("ZXing、zxing-android-embedded", "Apache-2.0", "本机二维码生成与相机扫码"),
+    ))
     Text(
         "完整清单见源码仓库 docs/THIRD_PARTY.md。",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -46,3 +46,32 @@ Lite 正式包的三模型长录音回归：两段自然中英夹杂录音，中
 正式 Android 12/API31 arm64 模拟器验证：三模型混说保留 ON TIME、IN TIME 与中文，候选行滑动、长按展开、左右切换到第三模型并提交全文、完整删除通过。切换到另一输入法并发送 UI_HIDDEN=20，再切回录音，模型加载计数保持 3，没有重新加载。该轮初载记录约 0.7–1.2 秒；环境内存 3 GB、4 核，不能与旧轮次不同负载的延迟作直接因果比较。正式包英文录音仍把 chieftain 识别为 chief then，整句上屏和删除通过，词级失败保留。
 
 最终 Lite APK 经下载运行库的 C API 识别真实英文录音，得到完整的 After early nightfall the yellow lamps would light up ... 句子，上屏后键盘完整删除通过。正式语音版中文模式使用 SenseVoice，识别“开放时间早上九点至下午五点”并完整删除通过。
+
+## 2026-10-06 精度复核
+
+这次只用现有的 sherpa-onnx 1.13.8 C API、int8 模型和本机 `.ref/sherpa` 音频，在同一台 macOS arm64 主机上逐个串行识别。评测集是 Sherpa 官方 [Paraformer 模型卡](https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-paraformer/paraformer-models.html)公布的 `1.wav`–`16.wav`，每段 3.71–10.88 秒；字符错误率先去掉标点，再和官方 ground truth 做编辑距离。这个集合是 Paraformer 的川渝方言测试集，适合比较这些模型在同一批音频上的差异，不代表普通话、混说、噪声或所有手机的总体准确率。
+
+| 模型与设置 | 16 段总 CER | 单段耗时范围 / 平均 | 实际输出（音频时长；耗时） |
+|---|---:|---:|---|
+| 旧默认实时模型，`asr-stream-small`，26 MB int8 | 0.473 | 46–137 ms / 94 ms | 同一组音频，以 40 ms 小块送入流式识别并补齐终止上下文；16 段均有错误。原文输出保存在原生测试日志，未将结果替换成期望词。 |
+| Paraformer，`zh` 语料，238 MB int8 | 0.060 | 116–310 ms / 219 ms | `1.wav`（7.81 s；200 ms）：`来哥哥再给你唱首歌哈儿哎呦把伴奏给我放起来放就放嘛还要动人家钩子`；`8.wav`（7.30 s；302 ms）：`换奇旅游无限的感慨使他更加痛恨官场的倾炸污浊` |
+| SenseVoice 2025-09，显式 `zh`，237 MB int8 | 0.103 | 145–406 ms / 273 ms | `1.wav`（7.81 s；297 ms）：`来哥哥再给你唱首歌好哎哟把伴奏给我放起来放狗放嘛还要多人家狗子`；`12.wav`（10.88 s；393 ms）：`将溃疡两周以上都应该及时就医据了解啊小云平时呢都喜欢吃比较烫的饭菜也喜欢吃麻辣烫火锅之类的高温食物` |
+| Zipformer CTC 终稿，`asr-final-small`，63 MB int8 | 0.118 | 78–291 ms / 151 ms | `1.wav`（7.81 s；139 ms）：`来哥哥再给你唱首歌好哎呦把漴子给我放起来放就放嘛还要多人家钗子`；`6.wav`（7.81 s；147 ms）：`是不是给人感觉后头是青花亮色的然后说话是很平和的眼神是不慌乱的不散的` |
+
+因此保留当前模型选择策略：混说继续用支持自动语言检测的 SenseVoice，中文默认下载小型流式模型和小型终稿模型，仅选择实时模型，由终稿 companion 对整句复核；旧默认中文实时用户后台补装终稿，并尊重仅 Wi-Fi 和手动模型选择；没有把专门川渝方言集上的 Paraformer CER 直接当成通用中文准确率，也没有把它盲设为所有中文用户的默认终稿。Sherpa 的 [SenseVoice 说明](https://github.com/k2-fsa/sherpa/blob/master/docs/source/onnx/sense-voice/pretrained.rst)明确列出 `auto`、`zh`、`en` 等语言，并说明 2025-09-09 Cantonese 微调版不自带标点；[Whisper 原始模型卡](https://github.com/openai/whisper/blob/main/model-card.md)也提醒不同语言的表现随训练数据量变化。因此，英文档位仍传 `en`，中英混合传 `auto`，中文档位传 `zh`；Whisper 混说漏英文的现象归因于模型/语言条件，不改成后处理猜词。
+
+本轮还复核了 endpoint、VAD 和上屏边界：流式 Zipformer 按 Sherpa [官方 endpoint 参数定义](https://github.com/k2-fsa/sherpa-onnx/blob/master/python-api-examples/streaming_server.py)启用 endpoint，当前适配层显式使用“无声 4 秒、说话后静音 1.6 秒、最长 30 秒”，`TwoPassRecognizer` 另有 28 秒保险断句；这些是产品分句取值，不冒充 Sherpa 示例中的默认值。Silero VAD 只负责整句模型分句，不停止麦克风。现有 8 秒停顿测试能得到两段完整中文，静音不会产生终稿；现有 partial/final 回归也只将 partial 作为组合文本、final 作为一次提交，没有发现重复上屏。
+
+确定的后处理问题是：识别文字中已有内部逗号但没有句末标点时，原实现用“存在任意标点”直接跳过标点模型。现在只在已有句末标点时跳过；例如回归桩输入 `你好，世界大家好`，修改前最终仍是 `你好，世界大家好` 且标点模型调用 0 次，修改后实际最终文本为 `你好，世界，大家好` 且调用 1 次。模型直出样本 `paraformer/1.wav` 在修改前后均为上表文本，这说明改动只影响缺少句末标点的后处理分支，没有把单个模型样本冒充整体精度提升。标点模型的能力和适用语言见 Sherpa 的 [CT-Transformer 标点模型说明](https://k2-fsa.github.io/sherpa/onnx/punctuation/pretrained_models.html)。
+
+复测命令：
+
+```sh
+cd android
+./gradlew --no-daemon :native-test:test --tests 'com.weavetext.ime.nativetest.NativeAsrTest.officialChineseModelBenchmarkReportsTextAndLatency'
+./gradlew --no-daemon :app:testDebugUnitTest --tests 'com.weavetext.ime.voice.LocalAsrChoiceTest'
+```
+
+本轮新增实时模型基线用于验证默认终稿升级：同一方言集上，实时模型 CER 为 47.3%，小型终稿为 11.8%。这是桌面主机的模型比较，耗时不能当作手机麦克风到上屏的延迟，差异也不能泛化为所有语音场景。手动选择多个模型仍分别显示候选，不自动投票或覆盖。
+
+Mac 保持系统离线语音与插件路径，开启 Apple 官方 [`addsPunctuation`](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/addspunctuation)，停止后的终稿等待由 5 秒改为 15 秒，减少慢设备收尾被提前取消；没有把界面和等待时长修复宣称为声学模型准确率提升。

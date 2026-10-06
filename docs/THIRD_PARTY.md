@@ -71,6 +71,9 @@ text and source link; a self-built table is planned.*
 | libloading | ISC | 运行时载入下载的识别运行库 / loading the downloaded speech runtime at run time |
 | snow（含 chacha20poly1305、blake2、x25519-dalek、curve25519-dalek 等 RustCrypto / dalek 组件） | Apache-2.0 OR MIT（dalek：BSD-3-Clause） | 织文互联的 Noise 加密通道 / WeaveLink Noise encrypted channel |
 | spake2 | MIT OR Apache-2.0 | 织文互联配对码的口令认证密钥交换 / WeaveLink pairing-code PAKE |
+| quinn（含 quinn-proto、quinn-udp） | MIT OR Apache-2.0 | 织文互联跨网 UDP 直传、重传与流控 / direct QUIC transfer |
+| tokio | MIT | 织文互联 UDP 网络运行时 / UDP network runtime |
+| rcgen | MIT OR Apache-2.0 | 临时直连证书，与连接码中的证书绑定 / ephemeral direct certificates pinned by tickets |
 | mdns-sd（含 flume、socket2、if-addrs） | Apache-2.0 OR MIT | 织文互联局域网发现 / WeaveLink LAN discovery |
 | serde | MIT OR Apache-2.0 | 织文互联的设备列表 / WeaveLink device list |
 
@@ -80,6 +83,7 @@ text and source link; a self-built table is planned.*
 |---|---|---|
 | AndroidX (core-ktx, activity-compose, lifecycle) | Apache-2.0 | 基础组件 / basics |
 | Jetpack Compose, Material 3 | Apache-2.0 | 设置 App 界面 / settings UI |
+| ZXing、zxing-android-embedded（JourneyApps） | Apache-2.0 | 本机二维码生成、相机预览与解码 / local QR generation and camera scanning |
 
 ### 3.1 仅测试使用 / Test-only (not shipped in the APK)
 
@@ -89,3 +93,17 @@ text and source link; a self-built table is planned.*
 | Robolectric | MIT | JVM 上运行 Android 代码与原生图形渲染 / Android on the JVM with native graphics |
 | Roborazzi（roborazzi、roborazzi-compose） | Apache-2.0 | JVM 截图测试 / JVM screenshot tests |
 | AndroidX Test (core-ktx)、Compose UI Test (ui-test-junit4, ui-test-manifest) | Apache-2.0 | 测试工具 / test utilities |
+
+### 表情名称与目录
+
+Emoji 基础目录来自 [Unicode Emoji 15.1 测试数据](https://www.unicode.org/Public/emoji/15.1/emoji-test.txt)，中文名称来自 [Unicode CLDR 48](https://github.com/unicode-org/cldr/tree/release-48/common/annotations)。目录与中文名称按 Unicode License V3 使用，许可随 APK 和 DMG 内的应用一起打包，原文见 `data/expressions/UNICODE-LICENSE.txt`。颜文字及其分类名称由项目自行整理。
+
+## 翻译服务与 SDK
+
+独立的 Android 离线翻译插件使用 Google 官方 `com.google.mlkit:translate:17.0.3` 与捆绑式 `com.google.mlkit:language-id:17.0.6`。这是 Google 提供的设备端 SDK，不能标作开源翻译引擎。模型按 Google SDK 管理，不改模型文件或用第三方模型镜像冒充；原文在设备处理，模型下载、SDK 配置与诊断信息可能联网，参考 [Android 数据披露](https://developers.google.com/ml-kit/android-data-disclosure)。语言包不是随 APK 预装。Google SDK 只链接到 `android/translation-google`，主输入法不链接 SDK、初始化提供器或其 JNI 库；独立 APK 与主 APK 使用相同签名，文本通过签名保护的 Binder 契约传入。
+
+译文旁使用 Google 官方原样的 [Google Translate 署名徽章](https://cloud.google.com/translate/attribution)，从该页的官方 ZIP 提取全彩与白色 @3x PNG；不重绘、不修改徽章。应用没有与 Google 建立合作或背书关系。手机与桌面的 Google 网页入口仅由用户点击打开，不调用非公开翻译接口。
+
+macOS 使用 Apple 自带的 [Translation framework](https://developer.apple.com/documentation/translation/translationsession)，系统翻译 API 需要 macOS 15+，语言包由系统管理。Apple SDK 和模型不是项目自行开放的翻译引擎。项目保留 macOS 13 最低部署目标，旧系统仅使用官方网页入口。
+
+Google Translate 是自动翻译，提供的译文没有准确性或可靠性保证；请在上屏前确认。服务说明与归因遵循 [ML Kit 使用指南](https://developers.google.com/ml-kit/language/translation/translation-terms)。

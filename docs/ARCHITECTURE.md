@@ -30,6 +30,16 @@ macOS 版（`macos/`，Swift + InputMethodKit）链接 `weave-c` 的静态库，
 （上屏文字、组合串、候选）。组合中的拼音**不写入编辑器**，只在确定时 `commitText`，避开各 App 对
 composing 文本支持不一的兼容问题。
 
+中文补充：**组合串有上限**。全拼/双拼/英文里，键盘上还没变成字词的最长原始输入是 96 个字母
+（`MAX_COMPOSITION_RAW`）；超过就把首选能上屏的部分先上屏、剩下的按键留在组合里（与五笔满四码顶屏同一思路）。
+没有这条上限时，乱打一整串会让组合串无上限地长，而每次按键都要把整串重解一遍（建音节图 + 格解码），
+实测每键 2 ms 一路涨到 28 ms，就是「乱打一会儿越来越卡」。**代价**：一句连打超过 96 个字母才选词的句子
+会在中途被切开（`keybench` 与 `typing_latency` 里有对照）；真实输入几乎不会这样，因为中间总会选词。
+*Composition cap: at most 96 raw letters (`MAX_COMPOSITION_RAW`) stay uncommitted; past that, what can be
+committed is committed. Without it a mashed run grows without bound while every key re-solves the whole string
+(2 ms → 28 ms per key measured). Cost: a sentence typed past 96 letters with no pick in between gets cut;
+see `keybench` and `typing_latency`.*
+
 English: the UI talks only to `InputController` and `VoiceHub`. The engine is a single-threaded state
 machine returning a snapshot (commit text, preedit, candidates) after every key. The preedit is never
 written into the editor; only final text is committed, which avoids per-app composing-text quirks.
@@ -166,6 +176,11 @@ Ed25519 signature checked against the built-in key, and attached as the extra le
 SPAKE2 把配对码变成强密钥作为 Noise XXpsk3 的预共享密钥（只能在线猜，截获的握手无法离线穷举），双方记下对方静态公钥；
 之后用 Noise XX 连接并核对公钥。消息：文字（剪贴板或直接发送）、文件（60 KB 分块、SHA-256 校验、文件名清洗）。
 宿主通过 JSON 命令与事件驱动（见 `core/weave-link/src/lib.rs`）。
+
+局域网及可达的远程地址沿用 TCP；跨网直传单独开启 UDP 端点，同一个 socket 做 STUN、双向打洞及 QUIC 传输。
+双方手动交换 5 分钟有效的连接码（候选地址、临时 TLS 证书、设备 ID、配对码），仍经 SPAKE2 + Noise 核对身份。
+QUIC 处理丢包、重传、排序与流控。没有数据中继或自动信令；打洞失败明确报错，绝不转为文件中转。
+实现与验证边界见 [互联与 NAT 穿透](research/09-link-nat-traversal.md)。
 English: mDNS discovery; pairing turns the 6-digit code into a PSK with SPAKE2 for Noise XXpsk3 and pins static keys;
 connections use Noise XX with the pinned keys. Text and chunked, checksummed files; hosts drive it with JSON.
 

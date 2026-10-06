@@ -55,8 +55,12 @@ data class LinkUiState(
     val addrs: List<String> = emptyList(),
     val pairingCode: String = "",
     val pairingUri: String = "",
+    val directTicket: String = "",
+    val directBusy: Boolean = false,
+    val directMessage: String? = null,
     /** 扫码打开的配对请求（地址 + 配对码），设置页据此直接配对。 A pairing request from a scanned QR code. */
     val pendingPair: PendingPair? = null,
+    val pendingDirect: String? = null,
 ) {
     val connected get() = trusted.filter { it.connected }
 }
@@ -75,11 +79,14 @@ interface LinkController {
     /** [fd] 的所有权交给内核。 Ownership of [fd] passes to the core. */
     fun sendFd(to: String?, fd: Int, name: String, mime: String): Boolean
     fun offerPair(p: PendingPair?)
+    fun offerDirect(ticket: String?) {}
     fun resetPairing()
     fun rescan() {}
     fun connect(id: String, addrs: List<String> = emptyList()) {}
     fun setReceiveDirectory(uri: String) {}
     fun openPairing(addrs: List<String> = emptyList()) {}
+    fun openDirect() {}
+    fun joinDirect(ticket: String) {}
     fun retrySave(id: String) {}
     fun sendPersonal(id: String) {}
     fun importPersonal(id: String) {}
@@ -153,7 +160,7 @@ class LinkManager internal constructor(
         poller = null
         (b as? NativeLink)?.destroy()
         sink.onStopped()
-        update { it.copy(running = false, trusted = it.trusted.map { p -> p.copy(connected = false, nearby = false) }, nearby = emptyList()) }
+        update { it.copy(running = false, trusted = it.trusted.map { p -> p.copy(connected = false, nearby = false) }, nearby = emptyList(), directTicket = "", directBusy = false, directMessage = null) }
     }
 
     private fun pollLoop(b: LinkBackend) {
@@ -168,7 +175,16 @@ class LinkManager internal constructor(
     /** 处理一个事件（主线程）。 Handle one event on the main thread. */
     internal fun onEvent(o: JSONObject) {
         when (o.optString("type")) {
-            "peerFound", "peerLost", "connected", "disconnected" -> refreshPeers()
+            "peerFound", "peerLost", "connected", "disconnected" -> {
+                if (o.optString("transport") == "direct-udp") update { it.copy(directTicket = "", directBusy = false, directMessage = "已建立 P2P 直连，文件不经过中转") }
+                refreshPeers()
+            }
+            "directReady" -> {
+                val ticket = o.optString("ticket")
+                update { it.copy(directTicket = ticket, directBusy = false, directMessage = if (o.optBoolean("public")) "连接码已生成，5 分钟内有效" else "连接码已生成；公网地址探测未成功，跨网直连可能失败") }
+                main.postDelayed({ update { if (it.directTicket == ticket) it.copy(directTicket = "", directMessage = "连接码已过期，请两端重新生成") else it } }, o.optLong("expiresIn", 300).coerceIn(1, 300) * 1000)
+            }
+            "directFailed" -> update { it.copy(directBusy = false, directMessage = directReason(o.optString("reason"))) }
             "paired" -> { update { it.copy(pairing = PairState.Done(o.optString("name")), pendingPair = null) }; refreshPeers() }
             "pairFailed" -> update { it.copy(pairing = PairState.Failed(pairReason(o.optString("reason")))) }
             "text" -> onRemoteText(o.optString("text"), o.optBoolean("clip"), o.optString("fromName"))
@@ -187,6 +203,15 @@ class LinkManager internal constructor(
         r.contains("wrong code") || r.contains("rejected") || r.contains("hello") -> "配对码不对或已过期"
         r.contains("unreachable") || r.contains("refused") || r.contains("timed out") -> "连不上这台设备：检查地址、端口、本地网络权限或远程入站规则"
         else -> "配对失败"
+    }
+
+    private fun directReason(reason: String) = when {
+        reason.contains("expired") -> "连接码已过期，请两端重新生成"
+        reason.contains("own connection") -> "请粘贴对方的连接码"
+        reason.contains("generate your") -> "请先生成本机连接码"
+        reason.contains("already") -> "正在准备或连接，请稍候"
+        reason.contains("invalid") || reason.contains("certificate") -> "连接码无效，请完整复制对方的连接码"
+        else -> "直连失败：请确认两端已互换连接码。当前网络可能限制 UDP 或打洞；没有使用中转"
     }
 
     private fun onRemoteText(text: String, clip: Boolean, from: String) {
@@ -292,7 +317,8 @@ class LinkManager internal constructor(
         return runCatching { JSONObject(b.call(cmd.toString())).optBoolean("ok") }.getOrDefault(false)
     }
 
-    override fun offerPair(p: PendingPair?) = update { it.copy(pendingPair = p, pairing = PairState.Idle) }
+    override fun offerPair(p: PendingPair?) = update { it.copy(pendingPair = p, pendingDirect = null, pairing = PairState.Idle) }
+    override fun offerDirect(ticket: String?) = update { it.copy(pendingDirect = ticket, pendingPair = null) }
 
     override fun resetPairing() = update { it.copy(pairing = PairState.Idle) }
     override fun rescan() { discoveryAgent?.start(info) }
@@ -311,6 +337,18 @@ class LinkManager internal constructor(
         update { it.copy(pairingCode = r.optString("code"), pairingUri = r.optString("uri")) }
         val code = r.optString("code")
         main.postDelayed({ update { if (it.pairingCode == code) it.copy(pairingCode = "", pairingUri = "") else it } }, 120_000)
+    }
+    override fun openDirect() {
+        val b = backend ?: return
+        update { it.copy(directBusy = true, directMessage = "正在准备跨网连接…") }
+        val result = JSONObject(b.call("""{"op":"openDirect"}"""))
+        if (!result.optBoolean("ok")) update { it.copy(directBusy = false, directMessage = directReason(result.optString("error"))) }
+    }
+    override fun joinDirect(ticket: String) {
+        val b = backend ?: return
+        update { it.copy(directBusy = true, directMessage = "正在尝试 P2P 直连…") }
+        val result = JSONObject(b.call(JSONObject().put("op", "joinDirect").put("ticket", ticket.trim()).toString()))
+        if (!result.optBoolean("ok")) update { it.copy(directBusy = false, directMessage = directReason(result.optString("error"))) }
     }
     override fun retrySave(id: String) {
         val t = _state.value.transfers.firstOrNull { it.id == id && it.incoming && it.state == LinkTransfer.State.FAILED && it.path?.startsWith('/') == true } ?: return

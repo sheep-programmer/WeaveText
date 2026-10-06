@@ -8,6 +8,7 @@
     <files-path name="clip_media" path="clipboard/media/" />
     <cache-path name="link_inbox" path="link-inbox/" />
     <cache-path name="updates" path="updates/" />
+    <cache-path name="translation_plugins" path="translation-plugins/" />
     <files-path name="link_clip" path="link/clip/" />
     <external-files-path name="link_downloads" path="Download/WeaveText/" />
 </paths>

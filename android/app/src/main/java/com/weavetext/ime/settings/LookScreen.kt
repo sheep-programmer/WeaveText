@@ -70,6 +70,8 @@ fun LookScreen() {
         Spacer(Modifier.height(12.dp))
         GroupCard {
             val repo = StyleRepository.get(ctx)
+            // 这一块在作用域内直接读设置，所以 KeyFeelCard 里改的样式/主题会即时反映在摘要上。
+            // Read here, in scope, so style changes made by KeyFeelCard show in these summaries at once.
             val theme = WeavePrefs.styleTheme(p)
             val layout = repo.layout(WeavePrefs.styleLayout(p))
             val themeName = if (theme == StyleRepository.AUTO) repo.theme(layout.theme).name else repo.theme(theme).name
@@ -79,6 +81,10 @@ fun LookScreen() {
             RowDivider()
             SettingRow("工具栏", "选择候选栏上方显示的按钮和顺序", icon = R.drawable.ic_toolbox, onClick = { nav.push(Route.Toolbar) }) {
                 ValueChevron("${(WeavePrefs.toolbarCustom(p) ?: defaultToolbar(ctx, p)).size} 个")
+            }
+            RowDivider()
+            SettingRow("翻译", "配置可选的在线翻译服务", icon = R.drawable.ic_globe, onClick = { nav.push(Route.Translation) }) {
+                ValueChevron(if (TranslationSettings.onlineEnabled(p)) "已开启" else "未开启")
             }
         }
         GroupTitle("深浅色")
@@ -98,6 +104,7 @@ fun LookScreen() {
         }
         GroupTitle("按键手感")
         GroupCard { KeyFeelCard(p, feedback, view) }
+        FloatingResizeSettingsCard(p)
         androidx.compose.foundation.layout.Spacer(Modifier.height(GroupGap))
         GroupCard {
             SwitchRow("按键气泡", "按下时放大显示字符", WeavePrefs.keyPreview(p)) { p.edit().putBoolean(WeavePrefs.KEY_PREVIEW, it).apply() }
@@ -159,9 +166,12 @@ private fun StepSlider(value: Int, labels: List<String>, onChange: (Int) -> Unit
  * Live preview: the real, non-interactive KeyboardView scaled to 0.6.
  */
 @Composable
-private fun KeyboardPreview(prefs: SharedPreferences) {
+private fun KeyboardPreview(raw: SharedPreferences) {
     val ctx = LocalContext.current
-    val style = StyleRepository.get(ctx).resolve(ctx, prefs)
+    // 自己拿「活」的设置：样式 / 主题 / 微调一变，预览跟着重建。
+    // Own live preferences, so style, theme or tweak changes rebuild the preview.
+    val p by rememberLivePrefs(raw)
+    val style = StyleRepository.get(ctx).resolve(ctx, p)
     val palette = style.palette
     val metrics = style.metrics
     val icons = remember(palette) { Icons(ctx) }
@@ -214,7 +224,10 @@ fun soundSummary(p: SharedPreferences): String {
  */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun KeyFeelCard(p: SharedPreferences, feedback: Feedback, view: android.view.View) {
+private fun KeyFeelCard(raw: SharedPreferences, feedback: Feedback, view: android.view.View) {
+    // 自己拿「活」的设置：选中的风格、音量与震动档位当场重画，不必退出这一页再进来。
+    // Own live preferences so the picked style, volume and vibration level redraw on the spot.
+    val p by rememberLivePrefs(raw)
     val style = WeavePrefs.soundStyle(p)
     val volume = WeavePrefs.soundVolume(p)
     androidx.compose.runtime.SideEffect { feedback.soundStyle = style; feedback.soundVolume = volume }

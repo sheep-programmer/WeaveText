@@ -12,7 +12,7 @@
 //! 快照编码（大端，Java ByteBuffer 默认序）/ Snapshot encoding (big endian):
 //! ```text
 //! u8 version(=1) u8 flags(bit0=composing) str commit str preedit
-//! i32 total i32 n { str text str comment u8 flags(user=1,cloud=2) }*n i32 m { str pinyin }*m str schema
+//! i32 total i32 n { str text str comment u8 flags(user=1,cloud=2,pinyin=4) [str pinyin if bit2] }*n i32 m { str pinyin }*m str schema
 //! str = i32 byte_len + utf-8
 //! ```
 
@@ -86,7 +86,9 @@ impl Enc {
         for c in c {
             self.str(&c.text);
             self.str(&c.comment);
-            self.u8((c.user as u8) | ((c.cloud as u8) << 1));
+            let annotated = !c.pinyin.is_empty();
+            self.u8((c.user as u8) | ((c.cloud as u8) << 1) | ((annotated as u8) << 2));
+            if annotated { self.str(&c.pinyin); }
         }
     }
 }

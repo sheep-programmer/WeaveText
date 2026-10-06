@@ -10,6 +10,8 @@ final class LinkPageModel: ObservableObject {
     @Published var address = ""
     @Published var code = ""
     @Published var reconnectAddress = ""
+    @Published var directRemote = ""
+    @Published var showDirectQr = false
 }
 
 /// 互联：与同一局域网内的手机配对，互传文字、剪贴板、图片与文件。
@@ -45,6 +47,18 @@ struct LinkPage: View {
         .sheet(isPresented: Binding(get: { link.state.pairing != nil }, set: { if !$0 { link.closePairing() } })) {
             PairingSheet(link: link)
         }
+        .sheet(isPresented: $model.showDirectQr) {
+            VStack(spacing: 16) {
+                Text("本机跨网连接二维码").font(.title2.weight(.semibold))
+                if !link.directTicket.isEmpty {
+                    QRView(text: link.directTicket, side: 260)
+                    Text("在手机互联页点「扫描二维码」读取。仍需把手机的连接码发回电脑，并在两端分别连接。")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                } else { Text("连接码已失效，请重新生成") }
+                Button("关闭") { model.showDirectQr = false }.keyboardShortcut(.cancelAction)
+            }.padding(24).frame(width: 400)
+        }
+        .onChange(of: link.directTicket) { value in if value.isEmpty { model.showDirectQr = false } }
         .alert(
             "取消与「\(model.confirmForget?.displayName ?? "")」的配对？",
             isPresented: Binding(get: { model.confirmForget != nil }, set: { if !$0 { model.confirmForget = nil } })
@@ -65,6 +79,26 @@ struct LinkPage: View {
                 Label("互联服务没有启动，请检查网络后重新打开开关。", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
+        }
+        Section("跨网直传") {
+            Button("生成本机连接码") { link.openDirect() }.disabled(!s.running || link.directBusy)
+            if !link.directTicket.isEmpty {
+                Button("显示连接二维码") { model.showDirectQr = true }
+                Button("复制本机连接码") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(link.directTicket, forType: .string)
+                }
+            }
+            TextField("粘贴对方的连接码", text: $model.directRemote)
+                .onChange(of: model.directRemote) { value in
+                    if value.count > 16_384 { model.directRemote = String(value.prefix(16_384)) }
+                }
+            Button("连接对方") { link.joinDirect(model.directRemote) }
+                .disabled(!s.running || link.directBusy || link.directTicket.isEmpty || model.directRemote.isEmpty)
+            if link.directBusy { ProgressView().controlSize(.small) }
+            if !link.directMessage.isEmpty { Text(link.directMessage).font(.callout).foregroundStyle(.secondary) }
+            Text("两端各生成一份连接码，互相发送；分别粘贴对方的连接码并点「连接对方」。连接后即可发送文件。文件加密直传，不经过中转；地址探测服务只帮助建立连接。部分网络无法打洞时会提示失败。")
+                .font(.callout).foregroundStyle(.secondary)
         }
         Section("本机") {
             HStack {

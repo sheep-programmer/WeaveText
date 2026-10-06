@@ -4,23 +4,26 @@ import Foundation
 public struct Candidate: Decodable, Equatable, Sendable {
     public var text: String
     public var comment: String
+    public var pinyin: String
     /// 来自用户词库（可删除）。 Learned from the user (deletable).
     public var user: Bool
     public var cloud: Bool
 
-    public init(text: String, comment: String = "", user: Bool = false, cloud: Bool = false) {
+    public init(text: String, comment: String = "", user: Bool = false, cloud: Bool = false, pinyin: String = "") {
         self.text = text
         self.comment = comment
+        self.pinyin = pinyin
         self.user = user
         self.cloud = cloud
     }
 
-    private enum CodingKeys: String, CodingKey { case text, comment, user, cloud }
+    private enum CodingKeys: String, CodingKey { case text, comment, user, cloud, pinyin }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         text = try c.decode(String.self, forKey: .text)
         comment = try c.decodeIfPresent(String.self, forKey: .comment) ?? ""
+        pinyin = try c.decodeIfPresent(String.self, forKey: .pinyin) ?? ""
         user = try c.decodeIfPresent(Bool.self, forKey: .user) ?? false
         cloud = try c.decodeIfPresent(Bool.self, forKey: .cloud) ?? false
     }

@@ -5,6 +5,7 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.ExtractedTextRequest
 import com.weavetext.ime.core.Candidate
 import com.weavetext.ime.core.EngineSnapshot
 import com.weavetext.ime.core.KeyEngine
@@ -27,6 +28,7 @@ data class ImeState(
     val totalCandidates: Int = 0,
     val pinyinOptions: List<String> = emptyList(),
     val composing: Boolean = false,
+    val handRecognizing: Boolean = false,
     val chinese: Boolean = true,
     val schema: String = "pinyin",
     val enterAction: EnterAction = EnterAction.NEWLINE,
@@ -46,6 +48,73 @@ data class ImeState(
  * only commitText. This sidesteps composing-text quirks in chat apps, WebViews, etc.
  */
 class InputController(private val icProvider: () -> InputConnection?) {
+    private var inputEpoch = 0L
+    private var translationRevision = 0L
+
+    /** A translation belongs to the editor and selection where its source was read. */
+    class TranslationTarget internal constructor(
+        internal val epoch: Long,
+        internal val revision: Long,
+        internal val connection: InputConnection,
+        internal val start: Int,
+        internal val end: Int,
+        val selectedText: String,
+        internal val before: String,
+        internal val after: String,
+    )
+
+    fun captureTranslationTarget(): TranslationTarget? {
+        if (isSensitiveField) return null
+        // Drop unconfirmed typing and pending handwriting before binding the target.
+        discardHand()
+        endReconversion()
+        engineRef?.clear()
+        pendingKeys.clear()
+        refresh()
+        val connection = icProvider() ?: return null
+        return readTranslationTarget(connection)
+    }
+
+    private fun readTranslationTarget(connection: InputConnection): TranslationTarget? = runCatching {
+        val extracted = connection.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 128 }, 0)
+        val start = extracted?.let { it.startOffset + it.selectionStart } ?: editor.selStart
+        val end = extracted?.let { it.startOffset + it.selectionEnd } ?: editor.selEnd
+        if (start < 0 || end < 0) return null
+        val selected = connection.getSelectedText(0)?.toString().orEmpty()
+        if (selected.length > com.weavetext.ime.translate.TranslationRequest.MAX_TEXT_CHARS ||
+            selected.length != kotlin.math.abs(end - start)) return null
+        val before = connection.getTextBeforeCursor(64, 0)?.toString() ?: return null
+        val after = connection.getTextAfterCursor(64, 0)?.toString() ?: return null
+        TranslationTarget(inputEpoch, translationRevision, connection, start, end, selected, before, after)
+    }.getOrNull()
+
+    fun writeTranslation(target: TranslationTarget, text: String, replace: Boolean): Boolean {
+        if (isSensitiveField || text.isBlank() || target.epoch != inputEpoch ||
+            target.revision != translationRevision || state.composing || handJob != null ||
+            handCommits.isNotEmpty() || icProvider() !== target.connection) return false
+        val now = readTranslationTarget(target.connection) ?: return false
+        if (now.start != target.start || now.end != target.end || now.selectedText != target.selectedText ||
+            now.before != target.before || now.after != target.after) return false
+        if (replace && target.selectedText.isEmpty()) return false
+        val connection = target.connection
+        return runCatching {
+            connection.beginBatchEdit()
+            try {
+                // Insert follows the original selection; it never replaces it.
+                if (!replace && !connection.setSelection(maxOf(target.start, target.end), maxOf(target.start, target.end))) return false
+                val ok = connection.commitText(text, 1)
+                if (ok) {
+                    translationRevision++
+                    stamp++
+                    editor.invalidate()
+                    engineRef?.breakChain()
+                    engineRef?.setContext(null)
+                    dismissPredictions()
+                }
+                ok
+            } finally { connection.endBatchEdit() }
+        }.getOrDefault(false)
+    }
     private var reconversion: Triple<String,Int,Int>? = null
     private var reconversionSchema = "pinyin"
     fun feature(command: org.json.JSONObject): org.json.JSONObject = runCatching { org.json.JSONObject(engine?.features(command.toString()) ?: "{}") }.getOrDefault(org.json.JSONObject())
@@ -94,7 +163,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      */
     private var engine: KeyEngine?
         get() { settleHand(); return engineRef }
-        set(v) { engineRef = v; handJob = null }
+        set(v) { discardHand(); engineRef = v }
     private var engineRef: KeyEngine? = null
 
     /**
@@ -105,7 +174,18 @@ class InputController(private val icProvider: () -> InputConnection?) {
     var handWorker: java.util.concurrent.ExecutorService? = null
     var postMain: (Runnable) -> Unit = { it.run() }
     private var handJob: HandJob? = null
-    private class HandJob(val engine: KeyEngine, val strokes: List<FloatArray>, val result: java.util.concurrent.Future<IntArray?>)
+    private var handGeneration = 0L
+    private val handCommits = LinkedHashSet<HandJob>()
+    private var applyingHandResult = false
+    private class HandJob(val engine: KeyEngine, val strokes: List<FloatArray>, val result: java.util.concurrent.Future<IntArray?>, val generation: Long)
+
+    private fun discardHand() {
+        handGeneration++
+        handJob?.result?.cancel(false)
+        handJob = null
+        handCommits.forEach { it.result.cancel(false) }
+        handCommits.clear()
+    }
     var state = ImeState()
         private set
     private val listeners = mutableListOf<(ImeState) -> Unit>()
@@ -187,6 +267,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
     // ---------------------------------------------------------------- lifecycle
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        inputEpoch++
+        translationRevision++
+        if (!restarting) discardHand()
         endReconversion()
         editorInfo = info
         engine?.let(::syncClock)
@@ -260,9 +343,15 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 编辑器回报的选区变化。 Selection update from the editor. */
     fun onSelectionUpdate(selStart: Int, selEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
+        if (selStart != editor.selStart || selEnd != editor.selEnd) translationRevision++
         // 光标被挪到别处（点了别的位置、粘贴…）：联想词对应的上文已经不对了，收起并断开连续造词。
         // The cursor moved elsewhere (a tap, a paste…): the predictions no longer fit, dismiss them and break the chain.
         if (editor.onUpdate(selStart, selEnd, candidatesStart, candidatesEnd)) {
+            if (!applyingHandResult && (handJob != null || handCommits.isNotEmpty())) {
+                discardHand()
+                engineRef?.clear()
+                refresh()
+            }
             val e = engine ?: return
             e.breakChain()
             if (!state.composing && state.candidates.isNotEmpty()) {
@@ -273,6 +362,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onFinishInput() {
+        translationRevision++
+        discardHand()
         endReconversion()
         engine?.let { it.clear(); it.flush() }
         pendingKeys.clear()
@@ -543,6 +634,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * off, e.g. on a physical keyboard).
      */
     fun onSpace(periodShortcut: Boolean = true) {
+        if (state.chinese && state.schema == "hand" && handJob != null) { commitFirst(); return }
         if(reconversion!=null){onCandidate(0);return}
         if (keep(PendingKey(PendingKey.SPACE))) return
         val e = engine
@@ -570,6 +662,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private val periodAllowed get() = !state.chinese && !state.passwordField && !latinField && !keyEventsOnly
 
     fun onEnter() {
+        if (state.chinese && state.schema == "hand" && handJob != null) { commitFirst(); return }
         if(reconversion!=null){onCandidate(0);return}
         if (keep(PendingKey(PendingKey.ENTER))) return
         val e = engine
@@ -595,6 +688,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onCandidate(index: Int) {
+        if (state.handRecognizing) return
         reconversion?.let { old ->
             if (icProvider()?.getSelectedText(0)?.toString()!=old.first || (old.second>=0 && editor.selectionKnown && (editor.selStart!=old.second || editor.selEnd!=old.third))) {
                 engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh();return
@@ -627,25 +721,49 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // result is dropped if newer strokes arrived meanwhile.
         val copy = strokes.map { it.copyOf() }
         handJob?.result?.cancel(false)
-        val job = HandJob(e, copy, worker.submit(java.util.concurrent.Callable { e.handRecognize(copy) }))
+        val job = HandJob(e, copy, worker.submit(java.util.concurrent.Callable { e.handRecognize(copy) }), handGeneration)
         handJob = job
+        update { it.copy(handRecognizing = true, composing = true, candidates = emptyList(), totalCandidates = 0, preedit = "") }
         // 单线程执行器：这一步排在识别之后。 Single-thread executor: this runs after the recognition.
-        worker.execute { postMain(Runnable { if (handJob === job) finishHand(job) }) }
+        worker.execute { postMain(Runnable { if (job.generation == handGeneration && (handJob === job || job in handCommits)) finishHand(job) }) }
     }
 
     /** 还有后台识别没交回时，等它算完并交回（最多一次识别的时间）。 Wait for and apply a pending recognition. */
     private fun settleHand() {
+        while (handCommits.isNotEmpty()) finishHand(handCommits.first())
         val job = handJob ?: return
         finishHand(job)
     }
 
     private fun finishHand(job: HandJob) {
-        handJob = null
-        if (engineRef !== job.engine) return
+        val commit = handCommits.remove(job)
+        if (handJob === job) handJob = null
+        if (engineRef !== job.engine || job.generation != handGeneration) return
         val cps = try { job.result.get(2, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Exception) { null }
-        if (cps == null) job.engine.handInput(job.strokes) else job.engine.handApply(job.strokes, cps)
-        stamp++
-        refresh()
+        val wasApplying = applyingHandResult
+        applyingHandResult = true
+        try {
+            if (cps == null) job.engine.handInput(job.strokes) else job.engine.handApply(job.strokes, cps)
+            if (commit) job.engine.select(0)
+            stamp++
+            refresh()
+        } finally { applyingHandResult = wasApplying }
+    }
+
+    /** Re-evaluate current ink after a mode switch without waiting for an obsolete recognition. */
+    fun setHandLineMode(on: Boolean, strokes: List<FloatArray> = emptyList()) {
+        handJob?.result?.cancel(false)
+        handJob = null
+        engineRef?.features(org.json.JSONObject().put("op", "setHandLine").put("on", on).toString())
+        if (strokes.isNotEmpty()) onHandStrokes(strokes) else refresh()
+    }
+
+    /** Undo/redo replaces geometry without settling the canceled network pass. */
+    fun replaceHandInk(strokes: List<FloatArray>) {
+        handJob?.result?.cancel(false)
+        handJob = null
+        engineRef?.clear()
+        if (strokes.isNotEmpty()) onHandStrokes(strokes) else refresh()
     }
 
     /**
@@ -653,11 +771,21 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Handwriting, pen down after a pause: commit the top candidate. Like tapping it, this keeps the word chain
      * (handwritten chars can form user words) and offers predictions.
      */
-    fun commitFirst() {
-        val e = engine ?: return
-        if (!e.isComposing()) return
+    fun commitFirst(): Boolean {
+        // A pen pause must not block the UI while the network finishes. Keep committed jobs
+        // in order and let the next character start with its own strokes immediately.
+        handJob?.takeIf { !it.result.isDone }?.let { job ->
+            handCommits += job
+            handJob = null
+            update { it.copy(handRecognizing = true, composing = true, candidates = emptyList(), totalCandidates = 0, preedit = "") }
+            return true
+        }
+        val e = engine ?: return false
+        if (!e.isComposing()) return false
+        if (state.schema == "hand" && state.candidates.isEmpty()) return false
         if (state.schema == "hand" && state.candidates.isNotEmpty()) e.select(0) else e.commitFirst()
         refresh()
+        return true
     }
 
     fun onPinyinOption(index: Int) {
@@ -695,6 +823,12 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun setOption(key: String, value: Boolean) { engine?.setOption(key, value) }
+    /** Apply changes to the existing composition and notify candidate views immediately. */
+    fun refreshEngineOptions() {
+        if (engine == null) return
+        feature(org.json.JSONObject().put("op", "refreshOptions"))
+        refresh()
+    }
 
     /**
      * 设定中文方案但不改变中/英状态（设置同步、内核未就绪时用）。
@@ -785,6 +919,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
     fun reset() {
+        discardHand()
         endReconversion()
         engine?.clear()
         pendingKeys.clear()
@@ -1029,10 +1164,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 开始说话时所在的输入框。 The editor dictation started in. */
     private var voiceField: Pair<String?, Int>? = null
+    private var voiceEpoch: Long? = null
     private fun field(info: EditorInfo?) = info?.packageName to (info?.fieldId ?: 0)
 
     /** 记下开始说话的输入框。 Remember which editor dictation started in. */
-    fun voiceBegin() { voiceField = field(editorInfo) }
+    fun voiceBegin() { voiceField = field(editorInfo); voiceEpoch = inputEpoch }
 
     /**
      * 语音的输入连接：收起键盘后才出来的终稿，只写回开始说话的那个输入框；用户已经换到别的应用或输入框就丢掉，
@@ -1043,7 +1179,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      */
     private fun voiceIc(): InputConnection? {
         val started = voiceField
-        if (started != null && started != field(editorInfo)) return null
+        if (started != null && (started != field(editorInfo) || voiceEpoch != inputEpoch)) return null
         return ic()
     }
 
@@ -1090,7 +1226,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 取消语音：丢弃 composing。 Drop the voice composing text. */
     fun voiceCancel() {
-        val ic = ic() ?: return
+        val ic = voiceIc() ?: return
         ic.setComposingText("", 1)
         ic.finishComposingText()
     }
@@ -1125,6 +1261,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * locally and the mirror waits for the editor's next report.
      */
     private fun ic(modeled: Boolean = false): InputConnection? {
+        // Editor changes must follow queued handwriting commits; delivering a result must
+        // never recursively settle a newer glyph before writing the older one.
+        if (!applyingHandResult && (handJob != null || handCommits.isNotEmpty())) settleHand()
         stamp++
         if (!modeled) editor.invalidate()
         return icProvider()
@@ -1132,13 +1271,13 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     private fun drainCommit(): EngineSnapshot? {
         stamp++
-        val snap = engine?.snapshot() ?: return null
+        val snap = engineRef?.snapshot() ?: return null
         if (snap.commit.isNotEmpty()) write(snap.commit)
         return snap
     }
 
     private fun refresh() {
-        if (engine == null && pendingKeys.isNotEmpty()) { showPending(); return }
+        if (engineRef == null && pendingKeys.isNotEmpty()) { showPending(); return }
         val snap = drainCommit() ?: EngineSnapshot.EMPTY
         update {
             it.copy(
@@ -1147,7 +1286,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
                 candidates = snap.candidates,
                 totalCandidates = snap.totalCandidates,
                 pinyinOptions = snap.pinyinOptions,
-                composing = snap.composing,
+                composing = snap.composing || handJob != null || handCommits.isNotEmpty(),
+                handRecognizing = handJob != null || handCommits.isNotEmpty(),
             )
         }
     }

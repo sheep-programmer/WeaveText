@@ -8,11 +8,19 @@ final class HandwritingModel: ObservableObject {
     @Published var clearTick=0
     @Published var undoTick=0
     @Published var hasInk=false
-    @Published var multi=false
+    @Published var multi=Preferences.shared.handLine {didSet {Preferences.shared.handLine=multi}}
     weak var owner:WeaveInputController?
     private var generation=0
     private var idle:DispatchWorkItem?
     private let worker=DispatchQueue(label:"WeaveText.handwriting",qos:.userInitiated)
+    private var observer:NSObjectProtocol?
+    init() {
+        observer=NotificationCenter.default.addObserver(forName:Preferences.didChange,object:nil,queue:.main) {[weak self] _ in
+            guard let self,self.multi != Preferences.shared.handLine else {return}
+            self.multi=Preferences.shared.handLine
+        }
+    }
+    deinit {if let observer {NotificationCenter.default.removeObserver(observer)}}
     func beginStroke() {idle?.cancel();generation += 1;candidates=[];hasInk=true;message="正在书写…"}
     func undoStroke() {idle?.cancel();undoTick += 1}
     func recognize(_ strokes:[[[Float]]]) {
@@ -68,11 +76,12 @@ final class HandwritingWindow:NSObject,NSWindowDelegate {
         model.owner=owner
         previousSchema=EngineHost.shared.chinese ? EngineHost.shared.scheme.id : "english"
         if window==nil {
-            let panel=InputPanel(contentRect:NSRect(x:0,y:0,width:520,height:360),styleMask:[.titled,.closable,.nonactivatingPanel,.resizable],backing:.buffered,defer:false)
+            let panel=InputPanel(contentRect:NSRect(x:0,y:0,width:520,height:390),styleMask:[.titled,.closable,.nonactivatingPanel,.resizable],backing:.buffered,defer:false)
             panel.title="织文手写";panel.level = .floating;panel.hidesOnDeactivate=false;panel.isReleasedWhenClosed=false
             panel.becomesKeyOnlyIfNeeded=true
             panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.ignoresCycle]
             panel.contentView=ClickThroughHostingView(rootView:HandwritingView(model:model));panel.delegate=self
+            WindowAppearance.shared.track(panel)
             window=panel;panel.center()
         }
         model.clear();EngineHost.shared.engine?.setSchema("hand")
@@ -88,6 +97,7 @@ final class HandwritingWindow:NSObject,NSWindowDelegate {
 }
 struct HandwritingView:View {
     @ObservedObject var model:HandwritingModel
+    @ObservedObject var prefs:Preferences = .shared
     var body:some View {
         VStack(spacing:12) {
             HStack(spacing:10) {
@@ -130,26 +140,30 @@ struct HandwritingView:View {
                     ScrollView(.horizontal,showsIndicators:false) {
                         HStack(spacing:8) {
                             ForEach(Array(model.candidates.enumerated()),id:\.offset) {index,c in
-                                CandidateChip(text:c.text,index:index+1,primary:index==0) {model.choose(c,index:index)}
+                                CandidateChip(text:c.text,pinyin:c.pinyin,index:index+1,primary:index==0) {model.choose(c,index:index)}
                             }
                         }.padding(.vertical,2)
                     }.frame(minHeight:48)
                 }
             }
-        }.padding(16).background(Color(nsColor:.windowBackgroundColor))
+        }.padding(20).background(Theme.palette(prefs.colorTheme).surface).weaveStyle(prefs)
     }
 }
 /// 候选字：第一个高亮（停笔后自动上屏的就是它），点选即上屏。 A candidate; the first is highlighted — the one a pause commits.
 private struct CandidateChip:View {
     let text:String
+    let pinyin:String
     let index:Int
     let primary:Bool
     let action:()->Void
     var body:some View {
         Button(action:action) {
-            HStack(alignment:.firstTextBaseline,spacing:6) {
+            HStack(alignment:.lastTextBaseline,spacing:6) {
                 Text("\(index)").font(.caption2).foregroundStyle(primary ? Color.accentColor : .secondary)
-                Text(text).font(.system(size:26))
+                VStack(spacing:2) {
+                    if !pinyin.isEmpty {Text(pinyin).font(.system(size:12)).foregroundStyle(.secondary)}
+                    Text(text).font(.system(size:26))
+                }
             }
             .padding(.horizontal,14).padding(.vertical,6).frame(minHeight:44)
             .background(RoundedRectangle(cornerRadius:10).fill(primary ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12)))

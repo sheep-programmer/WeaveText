@@ -50,6 +50,10 @@ lipo -info "$BUILD/lib/libweave_c.a"
 cd "$MAC"
 if [[ $SKIP_TESTS == 0 ]]; then
   step "测试 / tests"
+  # 外部 Rust 静态库不由 SwiftPM 构建；删除已链接的测试输出，确保 Rust-only 改动也进入本轮测试。
+  # The external Rust archive is built outside SwiftPM. Force a fresh test link after rebuilding it.
+  test_bins="$(swift build --show-bin-path)"
+  rm -rf "$test_bins/WeaveTextPackageTests.xctest"
   if [[ -d "$TESTING_PLUGINS" ]]; then
     swift test -Xswiftc -plugin-path -Xswiftc "$TESTING_PLUGINS"
   else
@@ -63,8 +67,12 @@ for arch in arm64 x86_64; do
   triple="$arch-apple-macosx13.0"
   # 每个架构单独的构建目录，否则两次产物落在同一处。 One scratch dir per arch, or both land in one place.
   scratch="$MAC/.build/$arch"
+  binpath="$(swift build -c release --triple "$triple" --scratch-path "$scratch" --show-bin-path)"
+  # 缓存 Swift 对象仍可复用，最终链接必须取本轮 Rust 内核。
+  # Reuse Swift objects, but always link the executable against the current Rust archive.
+  rm -f "$binpath/WeaveText"
   swift build -c release --triple "$triple" --scratch-path "$scratch" --product WeaveText
-  BINS+=("$(swift build -c release --triple "$triple" --scratch-path "$scratch" --show-bin-path)/WeaveText")
+  BINS+=("$binpath/WeaveText")
 done
 mkdir -p "$BUILD/bin"
 lipo -create "${BINS[@]}" -output "$BUILD/bin/WeaveText"
@@ -102,6 +110,8 @@ done
 echo "data: ${KEYS[*]}"
 # 专业词库目录（与 Android 同一份）。 The domain-dictionary catalog, the same file as Android's.
 cp "$ROOT/android/app/src/main/assets/dictpacks.json" "$APP/Contents/Resources/dictpacks.json"
+mkdir -p "$APP/Contents/Resources/expressions"
+cp "$ROOT/data/expressions/catalog.json" "$ROOT/data/expressions/UNICODE-LICENSE.txt" "$APP/Contents/Resources/expressions/"
 # 下载镜像：取 Android 模型目录里的 "mirrors"（专业词库与云端热词先直连，失败再依次换镜像）。
 # Download mirrors: the "mirrors" of Android's model catalog (packs and hot words try the direct URL first).
 plutil -extract mirrors json -o "$APP/Contents/Resources/mirrors.json" "$ROOT/android/app/src/main/assets/models/catalog.json"

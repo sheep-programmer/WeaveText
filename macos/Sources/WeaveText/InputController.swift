@@ -21,12 +21,14 @@ final class WeaveInputController: IMKInputController {
     /// 上一个直通的键是数字（3.14 里的句点保持半角）。 The last passed-through key was a digit.
     private var afterDigit = false
     private var preedit = ""
+    private var correctionMarks: [PreeditMark] = []
     private var reconversionOriginal: (text:String,schema:String,range:NSRange)?
     private weak var reconversionClient: AnyObject?
     /// 敲等号后给出的算式结果（候选窗里只有它一个）。 The result offered after `=`, the only item in the panel.
     private var calcResult: String?
     /// 候选窗里是上屏后的联想词。 The panel shows predictions after a commit.
     private var predicting = false
+    private(set) var translationEpoch = 0
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         // 鼠标点在文档里时收起联想词。 A click in the document dismisses the predictions.
@@ -34,6 +36,7 @@ final class WeaveInputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
+        translationEpoch += 1
         super.activateServer(sender)
         host.activeController = self
         host.engine?.clear()
@@ -50,6 +53,8 @@ final class WeaveInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        translationEpoch += 1
+        MainActor.assumeIsolated { TranslationWindow.shared.invalidate(owner: self) }
         HandwritingWindow.shared.dismiss(owner:self)
         finishComposition(client: sender as? IMKTextInput)
         calcResult = nil
@@ -82,9 +87,11 @@ final class WeaveInputController: IMKInputController {
             flagsChanged(event, client)
             return false
         case .keyDown:
+            translationEpoch += 1
             return keyDown(event, client)
         case .leftMouseDown:
             if event.window is InputPanel { return false }
+            translationEpoch += 1
             if reconversionOriginal != nil { cancelReconversion() }
             dismissPredictions()
             // 光标挪了：之后的退格删的不是刚上屏的词。 The caret moved: a later backspace isn't deleting that commit.
@@ -122,6 +129,17 @@ final class WeaveInputController: IMKInputController {
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
         if prefs.voiceShortcut?.matches(key) == true { openVoice(nil); return true }
+        let chineseInput = host.chinese && host.scheme.isChinese
+        if !chineseInput && !prefs.englishCompletion {
+            if engine.isComposing || predicting || calcResult != nil {
+                finishComposition(client: client)
+                calcResult = nil
+                CandidatePanel.shared.hide()
+            }
+            afterDigit = !key.command && !key.control && !key.option && key.character?.isASCII == true && key.character?.isNumber == true
+            passIdle(key, engine)
+            return false
+        }
         if calcResult != nil, handleCalcKey(key, client) { return true }
         if predicting {
             switch KeyMapper.predictionAction(for: key, count: pager.page.count, pageSize: prefs.pageSize) {
@@ -137,10 +155,10 @@ final class WeaveInputController: IMKInputController {
             }
         }
         let composing = engine.isComposing
-        let ctx = KeyContext(composing: composing, chinese: host.chinese && host.scheme.isChinese, pageSize: prefs.pageSize,
+        let ctx = KeyContext(composing: composing, chinese: chineseInput, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
                              vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
-                             bindings: prefs.candidateKeys)
+                             bindings: prefs.candidateKeys, englishCompletion: prefs.englishCompletion)
         let action = KeyMapper.action(for: key, in: ctx)
         if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
             return true
@@ -186,7 +204,7 @@ final class WeaveInputController: IMKInputController {
                 }
                 return ctx.composing
             }
-            insert(punctuation.convert(c, afterDigit: wasAfterDigit && !ctx.composing), client)
+            insertPunctuation(prefs.fullWidthPunctuation ? punctuation.convert(c, afterDigit: wasAfterDigit && !ctx.composing) : String(c), client)
             return true
         case .backspace:
             engine.backspace()
@@ -247,6 +265,19 @@ final class WeaveInputController: IMKInputController {
         if calcResult == nil { CandidatePanel.shared.hide() }
     }
 
+    /// Apply opt-out changes immediately, keeping any typed English as raw text.
+    func inputOptionsDidChange() {
+        if !prefs.prediction { dismissPredictions() }
+        if !(host.chinese && host.scheme.isChinese) && !prefs.englishCompletion {
+            finishComposition()
+            calcResult = nil
+            CandidatePanel.shared.hide()
+        } else if host.engine?.isComposing == true {
+            expanded = false; expandedList = []; expandedExhausted = false
+            refresh(client())
+        }
+    }
+
     /// 不在组合时把键交给应用：退格先给内核（由它决定是否撤销刚学到的词），会写字或挪光标的键断开连续上屏。
     /// A key handed to the app while idle: backspace reaches the engine first (it decides whether to undo what was
     /// just learned); keys that write or move the caret break the chain of commits.
@@ -260,6 +291,22 @@ final class WeaveInputController: IMKInputController {
 
     private var fetch: Pager.Fetch {
         { [weak self] offset, limit in self?.host.engine?.candidates(offset: offset, limit: limit) ?? [] }
+    }
+
+    private func insertPunctuation(_ text:String,_ client:IMKTextInput) {
+        let selection=client.selectedRange()
+        guard prefs.autoPair,prefs.fullWidthPunctuation,selection.location != NSNotFound,selection.length==0 else {insert(text,client);return}
+        if let close=Punctuation.pairs[text] {
+            let pair=text+close,range=NSRange(location:selection.location,length:(pair as NSString).length)
+            insert(pair,client)
+            // Clients without document access cannot move the cursor; retain ordinary punctuation there.
+            if client.attributedSubstring(from:range)?.string==pair {
+                client.setMarkedText("",selectionRange:NSRange(location:0,length:0),replacementRange:NSRange(location:selection.location+(text as NSString).length,length:0))
+            }
+        } else if Punctuation.pairs.values.contains(text),client.attributedSubstring(from:NSRange(location:selection.location,length:(text as NSString).length))?.string==text {
+            host.engine?.breakChain()
+            client.setMarkedText("",selectionRange:NSRange(location:0,length:0),replacementRange:NSRange(location:selection.location+(text as NSString).length,length:0))
+        } else {insert(text,client)}
     }
 
     // MARK: - 等号算式 / The result after `=`
@@ -326,8 +373,37 @@ final class WeaveInputController: IMKInputController {
     }
 
     @objc func openStickers(_ sender:Any?) {StickerWindow.shared.show(owner:self)}
+    @objc func openExpressions(_ sender:Any?) {ExpressionsWindow.shared.show(owner:self)}
     @objc func openHandwriting(_ sender:Any?) {HandwritingWindow.shared.show(owner:self)}
     @objc func openVoice(_ sender: Any?) { VoiceWindow.shared.show(owner: self) }
+    @objc func openTranslation(_ sender: Any?) {
+        MainActor.assumeIsolated { TranslationWindow.shared.show(owner: self) }
+    }
+    func prepareTranslation() {
+        translationEpoch += 1
+        if reconversionOriginal != nil { cancelReconversion() }
+        else if !preedit.isEmpty, let target = client() { setMarked("", target) }
+        host.engine?.clear()
+        preedit = ""; predicting = false; calcResult = nil
+        CandidatePanel.shared.hide()
+    }
+    @discardableResult func commitTranslation(_ text: String, client target: IMKTextInput,
+                                             replacementRange: NSRange, epoch: Int) -> Bool {
+        guard !text.isEmpty, translationEpoch == epoch, host.activeController === self,
+              let current = client(), current as AnyObject === target as AnyObject,
+              host.engine?.isComposing != true else { return false }
+        translationEpoch += 1
+        host.engine?.clear()
+        host.engine?.breakChain()
+        host.engine?.setContext(nil)
+        target.insertText(text, replacementRange: replacementRange)
+        preedit = ""; predicting = false; punctuation.reset(); afterDigit = false
+        CandidatePanel.shared.hide()
+        return true
+    }
+    @objc func openClipboard(_ sender:Any?) {ToolsWindow.shared.show(owner:self)}
+    @objc func openPhrases(_ sender:Any?) {ToolsWindow.shared.show(owner:self,tab:"phrases")}
+    @objc func openPlugins(_ sender:Any?) {SettingsWindow.shared.show(page:.plugins)}
     @discardableResult func commitVoiceText(_ text: String) -> Bool {
         guard host.activeController === self, let client = client(), !text.isEmpty else { return false }
         finishComposition(client: client)
@@ -429,6 +505,7 @@ final class WeaveInputController: IMKInputController {
     }
 
     private func setMarked(_ text: String, _ client: IMKTextInput, marks: [PreeditMark] = []) {
+        correctionMarks = marks
         let attrs = mark(forStyle: kTSMHiliteRawText, at: NSRange(location: 0, length: (text as NSString).length))
             as? [NSAttributedString.Key: Any] ?? [.underlineStyle: NSUnderlineStyle.single.rawValue]
         let styled = NSMutableAttributedString(string: text, attributes: attrs)
@@ -450,6 +527,17 @@ final class WeaveInputController: IMKInputController {
             expandedList = fetch(0, Self.expandedBatch)
             expandedExhausted = expandedList.count < Self.expandedBatch
             expanded = true
+        }
+        showCandidates(client)
+    }
+
+    /// 点候选条上的翻页箭头。 Click the page arrows on the candidate bar.
+    func turnPage(_ delta: Int) {
+        guard !predicting, pager.total > 0, let client = client() else { return }
+        if delta < 0 {
+            guard pager.previous(fetch: fetch) else { return }
+        } else {
+            guard pager.next(fetch: fetch) else { return }
         }
         showCandidates(client)
     }
@@ -481,7 +569,7 @@ final class WeaveInputController: IMKInputController {
         let state = CandidateState(preedit: preedit, candidates: pager.page, highlight: predicting ? -1 : pager.highlight,
                                    hasPrevious: !predicting && pager.hasPrevious, hasNext: !predicting && pager.hasNext,
                                    orientation: prefs.orientation, fontSize: CGFloat(prefs.fontSize),
-                                   hint: predicting ? "联想" : "",
+                                   hint: predicting ? "联想" : (correctionMarks.isEmpty ? "" : "已纠错 · 回车输入原文"),
                                    expandable: !predicting && pager.total > pager.page.count,
                                    expanded: expanded ? expandedList : nil, expandedMore: expanded && !expandedExhausted)
         CandidatePanel.shared.show(state, caret: caret, owner: self)

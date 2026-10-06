@@ -17,5 +17,6 @@ class FakeLink(initial: LinkUiState = LinkUiState()) : LinkController {
     override fun sendText(to: String?, text: String, clip: Boolean): Boolean { sent += "text:$text"; return true }
     override fun sendFd(to: String?, fd: Int, name: String, mime: String): Boolean { sent += "file:$name"; return true }
     override fun offerPair(p: PendingPair?) { state.value = state.value.copy(pendingPair = p) }
+    override fun offerDirect(ticket: String?) { state.value = state.value.copy(pendingDirect = ticket) }
     override fun resetPairing() {}
 }

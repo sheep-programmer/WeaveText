@@ -6,6 +6,7 @@ import com.weavetext.ime.testing.FakeModels
 import com.weavetext.ime.voice.local.EnergyEndpoint
 import com.weavetext.ime.voice.local.LocalAsrChoice
 import com.weavetext.ime.voice.local.OfflineAsr
+import com.weavetext.ime.voice.local.Punctuator
 import com.weavetext.ime.voice.local.TwoPassListener
 import com.weavetext.ime.voice.local.TwoPassRecognizer
 import org.junit.Assert.assertEquals
@@ -55,6 +56,12 @@ class LocalAsrChoiceTest {
         override fun release() {}
     }
 
+    private class FakePunctuator(private val result: String) : Punctuator {
+        var calls = 0
+        override fun punctuate(text: String): String { calls++; return result }
+        override fun release() {}
+    }
+
     private fun tone(seconds: Double, amp: Float) = FloatArray((16000 * seconds).toInt()) { i -> amp * sin(i * 0.12).toFloat() }
     private fun quiet(seconds: Double) = FloatArray((16000 * seconds).toInt()) { i -> if (i % 7 == 0) 0.001f else -0.0005f }
 
@@ -83,6 +90,20 @@ class LocalAsrChoiceTest {
         feedChunks(r, quiet(1.0))
         r.finish()
         assertEquals(1, finals.size)
+    }
+
+    @Test fun punctuationCompletesTextWithAnInternalComma() {
+        val punc = FakePunctuator("你好，世界，大家好。")
+        val finals = mutableListOf<String>()
+        val r = TwoPassRecognizer(null, FakeOffline("你好，世界大家好"), punc, object : TwoPassListener {
+            override fun onPartial(text: String) {}
+            override fun onFinal(text: String) { finals += text }
+        })
+        feedChunks(r, quiet(0.5))
+        feedChunks(r, tone(0.2, 0.2f))
+        r.finish()
+        assertEquals("含内部逗号但没有句末标点时仍调用标点模型 / punctuation should complete an unterminated sentence", 1, punc.calls)
+        assertEquals(listOf("你好，世界，大家好"), finals)
     }
 
     @Test fun energyEndpointAdaptsToTheNoiseFloor() {

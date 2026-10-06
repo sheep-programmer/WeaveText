@@ -1,9 +1,11 @@
 # 织文 Lua 插件宿主 / WeaveText Lua Plugin Host
 
-`core/weave-plugin` 是织文输入法的 Lua 5.4 插件宿主：加载 `.xipk` 插件包，为插件提供 `host.*` API，
+手机可从自定义 GitHub 仓库导入插件，私有仓库支持只读访问令牌登录；使用步骤和凭据隔离见 [插件仓库](plugin-repositories.md)。
+
+`core/weave-plugin` 是织文输入法的 Lua 5.4 插件宿主：按内容加载插件 ZIP 包（不限制后缀），为插件提供 `host.*` API，
 并对外（JNI / Kotlin）提供语音识别会话接口。宿主是通用的，本身不包含任何具体服务的插件。
 
-`core/weave-plugin` is WeaveText's Lua 5.4 plugin host. It loads `.xipk` packages, exposes the
+`core/weave-plugin` is WeaveText's Lua 5.4 plugin host. It loads plugin ZIP archives regardless of suffix, exposes the
 `host.*` API to plugins and offers a speech-session API to the app (JNI / Kotlin). The host is
 generic and ships no service-specific plugins.
 
@@ -11,9 +13,9 @@ generic and ships no service-specific plugins.
 
 ## 1. 插件包格式 / Package format
 
-`.xipk` 是一个 zip，解包后：
+插件包是 ZIP，文件名后缀不参与识别（兼容旧 `.xipk`）；解包后：
 
-A `.xipk` is a zip archive with this layout:
+A plugin package is a ZIP archive with this layout; the suffix is not a format requirement:
 
 ```
 manifest.yaml      元数据 / metadata
@@ -120,9 +122,9 @@ cancel() / Drop(SpeechSession) ──► 立即结束：on_end + plugin.cancel()
 
 ```rust
 let mut mgr = PluginManager::new(plugins_dir, config_dir);
-mgr.scan() -> Vec<PluginInfo>              // 登记 plugins_dir 下的目录；解包新的/版本变化的 .xipk
-mgr.install(&xipk) -> Result<PluginInfo>   // 解包到 plugins_dir/<id>/（先写临时目录再改名）
-mgr.add_path(&dir_or_xipk)                 // 原地登记任意目录（联调用）/ register in place
+mgr.scan() -> Vec<PluginInfo>              // 登记 plugins_dir 下的目录；按内容解包新的/版本变化的 ZIP
+mgr.install(&archive) -> Result<PluginInfo>   // 解包到 plugins_dir/<id>/（先写临时目录再改名）
+mgr.add_path(&dir_or_archive)                 // 原地登记任意目录（联调用）/ register in place
 mgr.uninstall(id)                          // 删除解包目录与 config_dir/<id>.json
 mgr.list() -> Vec<PluginInfo>
 mgr.get_config(id, key) -> Option<String>  // 已设置的值，否则 defaultValue
@@ -307,9 +309,9 @@ Stream callbacks: `onData(payload)` per `data:` line, `onDone(raw)` with the who
    Call `host.ws.close()` before `connect` when you need a fresh connection.
 5. **在 manifest 声明所有域名**；未声明的请求直接失败，原因见 `lastError()`。
    Declare every host in the manifest; others fail and `lastError()` says why.
-6. 打包：在插件目录执行 `zip -r ../myplugin.xipk manifest.yaml main.lua resources libs`。
-   Pack with `zip -r ../myplugin.xipk manifest.yaml main.lua resources libs`.
-7. 桌面联调：`cargo run -p weave-plugin --example speechtest -- <插件目录或.xipk> <16k单声道.wav> [key=value ...]`，
+6. 打包：在插件目录执行 `zip -r ../myplugin.zip manifest.yaml main.lua resources libs`。
+   Pack with `zip -r ../myplugin.zip manifest.yaml main.lua resources libs`.
+7. 桌面联调：`cargo run -p weave-plugin --example speechtest -- <插件目录或ZIP包> <16k单声道.wav> [key=value ...]`，
    按 40 ms 实时节奏喂音频并打印所有事件（额外参数写入插件配置）。
    Desktop testing: the `speechtest` example feeds a 16 kHz mono WAV in real time and prints events.
 

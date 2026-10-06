@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import WeaveCore
 
 /// 用户词列表。 The user-word list.
@@ -8,6 +10,9 @@ final class UserWordsModel: ObservableObject {
     @Published private(set) var count = 0
     @Published var confirmClear = false
     @Published var confirmHandClear = false
+    @Published var newWord = ""
+    @Published var newPinyin = ""
+    @Published var message = ""
 
     private var engine: WeaveSession? { EngineHost.shared.engine }
 
@@ -24,6 +29,39 @@ final class UserWordsModel: ObservableObject {
     func clearAll() {
         engine?.clearUserWords()
         reload()
+    }
+    func addWord() {
+        let word=newWord.trimmingCharacters(in:.whitespacesAndNewlines),py=newPinyin.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !word.isEmpty,!py.isEmpty,!word.contains("\t"),!word.contains("\n"),!py.contains("\t"),!py.contains("\n") else {message="请输入词语和有效拼音";return}
+        let count=engine?.importUserWords(word+"\t"+py+"\t1") ?? 0
+        message=count>0 ? "已添加用户词" : "拼音格式无效，音节请用空格分隔"
+        if count>0 {newWord="";newPinyin="";reload()}
+    }
+    func importWords() {
+        let picker=NSOpenPanel();picker.allowedContentTypes=[.plainText];picker.allowsMultipleSelection=false
+        picker.begin { [weak self] response in
+            guard response == .OK,let url=picker.url else {return}
+            Task { @MainActor in
+                do {
+                    let text=try await Task.detached {
+                        guard (try url.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0)<=8*1024*1024 else {throw PluginFailure("用户词文件超过 8 MB")}
+                        return try String(contentsOf:url,encoding:.utf8)
+                    }.value
+                    let count=self?.engine?.importUserWords(text) ?? 0
+                    self?.message="已导入 \(count) 个用户词";self?.reload()
+                } catch {self?.message=error.localizedDescription}
+            }
+        }
+    }
+    func exportWords() {
+        let picker=NSSavePanel();picker.allowedContentTypes=[.plainText];picker.nameFieldStringValue="织文用户词.txt"
+        picker.begin { [weak self] response in
+            guard response == .OK,let url=picker.url,let text=self?.engine?.features(["op":"exportUserWords"])["text"] as? String else {return}
+            Task { @MainActor in
+                do {try await Task.detached {try Data(text.utf8).write(to:url,options:.atomic)}.value;self?.message="已导出全部用户词"}
+                catch {self?.message=error.localizedDescription}
+            }
+        }
     }
 }
 
@@ -59,6 +97,13 @@ struct DictionaryPage: View {
                     }
                 }
                 CloudWordsSection(cloud: cloud)
+                Section {
+                    Button("导入用户词…") {model.importWords()}
+                    Button("导出用户词…") {model.exportWords()}
+                    if !model.message.isEmpty {Text(model.message)}
+                } header: {Text("导入与导出")} footer: {
+                    Footnote("与手机端格式一致：每行「词语、拼音、词频」，列用 Tab 分隔；拼音音节用空格分隔，词频可省略。")
+                }
                 Section {
                     Button("清空个人手写字形…", role: .destructive) { model.confirmHandClear = true }
                 } header: {
@@ -174,6 +219,12 @@ struct UserWordsPage: View {
                 }
             } header: {
                 Text("已学会 \(model.count) 个词")
+            }
+            Section("添加用户词") {
+                TextField("词语",text:$model.newWord)
+                TextField("拼音，例如 zhi wen",text:$model.newPinyin)
+                Button("添加") {model.addWord()}
+                if !model.message.isEmpty {Text(model.message)}
             }
         }
         .formStyle(.grouped)

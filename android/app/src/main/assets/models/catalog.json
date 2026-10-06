@@ -207,8 +207,8 @@
       "kind": "asr-offline",
       "arch": "zipformer-ctc",
       "name": "终稿识别 · 小",
-      "description": "每句说完后重新识别一遍，抗噪最好，约 63 MB。",
-      "descriptionLite": "每句说完后重新识别一遍，抗噪最好，约 63 MB。",
+      "description": "每句说完后整句复核识别，可与实时模型配合，约 63 MB。",
+      "descriptionLite": "每句说完后整句复核识别，可与实时模型配合，约 63 MB。",
       "license": "Apache-2.0（随 k2-fsa/sherpa-onnx 发布，模型卡未单独声明）",
       "builtin": false,
       "archive": {

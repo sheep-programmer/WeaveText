@@ -98,6 +98,9 @@ struct AboutPage: View {
                url: "https://github.com/dalek-cryptography/curve25519-dalek"),
         Notice(name: "spake2（含 hkdf、hmac、sha2）", use: "织文互联配对码的口令认证密钥交换", license: "MIT OR Apache-2.0",
                url: "https://github.com/RustCrypto/PAKEs"),
+        Notice(name: "quinn、rustls、rcgen", use: "跨网 UDP 直传与临时证书", license: "MIT OR Apache-2.0",
+               url: "https://github.com/quinn-rs/quinn"),
+        Notice(name: "tokio", use: "跨网直传网络运行时", license: "MIT", url: "https://github.com/tokio-rs/tokio"),
         Notice(name: "mdns-sd（含 flume、socket2、if-addrs）", use: "织文互联局域网发现", license: "Apache-2.0 OR MIT",
                url: "https://github.com/keepsimple1/mdns-sd"),
         Notice(name: "serde", use: "织文互联的设备列表", license: "MIT OR Apache-2.0", url: "https://github.com/serde-rs/serde"),
@@ -110,7 +113,7 @@ struct AboutPage: View {
         ("本机处理", "拼音、五笔、联想与用户词学习全部在本机完成，织文不收集、不上传你的输入内容。"),
         ("云端热词", "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开这台 Mac。"),
         ("专业词库", "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。"),
-        ("织文互联", "默认关闭。开启后只在同一局域网内与你配对过的设备直接通信，全程端到端加密，不经过任何服务器。"),
+        ("织文互联", "默认关闭。文件与你配对过的设备端到端加密直传，不经过中转。跨网直传由你主动生成连接码，地址探测服务只获取公网映射，不接收文件内容。部分网络不能直连时会提示失败。"),
     ]
 
     @StateObject private var removal = UninstallModel()
