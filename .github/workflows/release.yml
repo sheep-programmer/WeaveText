@@ -52,6 +52,11 @@ jobs:
           name=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/app/build.gradle.kts)
           test "v$name" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != versionName $name"; exit 1; }
           echo "VERSION=$name" >> "$GITHUB_ENV"
+          plugin=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/translation-google/build.gradle.kts)
+          adapter=$(sed -nE 's/^version: *(.*)$/\1/p' tools/translation/apple-plugin/manifest.yaml)
+          test -n "$plugin" && test -n "$adapter"
+          echo "PLUGIN_VERSION=$plugin" >> "$GITHUB_ENV"
+          echo "ADAPTER_VERSION=$adapter" >> "$GITHUB_ENV"
 
       # 正式签名：没有配置密钥时直接失败，绝不发出调试签名的包。 Never publish debug-signed builds.
       - name: Signing key
@@ -67,9 +72,11 @@ jobs:
       - name: Build unified offline runtime
         working-directory: android
         run: |
-          ./gradlew --no-daemon :app:assembleRelease
+          ./gradlew --no-daemon :app:assembleRelease :translation-google:assembleRelease
           mkdir -p ../dist
           cp app/build/outputs/apk/release/app-release.apk "../dist/WeaveText-$VERSION-arm64.apk"
+          cp translation-google/build/outputs/apk/release/translation-google-release.apk "../dist/WeaveText-Google-Offline-Translation-$PLUGIN_VERSION.apk"
+          python3 ../tools/translation/package-apple-plugin.py
           python3 ../tools/check-release-jni.py "../dist/WeaveText-$VERSION-arm64.apk" "../.ref/cache/sherpa-onnx-1.13.8.aar"
 
       - name: Verify
@@ -79,8 +86,14 @@ jobs:
           ! unzip -l "$apk" | grep -qE '\.onnx$' || { echo "models must be downloaded"; exit 1; }
           unzip -l "$apk" | grep -q 'libonnxruntime.so' || { echo "missing runtime"; exit 1; }
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
-          for f in dist/*.apk; do "$apksigner" verify --print-certs "$f" | grep 'SHA-256'; done
+          expected=$("$apksigner" verify --print-certs "$apk" | sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' | sort -u)
+          test -n "$expected"
+          for f in dist/*.apk; do
+            actual=$("$apksigner" verify --print-certs "$f" | sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' | sort -u)
+            test "$actual" = "$expected" || { echo "APK signing certificate mismatch: $f"; exit 1; }
+          done
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          (cd dist && sha256sum "WeaveText-Apple-Offline-Translation-$ADAPTER_VERSION.zip" > SHA256SUMS-plugins.txt)
 
       - name: Publish
         env:
@@ -94,7 +107,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/weave-release-draft" 2>/dev/null; then
             test "$(cat "$RUNNER_TEMP/weave-release-draft")" = false || { echo "existing release is a draft"; exit 1; }
             gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/weave-release-assets"
-            for name in "WeaveText-$VERSION-arm64.apk" SHA256SUMS.txt; do
+            for name in "WeaveText-$VERSION-arm64.apk" "WeaveText-Google-Offline-Translation-$PLUGIN_VERSION.apk" "WeaveText-Apple-Offline-Translation-$ADAPTER_VERSION.zip" SHA256SUMS.txt SHA256SUMS-plugins.txt; do
               grep -Fxq "$name" "$RUNNER_TEMP/weave-release-assets" || { echo "existing release is incomplete: $name"; exit 1; }
             done
             echo "Complete public Android release already present"
