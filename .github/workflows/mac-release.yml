@@ -20,12 +20,12 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     env:
-      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      TAG: ${{ inputs.tag || (startsWith(github.event.workflow_run.display_title, 'v') && github.event.workflow_run.display_title) || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+          ref: ${{ env.TAG }}
 
       - name: Check public release and version
         run: |

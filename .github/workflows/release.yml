@@ -2,10 +2,17 @@
 # On a v* tag: build one offline-runtime APK; recognition models download on first use.
 # Tags containing "-" are marked as pre-releases; notes come from docs/releases/<tag>.md.
 name: Release
+run-name: ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build or repair
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,8 +21,12 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-java@v6
         with:
@@ -50,7 +61,7 @@ jobs:
       - name: Check version
         run: |
           name=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/app/build.gradle.kts)
-          test "v$name" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != versionName $name"; exit 1; }
+          test "v$name" = "$TAG" || { echo "tag $TAG != versionName $name"; exit 1; }
           echo "VERSION=$name" >> "$GITHUB_ENV"
           plugin=$(sed -nE 's/^ *versionName = "(.*)"/\1/p' android/translation-google/build.gradle.kts)
           adapter=$(sed -nE 's/^version: *(.*)$/\1/p' tools/translation/apple-plugin/manifest.yaml)
@@ -86,10 +97,10 @@ jobs:
           ! unzip -l "$apk" | grep -qE '\.onnx$' || { echo "models must be downloaded"; exit 1; }
           unzip -l "$apk" | grep -q 'libonnxruntime.so' || { echo "missing runtime"; exit 1; }
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
-          expected=$("$apksigner" verify --print-certs "$apk" | sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' | sort -u)
+          expected=$("$apksigner" verify --print-certs "$apk" | sed -nE 's/^.*certificate SHA-256 digest: ([0-9a-fA-F]{64})$/\1/p' | sort -u)
           test -n "$expected"
           for f in dist/*.apk; do
-            actual=$("$apksigner" verify --print-certs "$f" | sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' | sort -u)
+            actual=$("$apksigner" verify --print-certs "$f" | sed -nE 's/^.*certificate SHA-256 digest: ([0-9a-fA-F]{64})$/\1/p' | sort -u)
             test "$actual" = "$expected" || { echo "APK signing certificate mismatch: $f"; exit 1; }
           done
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
@@ -99,19 +110,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease";; esac
-          notes="docs/releases/$GITHUB_REF_NAME.md"
+          pre=""; case "$TAG" in *-*) pre="--prerelease";; esac
+          notes="docs/releases/$TAG.md"
           test -f "$notes" || notes=/dev/null
           # A validated local release may already contain the full Android set.
           # Keep those APKs and their matching checksums together on a rerun.
-          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/weave-release-draft" 2>/dev/null; then
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/weave-release-draft" 2>/dev/null; then
             test "$(cat "$RUNNER_TEMP/weave-release-draft")" = false || { echo "existing release is a draft"; exit 1; }
-            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/weave-release-assets"
+            gh release view "$TAG" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/weave-release-assets"
             for name in "WeaveText-$VERSION-arm64.apk" "WeaveText-Google-Offline-Translation-$PLUGIN_VERSION.apk" "WeaveText-Apple-Offline-Translation-$ADAPTER_VERSION.zip" SHA256SUMS.txt SHA256SUMS-plugins.txt; do
               grep -Fxq "$name" "$RUNNER_TEMP/weave-release-assets" || { echo "existing release is incomplete: $name"; exit 1; }
             done
             echo "Complete public Android release already present"
             exit 0
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag $pre \
+          gh release create "$TAG" dist/* --verify-tag $pre \
             --title "织文输入法 $VERSION" --notes-file "$notes"
