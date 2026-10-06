@@ -48,7 +48,7 @@ jobs:
       # JVM 测试用不到安卓原生库，跳过交叉编译。 JVM tests need no Android natives.
       - name: Android unit tests and lint
         working-directory: android
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :native-test:test -Pweave.skipRust=true
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :translation-google:testDebugUnitTest :translation-google:lintDebug :native-test:test -Pweave.skipRust=true
 
       - uses: actions/upload-artifact@v7
         if: failure()

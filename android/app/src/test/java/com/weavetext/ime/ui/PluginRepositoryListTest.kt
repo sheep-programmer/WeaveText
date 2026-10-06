@@ -2,6 +2,7 @@ package com.weavetext.ime.ui
 
 import android.app.Application
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -22,6 +23,7 @@ import com.weavetext.ime.testing.FakeModels
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Before
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -85,7 +87,12 @@ class PluginRepositoryListTest {
         val deps = SettingsDeps(app, engines = { FakeEngines() }, models = { FakeModels(emptyMap()) },
             status = { ImeStatus(true, true, true) }, pluginRepositories = { service })
         compose.setContent { SettingsApp(deps, Navigator(listOf(Route.Home, Route.Voice, Route.PluginRepositories))) }
-        compose.waitUntil(10_000) { service.summary(GitHubRepository.parse("demo/voice-plugins")) != null && service.summary(GitHubRepository.parse("demo/personal-tools")) != null }
+        val expectedCounts = plugins.values.map { it.size }.groupingBy { it }.eachCount()
+        compose.waitUntil(10_000) {
+            expectedCounts.all { (count, repositories) ->
+                compose.onAllNodesWithText("$count 项插件").fetchSemanticsNodes().size == repositories
+            }
+        }
         compose.waitForIdle()
     }
 
@@ -112,10 +119,11 @@ class PluginRepositoryListTest {
         compose.onNodeWithText("这个仓库还没有可导入的插件").assertExists()
         plugins["voice-plugins"] = listOf("new-asr")
         compose.onNodeWithText("刷新").performClick()
-        compose.waitUntil(10_000) { service.summary(GitHubRepository.parse("demo/voice-plugins"))?.pluginCount == 1 }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("new-asr").fetchSemanticsNodes().size == 1 }
         compose.waitForIdle()
         compose.onNodeWithText("new-asr").assertExists()
         compose.onNodeWithText("这个仓库还没有可导入的插件").assertDoesNotExist()
+        assertEquals(2, compose.onAllNodesWithText("1 项插件").fetchSemanticsNodes().size)
     }
 
     @Test fun expandedListLight() { show(); compose.onNodeWithText("voice-plugins").performClick(); snapshot("expanded") }

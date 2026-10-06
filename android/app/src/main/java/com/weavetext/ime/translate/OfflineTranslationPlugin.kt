@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.core.content.FileProvider
 import com.weavetext.translation.contract.TranslationPluginContract as Contract
 import java.io.File
@@ -70,7 +71,7 @@ object OfflineTranslationPlugin {
             val pm = ctx.packageManager
             val info = pm.getPackageArchiveInfo(file.path, FLAGS) ?: error("文件不是有效的 Android 插件安装包")
             require(info.packageName == Contract.PLUGIN_PACKAGE) { "请选择 Google 离线翻译插件安装包" }
-            val ours = pm.getPackageInfo(ctx.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            val ours = pm.getPackageInfo(ctx.packageName, signatureFlags)
             require(sameSigners(ours, info)) { "插件签名与输入法不匹配" }
             require(inspectServices(info).state == State.READY) { "离线翻译插件清单不兼容" }
             val shared = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
@@ -80,11 +81,22 @@ object OfflineTranslationPlugin {
     }
 
     internal fun sameSigners(left: PackageInfo, right: PackageInfo): Boolean {
-        val a = left.signingInfo?.apkContentsSigners?.map { it.toByteArray().toList() }?.toSet().orEmpty()
-        val b = right.signingInfo?.apkContentsSigners?.map { it.toByteArray().toList() }?.toSet().orEmpty()
+        val a = signers(left)
+        val b = signers(right)
         return a.isNotEmpty() && a == b
     }
 
+    @Suppress("DEPRECATION")
+    private fun signers(info: PackageInfo): Set<List<Byte>> {
+        val signatures = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures
+        return signatures.orEmpty().map { it.toByteArray().toList() }.toSet()
+    }
+
+    @Suppress("DEPRECATION")
+    private val signatureFlags: Int
+        get() = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+
     private const val MAX_APK_BYTES = 96L * 1024 * 1024
-    private const val FLAGS = PackageManager.GET_SERVICES or PackageManager.GET_META_DATA or PackageManager.GET_SIGNING_CERTIFICATES
+    private val FLAGS: Int
+        get() = PackageManager.GET_SERVICES or PackageManager.GET_META_DATA or signatureFlags
 }
