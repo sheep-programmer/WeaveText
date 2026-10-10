@@ -43,6 +43,7 @@ class KeyHapticsTest {
     @Before fun setUp() {
         shadow = Shadows.shadowOf(app.getSystemService(VibratorManager::class.java).defaultVibrator)
         vibrator = app.getSystemService(VibratorManager::class.java).defaultVibrator
+        shadow.setHasVibrator(true)
         Settings.System.putInt(app.contentResolver, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1)
         shadow.setSupportedPrimitives(
             listOf(

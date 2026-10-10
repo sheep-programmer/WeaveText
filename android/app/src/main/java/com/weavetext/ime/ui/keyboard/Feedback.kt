@@ -32,11 +32,12 @@ class Feedback(ctx: Context) {
 
     private val app = ctx.applicationContext
     private val audio = ctx.getSystemService(AudioManager::class.java)
-    private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= 31) {
+    private val vibrator: Vibrator? = (if (Build.VERSION.SDK_INT >= 31) {
         ctx.getSystemService(VibratorManager::class.java)?.defaultVibrator
-    } else {
+    } else null) ?: run {
         @Suppress("DEPRECATION") ctx.getSystemService(Vibrator::class.java)
     }
+    private val hasVibrator = runCatching { vibrator?.hasVibrator() == true }.getOrDefault(false)
     private val thread = HandlerThread("weave-feedback").apply { start() }
     private val handler = Handler(thread.looper)
 
@@ -45,10 +46,14 @@ class Feedback(ctx: Context) {
     internal val looper get() = thread.looper
 
     /** 0 关 1 系统 2 轻 3 中 4 强。振动效果在 feedback 线程预先建好。 Effects are prebuilt on the feedback thread. */
-    var vibration = WeavePrefs.VIBRATION_DEFAULT
+    @Volatile var vibration = WeavePrefs.VIBRATION_DEFAULT
         set(v) {
-            field = v
-            if (v >= 1 && vibrator != null) handler.post { effect(v) }
+            val level = v.coerceIn(0, 4)
+            field = level
+            if (level == 0) {
+                handler.removeCallbacks(vibrateTask); handler.removeCallbacks(tickTask)
+                vibratePending = false; tickPending = false
+            }
         }
 
     /**
@@ -57,12 +62,10 @@ class Feedback(ctx: Context) {
      * Prefer primitives (Android 11+) over the platform's TICK / CLICK / HEAVY_CLICK presets, whose lengths vary
      * by vendor: a composition of a click plus a touch tick reads as one even key strike across levels.
      */
-    private fun prefersPrimitives(v: Vibrator) =
+    private fun prefersPrimitives(v: Vibrator, lv: Int) =
         Build.VERSION.SDK_INT >= 30 &&
-            v.areAllPrimitivesSupported(
-                VibrationEffect.Composition.PRIMITIVE_CLICK,
-                VibrationEffect.Composition.PRIMITIVE_TICK,
-            )
+            if (lv == 2) v.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)
+            else v.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK, VibrationEffect.Composition.PRIMITIVE_TICK)
 
     /** 各档的（点击力度, 尾随刻度力度, 尾随延迟 ms）。 Per level: (click scale, tick scale, tick delay ms). */
     private fun strike(lv: Int): Triple<Float, Float, Int> = when (lv) {
@@ -101,12 +104,25 @@ class Feedback(ctx: Context) {
      * one is pending keeps the rhythm even (the platform's own touch feedback coalesces the same way).
      */
     @Volatile private var vibratePending = false
+    @Volatile private var tickPending = false
+    @Volatile private var released = false
     private val vibrateTask = Runnable {
         vibratePending = false
-        vibrate(vibration)
+        val level = vibration
+        if (!released && level in 1..4 && systemTouchHapticsOn()) vibrate(level)
     }
     /** 触摸反馈用途（遵从系统的触摸振动开关与强度）。 Touch usage, honouring the system touch-haptics setting. */
     private val touchAttrs: Any? = if (Build.VERSION.SDK_INT >= 33) android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_TOUCH) else null
+    private val touchAudioAttrs = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+
+    enum class HapticAvailability { AVAILABLE, SYSTEM_DISABLED, NO_VIBRATOR }
+    fun hapticAvailability(): HapticAvailability = when {
+        !hasVibrator -> HapticAvailability.NO_VIBRATOR
+        !systemTouchHapticsOn() -> HapticAvailability.SYSTEM_DISABLED
+        else -> HapticAvailability.AVAILABLE
+    }
 
     /**
      * 系统的「触摸振动」总开关。关掉时界面不再擅自动马达——键盘里的「按键震动」是键盘自己的设置，
@@ -219,7 +235,7 @@ class Feedback(ctx: Context) {
      */
     fun haptic(view: View) {
         val lv = vibration
-        if (lv == 0) return
+        if (released || lv == 0) return
         if (!systemTouchHapticsOn()) return
         if (lv == 1 && (Build.VERSION.SDK_INT < 33 || vibrator == null)) {
             view.performHapticFeedback(
@@ -227,7 +243,7 @@ class Feedback(ctx: Context) {
             )
             return
         }
-        if (vibrator == null) return
+        if (!hasVibrator) return
         if (vibratePending) return
         vibratePending = true
         handler.post(vibrateTask)
@@ -239,18 +255,23 @@ class Feedback(ctx: Context) {
      * level; nothing when vibration is off.
      */
     fun tick(view: View) {
-        if (vibration == 0 || !systemTouchHapticsOn()) return
+        if (released || vibration == 0 || !systemTouchHapticsOn()) return
         val v = vibrator
         if (v == null) {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             return
         }
-        handler.post(tickTask)
+        if (hasVibrator && !tickPending) {
+            tickPending = true
+            handler.post(tickTask)
+        }
     }
 
     private val tickTask = Runnable {
+        tickPending = false
+        if (released || vibration == 0 || !systemTouchHapticsOn()) return@Runnable
         val v = vibrator ?: return@Runnable
-        val e = tickEffect ?: run {
+        val e = tickEffect ?: runCatching {
             val built = if (Build.VERSION.SDK_INT >= 30 && v.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
                 VibrationEffect.startComposition().addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.5f).compose()
             } else if (Build.VERSION.SDK_INT >= 29) {
@@ -260,16 +281,32 @@ class Feedback(ctx: Context) {
             }
             tickEffect = built
             built
-        }
-        if (Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes) else v.vibrate(e)
+        }.getOrElse { fallback(v, 2) }
+        sendTouch(v, e, 2)
     }
     @Volatile private var tickEffect: VibrationEffect? = null
 
     /** feedback 线程上振动。 Vibrate, on the feedback thread. */
     private fun vibrate(lv: Int) {
         val v = vibrator ?: return
-        val e = effect(lv) ?: return
-        if (lv == 1 && Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes) else v.vibrate(e)
+        val e = runCatching { effect(lv) }.getOrElse { fallback(v, lv) } ?: return
+        sendTouch(v, e, lv)
+    }
+
+    /** Classify every strength as touch feedback, including the pre-Android 13 overload. */
+    @Suppress("DEPRECATION")
+    private fun sendTouch(v: Vibrator, e: VibrationEffect, lv: Int) {
+        if (runCatching {
+            if (Build.VERSION.SDK_INT >= 33) v.vibrate(e, touchAttrs as android.os.VibrationAttributes)
+            else v.vibrate(e, touchAudioAttrs)
+        }.isSuccess) return
+        // A vendor may advertise primitives but reject the composed effect. Keep the worker alive.
+        val simpler = fallback(v, lv)
+        effects[lv] = simpler
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 33) v.vibrate(simpler, touchAttrs as android.os.VibrationAttributes)
+            else v.vibrate(simpler, touchAudioAttrs)
+        }
     }
 
     /** 测试用：按某档建一个效果（与按键路径同一套逻辑）。 Test hook: build the effect for a level. */
@@ -278,6 +315,7 @@ class Feedback(ctx: Context) {
 
     /** 取（必要时新建）某档的效果；feedback 线程。 Get or build the effect for a level, on the feedback thread. */
     private fun effect(lv: Int): VibrationEffect? {
+        if (lv !in 1..4) return null
         effects[lv]?.let { return it }
         val v = vibrator ?: return null
         val e = if (lv == 1) {
@@ -289,8 +327,12 @@ class Feedback(ctx: Context) {
     }
 
     private fun build(v: Vibrator, lv: Int): VibrationEffect {
-        if (prefersPrimitives(v)) return composed(lv)
-        if (Build.VERSION.SDK_INT >= 29 && v.hasAmplitudeControl()) {
+        if (prefersPrimitives(v, lv)) return composed(lv)
+        return fallback(v, lv)
+    }
+
+    private fun fallback(v: Vibrator, lv: Int): VibrationEffect {
+        if (Build.VERSION.SDK_INT >= 29) {
             return VibrationEffect.createPredefined(
                 when (lv) { 2 -> VibrationEffect.EFFECT_TICK; 3 -> VibrationEffect.EFFECT_CLICK; else -> VibrationEffect.EFFECT_HEAVY_CLICK },
             )
@@ -298,13 +340,16 @@ class Feedback(ctx: Context) {
         // 老设备：明确按毫秒与振幅给一击，而不是交给系统预置（长短不可控）。
         // Older devices: an explicit one-shot with our own duration and amplitude.
         return if (v.hasAmplitudeControl()) {
-            when (lv) { 2 -> VibrationEffect.createOneShot(9, 60); 3 -> VibrationEffect.createOneShot(14, 130); else -> VibrationEffect.createOneShot(20, 255) }
+            when (lv) { 2 -> VibrationEffect.createOneShot(12, 60); 3 -> VibrationEffect.createOneShot(18, 130); else -> VibrationEffect.createOneShot(26, 255) }
         } else {
-            VibrationEffect.createOneShot(when (lv) { 2 -> 8L; 3 -> 13L; else -> 20L }, VibrationEffect.DEFAULT_AMPLITUDE)
+            VibrationEffect.createOneShot(when (lv) { 2 -> 12L; 3 -> 18L; else -> 26L }, VibrationEffect.DEFAULT_AMPLITUDE)
         }
     }
 
     fun release() {
+        released = true
+        handler.removeCallbacks(vibrateTask); handler.removeCallbacks(tickTask)
+        vibratePending = false; tickPending = false
         handler.post { pool?.release(); pool = null }
         thread.quitSafely()
     }

@@ -20,6 +20,9 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
@@ -278,6 +281,21 @@ private fun KeyFeelCard(raw: SharedPreferences, feedback: Feedback, view: androi
     }
     RowDivider(false)
     val vib = WeavePrefs.vibration(p)
+    val owner = LocalLifecycleOwner.current
+    var vibrationState by remember(feedback) { mutableStateOf(feedback.hapticAvailability()) }
+    DisposableEffect(feedback, owner) {
+        fun refreshVibration() { vibrationState = feedback.hapticAvailability() }
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) = refreshVibration()
+        }
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshVibration()
+        }
+        owner.lifecycle.addObserver(lifecycleObserver)
+        val resolver = view.context.contentResolver
+        resolver.registerContentObserver(android.provider.Settings.System.getUriFor(android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED), false, observer)
+        onDispose { owner.lifecycle.removeObserver(lifecycleObserver); resolver.unregisterContentObserver(observer) }
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             Text("按键震动", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
@@ -292,10 +310,24 @@ private fun KeyFeelCard(raw: SharedPreferences, feedback: Feedback, view: androi
                         p.edit().putInt(WeavePrefs.VIBRATION, lv).apply()
                         // 选中即振动一次预览。 Preview the new strength.
                         feedback.vibration = lv
+                        vibrationState = feedback.hapticAvailability()
                         feedback.haptic(view)
                     },
                     shape = SegmentedButtonDefaults.itemShape(i, VIBRATION_LEVELS.size),
                 ) { Text(name) }
+            }
+        }
+        if (vib != 0 && vibrationState != Feedback.HapticAvailability.AVAILABLE) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (vibrationState == Feedback.HapticAvailability.NO_VIBRATOR) "当前设备没有可用的振动马达"
+                else "系统触摸振动已关闭，开启后可体验所选档位",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (vibrationState == Feedback.HapticAvailability.SYSTEM_DISABLED) {
+                TextButton(onClick = {
+                    runCatching { view.context.startActivity(android.content.Intent(android.provider.Settings.ACTION_SOUND_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }) { Text("打开系统声音设置") }
             }
         }
     }
