@@ -52,10 +52,9 @@
   安装包没有签名，macOS 拦下时到 系统设置 › 隐私与安全性 点「仍要打开」。
 安装后在系统设置中启用「织文输入法」并切换为当前输入法。
 
-*Get the APK from [Releases](../../releases) (Android 8.0+, arm64); both builds share one signature. **Lite**
-(recommended) has every input feature and reads its dictionaries straight from the APK, so the footprint is about
-the APK size; voice uses the system recognizer or plugins, or a one-tap ~30 MB offline voice pack (speech runtime +
-streaming model) downloaded in the app — same on-device quality, no reinstall. **Offline voice** adds on-device speech recognition.
+*Get the unified APK from [Releases](../../releases) (Android 8.0+, arm64). It includes the offline speech runtime;
+recognition models download when voice input is first used, with mirror fallback and on-device recognition.
+There is one Android package; no separate Lite or voice build is needed.
 **macOS** (`.dmg`, macOS 13+, universal): open the disk image and double-click the installer inside;
 the package is unsigned, so if macOS blocks it click Open Anyway in System Settings › Privacy & Security. Enable WeaveText in system settings after installing.*
 
@@ -97,6 +96,7 @@ cd ../android && ./gradlew :app:assembleDebug :app:testDebugUnitTest :native-tes
 - [架构与内核 / Architecture](docs/ARCHITECTURE.md)
 - [插件宿主与插件开发 / Plugin host](docs/plugin-host.md)
 - [GitHub 插件仓库与私有仓库登录](docs/plugin-repositories.md)
+- [插件市场与可选扩展](docs/extensions.md)
 - [UI 设计规范 / Design system](docs/design/)
 - [调研报告 / Research](docs/research/)
 - [第三方组件与数据 / Third party](docs/THIRD_PARTY.md)
