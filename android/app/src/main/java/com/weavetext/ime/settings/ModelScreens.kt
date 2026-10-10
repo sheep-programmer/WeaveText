@@ -33,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
@@ -43,6 +42,8 @@ import com.weavetext.ime.models.VoicePack
 import com.weavetext.ime.models.ModelRepository
 import com.weavetext.ime.models.ModelSpec
 import com.weavetext.ime.models.ModelState
+import com.weavetext.ime.models.DownloadPhase
+import com.weavetext.ime.models.Progress
 import com.weavetext.ime.models.isReady
 import java.util.Locale
 
@@ -58,7 +59,27 @@ fun formatSize(bytes: Long): String {
     }
 }
 
-private fun formatSpeed(bps: Long) = if (bps <= 0) null else formatSize(bps) + "/s"
+/** Same honest status/size/speed presentation for APKs, models and dictionary packs. */
+internal fun downloadProgressText(p: Progress): String {
+    val status = when (p.phase) {
+        DownloadPhase.CONNECTING -> "正在连接下载源…"
+        DownloadPhase.DOWNLOADING -> if (p.total > 0) "正在下载 ${(p.downloaded.toDouble() * 100 / p.total).toInt().coerceIn(0, 100)}%" else "正在下载…"
+        DownloadPhase.VERIFYING -> "正在校验…"
+    }
+    val size = "${formatSize(p.downloaded.coerceAtLeast(0))} / " + if (p.total > 0) formatSize(p.total) else "大小未知"
+    val speed = if (p.phase == DownloadPhase.DOWNLOADING) " · ${formatSize(p.bytesPerSecond.coerceAtLeast(0))}/s" else ""
+    return listOfNotNull(status, size + speed, p.mirror.takeIf { it.isNotBlank() }).joinToString("\n")
+}
+
+@Composable
+internal fun DownloadProgressContent(p: Progress, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (p.phase == DownloadPhase.DOWNLOADING && p.total > 0) {
+            LinearProgressIndicator(progress = { (p.downloaded.toFloat() / p.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
+        } else LinearProgressIndicator(Modifier.fillMaxWidth())
+        Text(downloadProgressText(p), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
 
 
 /** 订阅模型状态变化，返回每次变化递增的计数。 Observe model state changes as a counter. */
@@ -317,20 +338,13 @@ private fun androidx.compose.foundation.layout.RowScope.ModelActions(
         ModelState.Waiting, ModelState.Extracting, is ModelState.Downloading -> {
             Column(Modifier.weight(1f).padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val p = (state as? ModelState.Downloading)?.progress
-                if (p != null && p.total > 0) {
-                    LinearProgressIndicator(progress = { (p.downloaded.toFloat() / p.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
-                } else LinearProgressIndicator(Modifier.fillMaxWidth())
-                val label = when {
-                    state == ModelState.Waiting -> "正在准备…"
-                    state == ModelState.Extracting -> "正在解压与校验…"
-                    p != null -> listOfNotNull(
-                        if (p.total > 0) "${(p.downloaded * 100 / p.total).coerceIn(0, 100)}%" else formatSize(p.downloaded),
-                        formatSpeed(p.bytesPerSecond),
-                        p.mirror.ifBlank { null },
-                    ).joinToString(" · ")
-                    else -> ""
+                if (p != null) DownloadProgressContent(p) else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        if (state == ModelState.Extracting) "正在解压与校验…" else "等待下载… · ${formatSize(m.archiveSize)}",
+                        style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                    )
                 }
-                Text(label, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // 解压在原生层进行，不能中途取消。 Extraction runs natively and cannot be cancelled.
             if (state != ModelState.Extracting) TextButton(onClick = onCancel) { Text("取消") }

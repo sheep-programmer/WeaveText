@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -53,7 +54,7 @@ fun SchemesScreen() {
     var showHand by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
     // 已启用的在前（按用户顺序），其余在后。 Enabled first (user order), then the rest.
-    val order = enabled + ALL_KEYBOARDS.filter { it !in enabled }
+    val order = enabled + ALL_KEYBOARDS.filter { it !in enabled && Extensions.scheme(p, it) }
 
     fun save(list: List<String>) {
         p.edit().putString(WeavePrefs.KEYBOARDS, list.joinToString(",")).apply()
@@ -100,7 +101,7 @@ fun SchemesScreen() {
                 }
             }
             RowDivider(false)
-            SwitchRow("词语上方拼音注音", "默认开启，显示完整带声调拼音，例如 nǐ hǎo；轻声按规范不标调", checked = WeavePrefs.pinyinHint(p) != 0, subtitleMaxLines = 2) {
+            SwitchRow("首选拼音注音", "默认关闭；打开后只在首选词后面用括号标出带声调拼音，例如 银行(yín háng)", checked = WeavePrefs.pinyinHint(p) != 0, subtitleMaxLines = 2) {
                 p.edit().putInt(WeavePrefs.PINYIN_HINT, if (it) 1 else 0).apply()
             }
             RowDivider(false)
@@ -108,6 +109,7 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.AUTO_PAIR, it).apply()
             }
         }
+        if (Extensions.scheme(p, "hand")) {
         GroupTitle("手写")
         GroupCard {
             ClearHandLearningRow()
@@ -129,6 +131,8 @@ fun SchemesScreen() {
             }
         }
         HandwritingAppearanceSettings(p)
+        }
+        if (Extensions.scheme(p, "wubi86")) {
         GroupTitle("五笔")
         GroupCard {
             SwitchRow("显示字根提示", checked = WeavePrefs.wubiRootHints(p)) { p.edit().putBoolean(WeavePrefs.WUBI_ROOT_HINTS, it).apply() }
@@ -137,6 +141,8 @@ fun SchemesScreen() {
                 p.edit().putBoolean(WeavePrefs.WUBI_PINYIN_MIX, it).apply()
             }
         }
+        }
+        GroupCard { SettingRow("更多输入方案", "在插件市场启用手写与五笔", onClick = { nav.push(Route.Market("scheme")) }) { Chevron() } }
     }
 
     if (showDepth) {

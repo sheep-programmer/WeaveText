@@ -101,10 +101,18 @@ public final class CloudWords: ObservableObject {
         publish()
     }
 
-    public var enabled: Bool { defaults.bool(forKey: Key.enabled) }
+    public var moduleEnabled = true {
+        didSet {
+            guard oldValue != moduleEnabled else { return }
+            generation += 1; task?.cancel(); task = nil
+            if moduleEnabled { attach(); refreshIfStale() } else { unload() }
+            publish()
+        }
+    }
+    public var enabled: Bool { moduleEnabled && defaults.bool(forKey: Key.enabled) }
 
     public func setEnabled(_ on: Bool) {
-        if on==enabled {if on {refreshNow()};return}
+        if on==defaults.bool(forKey:Key.enabled) {if on {refreshNow()};return}
         generation += 1
         defaults.set(on, forKey: Key.enabled)
         if on {

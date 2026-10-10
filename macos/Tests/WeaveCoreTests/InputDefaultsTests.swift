@@ -11,20 +11,21 @@ import Testing
         let prefs = Preferences(defaults: defaults)
         #expect(!prefs.prediction && !prefs.englishCompletion)
         #expect(prefs.autocorrect && prefs.learning && prefs.autoPair)
-        #expect(prefs.pinyinHint == .toned)
+        #expect(prefs.pinyinHint == .off)
         #expect(!prefs.clipboardRecord && prefs.voiceEngines==["system"])
         #expect(prefs.engineOptions.contains { $0.0 == "candidates.prediction" && !$0.1 })
         #expect(KeyMapper.action(for: KeyInput(keyCode: 0, characters: "r"),
                                  in: KeyContext(composing: false, chinese: false, englishCompletion: prefs.englishCompletion)) == .pass)
     }
-    @Test func annotationsDefaultToFullTonesAndKeepAnExplicitOffChoice() {
+    @Test func annotationsDefaultOffAndKeepAnExplicitOnChoice() {
         let name="weave-tone-defaults-\(UUID().uuidString)",d=UserDefaults(suiteName:name)!
         defer {d.removePersistentDomain(forName:name)}
-        #expect(Preferences(defaults:d).pinyinHint == .toned)
-        d.set("plain",forKey:"pinyinHint")
-        #expect(Preferences(defaults:d).pinyinHint == .toned)
-        let p=Preferences(defaults:d);p.pinyinHint = .off
         #expect(Preferences(defaults:d).pinyinHint == .off)
+        #expect(Preferences(defaults:d).engineOptions.contains { $0.0 == "candidates.pinyin" && !$0.1 })
+        d.set("plain",forKey:"pinyinHint")
+        #expect(Preferences(defaults:d).pinyinHint == .off)
+        let p=Preferences(defaults:d);p.pinyinHint = .toned
+        #expect(Preferences(defaults:d).pinyinHint == .toned)
     }
     @Test func correctionLearningAndWubiSwitchesPersist() {
         let name="weave-parity-settings-\(UUID().uuidString)",d=UserDefaults(suiteName:name)!

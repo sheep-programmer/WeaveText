@@ -146,10 +146,10 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
      * 开始下载并安装；[allowMetered] 为 false 且当前是计流量网络时直接失败（界面应先征得同意）。
      * Start downloading; fails right away on a metered network unless [allowMetered].
      */
-    override fun download(id: String, allowMetered: Boolean) {
+    @Synchronized override fun download(id: String, allowMetered: Boolean) {
         val m = catalog.find(id) ?: return
         val s = state(id)
-        if (s == ModelState.Builtin || s == ModelState.Installed || s is ModelState.Downloading || s == ModelState.Waiting) return
+        if (s == ModelState.Builtin || s == ModelState.Installed || s is ModelState.Downloading || s == ModelState.Waiting || s == ModelState.Extracting || cancels.containsKey(id)) return
         if (!allowMetered && isMetered()) {
             set(id, ModelState.Failed("当前为移动网络，已按设置暂停下载"))
             return
@@ -175,6 +175,7 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
                 }
                 val pref = mirrorPreference.takeIf { it != "auto" }
                 fetcher.fetch(m, staging, cancel, pref) { p -> set(id, ModelState.Downloading(p)) }
+                Downloader.checkCancelled(cancel)
                 install(m, staging)
                 set(id, ModelState.Installed)
             } catch (t: Throwable) {
@@ -184,9 +185,9 @@ class ModelManager private constructor(private val ctx: Context) : ModelReposito
                     val names = m.archives.map { it.url.substringAfterLast('/') }
                     downloads.listFiles()?.filter { f -> names.any { f.name.startsWith(it) } }?.forEach { it.delete() }
                 }
-                set(id, if (cancel.get()) ModelState.NotInstalled else ModelState.Failed(t.message?.lineSequence()?.firstOrNull() ?: "下载失败"))
+                set(id, if (cancel.get()) ModelState.NotInstalled else ModelState.Failed(VoicePack.friendly(t.message.orEmpty())))
             } finally {
-                cancels.remove(id)
+                cancels.remove(id, cancel)
             }
         }
     }

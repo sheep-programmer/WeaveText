@@ -13,7 +13,7 @@ class VoicePack(private val repo: ModelRepository, private val bundledRuntime: B
     sealed interface State {
         /** 尚未下载；[bytes] 为还需下载的大小。 Not downloaded; [bytes] still to download. */
         data class Idle(val bytes: Long) : State
-        data class Downloading(val done: Long, val total: Long, val bytesPerSecond: Long, val mirror: String) : State
+        data class Downloading(val done: Long, val total: Long, val bytesPerSecond: Long, val mirror: String, val phase: DownloadPhase = DownloadPhase.DOWNLOADING) : State
         /** 正在解压与校验。 Extracting and verifying. */
         data object Installing : State
         data object Ready : State
@@ -33,7 +33,7 @@ class VoicePack(private val repo: ModelRepository, private val bundledRuntime: B
         val remaining = parts.zip(states).filter { !it.second.isReady }.sumOf { it.first.archiveSize }
         val active = states.filter { it == ModelState.Waiting || it == ModelState.Extracting || it is ModelState.Downloading }
         if (active.isNotEmpty()) {
-            if (active.all { it == ModelState.Extracting } && states.none { it is ModelState.Failed || it == ModelState.NotInstalled }) {
+            if (active.all { it == ModelState.Extracting || (it is ModelState.Downloading && it.progress.phase == DownloadPhase.VERIFYING) } && states.none { it is ModelState.Failed || it == ModelState.NotInstalled }) {
                 return State.Installing
             }
             var done = 0L
@@ -56,7 +56,8 @@ class VoicePack(private val repo: ModelRepository, private val bundledRuntime: B
                     else -> total += m.archiveSize
                 }
             }
-            return State.Downloading(done, total, speed, mirror)
+            val phase = if (active.any { it is ModelState.Downloading && it.progress.phase == DownloadPhase.DOWNLOADING }) DownloadPhase.DOWNLOADING else DownloadPhase.CONNECTING
+            return State.Downloading(done, total, speed, mirror, phase)
         }
         states.firstOrNull { it is ModelState.Failed }?.let { return State.Failed(friendly((it as ModelState.Failed).message), remaining) }
         return State.Idle(remaining)

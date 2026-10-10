@@ -13,13 +13,12 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import com.weavetext.ime.BuildConfig
 import com.weavetext.ime.models.Downloader
+import com.weavetext.ime.models.DownloadPhase
 import com.weavetext.ime.models.Mirror
 import com.weavetext.ime.models.ModelManager
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URI
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -38,7 +37,9 @@ object VoiceUpgrade {
 
     sealed interface State {
         data object Idle : State
-        data class Downloading(val done: Long, val total: Long, val bytesPerSecond: Long, val mirror: String) : State
+        data class Downloading(val done: Long, val total: Long, val bytesPerSecond: Long, val mirror: String,
+            val phase: DownloadPhase = DownloadPhase.DOWNLOADING) : State
+        data object Cancelling : State
         data object Verifying : State
         data class Ready(val file: File) : State
         data class Failed(val message: String) : State
@@ -48,7 +49,8 @@ object VoiceUpgrade {
         private set
     private val listeners = CopyOnWriteArrayList<(State) -> Unit>()
     private val main = Handler(Looper.getMainLooper())
-    private val cancel = AtomicBoolean(false)
+    // A worker owns its cancellation token until its cleanup finishes; a retry cannot revive it.
+    private var operation: AtomicBoolean? = null
 
     /** 只有运行库不随包的轻量版需要（离线语音版本身已含端侧识别）。 Only the lite build needs this. */
     val available: Boolean get() = !com.weavetext.ime.models.AsrRuntime.bundled
@@ -66,36 +68,52 @@ object VoiceUpgrade {
 
     /** 开始（或继续）下载；已在进行则忽略。 Start or resume the download; ignored while running. */
     fun start(ctx: Context) {
-        if (state is State.Downloading || state is State.Verifying) return
         val app = ctx.applicationContext
-        cancel.set(false)
-        set(State.Downloading(0, 0, 0, ""))
-        Thread({ run(app) }, "weave-voice-upgrade").apply { isDaemon = true }.start()
+        val dest = File(File(app.cacheDir, DIR), assetName)
+        val token = begin(State.Downloading(File(dest.path + ".part").length(), 0, 0, "", DownloadPhase.CONNECTING)) ?: return
+        Thread({ run(app, token, dest) }, "weave-voice-upgrade").apply { isDaemon = true }.start()
     }
 
-    fun cancel() {
-        cancel.set(true)
+    @Synchronized private fun begin(initial: State): AtomicBoolean? {
+        if (operation != null) return null
+        return AtomicBoolean(false).also { operation = it; set(initial) }
     }
 
-    private fun run(ctx: Context) {
-        try {
-            val mirrors = ModelManager.get(ctx).mirrors()
-            val (sha, size) = assetInfo(mirrors) ?: throw IOException("暂时取不到离线语音版的下载信息，请检查网络后重试")
-            val dest = File(File(ctx.cacheDir, DIR), assetName)
+    @Synchronized private fun publish(token: AtomicBoolean, next: State) {
+        if (operation === token && !token.get()) set(next)
+    }
+
+    @Synchronized private fun finish(token: AtomicBoolean, next: State) {
+        if (operation !== token) return
+        operation = null
+        set(if (token.get()) State.Idle else next)
+    }
+
+    @Synchronized fun cancel() {
+        operation?.let { it.set(true); set(State.Cancelling) }
+    }
+
+    private fun run(ctx: Context, token: AtomicBoolean, dest: File) {
+        val result = try {
+            val manager = ModelManager.get(ctx)
+            val mirrors = manager.mirrors()
+            val (sha, size) = assetInfo(mirrors, token) ?: throw IOException("暂时取不到离线语音版的下载信息，请检查网络后重试")
+            Downloader.checkCancelled(token)
             val url = "https://github.com/$REPO/releases/download/$tag/$assetName"
-            Downloader(mirrors).download(url, sha, dest, cancel, expectedSize = size) { p ->
-                set(State.Downloading(p.downloaded, p.total, p.bytesPerSecond, p.mirror))
+            Downloader(mirrors).download(url, sha, dest, token, expectedSize = size,
+                preferred = manager.mirrorPreference.takeIf { it != "auto" }) { p ->
+                publish(token, State.Downloading(p.downloaded, p.total, p.bytesPerSecond, p.mirror, p.phase))
             }
-            set(State.Verifying)
-            if (!verifySigner(ctx, dest)) {
-                dest.delete()
-                throw IOException("下载的安装包签名不一致，已丢弃")
-            }
-            set(State.Ready(dest))
+            Downloader.checkCancelled(token)
+            publish(token, State.Verifying)
+            AppUpgrade.requireMatchingSigner(dest) { verifySigner(ctx, it) }
+            Downloader.checkCancelled(token)
+            State.Ready(dest)
         } catch (e: Exception) {
-            Log.w(TAG, "download failed", e)
-            set(if (cancel.get()) State.Idle else State.Failed(friendly(e)))
+            if (!token.get()) Log.w(TAG, "download failed", e)
+            State.Failed(friendly(e))
         }
+        finish(token, result)
     }
 
     private fun friendly(e: Exception): String {
@@ -111,56 +129,41 @@ object VoiceUpgrade {
      * 大小与 SHA-256：优先读 GitHub 发布接口（数据来自 GitHub 本身，不经镜像），取不到再经镜像读 SHA256SUMS.txt。
      * Size and SHA-256 from the GitHub release API (served by GitHub, not a mirror), else SHA256SUMS.txt via mirrors.
      */
-    private fun assetInfo(mirrors: List<Mirror>): Pair<String, Long>? {
-        runCatching {
-            val json = JSONObject(httpText("https://api.github.com/repos/$REPO/releases/tags/$tag"))
-            val assets = json.getJSONArray("assets")
-            for (i in 0 until assets.length()) {
-                val a = assets.getJSONObject(i)
-                val digest = a.optString("digest")
-                if (a.optString("name") == assetName && digest.startsWith("sha256:")) {
-                    return digest.removePrefix("sha256:") to a.optLong("size")
+    internal fun assetInfo(
+        mirrors: List<Mirror>, cancel: AtomicBoolean,
+        releaseTag: String = tag, asset: String = assetName,
+        read: (String) -> String = { Downloader(emptyList()).readText(it, cancel, maxBytes = 256 * 1024) },
+    ): Pair<String, Long>? {
+        val api = "https://api.github.com/repos/$REPO/releases/tags/$releaseTag"
+        for (url in (listOf(api) + mirrors.map { it.apply(api) }).distinct()) {
+            Downloader.checkCancelled(cancel)
+            try {
+                val json = JSONObject(read(url))
+                if (json.optString("tag_name") != releaseTag) continue
+                val assets = json.getJSONArray("assets")
+                for (i in 0 until assets.length()) {
+                    val a = assets.getJSONObject(i)
+                    val digest = a.optString("digest").removePrefix("sha256:")
+                    if (a.optString("name") == asset && a.optString("digest").startsWith("sha256:") && Regex("[a-fA-F0-9]{64}").matches(digest)) {
+                        return digest.lowercase() to a.optLong("size").coerceAtLeast(0)
+                    }
                 }
+            } catch (e: Exception) {
+                Downloader.checkCancelled(cancel)
+                Log.i(TAG, "release API unavailable: ${e.message}")
             }
-        }.onFailure { Log.i(TAG, "release API unavailable: ${it.message}") }
-        val sums = "https://github.com/$REPO/releases/download/$tag/SHA256SUMS.txt"
-        for (m in mirrors) {
-            val text = runCatching { httpText(m.apply(sums)) }.getOrNull() ?: continue
-            val sha = text.lineSequence()
-                .map { it.trim().split(Regex("\\s+"), limit = 2) }
-                .firstOrNull { it.size == 2 && it[1].trimStart('*') == assetName }
-                ?.first()
-            if (sha != null && sha.length == 64) return sha.lowercase() to 0L
+        }
+        val sums = "https://github.com/$REPO/releases/download/$releaseTag/SHA256SUMS.txt"
+        for (url in (listOf(sums) + mirrors.map { it.apply(sums) }).distinct()) {
+            Downloader.checkCancelled(cancel)
+            try {
+                AppUpgrade.checksum(read(url), asset)?.let { return it to 0L }
+            } catch (e: Exception) {
+                Downloader.checkCancelled(cancel)
+                Log.i(TAG, "checksum source unavailable: ${e.message}")
+            }
         }
         return null
-    }
-
-    private fun httpText(url: String): String {
-        val c = URI(url).toURL().openConnection() as HttpURLConnection
-        c.connectTimeout = 8_000
-        c.readTimeout = 15_000
-        c.setRequestProperty("User-Agent", "WeaveText-Updater")
-        c.setRequestProperty("Accept", "application/vnd.github+json")
-        try {
-            if (c.responseCode != 200) throw IOException("HTTP ${c.responseCode}")
-            return c.inputStream.use { i ->
-                val bytes = i.readNBytesCompat(256 * 1024)
-                String(bytes, Charsets.UTF_8)
-            }
-        } finally {
-            c.disconnect()
-        }
-    }
-
-    private fun java.io.InputStream.readNBytesCompat(max: Int): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        val buf = ByteArray(8192)
-        while (out.size() < max) {
-            val n = read(buf)
-            if (n < 0) break
-            out.write(buf, 0, minOf(n, max - out.size()))
-        }
-        return out.toByteArray()
     }
 
     /** 安装包与当前应用同包名、同签名。 Same package name and signer as the installed app. */

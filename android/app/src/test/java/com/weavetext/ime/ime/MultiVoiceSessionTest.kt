@@ -12,8 +12,12 @@ import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.voice.MultiEngineResults.Status
 import com.weavetext.ime.voice.VoicePlugin
 import com.weavetext.ime.voice.VoiceAutoDownload
+import com.weavetext.ime.voice.MultiVoiceListener
+import com.weavetext.ime.voice.VoiceListener
+import com.weavetext.ime.voice.VoiceRecognizer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -155,6 +159,118 @@ class MultiVoiceSessionTest {
         session.stop()
         session.cancel()
         assertEquals("", edit.text.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+    }
+
+    @Test fun cancellingWhileListeningClearsResultsAndRejectsEveryOldCallback() {
+        session.start()
+        val old = rec.multi
+        old.onEnginePartial(local.id, "未确认")
+        session.cancel()
+        assertNull(session.results)
+        assertEquals("", session.partial)
+        assertFalse(rec.isRunning)
+        old.onEngineFinal(local.id, "迟到结果")
+        old.onEngineEnd(local.id)
+        old.onEnd()
+        session.choose(0)
+        assertNull(session.results)
+        assertEquals("", edit.text.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+    }
+
+    @Test fun aggregateEndSettlesRemainingRowsWithoutWaitingForTimeout() {
+        session.start()
+        rec.multi.onEnginePartial(local.id, "主引擎半句")
+        rec.multi.onEngineFinal(a.id, "插件结果")
+        rec.endAll() // onEnd means all engines finished, even if individual end callbacks were omitted.
+        assertEquals(VoiceSession.State.CHOOSING, session.state)
+        assertTrue(session.results!!.settled)
+        assertEquals(Status.DONE, session.results!!.rows()[0].status)
+        assertEquals(Status.ERROR, session.results!!.rows()[2].status)
+        session.choose(0)
+        assertEquals("主引擎半句", edit.text.toString())
+    }
+
+    @Test fun endedRecognizerCannotReplaceRowsWhileWaitingForUserChoice() {
+        session.start()
+        val old = rec.multi
+        old.onEngineFinal(local.id, "已完成")
+        old.onEngineEnd(local.id); old.onEngineEnd(a.id); old.onEngineEnd(b.id)
+        rec.endAll()
+        val rows = session.results!!.rows()
+        old.onEngineReplace(local.id, "已完成", "不应改变")
+        old.onPartial("不应写编辑器"); old.onFinal("不应上屏")
+        old.onError("迟到错误")
+        assertEquals(rows, session.results!!.rows())
+        assertEquals("", edit.text.toString())
+        assertEquals(VoiceSession.State.CHOOSING, session.state)
+        session.choose(0)
+        assertEquals("已完成", edit.text.toString())
+    }
+
+    @Test fun detachedTimeoutPreservesPrimaryPartialWithoutChangingEngineSelection() {
+        val selected = engines.activeId to engines.extraIds
+        session.timeoutMs = 100
+        session.start()
+        val old = rec.multi
+        old.onEnginePartial(local.id, "保留主引擎半句")
+        session.detach()
+        ShadowLooper.idleMainLooper(101, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertEquals("保留主引擎半句", edit.text.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertNull(session.results)
+        assertFalse(rec.isRunning)
+        old.onEngineFinal(local.id, "迟到主引擎")
+        old.onEngineReplace(local.id, "保留主引擎半句", "不应覆写")
+        assertEquals("保留主引擎半句", edit.text.toString())
+        assertEquals(selected, engines.activeId to engines.extraIds)
+    }
+
+    @Test fun captureErrorRetainsMultiEngineTextForAnExplicitChoice() {
+        session.start()
+        val old = rec.multi
+        old.onEnginePartial(local.id, "保留主引擎")
+        old.onEngineFinal(a.id, "保留插件")
+        old.onError("麦克风中断")
+        assertFalse(rec.isRunning)
+        assertEquals(VoiceSession.State.CHOOSING, session.state)
+        assertTrue(session.results!!.settled)
+        assertEquals("", edit.text.toString())
+        old.onEngineReplace(a.id, "保留插件", "迟到修正")
+        session.choose(1)
+        assertEquals("保留插件", edit.text.toString())
+        assertNull(session.error)
+    }
+
+    @Test fun synchronousStopCompletionCommitsDetachedTextOnce() {
+        val synchronous = object : VoiceRecognizer {
+            lateinit var listener: MultiVoiceListener
+            override var isRunning = false
+            override fun start(listener: VoiceListener): Boolean {
+                this.listener = listener as MultiVoiceListener
+                isRunning = true
+                this.listener.onEngines(listOf(local, a))
+                this.listener.onEnginePartial(local.id, "同步半句")
+                return true
+            }
+            override fun stop() {
+                listener.onEngineFinal(local.id, "同步终稿")
+                listener.onEngineFinal(a.id, "插件终稿")
+                isRunning = false
+                listener.onEnd()
+            }
+            override fun cancel() { isRunning = false; listener.onEnd() }
+        }
+        val ic = edit.onCreateInputConnection(EditorInfo())
+        session = VoiceSession(app, InputController { ic }) { synchronous }
+        session.start()
+        session.detach()
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertNull(session.results)
+        assertEquals("同步终稿", edit.text.toString())
+        ShadowLooper.idleMainLooper(session.timeoutMs + 1, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertEquals("同步终稿", edit.text.toString())
         assertEquals(VoiceSession.State.IDLE, session.state)
     }
 

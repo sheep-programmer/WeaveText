@@ -23,6 +23,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.weavetext.ime.ui.keyboard.HandInkPrefs
 import com.weavetext.ime.ui.keyboard.HandInkStyle
+import com.weavetext.ime.ui.keyboard.HandwritingAreaMode
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Rule
@@ -72,6 +73,19 @@ class HandwritingAppearanceSettingsTest {
         } finally {
             file.delete()
         }
+    }
+
+    @Test fun areaChoicesPersistAndExternalChangesRefreshTheirSelection() {
+        compose.onNodeWithTag("handwriting_area_keyboard").assertIsSelected()
+        for (mode in listOf(HandwritingAreaMode.HALF, HandwritingAreaMode.FULL, HandwritingAreaMode.KEYBOARD)) {
+            compose.onNodeWithTag("handwriting_area_${mode.key}").performScrollTo().performClick()
+            compose.waitForIdle()
+            assertEquals(mode, WeavePrefs.handAreaMode(prefs))
+            compose.onNodeWithTag("handwriting_area_${mode.key}").assertIsSelected()
+        }
+        compose.runOnIdle { prefs.edit().putString(WeavePrefs.HAND_AREA_MODE, "full").apply() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("handwriting_area_full").assertIsSelected()
     }
 
     @Test fun eachToolSelectsAndChangesTheRealPreviewImmediately() {

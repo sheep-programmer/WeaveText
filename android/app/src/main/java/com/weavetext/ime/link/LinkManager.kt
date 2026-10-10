@@ -1,5 +1,6 @@
 package com.weavetext.ime.link
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -120,6 +121,15 @@ class LinkManager internal constructor(
     /** 刚从电脑收到并写进剪贴板的文字：不再发回去。 Text just received and put on the clipboard: never echoed back. */
     @Volatile private var lastRemote: String? = null
     @Volatile private var lastSent: String? = null
+
+    private val extensionListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Extensions.ENABLED) {
+            val enabled = WeavePrefs.linkEnabled(prefs)
+            update { it.copy(enabled = enabled) }
+            if (enabled) ensureRunning() else shutdown()
+        }
+    }
+    init { prefs.registerOnSharedPreferenceChangeListener(extensionListener) }
 
     private fun update(f: (LinkUiState) -> LinkUiState) { _state.value = f(_state.value) }
 

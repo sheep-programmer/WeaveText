@@ -5,7 +5,13 @@ package com.weavetext.ime.ui.keyboard
  * Symbol panel data; emoji follow Unicode group order.
  */
 object SymbolData {
-    class Category(val name: String, val items: List<String>, val columns: Int = 6, val emoji: Boolean = false, val kaomoji: Boolean = false)
+    /** 大类下的小类（表情的笑脸、人物……），在网格上方切换。 A sub-group (smileys, people…) switched above the grid. */
+    class Group(val name: String, val items: List<String>)
+
+    class Category(
+        val name: String, val items: List<String>, val columns: Int = 6, val emoji: Boolean = false, val kaomoji: Boolean = false,
+        val groups: List<Group> = emptyList(),
+    )
 
     private fun chars(s: String) = s.split(' ').filter { it.isNotEmpty() }
 
@@ -89,8 +95,12 @@ object SymbolData {
         Category("数学", MATH),
         Category("序号", ORDINAL),
         Category("箭头", ARROWS),
-        Category("表情", catalog?.supportedEmoji?.map{it.text} ?: EMOJI, 8, emoji = true),
-        Category("颜文字", catalog?.kaomoji?.map{it.text} ?: KAOMOJI, 2, kaomoji = true),
-    ) + (catalog?.supportedEmoji?.groupBy{it.group}?.map {(group,items)->Category(group,items.map{it.text},8,emoji = true)} ?: emptyList()) +
-        (catalog?.kaomoji?.groupBy{it.group}?.map {(group,items)->Category("颜·$group",items.map{it.text},2,kaomoji = true)} ?: emptyList())
+        // 小类只在大类里出现一次（网格上方），不再在分类列表里重复列出。
+        // Sub-groups appear once, above the grid, instead of being listed again among the categories.
+        Category("表情", catalog?.supportedEmoji?.map{it.text} ?: EMOJI, 8, emoji = true, groups = groups(catalog?.supportedEmoji)),
+        Category("颜文字", catalog?.kaomoji?.map{it.text} ?: KAOMOJI, 2, kaomoji = true, groups = groups(catalog?.kaomoji)),
+    )
+
+    private fun groups(items: List<ExpressionCatalog.Item>?): List<Group> =
+        items?.groupBy { it.group }?.map { (name, list) -> Group(name, list.map { it.text }) }.orEmpty().takeIf { it.size > 1 }.orEmpty()
 }

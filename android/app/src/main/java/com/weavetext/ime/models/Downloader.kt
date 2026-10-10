@@ -1,238 +1,444 @@
 package com.weavetext.ime.models
 
+import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** 下载进度。 Download progress. */
+enum class DownloadPhase { CONNECTING, DOWNLOADING, VERIFYING }
+
+/** Unknown total is 0; known totals prefer the catalog's expected metadata. */
 data class Progress(
     val downloaded: Long,
     val total: Long,
-    /** 最近约 1 秒的速度（字节/秒）。 Recent speed, bytes per second. */
     val bytesPerSecond: Long,
-    /** 当前使用的镜像名称。 Mirror currently in use. */
     val mirror: String,
+    val phase: DownloadPhase = DownloadPhase.DOWNLOADING,
 )
 
-/**
- * 多镜像下载：先并发探测各镜像（取前 64 KB 计时），按快慢排序；下载支持断点续传，
- * 某个镜像中途失败会带着已下载部分换下一个镜像继续；完成后校验 SHA-256。
- *
- * Multi-mirror download: probe all mirrors concurrently (timing the first 64 KB), order them by speed,
- * download with resume, move on to the next mirror on failure while keeping the partial file, and
- * verify SHA-256 at the end. Android-free so it can be tested on the desktop JVM.
- */
+/** Multi-mirror downloads with resume and SHA-256 verification; Android-free for JVM tests. */
 class Downloader(
     private val mirrors: List<Mirror>,
     private val connectTimeoutMs: Int = 8_000,
     private val readTimeoutMs: Int = 20_000,
     private val probeTimeoutMs: Long = 6_000,
 ) {
-    /** 并发探测每个镜像取前 64 KB 的耗时（毫秒），失败为 null；按快慢排序。 Probe all mirrors, fastest first. */
-    fun probeAll(url: String): List<Pair<Mirror, Long?>> {
+    /** All probes share one deadline. Timed-out/cancelled connections are closed. */
+    fun probeAll(url: String, cancel: AtomicBoolean = AtomicBoolean(false)): List<Pair<Mirror, Long?>> {
+        checkCancelled(cancel)
         if (mirrors.isEmpty()) return emptyList()
         val pool = Executors.newFixedThreadPool(mirrors.size) { r -> Thread(r, "weave-probe").apply { isDaemon = true } }
+        val futures = mirrors.map { m -> pool.submit(Callable { probe(m.apply(url), cancel) }) }
         try {
-            val futures = mirrors.map { m -> m to pool.submit(Callable { probe(m.apply(url)) }) }
-            return futures
-                .map { (m, f) -> m to runCatching { f.get(probeTimeoutMs, TimeUnit.MILLISECONDS) }.getOrNull() }
-                .sortedBy { it.second ?: Long.MAX_VALUE }
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(probeTimeoutMs)
+            while (futures.any { !it.isDone } && System.nanoTime() < deadline) {
+                checkCancelled(cancel)
+                Thread.sleep(25)
+            }
+            checkCancelled(cancel)
+            return mirrors.zip(futures).map { (m, f) ->
+                m to if (f.isDone && !f.isCancelled) runCatching { f.get() }.getOrNull() else null
+            }.sortedBy { it.second ?: Long.MAX_VALUE }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("cancelled")
         } finally {
+            futures.forEach { it.cancel(true) }
             pool.shutdownNow()
         }
     }
 
-    /** 按探测速度排好序的镜像（失败的排在最后）。 Mirrors ordered by probe speed, failures last. */
-    fun rankMirrors(url: String): List<Mirror> =
-        if (mirrors.size <= 1) mirrors else probeAll(url).map { it.first }
+    fun rankMirrors(url: String, cancel: AtomicBoolean = AtomicBoolean(false)): List<Mirror> =
+        if (mirrors.size <= 1) mirrors else probeAll(url, cancel).map { it.first }
 
-    /** 请求前 64 KB，返回耗时（毫秒），失败返回 null。 Time to fetch the first 64 KB, null on failure. */
-    private fun probe(src: String): Long? = try {
+    private fun probe(src: String, cancel: AtomicBoolean): Long? = try {
         val t0 = System.nanoTime()
         val c = open(src, 0)
         c.setRequestProperty("Range", "bytes=0-65535")
-        val code = c.responseCode
-        if (code != 200 && code != 206) null else {
-            c.inputStream.use { i ->
-                val buf = ByteArray(16 * 1024)
-                var n = 0
-                while (n < 65536) {
-                    val r = i.read(buf)
-                    if (r < 0) break
-                    n += r
+        RequestGuard(c, cancel, deadlineMs = probeTimeoutMs).use { guard ->
+            val code = c.responseCode
+            if (code != 200 && code != 206) null else {
+                c.inputStream.use { input ->
+                    val buf = ByteArray(16 * 1024)
+                    var n = 0
+                    while (n < 65536) {
+                        guard.check()
+                        val r = input.read(buf, 0, minOf(buf.size, 65536 - n))
+                        if (r < 0) break
+                        n += r
+                        guard.activity()
+                    }
                 }
+                (System.nanoTime() - t0) / 1_000_000
             }
-            (System.nanoTime() - t0) / 1_000_000
         }
-    } catch (_: Exception) {
-        null
-    }
+    } catch (_: Exception) { null }
 
     private fun open(src: String, from: Long): HttpURLConnection {
-        val c = URI(src).toURL().openConnection() as HttpURLConnection
+        val c = try {
+            URI(src).toURL().openConnection() as? HttpURLConnection ?: throw IOException("not an HTTP URL")
+        } catch (e: Exception) {
+            throw IOException("invalid download URL", e)
+        }
         c.connectTimeout = connectTimeoutMs
         c.readTimeout = readTimeoutMs
         c.instanceFollowRedirects = true
         c.setRequestProperty("User-Agent", "WeaveText-ModelDownloader")
+        // Android's transparent gzip would invalidate byte offsets and lengths.
+        c.setRequestProperty("Accept-Encoding", "identity")
         if (from > 0) c.setRequestProperty("Range", "bytes=$from-")
         return c
     }
 
-    /**
-     * 下载 [url] 到 [dest]（经 `dest.part` 续传），校验 [sha256]。
-     * @param preferred 优先尝试的镜像 id（用户在设置里指定时）。 Mirror to try first.
-     * @throws IOException 所有镜像都失败或校验失败。 All mirrors failed or checksum mismatch.
-     */
+    /** Bounded, cancellable metadata reads, sharing HTTP cleanup with downloads. */
+    fun readText(
+        url: String,
+        cancel: AtomicBoolean = AtomicBoolean(false),
+        maxBytes: Int = 1024 * 1024,
+        accept: String = "application/vnd.github+json",
+    ): String = request(cancel) { scope -> readTextBlocking(url, cancel, maxBytes, accept, scope) }
+
+    private fun readTextBlocking(url: String, cancel: AtomicBoolean, maxBytes: Int, accept: String, scope: RequestScope): String {
+        checkCancelled(cancel)
+        val c = open(url, 0)
+        c.setRequestProperty("Accept", accept)
+        RequestGuard(c, cancel, onTimeout = { scope.timeout() }).use { guard ->
+            try {
+                if (c.responseCode != 200) throw IOException("HTTP ${c.responseCode}")
+                guard.activity()
+                val out = ByteArrayOutputStream()
+                c.inputStream.use { input ->
+                    val buf = ByteArray(8192)
+                    while (true) {
+                        guard.check()
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        guard.activity()
+                        if (out.size() + n > maxBytes) throw IOException("metadata too large")
+                        out.write(buf, 0, n)
+                    }
+                }
+                guard.check()
+                return out.toString(Charsets.UTF_8.name())
+            } catch (e: IOException) {
+                guard.check()
+                throw e
+            }
+        }
+    }
+
+    /** Existing parameters/callback stay compatible; all completion paths verify SHA. */
     fun download(
         url: String,
         sha256: String,
         dest: File,
         cancel: AtomicBoolean = AtomicBoolean(false),
         preferred: String? = null,
-        /** 已经探测好的顺序（省去重复测速）。 Pre-computed mirror order. */
         ranked: List<Mirror>? = null,
-        /** 目录声明的大小；超出即中止，防止恶意镜像写满存储。0 表示未知。 Expected size; excess aborts. */
         expectedSize: Long = 0,
         onProgress: (Progress) -> Unit = {},
     ): File {
-        if (dest.isFile && sha256Of(dest) == sha256) return dest
+        checkCancelled(cancel)
+        if (!SHA256.matches(sha256)) throw IOException("invalid sha256")
+        val digest = sha256.lowercase()
+        fun verify(file: File, mirror: String): Boolean {
+            checkCancelled(cancel)
+            onProgress(Progress(file.length(), expectedSize.takeIf { it > 0 } ?: file.length(), 0, mirror, DownloadPhase.VERIFYING))
+            return (expectedSize <= 0 || file.length() == expectedSize) && sha256Of(file, cancel) == digest
+        }
+        if (dest.isFile && verify(dest, "本机")) return dest
         dest.parentFile?.mkdirs()
         val part = File(dest.path + ".part")
-        // 上次已下完、只差校验时进程被杀：直接校验，别再发 Range 请求（服务器会回 416，每个镜像都失败）。
-        // Killed after the download finished but before verification: verify now instead of sending a Range
-        // request every server answers with 416.
         if (expectedSize > 0 && part.isFile && part.length() == expectedSize) {
-            if (sha256Of(part) == sha256) {
-                if (dest.exists()) dest.delete()
-                if (part.renameTo(dest)) return dest
-            }
+            if (verify(part, "本机")) return promote(part, dest, cancel)
             part.delete()
         }
-        var order = ranked ?: rankMirrors(url)
+        onProgress(Progress(part.length(), expectedSize, 0, "", DownloadPhase.CONNECTING))
+        // A user-selected source should connect immediately. Auto mode still ranks all sources.
+        var order = ranked ?: if (preferred != null && mirrors.any { it.id == preferred }) mirrors else rankMirrors(url, cancel)
         if (preferred != null) order = order.sortedBy { if (it.id == preferred) 0 else 1 }
         val errors = mutableListOf<String>()
         for (m in order) {
-            if (cancel.get()) throw IOException("cancelled")
+            checkCancelled(cancel)
             try {
-                fetchWithResume(m, url, part, cancel, expectedSize, onProgress)
-                val got = sha256Of(part)
-                if (got != sha256) {
-                    // 校验失败说明这个镜像给的内容不对：丢弃后换下一个。 Bad content: drop and try the next.
+                var retriedFromZero = false
+                while (true) {
+                    val hadPartial = part.length() > 0
+                    fetchWithResume(m, url, part, cancel, expectedSize, onProgress)
+                    if (verify(part, m.name)) break
                     part.delete()
-                    throw IOException("sha256 mismatch from ${m.name}")
+                    // The retained prefix may belong to a corrupt previous mirror. Give this
+                    // mirror one clean attempt before blaming it for a mismatched resumed file.
+                    if (!hadPartial || retriedFromZero) throw IOException("sha256 mismatch from ${m.name}")
+                    retriedFromZero = true
                 }
-                if (dest.exists()) dest.delete()
-                if (!part.renameTo(dest)) throw IOException("rename failed")
-                return dest
+                return promote(part, dest, cancel)
             } catch (e: IOException) {
-                if (cancel.get()) throw IOException("cancelled")
+                checkCancelled(cancel)
                 errors += "${m.name}: ${e.message}"
             }
         }
         throw IOException("all mirrors failed:\n" + errors.joinToString("\n"))
     }
 
-    /** 同一镜像中途断开但有进展时，续传重试（最多 [RESUME_RETRIES] 次）。 Resume on the same mirror while it makes progress. */
+    private fun promote(part: File, dest: File, cancel: AtomicBoolean): File {
+        checkCancelled(cancel)
+        if (dest.exists() && !dest.delete()) throw IOException("cannot replace destination")
+        if (!part.renameTo(dest)) throw IOException("rename failed")
+        return dest
+    }
+
+    /** Resume a progressing EOF on the same mirror; a stall switches mirrors immediately. */
     private fun fetchWithResume(
         m: Mirror, url: String, part: File, cancel: AtomicBoolean, expectedSize: Long, onProgress: (Progress) -> Unit,
     ) {
         var retries = 0
+        var restarted = false
         while (true) {
-            val before = if (part.isFile) part.length() else 0L
+            checkCancelled(cancel)
+            val before = part.length()
             try {
                 fetch(m, url, part, cancel, expectedSize, onProgress)
                 return
             } catch (e: IOException) {
-                val progressed = part.isFile && part.length() > before
-                if (cancel.get() || !progressed || ++retries > RESUME_RETRIES) throw e
+                checkCancelled(cancel)
+                if (e is RestartFromZero && !restarted) { restarted = true; continue }
+                if (e is SocketTimeoutException || part.length() <= before || ++retries > RESUME_RETRIES) throw e
             }
         }
     }
 
     private fun fetch(
         m: Mirror, url: String, part: File, cancel: AtomicBoolean, expectedSize: Long, onProgress: (Progress) -> Unit,
+    ) = request(cancel) { scope -> fetchBlocking(m, url, part, cancel, expectedSize, onProgress, scope) }
+
+    private fun fetchBlocking(
+        m: Mirror, url: String, part: File, cancel: AtomicBoolean, expectedSize: Long, onProgress: (Progress) -> Unit, scope: RequestScope,
     ) {
-        var have = if (part.isFile) part.length() else 0L
-        if (expectedSize > 0 && have > expectedSize) {
-            part.delete()
-            have = 0
-        }
+        var have = part.length()
+        if (expectedSize > 0 && have > expectedSize) { scope.mutate { part.delete() }; have = 0 }
+        val transfer = TransferProgress(Progress(have, expectedSize, 0, m.name, DownloadPhase.CONNECTING)) { p -> scope.report { onProgress(p) } }
+        transfer.emit(force = true)
         val c = open(m.apply(url), have)
-        val code = c.responseCode
-        // 请求的起点已到文件尾：已下完，交给调用方校验（不对会删掉重下）。 Range past the end: complete, let the caller verify.
-        if (code == 416 && have > 0) { c.disconnect(); return }
-        if (code != 200 && code != 206) throw IOException("HTTP $code")
-        var resumed = code == 206 && have > 0
-        if (resumed) {
-            // 续传必须从我们请求的偏移开始，否则丢弃已下载部分。 The range must start at our offset.
-            val start = CONTENT_RANGE.find(c.getHeaderField("Content-Range").orEmpty())?.groupValues?.get(1)?.toLongOrNull()
-            if (start != have) {
-                c.disconnect()
-                part.delete()
-                throw IOException("bad Content-Range from ${m.name}")
+        RequestGuard(c, cancel, heartbeat = { transfer.emit() }, onTimeout = { scope.timeout() }).use { guard ->
+            try {
+                val code = c.responseCode
+                guard.activity()
+                if (code == 416) {
+                    val serverSize = UNSATISFIED_RANGE.matchEntire(c.getHeaderField("Content-Range").orEmpty())?.groupValues?.get(1)?.toLongOrNull()
+                    if (have > 0 && serverSize == have && (expectedSize <= 0 || have == expectedSize)) return
+                    // An incomplete/stale part must not turn 416 into successful completion.
+                    scope.mutate { part.delete() }
+                    throw RestartFromZero()
+                }
+                if (code != 200 && code != 206) throw IOException("HTTP $code")
+                if (!c.contentEncoding.isNullOrBlank() && !c.contentEncoding.equals("identity", true)) throw IOException("unexpected Content-Encoding")
+                val resumed = code == 206
+                val length = c.contentLengthLong
+                val range = if (resumed) parseRange(c.getHeaderField("Content-Range")) else null
+                if (resumed && (range == null || range.start != have || (length >= 0 && length != range.end - range.start + 1))) {
+                    scope.mutate { part.delete() }
+                    throw IOException("bad Content-Range from ${m.name}")
+                }
+                val announced = if (resumed) range!!.total else length
+                if (expectedSize > 0 && announced > 0 && announced != expectedSize) throw IOException("${m.name} announced $announced bytes, expected $expectedSize")
+                if (expectedSize > 0 && range != null && range.end >= expectedSize) throw IOException("bad Content-Range from ${m.name}")
+                // A chunked resumed response must not use have + 0 as its total.
+                val total = if (expectedSize > 0) expectedSize else announced.coerceAtLeast(0)
+                val offset = if (resumed) have else 0L
+                transfer.begin(offset, total)
+                RandomAccessFile(part, "rw").use { raf ->
+                    scope.mutate { if (resumed) raf.seek(have) else raf.setLength(0) }
+                    var done = offset
+                    c.inputStream.use { input ->
+                        val buf = ByteArray(1 shl 16)
+                        while (true) {
+                            guard.check()
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            guard.check()
+                            guard.activity()
+                            val limit = if (expectedSize > 0) expectedSize else total
+                            if ((limit > 0 && n > limit - done) || (range != null && n > range.end + 1 - done)) {
+                                scope.mutate { raf.setLength(0) }
+                                throw IOException("${m.name} sent more than the expected ${limit.takeIf { it > 0 } ?: range?.total} bytes")
+                            }
+                            scope.mutate { raf.write(buf, 0, n) }
+                            done += n
+                            transfer.advance(done, n)
+                        }
+                    }
+                    guard.check()
+                    transfer.emit(force = true)
+                    if (range != null && done < range.end + 1) throw IOException("connection closed early ($done/${range.end + 1})")
+                    if (total > 0 && done < total) throw IOException("connection closed early ($done/$total)")
+                }
+            } catch (e: IOException) {
+                guard.check()
+                throw e
+            } finally {
+                transfer.stop()
             }
         }
-        if (code == 206 && have == 0L) resumed = false
-        val total = if (resumed) have + c.contentLengthLong.coerceAtLeast(0) else c.contentLengthLong
-        if (expectedSize > 0 && total > expectedSize) {
-            c.disconnect()
-            throw IOException("${m.name} announced $total bytes, expected $expectedSize")
+    }
+
+    private class RestartFromZero : IOException("Range not satisfiable; restarting")
+    private data class ByteRange(val start: Long, val end: Long, val total: Long)
+
+    /** Some HttpURLConnection implementations lock disconnect behind a read. Cancellation must
+     * not wait for that cleanup. Stop file mutations/callbacks before returning to the caller;
+     * the guarded daemon request finishes socket cleanup under the configured timeouts. */
+    private class RequestScope(private val cancel: AtomicBoolean) {
+        private var stopped = false
+        @Volatile private var timedOut = false
+        fun timeout() { timedOut = true }
+        fun check() {
+            checkCancelled(cancel)
+            if (timedOut) throw SocketTimeoutException("download stalled")
         }
-        RandomAccessFile(part, "rw").use { raf ->
-            if (resumed) raf.seek(have) else raf.setLength(0)
-            var done = if (resumed) have else 0L
-            var windowStart = System.nanoTime()
-            var windowBytes = 0L
-            var speed = 0L
-            c.inputStream.use { i ->
-                val buf = ByteArray(1 shl 16)
-                while (true) {
-                    if (cancel.get()) throw IOException("cancelled")
-                    val n = i.read(buf)
-                    if (n < 0) break
-                    if (expectedSize > 0 && done + n > expectedSize) {
-                        raf.setLength(0)
-                        throw IOException("${m.name} sent more than the expected $expectedSize bytes")
-                    }
-                    raf.write(buf, 0, n)
-                    done += n
-                    windowBytes += n
-                    val now = System.nanoTime()
-                    if (now - windowStart > 500_000_000) {
-                        speed = windowBytes * 1_000_000_000 / (now - windowStart)
-                        windowStart = now
-                        windowBytes = 0
-                        onProgress(Progress(done, total.takeIf { it > 0 } ?: expectedSize, speed, m.name))
+        @Synchronized fun <T> mutate(block: () -> T): T {
+            check()
+            if (stopped) throw InterruptedIOException("cancelled")
+            return block()
+        }
+        @Synchronized fun report(block: () -> Unit) { if (!stopped && !timedOut && !cancel.get()) block() }
+        @Synchronized fun stop() { stopped = true }
+    }
+
+    private fun <T> request(cancel: AtomicBoolean, block: (RequestScope) -> T): T {
+        checkCancelled(cancel)
+        val scope = RequestScope(cancel)
+        val task = NETWORK_IO.submit(Callable { block(scope) })
+        try {
+            while (true) {
+                scope.check()
+                try { return task.get(100, TimeUnit.MILLISECONDS) }
+                catch (_: TimeoutException) { /* poll cancellation independently of blocking socket cleanup */ }
+                catch (e: ExecutionException) {
+                    val cause = e.cause
+                    when (cause) {
+                        is IOException -> throw cause
+                        is RuntimeException -> throw cause
+                        else -> throw IOException("HTTP request failed", cause)
                     }
                 }
             }
-            onProgress(Progress(done, total.takeIf { it > 0 } ?: expectedSize, speed, m.name))
-            val want = if (total > 0) total else expectedSize
-            if (want > 0 && done < want) throw IOException("connection closed early ($done/$want)")
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("cancelled")
+        } finally {
+            scope.stop()
+            if (!task.isDone) task.cancel(true)
+        }
+    }
+
+    /** Heartbeats clear stale speed during blocked reads; callback ordering is serialized. */
+    private class TransferProgress(private var p: Progress, private val callback: (Progress) -> Unit) {
+        private var stopped = false
+        private var last = System.nanoTime()
+        private var bytes = 0L
+        @Synchronized fun begin(done: Long, total: Long) {
+            p = p.copy(downloaded = done, total = total, phase = DownloadPhase.DOWNLOADING)
+            emit(force = true)
+        }
+        @Synchronized fun advance(done: Long, count: Int) { p = p.copy(downloaded = done); bytes += count; emit() }
+        @Synchronized fun emit(force: Boolean = false) {
+            if (stopped) return
+            val now = System.nanoTime()
+            if (!force && now - last < 500_000_000) return
+            val speed = if (p.phase == DownloadPhase.DOWNLOADING && now > last) bytes * 1_000_000_000 / (now - last) else 0
+            p = p.copy(bytesPerSecond = speed)
+            bytes = 0
+            last = now
+            callback(p)
+        }
+        @Synchronized fun stop() { stopped = true }
+    }
+
+    /** AtomicBoolean cannot wake a blocked socket: actively disconnect on cancel/timeout. */
+    private inner class RequestGuard(
+        private val connection: HttpURLConnection,
+        private val cancel: AtomicBoolean,
+        deadlineMs: Long = 0,
+        private val heartbeat: () -> Unit = {},
+        private val onTimeout: () -> Unit = {},
+    ) : Closeable {
+        private val owner = Thread.currentThread()
+        @Volatile private var closed = false
+        @Volatile private var timedOut = false
+        @Volatile private var lastActivity = System.nanoTime()
+        @Volatile private var connected = false
+        private val deadline = if (deadlineMs > 0) lastActivity + TimeUnit.MILLISECONDS.toNanos(deadlineMs) else Long.MAX_VALUE
+        private val watcher = Thread({
+            try {
+                while (!closed) {
+                    val idleMs = if (connected) readTimeoutMs.toLong() else connectTimeoutMs.toLong() + readTimeoutMs
+                    val now = System.nanoTime()
+                    timedOut = now >= deadline || (idleMs > 0 && now - lastActivity >= TimeUnit.MILLISECONDS.toNanos(idleMs))
+                    if (timedOut) onTimeout()
+                    if (cancel.get() || owner.isInterrupted || timedOut) { connection.disconnect(); break }
+                    heartbeat()
+                    Thread.sleep(100)
+                }
+            } catch (_: InterruptedException) { /* close */ }
+        }, "weave-http-watch").apply { isDaemon = true; start() }
+
+        fun activity() { connected = true; lastActivity = System.nanoTime() }
+        fun check() {
+            checkCancelled(cancel)
+            if (timedOut) throw SocketTimeoutException("download stalled")
+        }
+        override fun close() {
+            closed = true
+            watcher.interrupt()
+            connection.disconnect()
         }
     }
 
     companion object {
+        private val NETWORK_IO = Executors.newCachedThreadPool { r -> Thread(r, "weave-http").apply { isDaemon = true } }
         private const val RESUME_RETRIES = 5
-        private val CONTENT_RANGE = Regex("""bytes\s+(\d+)-""")
+        private val SHA256 = Regex("[0-9a-fA-F]{64}")
+        private val CONTENT_RANGE = Regex("bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)", RegexOption.IGNORE_CASE)
+        private val UNSATISFIED_RANGE = Regex("bytes\\s+\\*/(\\d+)", RegexOption.IGNORE_CASE)
 
-        fun sha256Of(f: File): String {
+        private fun parseRange(header: String?): ByteRange? {
+            val match = CONTENT_RANGE.matchEntire(header.orEmpty().trim()) ?: return null
+            val start = match.groupValues[1].toLongOrNull() ?: return null
+            val end = match.groupValues[2].toLongOrNull() ?: return null
+            val total = match.groupValues[3].let { if (it == "*") 0 else it.toLongOrNull() ?: return null }
+            return ByteRange(start, end, total).takeIf { end >= start && end < Long.MAX_VALUE && (total == 0L || end < total) }
+        }
+
+        internal fun checkCancelled(cancel: AtomicBoolean) {
+            if (cancel.get() || Thread.currentThread().isInterrupted) throw InterruptedIOException("cancelled")
+        }
+
+        fun sha256Of(f: File, cancel: AtomicBoolean = AtomicBoolean(false)): String {
+            checkCancelled(cancel)
             val md = MessageDigest.getInstance("SHA-256")
-            f.inputStream().use { i ->
+            f.inputStream().use { input ->
                 val buf = ByteArray(1 shl 16)
                 while (true) {
-                    val n = i.read(buf)
+                    checkCancelled(cancel)
+                    val n = input.read(buf)
                     if (n < 0) break
                     md.update(buf, 0, n)
                 }
             }
+            checkCancelled(cancel)
             return md.digest().joinToString("") { "%02x".format(it) }
         }
     }

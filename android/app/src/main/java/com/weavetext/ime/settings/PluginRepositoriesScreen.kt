@@ -114,7 +114,7 @@ fun PluginRepositoriesScreen() {
         val generation = accountGeneration
         scope.launch {
             try {
-                val result = slots.withPermit { withContext(Dispatchers.IO) { service.catalog(repo) } }
+                val result = slots.withPermit { withContext(deps.pluginIoDispatcher) { service.catalog(repo) } }
                 if (generation == accountGeneration && repos.any { it.key == repo.key }) rows[repo.key] = RepositoryRowState(
                     GitHubRepositorySummary(result.plugins.size, result.isPrivate), result)
             } catch (e: CancellationException) { throw e }

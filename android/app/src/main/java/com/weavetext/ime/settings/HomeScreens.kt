@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -190,80 +191,61 @@ fun HomeScreen(statusVersion: Int) {
     val ctx = LocalContext.current
     val p by rememberLivePrefs(deps.prefs)
     val status = remember(statusVersion) { deps.status() }
-    val engine = runCatching { deps.engines().active()?.name }.getOrNull()
-    var words by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(statusVersion) { words = runCatching { deps.dictionary.count() }.getOrNull() }
-
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            LargeTopAppBar(
-                title = { Text("织文输入法") },
-                colors = TopAppBarDefaults.largeTopAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-    ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).contentWidth().imePadding()) {
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                if (status.enabled && status.isDefault) {
-                    Row(
-                        Modifier.padding(start = 20.dp, bottom = 12.dp).clip(RoundedCornerShape(12.dp))
-                            .background(LocalSuccess.current.copy(alpha = 0.12f)).padding(start = 8.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(LocalSuccess.current))
-                        Text("已启用 · 当前默认输入法", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp).fillMaxWidth(),
-                    ) {
-                        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(painterResource(R.drawable.ic_warning), null, tint = MaterialTheme.colorScheme.onErrorContainer)
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                if (!status.enabled) "织文输入法尚未启用" else "织文不是默认输入法",
-                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f),
-                            )
-                            FilledTonalButton(onClick = {
-                                if (!status.enabled) ctx.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-                                else ctx.getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
-                            }) { Text(if (!status.enabled) "启用" else "切换") }
+    val cs = MaterialTheme.colorScheme
+    Scaffold(containerColor = cs.background, topBar = {
+        androidx.compose.material3.TopAppBar(title = { Text("织文") }, actions = {
+            TextButton({ nav.push(Route.About) }) { Text("关于") }
+        }, colors = TopAppBarDefaults.topAppBarColors(containerColor = cs.background))
+    }) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad).contentWidth().imePadding().verticalScroll(rememberScrollState())) {
+            Surface(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp), color = cs.primaryContainer) {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        BrandLogo(48)
+                        Column {
+                            Text("让输入顺手一点", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                            Text(if (status.enabled && status.isDefault) "已就绪 · 当前默认输入法" else "完成设置，开始使用织文", style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                    if (!status.enabled || !status.isDefault) {
+                        FilledTonalButton({
+                            if (!status.enabled) ctx.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+                            else ctx.getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+                        }) { Text(if (!status.enabled) "启用输入法" else "切换到织文") }
+                    }
+                    var text by rememberSaveable { mutableStateOf("") }
+                    OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), placeholder = { Text("在这里试试输入…") }, shape = RoundedCornerShape(16.dp), maxLines = 3)
                 }
-                GroupCard {
-                    SettingRow("输入方案", schemeSummary(p), R.drawable.ic_keyboard, onClick = { nav.push(Route.Schemes) }) { Chevron() }
-                    RowDivider()
-                    SettingRow("语音引擎", engine ?: "未安装", R.drawable.ic_waveform, onClick = { nav.push(Route.Voice) }) { Chevron() }
-                    RowDivider()
-                    SettingRow(
-                        "外观与手感", themeName(WeavePrefs.theme(p)) + " · " + HEIGHT_NAMES[WeavePrefs.heightLevel(p).coerceIn(0, 4)],
-                        R.drawable.ic_theme, onClick = { nav.push(Route.Look) },
-                    ) { Chevron() }
-                    RowDivider()
-                    SettingRow("词库", words?.let { "%,d 个用户词".format(it) } ?: "用户词与学习记录", R.drawable.ic_book, onClick = { nav.push(Route.Dictionary) }) { Chevron() }
-                    RowDivider()
-                    SettingRow("表情收纳袋", "收藏原图与动图 · 标签、分组和快捷分享", R.drawable.ic_sticker_bag, onClick = {ctx.startActivity(Intent(ctx,com.weavetext.ime.stickers.StickerActivity::class.java))}) {Chevron()}
-                    RowDivider()
-                    SettingRow("互联", linkSummary(p), R.drawable.ic_devices, onClick = { nav.push(Route.Link) }) { Chevron() }
-                }
-                Spacer(Modifier.height(GroupGap))
-                GroupCard {
-                    SettingRow("关于", null, R.drawable.ic_info, onClick = { nav.push(Route.About) }) { ValueChevron("v${deps.versionName}") }
-                }
-                Spacer(Modifier.height(16.dp))
             }
-            var t by rememberSaveable { mutableStateOf("") }
-            OutlinedTextField(
-                t, { t = it }, Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth(),
-                placeholder = { Text("在这里试试输入…") }, shape = RoundedCornerShape(12.dp),
-            )
+            GroupTitle("你的键盘")
+            GroupCard {
+                SettingRow("输入方案", schemeSummary(p), R.drawable.ic_keyboard, onClick = { nav.push(Route.Schemes) }) { Chevron() }
+                RowDivider()
+                SettingRow("外观与手感", "主题、布局与按键反馈", R.drawable.ic_theme, onClick = { nav.push(Route.Look) }) { Chevron() }
+                RowDivider()
+                SettingRow("词库与资料", "用户词、学习记录与备份", R.drawable.ic_book, onClick = { nav.push(Route.Dictionary) }) { Chevron() }
+            }
+            Spacer(Modifier.height(16.dp))
+            Surface(
+                modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp), color = cs.secondaryContainer,
+            ) {
+                SettingRow("插件市场", "添加功能，搭配主题与布局", R.drawable.ic_toolbox, onClick = { nav.push(Route.Market()) }) { Chevron() }
+            }
+            val voice = Extensions.feature(p, "voice")
+            val translate = Extensions.feature(p, "translate")
+            val stickers = Extensions.feature(p, "stickers")
+            val link = Extensions.feature(p, "link")
+            if (voice || translate || stickers || link) {
+                GroupTitle("已添加的工具")
+                GroupCard {
+                    if (voice) SettingRow("语音输入", "引擎与识别设置", R.drawable.ic_waveform, onClick = { nav.push(Route.Voice) }) { Chevron() }
+                    if (translate) SettingRow("翻译", "服务与离线翻译插件", R.drawable.ic_globe, onClick = { nav.push(Route.Translation) }) { Chevron() }
+                    if (stickers) SettingRow("表情收纳袋", "收藏与整理图片表情", R.drawable.ic_sticker_bag, onClick = { ctx.startActivity(Intent(ctx, com.weavetext.ime.stickers.StickerActivity::class.java)) }) { Chevron() }
+                    if (link) SettingRow("织文互联", "与电脑互传文字和文件", R.drawable.ic_devices, onClick = { nav.push(Route.Link) }) { Chevron() }
+                }
+            }
+            Text("按你的习惯，组合自己的键盘", Modifier.padding(24.dp).fillMaxWidth(), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
         }
     }
 }
-
-/** 首页「互联」副文字。 Home-page summary of WeaveLink. */
-private fun linkSummary(p: android.content.SharedPreferences) =
-    if (WeavePrefs.linkEnabled(p)) "已开启 · 与电脑互传文字和文件" else "与电脑互传文字、图片和文件"

@@ -25,6 +25,9 @@ if args.count > 1 {
             fputs("snapshot failed: \(error)\n", stderr)
             exit(1)
         }
+    case "--snapshot-extensions" where args.count > 2:
+        do {try DevTools.snapshotExtensions(into:URL(fileURLWithPath:args[2]));exit(0)}
+        catch {fputs("extension snapshot failed: \(error)\n",stderr);exit(1)}
     case "--snapshot-themes" where args.count > 2:
         do {try DevTools.snapshotThemes(into:URL(fileURLWithPath:args[2]));exit(0)}
         catch {fputs("theme snapshot failed: \(error)\n",stderr);exit(1)}

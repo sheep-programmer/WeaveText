@@ -4,9 +4,8 @@ import android.view.KeyEvent
 import com.weavetext.ime.R
 
 /**
- * 光标编辑面板（02 §9）：5 列 × 4 行（与键盘行数一致），列权重 1 | 1.25 | 1.25 | 1.25 | 1；
- * 第 4 行为撤销、重做、按词左右移动与换行。
- * Cursor edit panel: 5 × 4 grid matching the keyboard rows; the fourth row has undo, redo, word jumps and enter.
+ * 光标编辑面板（02 §9）：4 × 3，方向键在中间排成十字，两侧只留最常用的复制、粘贴、全选、开头、末尾。
+ * Cursor edit panel: 4 × 3 with the arrows as a cross in the middle and only the common actions around them.
  */
 class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     override val toolIndex = 3
@@ -17,33 +16,25 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         private set
 
     private val keys = listOf(
-        PadKey(TAB, icon = R.drawable.ic_tab),
-        PadKey(COPY, "复制", style = KeyStyle.CHAR),
+        PadKey(COPY, "复制"),
         PadKey(UP, icon = R.drawable.ic_chevron_up, style = KeyStyle.CHAR).apply { repeat = true },
-        PadKey(PASTE, "粘贴", style = KeyStyle.CHAR),
+        PadKey(PASTE, "粘贴"),
         PadKey(BACKSPACE, icon = R.drawable.ic_backspace).apply { repeat = true },
-        PadKey(HOME, "开头"),
         PadKey(LEFT, icon = R.drawable.ic_chevron_left, style = KeyStyle.CHAR).apply { repeat = true },
         PadKey(SELECT, "选择", style = KeyStyle.CHAR),
         PadKey(RIGHT, icon = R.drawable.ic_chevron_right, style = KeyStyle.CHAR).apply { repeat = true },
-        PadKey(DEL, "Del").apply { repeat = true },
-        PadKey(END, "末尾"),
-        PadKey(SELECT_ALL, "全选", style = KeyStyle.CHAR),
+        PadKey(SELECT_ALL, "全选"),
+        PadKey(HOME, "开头"),
         PadKey(DOWN, icon = R.drawable.ic_chevron_down, style = KeyStyle.CHAR).apply { repeat = true },
-        PadKey(CUT, "剪切", style = KeyStyle.CHAR),
+        PadKey(END, "末尾"),
         PadKey(BACK, "返回", style = KeyStyle.ACCENT),
-        PadKey(UNDO, icon = R.drawable.ic_undo),
-        PadKey(REDO, icon = R.drawable.ic_redo),
-        PadKey(WORD_LEFT, "词 ←", style = KeyStyle.CHAR).apply { repeat = true },
-        PadKey(WORD_RIGHT, "词 →", style = KeyStyle.CHAR).apply { repeat = true },
-        PadKey(ENTER, icon = R.drawable.ic_enter),
     )
 
     init {
         pad.keys = keys
         pad.layouter = { w, h ->
             val m = kb.metrics
-            val spec = keys.mapIndexed { i, k -> intArrayOf(k.id, i % 5, i / 5, 1, 1) }
+            val spec = keys.mapIndexed { i, k -> intArrayOf(k.id, i % 4, i / 4, 1, 1) }
             PadView.grid(keys, spec, WEIGHTS, ROWS, w, h, m)
             for (k in keys) { k.textSize = m.label(16f); k.large = true; k.iconSize = m.icon(24f) }
         }
@@ -63,7 +54,6 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private fun refreshSelection(has: Boolean) {
         keys.first { it.id == SELECT }.active = selecting
         keys.first { it.id == COPY }.disabled = !has
-        keys.first { it.id == CUT }.disabled = !has
         pad.invalidate()
         if(has) kb.topBar.showAction("已选中文字", "重新选词", 30000) {
             if(kb.controller.reselect()) kb.closePanel()
@@ -74,13 +64,10 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private fun onKey(id: Int) {
         val c = kb.controller
         when (id) {
-            TAB -> c.onTab()
             COPY -> c.contextMenuAction(android.R.id.copy)
             PASTE -> c.contextMenuAction(android.R.id.paste)
-            CUT -> c.contextMenuAction(android.R.id.cut)
             SELECT_ALL -> c.contextMenuAction(android.R.id.selectAll)
             BACKSPACE -> c.onBackspace()
-            DEL -> c.deleteForward()
             UP -> c.cursorArrow(KeyEvent.KEYCODE_DPAD_UP, selecting)
             DOWN -> c.cursorArrow(KeyEvent.KEYCODE_DPAD_DOWN, selecting)
             LEFT -> c.cursorArrow(KeyEvent.KEYCODE_DPAD_LEFT, selecting)
@@ -89,21 +76,16 @@ class CursorPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             END -> c.cursorToEdge(end = true, select = selecting)
             SELECT -> { selecting = !selecting; refreshSelection(c.hasSelection()) }
             BACK -> kb.closePanel()
-            UNDO -> c.undoRedo(redo = false)
-            REDO -> c.undoRedo(redo = true)
-            WORD_LEFT -> c.cursorWord(right = false, select = selecting)
-            WORD_RIGHT -> c.cursorWord(right = true, select = selecting)
-            ENTER -> c.onEnter()
         }
         if (id != SELECT && id != BACK) refreshSelection(c.hasSelection())
     }
 
     companion object {
-        private val WEIGHTS = floatArrayOf(1f, 1.25f, 1.25f, 1.25f, 1f)
-        private const val ROWS = 4
-        const val TAB = 0; const val COPY = 1; const val UP = 2; const val PASTE = 3; const val BACKSPACE = 4
-        const val HOME = 5; const val LEFT = 6; const val SELECT = 7; const val RIGHT = 8; const val DEL = 9
-        const val END = 10; const val SELECT_ALL = 11; const val DOWN = 12; const val CUT = 13; const val BACK = 14
-        const val UNDO = 15; const val REDO = 16; const val WORD_LEFT = 17; const val WORD_RIGHT = 18; const val ENTER = 19
+        private val WEIGHTS = floatArrayOf(1f, 1f, 1f, 1f)
+        private const val ROWS = 3
+        const val COPY = 1; const val UP = 2; const val PASTE = 3; const val BACKSPACE = 4
+        const val LEFT = 6; const val SELECT = 7; const val RIGHT = 8
+        const val SELECT_ALL = 11; const val DOWN = 12; const val BACK = 14
+        const val HOME = 5; const val END = 10
     }
 }

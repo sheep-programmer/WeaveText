@@ -97,6 +97,16 @@ class LinkManagerTest {
         m.setEnabled(false)
     }
 
+    @Test fun turningOffTheModuleStopsAnAlreadyRunningService() {
+        m.setEnabled(true)
+        assertTrue(m.state.value.running)
+        com.weavetext.ime.extensions.Extensions.setEnabled(WeavePrefs.of(app),"feature:link",false)
+        ShadowLooper.idleMainLooper()
+        assertTrue(backend.stopped)
+        assertFalse(m.state.value.running)
+        assertFalse(m.state.value.enabled)
+    }
+
     @Test fun offByDefaultAndStartsWhenEnabled() {
         m.ensureRunning()
         assertNull(backend.config)

@@ -214,6 +214,7 @@ android {
     sourceSets["main"].assets.srcDir(dictAssetsDir)
     sourceSets["main"].assets.srcDir(pluginAssetsDir)
     sourceSets["main"].assets.srcDir(expressionAssetsDir)
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("marketAssets"))
     if (bundleSpeechModels) sourceSets["main"].assets.srcDir(modelAssetsDir)
     // 端侧语音适配层：轻量版换成空实现，不依赖 sherpa-onnx。 Lite swaps the ASR adapter for a stub.
     sourceSets["main"].java.srcDir(if (liteBuild) "src/nosherpa/java" else "src/sherpa/java")
@@ -238,7 +239,7 @@ android {
             all {
                 it.systemProperty("robolectric.graphicsMode", "NATIVE")
                 it.systemProperty("roborazzi.test.record", "true")
-                it.systemProperty("weave.snapshotDir", project.file("src/test/snapshots").absolutePath)
+                it.systemProperty("weave.snapshotDir", (findProperty("weave.snapshotDir") as String?) ?: project.file("src/test/snapshots").absolutePath)
                 it.maxHeapSize = "4g"
             }
         }
@@ -329,7 +330,11 @@ val bundleExpressions by tasks.registering(Sync::class) {
     from(rootDir.resolve("../data/expressions")) { include("catalog.json", "UNICODE-LICENSE.txt") }
     into(expressionAssetsDir.resolve("expressions"))
 }
-tasks.named("preBuild") { dependsOn(buildRust, syncDicts, bundlePlugins, bundleExpressions, fetchSherpa, fetchBuiltinModels) }
+val bundleMarket by tasks.registering(Sync::class) {
+    from(rootDir.resolve("../data/market"))
+    into(layout.buildDirectory.dir("marketAssets/market"))
+}
+tasks.named("preBuild") { dependsOn(bundleMarket, buildRust, syncDicts, bundlePlugins, bundleExpressions, fetchSherpa, fetchBuiltinModels) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.04.01")

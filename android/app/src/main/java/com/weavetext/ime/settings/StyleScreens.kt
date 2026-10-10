@@ -153,6 +153,7 @@ fun StylesScreen() {
     }
 
     SubPage("键盘风格", snackbar = snack) {
+        GroupCard { SettingRow("更多主题与布局", "在插件市场安装，再自由搭配", onClick = { nav.push(Route.Market("theme")) }) { Chevron() } }
         GroupCard(Modifier.padding(top = 8.dp)) {
             Box(Modifier.padding(12.dp)) { StyleThumb(current, corner = 12.dp) }
         }

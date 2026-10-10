@@ -123,6 +123,18 @@ class VoicePackTest {
         assertEquals(listOf(stream to true), repo.downloads)
     }
 
+    @Test fun retainedBytesWhileConnectingDoNotPretendToBeAnActiveTransferAndHashingIsNotReady() {
+        val repo = FakeModels(mapOf(AsrRuntime.ID to ModelState.Installed, "vad-silero" to ModelState.Installed), catalog = FakeModels.LITE)
+        val pack = VoicePack(repo, bundledRuntime = false)
+        val size = repo.catalog.find(stream)!!.archiveSize
+        repo.emit(stream, ModelState.Downloading(Progress(size / 2, size, 0, "mirror", DownloadPhase.CONNECTING)))
+        assertEquals(DownloadPhase.CONNECTING, (pack.state() as VoicePack.State.Downloading).phase)
+        repo.emit(stream, ModelState.Downloading(Progress(size, size, 0, "mirror", DownloadPhase.VERIFYING)))
+        assertEquals(VoicePack.State.Installing, pack.state())
+        repo.emit(stream, ModelState.Installed)
+        assertEquals(VoicePack.State.Ready, pack.state())
+    }
+
     @Test fun packFailureIsReadableAndCancelStopsBoth() {
         val repo = FakeModels(catalog = FakeModels.LITE)
         val pack = VoicePack(repo, bundledRuntime = false)

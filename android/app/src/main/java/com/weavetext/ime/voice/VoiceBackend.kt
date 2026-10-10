@@ -1,5 +1,6 @@
 package com.weavetext.ime.voice
 
+import com.weavetext.ime.extensions.Extensions
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -156,6 +157,7 @@ private class Recognizer(private val ctx: Context, private val engines: OfflineE
     }
 
     override fun start(listener: VoiceListener): Boolean {
+        if (!Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(ctx), "voice")) return false
         cancel()
         if (!hasEngine()) { listener.onError("请选择语音引擎或下载离线语音包"); listener.onEnd(); return false }
         if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {

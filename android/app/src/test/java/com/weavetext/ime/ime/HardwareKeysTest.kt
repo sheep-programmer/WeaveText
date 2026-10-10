@@ -126,4 +126,120 @@ class HardwareKeysTest {
         assertFalse(press(KeyEvent.KEYCODE_ESCAPE))
         assertEquals("", ic.text)
     }
+
+    @Test fun candidateNavigationDoesNotWriteRawLetters() {
+        type("shi")
+        val snapshots = engine.snapshots
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_TAB))
+        assertEquals(2, controller.state.highlightedCandidate)
+        assertEquals("shi", engine.raw.toString())
+        assertEquals("", ic.text)
+        assertEquals("Navigating reuses candidates without decoding again", snapshots, engine.snapshots)
+        assertTrue(press(KeyEvent.KEYCODE_SPACE))
+        assertEquals("shi2", ic.text)
+        assertEquals(-1, controller.state.highlightedCandidate)
+    }
+
+    @Test fun pageNumbersChooseFromTheActivePageAndLoadBeyondSnapshot() {
+        type("shi")
+        repeat(7) { assertTrue(press(KeyEvent.KEYCODE_PAGE_DOWN)) }
+        assertEquals(63, controller.state.highlightedCandidate)
+        assertEquals("shi63", controller.state.candidates[63].text)
+        assertTrue(press(KeyEvent.KEYCODE_3))
+        assertEquals("shi65", ic.text)
+    }
+
+    @Test fun enterConfirmsOnlyAfterAnExplicitCandidateSelection() {
+        type("ni")
+        assertTrue(press(KeyEvent.KEYCODE_ENTER))
+        assertEquals("ni", ic.text)
+        type("hao")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_NUMPAD_ENTER))
+        assertEquals("nihao1", ic.text)
+    }
+
+    @Test fun changingCompositionDropsTheHardwareSelection() {
+        type("shi")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        type("a")
+        assertEquals(-1, controller.state.highlightedCandidate)
+        assertTrue(press(KeyEvent.KEYCODE_ENTER))
+        assertEquals("shia", ic.text)
+    }
+
+    @Test fun shiftTabGoesBackAndBoundsDoNotWrap() {
+        type("shi")
+        assertTrue(press(KeyEvent.KEYCODE_TAB))
+        assertTrue(press(KeyEvent.KEYCODE_TAB, KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON))
+        assertEquals(0, controller.state.highlightedCandidate)
+        assertTrue(press(KeyEvent.KEYCODE_PAGE_UP))
+        assertEquals(0, controller.state.highlightedCandidate)
+        assertTrue(press(KeyEvent.KEYCODE_ESCAPE))
+        assertFalse(press(KeyEvent.KEYCODE_TAB))
+    }
+
+    @Test fun englishCandidateSpaceKeepsTheExplicitSeparator() {
+        controller.toggleChinese()
+        type("hel")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_SPACE))
+        assertEquals("hel1 ", ic.text)
+    }
+
+    @Test fun englishPredictionSpaceKeepsTheExplicitSeparatorForTheNextWord() {
+        controller.toggleChinese()
+        engine.predicts = true
+        type("hello ")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_SPACE))
+        assertEquals("hello P2 ", ic.text)
+        type("world")
+        assertTrue(press(KeyEvent.KEYCODE_ENTER))
+        assertEquals("hello P2 world", ic.text)
+    }
+
+    @Test fun idlePredictionEnterAndEscapeClearTheBar() {
+        engine.predicts = true
+        type("ni ")
+        assertTrue(controller.state.candidates.isNotEmpty())
+        assertFalse(press(KeyEvent.KEYCODE_ENTER))
+        assertTrue(controller.state.candidates.isEmpty())
+        type("hao ")
+        assertTrue(press(KeyEvent.KEYCODE_ESCAPE))
+        assertTrue(controller.state.candidates.isEmpty())
+        assertEquals("【ni】【hao】", ic.text)
+    }
+
+    @Test fun idlePredictionsLeaveTabAndPageScrollingToTheApp() {
+        engine.predicts = true
+        type("ni ")
+        assertFalse(press(KeyEvent.KEYCODE_TAB))
+        assertFalse(press(KeyEvent.KEYCODE_PAGE_DOWN))
+        assertEquals(-1, controller.state.highlightedCandidate)
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_2))
+        assertEquals("【ni】P2", ic.text)
+    }
+
+    @Test fun capitalsInsideDoublePinyinReachTheEngineAndEnterPreservesTheKeys() {
+        // Model the engine's new uppercase contract without loading JNI in a host key-routing test.
+        controller.attachEngine(object : com.weavetext.ime.core.KeyEngine by engine {
+            override fun inputChar(codePoint: Int): Boolean {
+                if (codePoint in 'A'.code..'Z'.code && engine.schema.startsWith("shuangpin")) {
+                    engine.raw.append(codePoint.toChar()); return true
+                }
+                return engine.inputChar(codePoint)
+            }
+        })
+        assertTrue(controller.setSchema("shuangpin:xiaohe"))
+        type("ni")
+        assertTrue(press(KeyEvent.KEYCODE_H, KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON))
+        type("ub")
+        assertEquals("niHub", controller.state.preedit)
+        assertEquals("", ic.text)
+        assertTrue(press(KeyEvent.KEYCODE_ENTER))
+        assertEquals("niHub", ic.text)
+    }
 }

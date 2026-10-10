@@ -36,6 +36,7 @@ class SettingsDeps(
     val packs: () -> com.weavetext.ime.core.DictPackRepository = { com.weavetext.ime.core.DictPacks.get(ctx) },
     val cloud: () -> com.weavetext.ime.core.CloudWordsRepository = { com.weavetext.ime.core.CloudWords.get(ctx) },
     val pluginRepositories: () -> com.weavetext.ime.plugins.GitHubPlugins = { com.weavetext.ime.plugins.GitHubPlugins(ctx.applicationContext) },
+    val pluginIoDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
     val versionName: String = com.weavetext.ime.BuildConfig.VERSION_NAME,
     val versionCode: Int = com.weavetext.ime.BuildConfig.VERSION_CODE,
 ) {

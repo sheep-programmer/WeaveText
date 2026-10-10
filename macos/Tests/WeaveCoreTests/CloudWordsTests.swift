@@ -64,6 +64,19 @@ private let sigURL = CloudWords.url.appendingPathExtension("sig")
         #expect(cloud.status.attached && !cloud.status.updating && cloud.status.error==nil)
     }
 
+    @Test func disablingTheModuleStopsWorkAndKeepsTheUsersSetting() throws {
+        let fetcher=StubFetcher(),engine=Engine()
+        let (cloud,dir,defaults)=try make(fetcher,engine,clock:Date.init)
+        defer {try? FileManager.default.removeItem(at:dir)}
+        defaults.set(true,forKey:"cloudWords")
+        cloud.moduleEnabled=false
+        #expect(!cloud.enabled && !cloud.status.enabled)
+        #expect(cloud.refreshNow() == nil)
+        #expect(defaults.bool(forKey:"cloudWords"))
+        #expect(engine.unloads == 1)
+        #expect(fetcher.requests.isEmpty)
+    }
+
     @Test func offByDefaultAndDoesNothing() throws {
         let f = StubFetcher()
         let (c, dir, _) = try make(f, Engine(), clock: Date.init)

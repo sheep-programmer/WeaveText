@@ -38,6 +38,8 @@ interface TopBarHost {
     /** 候选长按；返回 false 表示没有长按功能，这次按下仍按点击处理。 Candidate long-press; false = none, still a tap. */
     fun onCandidateLong(index: Int): Boolean
     fun onExpand()
+    /** 点联想词右侧的叉：清掉候选栏。 The cross beside predictions: clear the bar. */
+    fun onDismissCandidates() {}
     fun onNeedMore()
     fun onClipChip()
     fun onHideByDrag()
@@ -98,6 +100,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var hasMore = false
     private var scrollX0 = 0f
     private var pressedCand = -1
+    private var highlightedCandidate = -1
+    private var candidateGeneration = 0L
+    private val focusedCandidate get() = highlightedCandidate.takeIf { it in texts.indices } ?: 0
     var candidateMode = false
         private set
     var expanded = false
@@ -181,7 +186,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     /** 组合串浮在栏上方。 Composing text floats above the bar. */
     private val floating get() = layout.candidates.preedit == "floating"
     /** 英文三格建议条。 Three-slot English suggestion strip. */
-    private val strip get() = english && layout.candidates.english == "strip3"
+    private val strip get() = english && layout.candidates.english == "strip3" && highlightedCandidate < 3
     /** 输入中左侧常驻工具按钮的宽度。 Width of the leading tool button while composing. */
     private fun leadW() = if (layout.toolbar.show == "always") metrics.dp(44f) else 0f
 
@@ -218,10 +223,12 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     fun setCandidates(
         preedit: String, items: List<Candidate>, total: Int, english: Boolean, keepScroll: Boolean,
         marks: List<PreeditMark> = emptyList(),
+        generation: Long = 0,
     ) {
         val marksChanged = marks != this.marks
         this.marks = marks
-        var changed = preedit != this.preedit || items.size != texts.size
+        var changed = generation != candidateGeneration || preedit != this.preedit || items.size != texts.size
+        candidateGeneration = generation
         if (!changed) for (i in items.indices) if (items[i].text != texts[i] || items[i].comment != comments[i] || items[i].pinyin != pinyins[i] || items[i].isCloud != cloudBadges.getOrElse(i){false}) { changed = true; break }
         texts.clear(); comments.clear(); pinyins.clear(); cloudBadges.clear()
         for (i in items.indices) { texts += items[i].text; comments += items[i].comment;pinyins += items[i].pinyin;cloudBadges += items[i].isCloud }
@@ -279,11 +286,35 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     }
 
     val loadedCount get() = texts.size
+
+    /** Keep the keyboard-selected word visible, including after loading another candidate page. */
+    fun setHighlightedCandidate(index: Int) {
+        if (highlightedCandidate == index) return
+        highlightedCandidate = index
+        remeasure(false)
+        if (index in texts.indices && ::metrics.isInitialized && width > 0 && !strip) {
+            while (measured <= index && measured < texts.size) ensureMeasured(contentWidth + width)
+            scroller.forceFinished(true)
+            val available = width - leadW() - (if (sideButton) expandW() else 0f)
+            val l = lefts[index]
+            val r = l + widths[index]
+            scrollX0 = when {
+                l < scrollX0 -> l
+                r > scrollX0 + available -> r - available
+                else -> scrollX0
+            }.coerceIn(0f, maxScroll())
+        }
+        invalidate()
+        a11y.invalidate()
+    }
     /** 第 [i] 个候选的文字（测试用）。 Candidate text at [i] (for tests). */
     @androidx.annotation.VisibleForTesting
     fun candidateAt(i: Int): String? = texts.getOrNull(i)
     @androidx.annotation.VisibleForTesting
     fun candidatePinyinAt(i: Int): String? = pinyins.getOrNull(i)
+    /** 第 [i] 个候选画出来的括号拼音（测试用）。 Bracketed pinyin drawn after candidate [i] (for tests). */
+    @androidx.annotation.VisibleForTesting
+    fun candidateHintAt(i: Int): String? = if (i in pinyins.indices) hintAt(i) else null
     /** 已测量（可绘制）的候选数。 Candidates measured so far. */
     val measuredCount get() = measured
 
@@ -308,14 +339,27 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     }
 
     /** 候选行的上沿：只有中文且有组合串时才给组合串留一行（联想词、本地列表整行居中）。 Top of the candidate row. */
-    private fun rowTop() = if (english || floating || preedit.isEmpty()) 0f else metrics.dp(18f) * metrics.topScale
+    /**
+     * 中文候选行固定在组合串下面，联想词（没有组合串）也放在同一位置，打字和上屏后词不会上下跳。
+     * Chinese candidates sit below the preedit line; predictions (no preedit) keep that same spot, so words don't
+     * jump up and down between typing and after a commit.
+     */
+    private fun rowTop() = if (english || floating) 0f else metrics.dp(18f) * metrics.topScale
 
     /**
      * 首项是否突出显示：有组合串（它就是空格会上屏的那个）或英文时突出；联想词没有「默认」项，一律平等。
      * Whether the first item stands out: with a preedit (it's what space commits) or in English; predictions have no default.
      */
-    private val firstStandsOut get() = english || preedit.isNotEmpty()
+    private val firstStandsOut get() = highlightedCandidate >= 0 || english || preedit.isNotEmpty()
+
+    /** 只有正在选的首选带拼音，括号标在词后。 Only the top candidate being picked carries its pinyin, in brackets after it. */
+    private fun hintAt(i: Int): String? = pinyins[i].takeIf { i == focusedCandidate && !english && preedit.isNotEmpty() && it.isNotEmpty() }?.let { "($it)" }
     private fun expandW() = metrics.dp(44f)
+
+    /** 联想词（没有组合串）右侧用叉代替下拉，点了清空。 Predictions (no preedit) get a cross instead of the dropdown. */
+    private val dismissable get() = !strip && !expanded && preedit.isEmpty() && texts.isNotEmpty()
+    /** 右端留出按钮位：展开或叉。 Room at the right end for the expand button or the cross. */
+    private val sideButton get() = hasMore || dismissable
 
     private fun remeasure(preeditChanged: Boolean = true) {
         if (!::metrics.isInitialized || width == 0) return
@@ -405,11 +449,11 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         if (measured >= n || contentWidth > x) { hasMore = total > n || measured < n || contentWidth > width - leadW() - expandW(); return }
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
-        annotation.textSize = m.dp(11f) * m.candScale
+        annotation.textSize = m.dp(13f) * m.candScale
         val maxItem = (width - expandW()) * 0.7f - m.dp(42f)
         while (measured < n && contentWidth <= x) {
             val i = measured
-            text.typeface = if (i == 0 && firstStandsOut) mediumTf else Typeface.DEFAULT
+            text.typeface = if (i == focusedCandidate && firstStandsOut) mediumTf else Typeface.DEFAULT
             val s = texts[i]
             var tw = text.measureText(s)
             val out = if (tw > maxItem) {
@@ -418,7 +462,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             var w = tw + m.dp(24f) + if(cloudBadges.getOrElse(i){false}) m.dp(18f) else 0f
             val c = comments[i]
             if (c.isNotEmpty()) w += small.measureText(c) + m.dp(3f)
-            if (pinyins[i].isNotEmpty()) w = max(w, annotation.measureText(pinyins[i]) + m.dp(24f))
+            hintAt(i)?.let { w += annotation.measureText(it) + m.dp(3f) }
             w = max(w, m.dp(40f))
             shown[i] = out
             lefts[i] = contentWidth
@@ -450,7 +494,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private fun maxScroll(): Float {
         // 还有没测量的候选时允许继续滚，滚动中再补测。 Unmeasured candidates remain: allow scrolling on, measuring as we go.
         val extra = if (measured < texts.size) width.toFloat() else 0f
-        return max(0f, contentWidth + extra - (width - leadW() - (if (hasMore) expandW() else 0f)))
+        return max(0f, contentWidth + extra - (width - leadW() - (if (sideButton) expandW() else 0f)))
     }
 
     private fun scrollTo(x: Float) {
@@ -562,7 +606,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         }
         val top = rowTop()
         val rowH = height - top
-        val right = width - (if (hasMore) expandW() else 0f)
+        val right = width - (if (sideButton) expandW() else 0f)
         // 有更多候选时整行画进图层，右端再擦成透明：渐变、图片背景上也看不出接缝。
         // With more candidates the row goes into a layer whose right end is erased, so no seam shows on gradients or images.
         val layer = if (hasMore) c.saveLayer(lead, top, right, height.toFloat(), null) else -1
@@ -570,15 +614,15 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         c.clipRect(lead, top, right, height.toFloat())
         text.textSize = m.dp(layout.candidates.textSize) * m.candScale
         small.textSize = m.dp(10f) * m.candScale
-        annotation.textSize = m.dp(11f) * m.candScale
+        annotation.textSize = m.dp(13f) * m.candScale
         annotation.color = p.labelSecondary
         val base = top + rowH / 2 - (text.ascent() + text.descent()) / 2
         for (i in 0 until measured) {
             val l = lead + lefts[i] - scrollX0
             if (l > right) break
             if (l + widths[i] < lead) continue
-            val pill = i == 0 && p.candidatePill && firstStandsOut
-            if (i == pressedCand || pill) {
+            val pill = i == focusedCandidate && p.candidatePill && firstStandsOut
+            if (i == pressedCand || i == highlightedCandidate || pill) {
                 fill.color = if (pill && i != pressedCand) p.candidatePillColor else p.toolbarActive
                 val h = min(m.dp(30f), rowH)
                 tmp.set(l + (if (pill) m.dp(4f) else 0f), top + (rowH - h) / 2, l + widths[i] - (if (pill) m.dp(4f) else 0f), top + (rowH + h) / 2)
@@ -588,38 +632,30 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 fill.color = p.divider
                 c.drawRect(l - m.dp(0.5f), top + rowH * 0.3f, l + m.dp(0.5f), top + rowH * 0.7f, fill)
             }
-            val first = i == 0 && firstStandsOut
+            val first = i == focusedCandidate && firstStandsOut
             text.typeface = if (first) mediumTf else Typeface.DEFAULT
             text.color = if (first) p.candidateFirst else p.label
             val sh = shown[i] ?: continue
-            val py = pinyins[i]
-            val annotated = !english && py.isNotEmpty()
-            val wordHeight = text.descent() - text.ascent()
-            val pyHeight = annotation.descent() - annotation.ascent()
-            val wordBase = if (annotated) top + (rowH - wordHeight - pyHeight - m.dp(1f)) / 2 + pyHeight + m.dp(1f) - text.ascent() else base
-            if (annotated) {
-                val pyBase = wordBase + text.ascent() - m.dp(1f) - annotation.descent()
-                c.drawText(py, l + m.dp(12f), pyBase, annotation)
-            }
-            c.drawText(sh, l + m.dp(12f), wordBase, text)
+            c.drawText(sh, l + m.dp(12f), base, text)
             // 英文：首项就是正在敲的单词，带上光标，每个字母当帧可见。 English: the first item is the word being typed, with a caret.
             if (i == 0 && english && cursorOn && preedit.isNotEmpty() && texts[0] == preedit) {
                 val cx = l + m.dp(12f) + text.measureText(sh) + m.dp(1f)
                 fill.color = p.candidateFirst
-                c.drawRect(cx, wordBase + text.ascent() * 0.8f, cx + m.dp(1f), wordBase + m.dp(1.5f), fill)
+                c.drawRect(cx, base + text.ascent() * 0.8f, cx + m.dp(1f), base + m.dp(1.5f), fill)
             }
             val badge=cloudBadges.getOrElse(i){false}
-            val end=l+m.dp(12f)+text.measureText(sh)
-            if(badge) icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),end+m.dp(10f),wordBase+(text.ascent()+text.descent())/2,m.dp(14f))
+            var end=l+m.dp(12f)+text.measureText(sh)
+            hintAt(i)?.let { c.drawText(it, end + m.dp(3f), base, annotation); end += m.dp(3f) + annotation.measureText(it) }
+            if(badge) icons.draw(c,R.drawable.ic_cloud,0xff2685e7.toInt(),end+m.dp(10f),base+(text.ascent()+text.descent())/2,m.dp(14f))
             val cm = comments[i]
             if (cm.isNotEmpty()) {
                 small.color = p.labelHint
-                c.drawText(cm, end + m.dp(if(badge) 21f else 3f), wordBase, small)
+                c.drawText(cm, end + m.dp(if(badge) 21f else 3f), base, small)
             }
         }
         c.restore()
         if (hasMore) {
-            // 渐隐遮罩 + 展开按钮。 Fade + expand button.
+            // 渐隐遮罩。 Fade.
             val fw = m.dp(16f)
             if (fadeShader == null) {
                 fadeShader = LinearGradient(0f, 0f, fw, 0f, 0, 0xFF000000.toInt(), Shader.TileMode.CLAMP)
@@ -630,7 +666,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             c.drawRect(0f, top, fw, height.toFloat(), fade)
             c.restore()
             c.restoreToCount(layer)
+        }
+        if (sideButton) {
             val expandIcon = when {
+                dismissable -> R.drawable.ic_close
                 layout.candidates.expandIcon == "grid" -> R.drawable.ic_toolbox
                 expanded -> R.drawable.ic_chevron_up
                 else -> R.drawable.ic_chevron_down
@@ -648,14 +687,14 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         text.textAlign = Paint.Align.CENTER
         for (i in 0 until measured) {
             val l = lefts[i]
-            if (i == pressedCand) {
+            if (i == pressedCand || i == highlightedCandidate) {
                 fill.color = p.toolbarActive
                 val h = min(m.dp(34f), rowH)
                 tmp.set(l + m.dp(4f), (rowH - h) / 2, l + widths[i] - m.dp(4f), (rowH + h) / 2)
                 c.drawRoundRect(tmp, h / 2, h / 2, fill)
             }
-            text.typeface = if (i == 0) mediumTf else Typeface.DEFAULT
-            text.color = p.label
+            text.typeface = if (i == focusedCandidate) mediumTf else Typeface.DEFAULT
+            text.color = if (i == highlightedCandidate) p.candidateFirst else p.label
             c.drawText(shown[i] ?: continue, l + widths[i] / 2, base, text)
         }
         fill.color = p.divider
@@ -697,7 +736,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     override fun dispatchHoverEvent(event: MotionEvent): Boolean = a11y.onHover(event) || super.dispatchHoverEvent(event)
 
     private inner class A11ySource : VirtualA11y.Source {
-        private fun candRight() = width - (if (hasMore) expandW() else 0f)
+        private fun candRight() = width - (if (sideButton) expandW() else 0f)
         private fun toolIndex(id: Int) = tools.indexOf(id)
 
         override fun a11yIds(): IntArray = when {
@@ -706,7 +745,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             candidateMode -> {
                 val lead = if (leadW() > 0f && !strip) intArrayOf(tools[0]) else IntArray(0)
                 val first = if (!english && preedit.isNotEmpty() && !floating) intArrayOf(PREEDIT) else IntArray(0)
-                lead + first + IntArray(measured) { CAND_BASE + it } + (if (hasMore) intArrayOf(EXPAND) else IntArray(0))
+                lead + first + IntArray(measured) { CAND_BASE + it } + (if (sideButton) intArrayOf(EXPAND) else IntArray(0))
             }
             clipChip != null -> intArrayOf(CHIP) + tools.filterIndexed { i, _ -> !chipHides(i) }.toIntArray()
             else -> tools.copyOf()
@@ -737,7 +776,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             id == ACTION_MSG -> actionMsg
             id == ACTION_BUTTON -> actionLabel
             id == PREEDIT -> "输入码 $preedit"
-            id == EXPAND -> if (expanded) "收起候选" else "展开更多候选"
+            id == EXPAND -> if (dismissable) "清空候选" else if (expanded) "收起候选" else "展开更多候选"
             id >= CAND_BASE -> texts.getOrNull(id - CAND_BASE)?.let { t ->
                 val c = comments.getOrNull(id - CAND_BASE)
                 val py = pinyins.getOrNull(id - CAND_BASE)
@@ -747,13 +786,17 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             else -> TOOL_NAMES.getOrNull(id)
         }
 
-        override fun a11yState(id: Int): CharSequence? = if (id < CHIP && id == activeTool) "已打开" else null
+        override fun a11yState(id: Int): CharSequence? = when {
+            id >= CAND_BASE && id - CAND_BASE == highlightedCandidate -> "已选中，按空格确认"
+            id < CHIP && id == activeTool -> "已打开"
+            else -> null
+        }
 
         override fun a11yClick(id: Int): Boolean {
             when {
                 id == ACTION_BUTTON -> { val a = action; clearAction(); a?.invoke() }
                 id == ACTION_MSG || id == PREEDIT -> return false
-                id == EXPAND -> host.onExpand()
+                id == EXPAND -> if (dismissable) host.onDismissCandidates() else host.onExpand()
                 id >= CAND_BASE -> { if (id - CAND_BASE !in texts.indices) return false; host.onCandidate(id - CAND_BASE) }
                 id == CHIP -> host.onClipChip()
                 id < CHIP -> host.onToolbar(id)
@@ -820,7 +863,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                     return true
                 }
                 if (candidateMode) {
-                    val right = width - (if (hasMore) expandW() else 0f)
+                    val right = width - (if (sideButton) expandW() else 0f)
                     if (e.x >= right) return true
                     if (!strip && e.x < leadW()) { pressedTool = 0; invalidate(); return true }
                     // 组合串那一行不可操作，点在它上面按横向位置算候选。 The preedit line isn't interactive: map by x.
@@ -892,8 +935,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                         scroller.fling(scrollX0.toInt(), 0, -vx.toInt(), 0, 0, maxScroll().toInt(), 0, 0)
                         postInvalidateOnAnimation()
                     } else {
-                        val right = width - (if (hasMore) expandW() else 0f)
-                        if (e.x >= right && hasMore) host.onExpand()
+                        val right = width - (if (sideButton) expandW() else 0f)
+                        if (e.x >= right && dismissable) host.onDismissCandidates()
+                        else if (e.x >= right && hasMore) host.onExpand()
                         else if (pressedCand >= 0) host.onCandidate(pressedCand)
                     }
                     pressedCand = -1

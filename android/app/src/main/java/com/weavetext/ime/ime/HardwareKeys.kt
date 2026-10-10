@@ -3,10 +3,10 @@ package com.weavetext.ime.ime
 import android.view.KeyEvent
 
 /**
- * 实体键盘的按键：字母、数字、标点、空格、回车、退格经过内核；组合中 1–9 选候选、Esc 取消、方向键先上屏原始字母；
+ * 实体键盘：上下 / Tab 选候选，PageUp / PageDown 每次移动九项，空格确认；未选候选时回车原样上屏。
  * Ctrl+空格切换中/英。其余组合键（Ctrl/Alt/Meta 快捷键等）交还给 App。
  * Physical-keyboard keys: letters, digits, punctuation, space, enter and backspace go through the engine;
- * while composing 1–9 pick a candidate, Esc cancels and arrows commit the raw letters first; Ctrl+Space
+ * arrows/Tab navigate candidates, PageUp/PageDown move nine items, Space confirms; Ctrl+Space
  * toggles Chinese/English. Other shortcuts (Ctrl/Alt/Meta) go back to the app.
  */
 class HardwareKeys(private val controller: InputController) {
@@ -37,26 +37,58 @@ class HardwareKeys(private val controller: InputController) {
         when (keyCode) {
             KeyEvent.KEYCODE_DEL -> { controller.onBackspace(); return true }
             // 实体键盘上两次空格就是两个空格，不改成句号。 Two spaces on a physical keyboard stay two spaces.
-            KeyEvent.KEYCODE_SPACE -> { controller.onSpace(periodShortcut = false); return true }
+            KeyEvent.KEYCODE_SPACE -> {
+                val visible = controller.visibleCandidates
+                if (visible?.highlightedCandidate?.let { it >= 0 } == true && visible.candidateGeneration != s.candidateGeneration) return true
+                if (!composing && s.highlightedCandidate >= 0) {
+                    controller.onCandidate(s.highlightedCandidate)
+                    if (!s.chinese) controller.onSpace(periodShortcut = false)
+                } else controller.onSpace(periodShortcut = false)
+                return true
+            }
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                val visible = controller.visibleCandidates
+                if (visible?.highlightedCandidate?.let { it >= 0 } == true && visible.candidateGeneration != s.candidateGeneration) return true
                 // 不在组合中时回车交给 App（多行换行、表单提交等按它自己的规则）。 Not composing: the app handles Enter.
-                if (!composing) return false
+                if (s.highlightedCandidate >= 0) { controller.onCandidate(s.highlightedCandidate); return true }
+                if (!composing) {
+                    if (s.candidates.isNotEmpty()) controller.dismissPredictions()
+                    return false
+                }
                 controller.onEnter(); return true
             }
             KeyEvent.KEYCODE_ESCAPE -> {
-                if (!composing) return false
+                if (!composing && s.candidates.isEmpty()) return false
                 controller.reset(); return true
             }
-            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-            KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END, KeyEvent.KEYCODE_TAB -> {
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_TAB,
+            KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_PAGE_DOWN -> {
+                // Idle predictions must not take Tab focus traversal or page scrolling from the app.
+                if (!composing && s.highlightedCandidate < 0 && keyCode in intArrayOf(
+                        KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_PAGE_DOWN)) return false
+                val delta = when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> -1
+                    KeyEvent.KEYCODE_PAGE_UP -> -9
+                    KeyEvent.KEYCODE_PAGE_DOWN -> 9
+                    KeyEvent.KEYCODE_TAB -> if (e.isShiftPressed) -1 else 1
+                    else -> 1
+                }
+                if ((!e.isShiftPressed || keyCode == KeyEvent.KEYCODE_TAB) && controller.moveCandidate(delta)) return true
+                if (composing) controller.commitRaw()
+                return false
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END -> {
                 if (composing) controller.commitRaw()
                 return false
             }
         }
         // 拼音 v 模式（v12*3）里数字是输入的一部分，不选候选。 In the pinyin v mode digits are input, not candidate picks.
-        if (composing && keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 && !e.isShiftPressed && s.candidates.isNotEmpty() && !vMode(s)) {
-            val i = keyCode - KeyEvent.KEYCODE_1
-            if (i < s.candidates.size) controller.onCandidate(i)
+        if ((composing || s.highlightedCandidate >= 0) && keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 && !e.isShiftPressed && s.candidates.isNotEmpty() && !vMode(s)) {
+            val i = s.highlightedCandidate.coerceAtLeast(0) / 9 * 9 + keyCode - KeyEvent.KEYCODE_1
+            val visible = controller.visibleCandidates
+            if (visible != null) controller.onVisibleCandidate(i, visible.candidateGeneration)
+            else if (i < maxOf(s.candidates.size, s.totalCandidates)) controller.onCandidate(i)
             return true
         }
         val ch = e.getUnicodeChar(e.metaState)

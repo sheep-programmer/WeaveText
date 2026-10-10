@@ -296,6 +296,7 @@ struct NativeTranslationJob: Equatable {
     }
 
     private func showOnMainActor(owner: WeaveInputController) {
+        guard Preferences.shared.extensionEnabled("feature:translate") else { return }
         guard !IsSecureEventInputEnabled() else { return }
         owner.prepareTranslation()
         model.begin(editor: IMKTranslationEditor(owner: owner))
@@ -330,7 +331,7 @@ struct NativeTranslationJob: Equatable {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.contentMinSize = NSSize(width: 520, height: 480)
         panel.contentView = NSHostingView(rootView: TranslationView(model: model).weaveStyle())
-        WindowAppearance.shared.track(panel)
+        WindowAppearance.shared.track(panel, extensionKey:"feature:translate")
         return panel
     }
 }

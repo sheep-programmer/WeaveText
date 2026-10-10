@@ -110,6 +110,9 @@ done
 echo "data: ${KEYS[*]}"
 # 专业词库目录（与 Android 同一份）。 The domain-dictionary catalog, the same file as Android's.
 cp "$ROOT/android/app/src/main/assets/dictpacks.json" "$APP/Contents/Resources/dictpacks.json"
+mkdir -p "$APP/Contents/Resources/market" "$APP/Contents/Resources/styles"
+cp -R "$ROOT/data/market/." "$APP/Contents/Resources/market/"
+cp "$ROOT/android/app/src/main/assets/styles/"theme-*.json "$APP/Contents/Resources/styles/"
 mkdir -p "$APP/Contents/Resources/expressions"
 cp "$ROOT/data/expressions/catalog.json" "$ROOT/data/expressions/UNICODE-LICENSE.txt" "$APP/Contents/Resources/expressions/"
 # 下载镜像：取 Android 模型目录里的 "mirrors"（专业词库与云端热词先直连，失败再依次换镜像）。

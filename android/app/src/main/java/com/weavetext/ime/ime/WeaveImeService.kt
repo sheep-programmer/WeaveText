@@ -1,5 +1,6 @@
 package com.weavetext.ime.ime
 
+import com.weavetext.ime.extensions.Extensions
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -29,7 +30,7 @@ class WeaveImeService : InputMethodService() {
         super.onCreate()
         debugBridge.register(this)
         // 词库拷贝与 mmap 放后台，键盘先出来。 Load off the main thread; keyboard shows first.
-        com.weavetext.ime.voice.VoiceHub.preload(this)
+        if (Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(this), "voice")) com.weavetext.ime.voice.VoiceHub.preload(this)
         loadEngine()
         controller.addListener(stateListener)
         // 手写识别单独一个后台线程，最新的一笔优先。 Handwriting recognition on its own background thread.
@@ -109,10 +110,15 @@ class WeaveImeService : InputMethodService() {
         // 上次加载失败（如存储暂时不可读）：键盘再出现时重试。 The last load failed: retry when the keyboard shows again.
         loadEngine()
         ui?.onShown(restarting)
-        com.weavetext.ime.voice.VoiceHub.preload(this)
+        if (Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(this), "voice")) com.weavetext.ime.voice.VoiceHub.preload(this)
         // 开启了互联时，键盘出现就把服务拉起来（进程被系统回收过也能恢复）。 Revive WeaveLink when the keyboard shows.
         com.weavetext.ime.link.LinkManager.get(this).ensureRunning()
         com.weavetext.ime.core.CloudWords.get(this).refreshIfStale()
+    }
+
+    override fun onWindowShown() {
+        super.onWindowShown()
+        ui?.onWindowShown()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {

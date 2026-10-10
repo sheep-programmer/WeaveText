@@ -356,6 +356,16 @@ pub fn is_input_key(c: u8) -> bool {
 
 /// 为双拼输入建音节图。 Build the syllable graph for shuangpin input.
 pub fn build_graph(id: SchemeId, keys: &[u8], fuzzy: &FuzzyOptions) -> SyllableGraph {
+    build_graph_with_step(id, keys, fuzzy, 2)
+}
+
+/// An English span can have odd length. Allow the same scheme's pairs to resume
+/// at either parity; the session only uses this graph when a Latin span wins.
+pub(crate) fn build_mixed_graph(id: SchemeId, keys: &[u8], fuzzy: &FuzzyOptions) -> SyllableGraph {
+    build_graph_with_step(id, keys, fuzzy, 1)
+}
+
+fn build_graph_with_step(id: SchemeId, keys: &[u8], fuzzy: &FuzzyOptions, step: usize) -> SyllableGraph {
     let t = table(id);
     let n = keys.len();
     let mut g = SyllableGraph::new(n);
@@ -395,7 +405,7 @@ pub fn build_graph(id: SchemeId, keys: &[u8], fuzzy: &FuzzyOptions) -> SyllableG
                 bits: Vec::new(),
             });
         }
-        i += 2;
+        i += step;
     }
     g.ensure_connected();
     g

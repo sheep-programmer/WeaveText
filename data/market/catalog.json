@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "kinds": [
+    {"id": "feature", "name": "功能"},
+    {"id": "scheme", "name": "输入方案"},
+    {"id": "theme", "name": "主题"},
+    {"id": "layout", "name": "布局"},
+    {"id": "speech", "name": "语音引擎"},
+    {"id": "translation", "name": "翻译"},
+    {"id": "dict", "name": "词库"}
+  ],
+  "items": [
+    {"id": "voice", "kind": "feature", "name": "语音输入", "summary": "按住说话或点按听写，可接入本地模型与语音引擎插件", "icon": "mic", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "translate", "kind": "feature", "name": "翻译", "summary": "翻译输入框里的文字或所选内容，支持离线翻译插件", "icon": "translate", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "stickers", "kind": "feature", "name": "表情收纳袋", "summary": "收纳图片表情，一键发送或插入", "icon": "sticker", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "phrases", "kind": "feature", "name": "常用语", "summary": "保存常用句子与快捷模板，点一下上屏", "icon": "phrases", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "link", "kind": "feature", "name": "织文互联", "summary": "手机与电脑互传文字、剪贴板和文件", "icon": "link", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "cloudwords", "kind": "feature", "name": "云端热词", "summary": "定期下载签名的流行词表，本机解码，不上传输入", "icon": "cloud", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "calc", "kind": "feature", "name": "计算器", "summary": "输入算式后按等号，结果出现在候选栏", "icon": "calc", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "hand", "kind": "scheme", "name": "手写输入", "summary": "手写键盘与手写窗口，可连写", "icon": "hand", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+    {"id": "wubi86", "kind": "scheme", "name": "五笔 86", "summary": "四码上屏、z 键拼音反查与编码补全", "icon": "wubi", "platforms": ["android", "mac"], "source": "builtin", "default": true},
+
+    {"id": "fresh", "kind": "theme", "name": "清爽", "summary": "冷灰底 + 蓝色强调", "platforms": ["android", "mac"], "source": "base"},
+    {"id": "ink", "kind": "theme", "name": "墨夜", "summary": "亮色为米白纸感，暗色为纯黑描边", "platforms": ["android", "mac"], "source": "base"},
+    {"id": "mint", "kind": "theme", "name": "薄荷", "summary": "清淡绿色调", "platforms": ["android", "mac"], "source": "base"},
+    {"id": "dusk", "kind": "theme", "name": "暮紫", "summary": "淡紫渐变背景，柔和投影", "platforms": ["android", "mac"], "source": "base"},
+    {"id": "dynamic", "kind": "theme", "name": "动态取色", "summary": "跟随壁纸取色（Android 12 及以上）", "platforms": ["android"], "source": "base"},
+    {"id": "amber", "kind": "theme", "name": "暖橙", "summary": "冷灰底、白色平面键，橙色首选与强调", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-amber.json"},
+    {"id": "azure", "kind": "theme", "name": "湛蓝", "summary": "浅灰底、白键带实色底边，蓝色回车", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-azure.json"},
+    {"id": "jade", "kind": "theme", "name": "青翠", "summary": "浅灰底、白键带细底边，绿色字胶囊首选", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-jade.json"},
+    {"id": "mist", "kind": "theme", "name": "雾蓝", "summary": "低饱和蓝灰色调，平面按键", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-mist.json"},
+    {"id": "silver", "kind": "theme", "name": "银灰", "summary": "银灰底、白键带底边，首选不着色", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-silver.json"},
+    {"id": "sakura", "kind": "theme", "name": "樱粉", "summary": "粉色调，亮色带柔和投影", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-sakura.json"},
+    {"id": "sea", "kind": "theme", "name": "海盐", "summary": "青蓝渐变背景，柔和投影", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-sea.json"},
+    {"id": "graphite", "kind": "theme", "name": "松烟", "summary": "单色描边，无阴影", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-graphite.json"},
+    {"id": "maple", "kind": "theme", "name": "秋枫", "summary": "暖棕色调", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-maple.json"},
+    {"id": "contrast", "kind": "theme", "name": "高对比", "summary": "黑白描边，强调色醒目", "platforms": ["android", "mac"], "source": "bundled", "file": "themes/theme-contrast.json"},
+    {"id": "glass", "kind": "theme", "name": "玻璃", "summary": "渐变底上的半透明按键", "platforms": ["android"], "source": "bundled", "file": "themes/theme-glass.json"},
+
+    {"id": "fresh", "kind": "layout", "name": "清爽", "summary": "浅灰底、白色字母键与 1dp 底边，字母上方带数字符号提示", "platforms": ["android"], "source": "base"},
+    {"id": "classic", "kind": "layout", "name": "经典", "summary": "键距紧凑，左下常驻分词键，字母键带数字符号提示", "platforms": ["android"], "source": "base"},
+    {"id": "bright", "kind": "layout", "name": "明快", "summary": "行距宽松，按键带实色底边，回车常驻强调色并显示文字", "platforms": ["android"], "source": "bundled", "file": "layouts/layout-bright.json"},
+    {"id": "plain", "kind": "layout", "name": "素雅", "summary": "极简工具栏，Shift 与删除键内缩，空格留白", "platforms": ["android"], "source": "bundled", "file": "layouts/layout-plain.json"},
+    {"id": "round", "kind": "layout", "name": "圆润", "summary": "小写字母、平面键，数字键与回车为胶囊形", "platforms": ["android"], "source": "bundled", "file": "layouts/layout-round.json"},
+    {"id": "refined", "kind": "layout", "name": "精致", "summary": "小写字母、无副标签，地球键切换语言", "platforms": ["android"], "source": "bundled", "file": "layouts/layout-refined.json"},
+    {"id": "numrow", "kind": "layout", "name": "数字行", "summary": "字母上方多一行数字键，常输数字时不用切换", "platforms": ["android"], "source": "bundled", "file": "layouts/layout-numrow.json"}
+  ]
+}

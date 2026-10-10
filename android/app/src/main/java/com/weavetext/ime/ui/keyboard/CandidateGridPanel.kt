@@ -73,6 +73,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         side.keys = buildSide(false)
         side.layouter = { w, h -> layoutSide(w, h) }
         grid.onPressFeedback = { kb.feedback.key(grid) }
+        grid.onLongFeedback = { kb.feedback.haptic(grid) }
     }
 
     private fun buildSide(t9: Boolean): List<PadKey> {
@@ -107,6 +108,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         side.keys = buildSide(t9)
         grid.scrollToTop()
         reload()
+        grid.highlight(kb.state.highlightedCandidate, force = true)
     }
 
     override fun onHide() {
@@ -119,12 +121,17 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         if (!s.composing && s.candidates.isEmpty()) { kb.closePanel(); return }
         // 组合串与首页候选都没变（光标回报等引起的刷新）：保留已翻到的位置和加载的页。
         // Same preedit and first page (a refresh from a selection report and the like): keep the scroll and loaded pages.
-        if (s.preedit == shownPreedit && s.preeditMarks == shownMarks && samePage(s.candidates) &&
-            (if (showPinyin) s.pinyinOptions else emptyList()) == pinyin) return
+        if (s.candidateGeneration == shownGeneration && s.preedit == shownPreedit && s.preeditMarks == shownMarks && samePage(s.candidates) &&
+            (if (showPinyin) s.pinyinOptions else emptyList()) == pinyin) {
+            grid.highlight(s.highlightedCandidate)
+            return
+        }
         reload()
+        grid.highlight(s.highlightedCandidate, force = true)
     }
 
     private var shownPreedit = ""
+    private var shownGeneration = 0L
     private var shownMarks: List<PreeditMark> = emptyList()
 
     private fun samePage(page: List<Candidate>): Boolean {
@@ -138,6 +145,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         cands = ArrayList(s.candidates)
         pinyin = if (showPinyin) s.pinyinOptions else emptyList()
         shownPreedit = s.preedit
+        shownGeneration = s.candidateGeneration
         shownMarks = s.preeditMarks
         header.set(s.preedit, s.preeditMarks)
         grid.rebuild()
@@ -203,6 +211,23 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     @SuppressLint("ViewConstructor")
     private inner class Grid(c: Context) : ScrollGridView(c) {
+        private var highlighted = -1
+        private var revealPending = false
+        fun highlight(index: Int, force: Boolean = false) {
+            if (!force && highlighted == index) return
+            highlighted = index
+            revealPending = index >= 0
+            revealHighlighted()
+            invalidate()
+            a11yChanged()
+        }
+        private fun revealHighlighted() {
+            val i = highlighted + nPinyin
+            if (revealPending && width > 0 && height > 0 && i * 4 + 3 < rects.size) {
+                reveal(rects[i * 4 + 1], rects[i * 4 + 3])
+                revealPending = false
+            }
+        }
         // 每项：left, top, right, bottom；前 pinyin.size 项为拼音 chip。 Per item rects.
         private var rects = FloatArray(0)
         private var labels: Array<String> = emptyArray()
@@ -246,6 +271,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 y += layoutRow(rowStart, i, spans.toIntArray(), y, rowH, unit)
             }
             rowsBottom = y
+            revealHighlighted()
             invalidate()
             a11yChanged()
         }
@@ -256,7 +282,8 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         }
         override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let {
             val candidate = cands.getOrNull(index - nPinyin)
-            if (index < nPinyin) "拼音 $it" else it + if(candidate?.isCloud==true) "，云端词" else ""
+            if (index < nPinyin) "拼音 $it" else it + (if(candidate?.isCloud==true) "，云端词" else "") +
+                (if (index - nPinyin == highlighted) "，已选中，按空格确认" else "")
         }
 
         private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float): Float {
@@ -282,8 +309,11 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onItemTap(index: Int) {
             if (index < nPinyin) { kb.controller.onPinyinOption(index); return }
-            kb.controller.onCandidate(index - nPinyin)
+            kb.controller.onVisibleCandidate(index - nPinyin, shownGeneration)
         }
+
+        override fun onItemLong(index: Int): Boolean = index >= nPinyin && kb.onCandidateLongVisible(index - nPinyin, shownGeneration)
+        override fun a11yLongLabel(index: Int): CharSequence? = if (index >= nPinyin) "查看完整候选与操作" else null
 
         override fun onScrolledNearEnd() = loadMore()
 
@@ -297,14 +327,14 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             for (i in labels.indices) {
                 val l = rects[i * 4]; val t = rects[i * 4 + 1]; val r = rects[i * 4 + 2]; val b = rects[i * 4 + 3]
                 if (b < top || t > bottom) continue
-                if (i == pressed) {
+                if (i == pressed || i == nPinyin + highlighted && highlighted >= 0) {
                     line.color = p.toolbarActive
                     c.drawRect(l, t, r, b, line)
                 }
                 val isPy = i < nPinyin
                 text.color = when {
                     isPy -> p.candidateFirst
-                    i == nPinyin -> p.candidateFirst
+                    i == nPinyin + highlighted || highlighted < 0 && i == nPinyin -> p.candidateFirst
                     else -> p.label
                 }
                 text.textSize = if (isPy) m.dp(15f) else m.dp(19f) * m.candScale

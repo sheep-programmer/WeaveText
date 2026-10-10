@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.testing.ScriptedRecognizer
+import com.weavetext.ime.testing.FakeEngine
 import com.weavetext.ime.ui.keyboard.VoicePanel
 import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.voice.VoiceLanguage
@@ -25,6 +26,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.TimeUnit
 
 /** 点按/按住共用同一停止规则，且切换语言会使旧会话失效。 */
 @RunWith(RobolectricTestRunner::class)
@@ -131,6 +134,43 @@ class VoiceInputGestureTest : KeyboardSnapshotSupport() {
         assertEquals(0, rec.stops)
         assertEquals(VoiceSession.State.IDLE, (kb!!.panel as VoicePanel).session.state)
         assertEquals("", (kb!!.panel as VoicePanel).session.committed.toString())
+    }
+
+    @Test fun hidingPanelStopsRepeatedDeleteAndDropsTheOldTouch() {
+        val rec = ScriptedRecognizer(engines)
+        val v = voiceView("tap", rec)
+        val engine = FakeEngine()
+        kb!!.controller.attachEngine(engine)
+        repeat(20) { kb!!.controller.onChar('a'.code) }
+        val m = kb!!.metrics
+        val (_, micY) = micCenter(v)
+        val deleteX = v.width - m.dp(44f)
+        val deleteY = micY - m.dp(17f)
+        event(v, MotionEvent.ACTION_DOWN, deleteX, deleteY)
+        ShadowLooper.idleMainLooper(401, TimeUnit.MILLISECONDS)
+        assertTrue(engine.raw.length < 20)
+        val beforeHide = engine.raw.toString()
+        (kb!!.panel as VoicePanel).onHide()
+        ShadowLooper.idleMainLooper(500, TimeUnit.MILLISECONDS)
+        event(v, MotionEvent.ACTION_UP, deleteX, deleteY)
+        assertEquals("关闭后不能继续删除，也不能执行旧手势的抬起", beforeHide, engine.raw.toString())
+    }
+
+    @Test fun hidingKeyboardDuringAHoldKeepsFinalTextDespiteOldTouchCancellation() {
+        val rec = ScriptedRecognizer(engines)
+        val v = voiceView("hold", rec)
+        val (x, y) = micCenter(v)
+        event(v, MotionEvent.ACTION_DOWN, x, y)
+        val old = rec.listener!!
+        old.onPartial("关闭前半句")
+        kb!!.onHidden()
+        val session = (kb!!.panel as VoicePanel).session
+        assertEquals(VoiceSession.State.FINALIZING, session.state)
+        event(v, MotionEvent.ACTION_CANCEL, x, y)
+        assertEquals("旧触摸取消不能丢掉停止收尾", VoiceSession.State.FINALIZING, session.state)
+        old.onFinal("完整终稿"); old.onEnd()
+        assertEquals("完整终稿", session.committed.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
     }
 
     @Test fun toolbarStartsAnInstalledRecognizerAndChecksModelsBeforeCapture() {

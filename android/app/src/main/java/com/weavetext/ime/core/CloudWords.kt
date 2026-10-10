@@ -1,5 +1,6 @@
 package com.weavetext.ime.core
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
@@ -54,6 +55,18 @@ class CloudWords private constructor(private val ctx: Context) : CloudWordsRepos
     private val commitLock=Any()
     private class Cancelled: Exception()
     private fun current(token:Int)=generation.get()==token && WeavePrefs.cloudWords(prefs)
+
+    private val extensionListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Extensions.ENABLED) {
+            synchronized(commitLock) {
+                generation.incrementAndGet()
+                if (!WeavePrefs.cloudWords(prefs)) { EngineHolder.peek()?.unloadPack(PACK_ID); attached = false }
+            }
+            if (WeavePrefs.cloudWords(prefs)) { EngineHolder.peek()?.let(::attach); refreshIfStale() }
+            changed()
+        }
+    }
+    init { prefs.registerOnSharedPreferenceChangeListener(extensionListener) }
 
     private val dir get() = File(ctx.filesDir, "dict/cloud")
     private val tsv get() = File(dir, "hotwords.tsv")

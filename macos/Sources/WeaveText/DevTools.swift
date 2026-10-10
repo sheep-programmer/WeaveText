@@ -4,6 +4,21 @@ import WeaveCore
 
 /// 构建脚本用的自检与截图（不启动输入法服务）。 Self-test and snapshots for the build script (no IME server).
 enum DevTools {
+    static func snapshotExtensions(into dir:URL) throws {
+        _=NSApplication.shared
+        try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+        let suite="weave-ext-preview-\(UUID().uuidString)",defaults=UserDefaults(suiteName:suite)!
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer {defaults.removePersistentDomain(forName:suite);try? FileManager.default.removeItem(at:root)}
+        let prefs=Preferences(defaults:defaults),nav=SettingsNavigation(),store=ExtensionStore(root:root)
+        for mode in [AppearanceMode.light,.dark] {
+            prefs.appearance=mode
+            for page in [SettingsPage.home,.market,.appearance] {
+                nav.page=page
+                try render(SettingsRoot(prefs:prefs,navigation:nav,extensionStore:store),size:NSSize(width:880,height:660),dark:mode == .dark,to:dir.appendingPathComponent("extensions-\(page.rawValue)-\(mode.rawValue).png"))
+            }
+        }
+    }
     static func snapshotThemes(into dir:URL) throws {
         _=NSApplication.shared
         try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
@@ -81,6 +96,15 @@ enum DevTools {
         "v(128+32)*4".forEach { _ = e.input($0) }
         let calc = e.snapshot().candidates.first?.text ?? "-"
         print("selftest: v(128+32)*4 → \(calc)")
+        e.clear()
+        e.setOption("features.calculator", false)
+        "v(128+32)*4".forEach { _ = e.input($0) }
+        let calculatorOff = !e.snapshot().candidates.contains { $0.text == "640" }
+        print("selftest: calculator disabled → \(calculatorOff)")
+        e.clear(); e.setOption("features.calculator", true)
+        "v2+3".forEach { _ = e.input($0) }
+        let calculatorBack = e.snapshot().candidates.first?.text == "5"
+        ok = ok && calculatorOff && calculatorBack
         e.clear()
         // 联想表随包：写了一串字（「我们今天」）后应有联想；只有一个词时不联想。
         // The prediction table ships: after a run of text (我们今天) there must be predictions; one bare word gives none.

@@ -3,17 +3,19 @@ import SwiftUI
 import WeaveCore
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, schemes, appearance, dictionary, plugins, translation, tools, link, about
+    case home, market, general, schemes, appearance, dictionary, plugins, translation, tools, link, about
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .home: return "概览"
+        case .market: return "插件市场"
         case .general: return "常规"
         case .schemes: return "输入方案"
         case .appearance: return "外观"
         case .dictionary: return "词库"
-        case .plugins: return "插件与语音"
+        case .plugins: return "语音引擎"
         case .translation: return "翻译"
         case .tools: return "输入工具"
         case .link: return "互联"
@@ -23,6 +25,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .home: return "square.grid.2x2"
+        case .market: return "puzzlepiece.extension"
         case .general: return "gearshape"
         case .schemes: return "keyboard"
         case .appearance: return "paintbrush"
@@ -36,6 +40,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     }
     var subtitle:String {
         switch self {
+        case .home:return "你的键盘、主题与输入工具"
+        case .market:return "按需添加功能，自由搭配主题与引擎"
         case .general:return "按你的习惯调整切换方式与快捷键"
         case .schemes:return "选择方案，管理注音、纠错与学习"
         case .appearance:return "选择主题与明暗模式，改动立即生效"
@@ -50,7 +56,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 }
 
 final class SettingsNavigation: ObservableObject {
-    @Published var page: SettingsPage? = .general
+    @Published var page: SettingsPage? = .home
 }
 
 /// 设置窗口：只建一个，再次打开时提到最前。 The settings window: created once, brought to front when reopened.
@@ -85,31 +91,37 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
 struct SettingsRoot: View {
     @ObservedObject var prefs: Preferences
     @ObservedObject var navigation: SettingsNavigation
+    var extensionStore:ExtensionStore = .shared
     var pluginModel:PluginCenter? = nil
     var toolsModel:ToolsModel? = nil
 
     var body: some View {
         HStack(spacing:0) {
-            VStack(alignment:.leading,spacing:22) {
+            VStack(alignment:.leading,spacing:16) {
                 HStack(spacing:9) {
                     Image(systemName:"character.cursor.ibeam").font(.system(size:21,weight:.medium))
                         .foregroundStyle(palette.accent).frame(width:40,height:40).background(palette.accentSoft,in:RoundedRectangle(cornerRadius:12))
                     VStack(alignment:.leading,spacing:3) {Text("织文").font(.system(size:20,weight:.semibold));Text("输入法设置").font(.caption).foregroundStyle(.secondary)}
                 }.padding(.top,12)
-                VStack(spacing:5) {
-                    ForEach(SettingsPage.allCases) {page in
+                ScrollView(showsIndicators:false) {
+                VStack(alignment:.leading,spacing:3) {
+                    ForEach(visiblePages) {page in
+                        if page == .schemes || page == .market || page == .about {
+                            Text(page == .schemes ? "键盘" : page == .market ? "扩展与工具" : "应用").font(.system(size:10,weight:.medium)).foregroundStyle(.secondary).padding(.top,12).padding(.bottom,3).padding(.leading,12)
+                        }
                         Button {navigation.page=page} label:{
                             HStack(spacing:10) {
                                 Image(systemName:page.symbol).font(.system(size:14,weight:.medium)).frame(width:20)
                                 Text(page.title).font(.system(size:13,weight:selection==page ? .semibold : .regular))
                                 Spacer()
-                            }.padding(.horizontal,12).padding(.vertical,11)
+                            }.padding(.horizontal,12).padding(.vertical,8)
                                 .foregroundStyle(selection==page ? palette.accent : palette.label)
                                 .background(selection==page ? palette.accentSoft : Color.clear,in:RoundedRectangle(cornerRadius:9))
                         }.buttonStyle(.plain).accessibilityValue(selection==page ? "已选择" : "")
                     }
                 }
-                Spacer(minLength:18)
+                }
+                Spacer(minLength:8)
                 VStack(alignment:.leading,spacing:8) {
                     Text("明暗模式").font(.caption).foregroundStyle(.secondary)
                     Picker("明暗模式",selection:$prefs.appearance) {
@@ -119,7 +131,7 @@ struct SettingsRoot: View {
                     }.pickerStyle(.segmented).labelsHidden().help("跟随系统 / 浅色 / 深色")
                     Button("主题与外观") {navigation.page = .appearance}.font(.caption).buttonStyle(.plain).foregroundStyle(palette.accent)
                 }.padding(.bottom,12)
-            }.padding(.horizontal,18).frame(width:194).background(palette.sidebar)
+            }.padding(.horizontal,18).frame(width:202).background(palette.sidebar)
             Rectangle().fill(palette.divider).frame(width:1)
             VStack(alignment:.leading,spacing:0) {
                 VStack(alignment:.leading,spacing:5) {
@@ -132,15 +144,22 @@ struct SettingsRoot: View {
             .background(palette.canvas)
         }.weaveStyle(prefs)
     }
-    private var selection:SettingsPage {navigation.page ?? .general}
+    private var visiblePages:[SettingsPage] {
+        [.home,.schemes,.appearance,.general,.dictionary,.market,.plugins,.translation,.tools,.link,.about].filter { page in
+            switch page {case .plugins:return prefs.extensionEnabled("feature:voice");case .translation:return prefs.extensionEnabled("feature:translate");case .link:return prefs.extensionEnabled("feature:link");default:return true}
+        }
+    }
+    private var selection:SettingsPage {let page=navigation.page ?? .home;return visiblePages.contains(page) ? page : .market}
     private var palette:ThemePalette {Theme.palette(prefs.colorTheme)}
     @ViewBuilder private var detail:some View {
             Group {
                 switch selection {
+                case .home: SettingsHomePage(prefs:prefs,navigation:navigation)
+                case .market: MarketPage(prefs:prefs,store:extensionStore,navigation:navigation)
                 case .general: GeneralPage(prefs: prefs)
                 case .schemes: SchemesPage(prefs: prefs)
                 case .appearance: AppearancePage(prefs: prefs)
-                case .dictionary: DictionaryPage(packs: EngineHost.shared.packs, cloud: EngineHost.shared.cloud)
+                case .dictionary: DictionaryPage(prefs:prefs,packs: EngineHost.shared.packs, cloud: EngineHost.shared.cloud)
                 case .plugins: PluginsPage(model: pluginModel ?? .shared, prefs: prefs)
                 case .translation: Form { TranslationSettingsView() }.formStyle(.grouped)
                 case .tools: ToolsPage(model: toolsModel ?? .shared, prefs: prefs)

@@ -161,4 +161,27 @@ class NavigationInsetReliabilityTest {
             assertEquals("inset" + inset, want, kb.navInset)
         }
     }
+
+    @Test fun theSystemImeButtonRowUnderGestureNavigationIsKeptClear() {
+        // 手势条只有 63，系统画的「收起 / 切换输入法」那排按钮以标题栏边衬报 126：按 126 留。
+        // The gesture handle is 63 but the system's hide / switch-keyboard row reports 126 as a caption bar.
+        setWindowInsets(WindowInsets.Builder(navBar(63))
+            .setInsets(WindowInsets.Type.captionBar(), Insets.of(0, 0, 0, 126)).build())
+        placeRootAtScreenBottom()
+        kb.view.dispatchApplyWindowInsets(WindowInsets.CONSUMED)
+        assertEquals(126, kb.navInset)
+    }
+
+    @Test fun aZeroReadDuringAnAppSwitchIsCorrectedOnceTheWindowShows() {
+        setWindowInsets(navBar(0))
+        kb.view.dispatchApplyWindowInsets(WindowInsets.CONSUMED)
+        assertEquals(0, kb.navInset)
+        kb.onWindowShown()
+        Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        // 动画结束后导航栏才落定，没有新的边衬分发：靠延迟补测读到。 The bar settles later with no new dispatch.
+        setWindowInsets(navBar(126))
+        placeRootAtScreenBottom()
+        Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(400))
+        assertEquals(126, kb.navInset)
+    }
 }

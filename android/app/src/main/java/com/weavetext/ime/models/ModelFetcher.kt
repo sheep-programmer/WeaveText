@@ -34,11 +34,16 @@ class ModelFetcher(
         preferred: String? = null,
         onProgress: (Progress) -> Unit = {},
     ) {
+        Downloader.checkCancelled(cancel)
         dest.mkdirs()
+        onProgress(Progress(0, spec.archiveSize, 0, "", DownloadPhase.CONNECTING))
         val hf = Downloader(hfMirrors)
         val gh = Downloader(githubMirrors)
-        val hfProbe = spec.hfRepo?.let { repo -> hf.probeAll(hfPath(repo, spec.files.first().name)) }.orEmpty()
-        val ghProbe = gh.probeAll(spec.archiveUrl)
+        val selected = preferred != null && (hfMirrors + githubMirrors).any { it.id == preferred }
+        val hfProbe = spec.hfRepo?.let { repo ->
+            if (selected) hfMirrors.map { it to null } else hf.probeAll(hfPath(repo, spec.files.first().name), cancel)
+        }.orEmpty()
+        val ghProbe = if (selected) githubMirrors.map { it to null } else gh.probeAll(spec.archiveUrl, cancel)
         val best = { p: List<Pair<Mirror, Long?>> -> p.firstOrNull()?.second ?: Long.MAX_VALUE }
         val routes = buildList {
             if (hfProbe.isNotEmpty()) add(Route.HF to best(hfProbe))
@@ -58,7 +63,7 @@ class ModelFetcher(
                     Route.HF -> perFile(spec, dest, hf, hfProbe.map { it.first }, cancel, preferred, onProgress)
                     Route.ARCHIVE -> archive(spec, dest, gh, ghProbe.map { it.first }, cancel, preferred, onProgress)
                 }
-                verify(spec, dest)
+                verify(spec, dest, cancel, onProgress)
                 return
             } catch (e: IOException) {
                 if (cancel.get()) throw IOException("cancelled")
@@ -75,14 +80,14 @@ class ModelFetcher(
         preferred: String?, onProgress: (Progress) -> Unit,
     ) {
         val repo = spec.hfRepo ?: throw IOException("no hf repo")
-        val total = spec.files.sumOf { it.size }
+        val total = if (spec.files.all { it.size > 0 }) spec.files.sumOf { it.size } else 0L
         var before = 0L
         for (f in spec.files) {
             val base = before
             dl.download(hfPath(repo, f.name), f.sha256, File(dest, f.name), cancel, preferred, order, f.size) { p ->
                 onProgress(p.copy(downloaded = base + p.downloaded, total = total))
             }
-            before += f.size
+            before += File(dest, f.name).length()
         }
     }
 
@@ -101,8 +106,10 @@ class ModelFetcher(
             if (cancel.get()) throw IOException("cancelled")
             val file = File(workDir, a.url.substringAfterLast('/'))
             try {
-                val ranked = if (i == 0) order else dl.probeAll(a.url).map { it.first }
+                onProgress(Progress(File(file.path + ".part").length(), a.size, 0, "", DownloadPhase.CONNECTING))
+                val ranked = if (i == 0) order else if (preferred != null) null else dl.probeAll(a.url, cancel).map { it.first }
                 dl.download(a.url, a.sha256, file, cancel, preferred, ranked, a.size, onProgress)
+                Downloader.checkCancelled(cancel)
                 val err = if (spec.files.size == 1 && a.url.endsWith(".onnx")) {
                     file.copyTo(File(dest, spec.files.single().name), overwrite = true)
                     null
@@ -110,7 +117,7 @@ class ModelFetcher(
                 file.delete()
                 if (err != null) throw IOException("解压失败：$err")
                 // 在这里校验，内容不对时还能换下一个来源。 Verify here so a bad pack falls through to the next source.
-                verify(spec, dest)
+                verify(spec, dest, cancel, onProgress)
                 return
             } catch (e: IOException) {
                 if (cancel.get()) throw e
@@ -121,12 +128,16 @@ class ModelFetcher(
     }
 
     /** 逐个文件核对大小与 SHA-256。 Check each file's size and SHA-256. */
-    private fun verify(spec: ModelSpec, dir: File) {
+    private fun verify(spec: ModelSpec, dir: File, cancel: AtomicBoolean, onProgress: (Progress) -> Unit) {
+        Downloader.checkCancelled(cancel)
+        val bytes = spec.files.sumOf { File(dir, it.name).length() }
+        onProgress(Progress(bytes, bytes, 0, "", DownloadPhase.VERIFYING))
         for (f in spec.files) {
+            Downloader.checkCancelled(cancel)
             val file = File(dir, f.name)
             if (!file.isFile) throw IOException("missing ${f.name}")
             if (f.size > 0 && file.length() != f.size) throw IOException("${f.name}: size ${file.length()} != ${f.size}")
-            val got = Downloader.sha256Of(file)
+            val got = Downloader.sha256Of(file, cancel)
             if (got != f.sha256) {
                 file.delete()
                 throw IOException("${f.name}: sha256 mismatch")

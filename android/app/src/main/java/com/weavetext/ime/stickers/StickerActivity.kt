@@ -1,5 +1,6 @@
 package com.weavetext.ime.stickers
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -26,6 +27,10 @@ class StickerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(this), "stickers")) {
+            startActivity(Intent(this, com.weavetext.ime.settings.SettingsActivity::class.java).setData(Uri.parse("weavetext://settings/market/feature")))
+            finish(); return
+        }
         enableEdgeToEdge()
         val night = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES

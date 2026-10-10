@@ -230,6 +230,8 @@ class SettingsScreenshotTest {
 
     /** .wvskin 导入确认（直接渲染弹层内容）。 .wvskin import confirmation, rendered directly. */
     private fun styleImport(name: String, dark: Boolean) {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.install(store.items.first { it.key == "layout:plain" })
         val repo = com.weavetext.ime.style.StyleRepository.get(app)
         val json = """{"version":1,"name":"晚霞","layout":{"extends":"plain"},"theme":{"extends":"dusk"},"overrides":{"radius":9}}"""
         val bytes = java.io.ByteArrayOutputStream().also { out ->

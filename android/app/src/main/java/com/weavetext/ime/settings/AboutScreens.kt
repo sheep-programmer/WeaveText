@@ -10,8 +10,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -25,6 +28,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
+import com.weavetext.ime.models.DownloadPhase
+import com.weavetext.ime.models.Progress
 import com.weavetext.ime.voice.AppUpgrade
 
 /** 问题反馈地址；仓库公开前为空，此时隐藏该入口。 Issue tracker URL; the row is hidden while empty. */
@@ -43,16 +48,6 @@ fun AboutScreen() {
         update = AppUpgrade.state
         onDispose { AppUpgrade.removeListener(listener) }
     }
-    val updateText = when (val s = update) {
-        AppUpgrade.State.Idle -> "从 GitHub 检查最新版本（支持镜像）"
-        AppUpgrade.State.Checking -> "正在检查 GitHub Release…"
-        is AppUpgrade.State.UpToDate -> "已是最新版 v${s.current}"
-        is AppUpgrade.State.Available -> "发现 ${s.tag} · 点击下载并安装"
-        is AppUpgrade.State.Downloading -> if (s.total > 0) "正在下载 ${(s.done * 100 / s.total).coerceIn(0, 100)}% · ${s.mirror}" else "正在连接镜像…"
-        AppUpgrade.State.Verifying -> "正在校验安装包…"
-        is AppUpgrade.State.Ready -> "已下载 ${s.tag} · 点击安装"
-        is AppUpgrade.State.Failed -> s.message
-    }
     SubPage("关于") {
         Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             BrandLogo(72)
@@ -70,19 +65,65 @@ fun AboutScreen() {
             RowDivider(false)
             SettingRow("开源许可", onClick = { nav.push(Route.Licenses) }) { Chevron() }
             RowDivider(false)
-            SettingRow("在线检查更新", updateText, icon = R.drawable.ic_update, subtitleMaxLines = 2, onClick = {
-                when (val s = AppUpgrade.state) {
+            AppUpdateContent(update, onAction = {
+                when (val s = update) {
                     is AppUpgrade.State.Available -> AppUpgrade.download(ctx, s)
                     is AppUpgrade.State.Ready -> AppUpgrade.install(ctx, s)
-                    is AppUpgrade.State.Downloading, AppUpgrade.State.Checking, AppUpgrade.State.Verifying -> AppUpgrade.cancel()
+                    is AppUpgrade.State.Failed, is AppUpgrade.State.Cancelled -> AppUpgrade.retry(ctx)
                     else -> AppUpgrade.check(ctx)
                 }
-            }) { Chevron() }
+            }, onCancel = { AppUpgrade.cancel() })
             if (ISSUES_URL.isNotEmpty()) {
                 RowDivider(false)
                 SettingRow("反馈问题", onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ISSUES_URL))) }) {
                     Icon(painterResource(R.drawable.ic_open_external), null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+/** Explicit actions and progress; opening the About page never starts a download. */
+@Composable
+internal fun AppUpdateContent(state: AppUpgrade.State, onAction: () -> Unit, onCancel: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("应用更新", style = MaterialTheme.typography.titleSmall)
+        val progress = when (state) {
+            is AppUpgrade.State.Connecting -> Progress(state.done, state.total, 0, state.mirror, DownloadPhase.CONNECTING)
+            is AppUpgrade.State.Downloading -> Progress(state.done, state.total, state.speed, state.mirror)
+            else -> null
+        }
+        if (progress != null) {
+            if (state is AppUpgrade.State.Connecting && state.label != "正在连接下载源…") Text(state.label, style = MaterialTheme.typography.bodySmall)
+            DownloadProgressContent(progress)
+        } else {
+            val label = when (state) {
+                AppUpgrade.State.Idle -> "从 GitHub 检查最新版本（支持已配置的镜像）"
+                AppUpgrade.State.Checking -> "正在检查 GitHub Release…"
+                is AppUpgrade.State.UpToDate -> "已是最新版 v${state.current}"
+                is AppUpgrade.State.Available -> "发现 ${state.tag} · " + if (state.size > 0) "下载 ${formatSize(state.size)}" else "下载大小待确认"
+                AppUpgrade.State.Verifying -> "正在校验安装包与签名…"
+                AppUpgrade.State.Cancelling -> "正在取消…"
+                is AppUpgrade.State.Cancelled -> if (state.available != null) "已取消，可继续下载" else "已取消检查"
+                is AppUpgrade.State.Ready -> "已下载 ${state.tag} · 校验通过"
+                is AppUpgrade.State.Failed -> state.message
+                else -> ""
+            }
+            if (state == AppUpgrade.State.Checking || state == AppUpgrade.State.Verifying || state == AppUpgrade.State.Cancelling) LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(label, style = MaterialTheme.typography.bodyMedium, color = if (state is AppUpgrade.State.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state is AppUpgrade.State.Available && state.notes.isNotBlank()) Text(state.notes, style = MaterialTheme.typography.bodySmall)
+        }
+        val active = progress != null || state == AppUpgrade.State.Checking || state == AppUpgrade.State.Verifying
+        if (active) TextButton(onClick = onCancel) { Text("取消") }
+        else if (state != AppUpgrade.State.Cancelling) {
+            FilledTonalButton(onClick = onAction) {
+                Text(when (state) {
+                    is AppUpgrade.State.Available -> "下载更新"
+                    is AppUpgrade.State.Ready -> "安装更新"
+                    is AppUpgrade.State.Failed -> "重试"
+                    is AppUpgrade.State.Cancelled -> if (state.available != null) "继续下载" else "重新检查"
+                    else -> "检查更新"
+                })
             }
         }
     }
@@ -124,14 +165,16 @@ fun HelpScreen() = SubPage("使用帮助") {
 fun PrivacyScreen() = SubPage("隐私说明") {
     Paragraphs(
         listOf(
-            "本机处理" to "拼音、五笔、联想与用户词学习全部在本机完成，织文不收集、不上传你的输入内容。",
-            "语音输入" to "默认使用本机离线模型。选用联网插件时，音频会发送到该插件对应的服务，插件只能访问其清单允许的网络地址。",
+            "本机处理" to "拼音、五笔、联想与用户词学习在本机完成，这些输入处理不需要上传文字。",
+            "语音输入" to "本机离线模型在设备上识别。选用已安装并配置好的联网语音插件并开始录音时，音频会发送到所选提供方；联网地址由插件清单声明。",
+            "翻译" to "只有主动点击翻译，选中或粘贴的原文才会发送到已配置的联网服务；网页翻译会把原文带到打开的官方网页。离线翻译插件在设备上处理原文。",
+            "市场与下载" to "刷新官方市场、安装扩展、下载语音模型或检查更新时，会向官方仓库、模型来源或已配置的镜像请求目录与所需文件，不发送输入文字或录音。",
             "GitHub 插件仓库" to "公开仓库可直接读取，私有仓库使用你提供的访问令牌。令牌通过 Android Keystore 加密保存在本机，不交给插件，不参与互联同步；退出 GitHub 登录后清除本机授权。",
-            "剪贴板" to "剪贴板历史只保存在本机私有目录；来自密码框或标记为敏感的内容不会记录，未固定的记录 24 小时后自动删除。可在「外观与手感」中关闭记录。",
+            "剪贴板" to "历史默认不记录；开启后保存在本机私有目录，未固定内容默认 24 小时后删除。来自密码框或标记为敏感的内容不会记录。可在「外观与手感」中开关记录。",
             "密码框" to "在密码框中输入时不学习用户词，也不记录剪贴板。",
             "云端热词" to "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开手机。",
             "专业词库" to "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。",
-            "织文互联" to "默认关闭。文件与你配对过的设备端到端加密直传，不经过中转。跨网直传由你主动生成连接码，地址探测服务只获取公网映射，不接收文件内容。部分网络不能直连时会提示失败。",
+            "织文互联" to "默认关闭。启用互联及剪贴板同步后，剪贴板会发送到已配对且已连接的设备；文字、图片与文件端到端加密直传。跨网连接由你主动生成连接码，地址探测服务只获取公网映射，不接收传输内容。",
             "二维码扫码" to "仅在主动打开扫码页面时使用相机，二维码在本机识别。相机图像不会录制或上传，离开扫码页面后停止使用相机。",
         ),
     )

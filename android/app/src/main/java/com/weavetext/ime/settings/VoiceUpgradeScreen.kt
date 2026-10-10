@@ -32,6 +32,7 @@ import com.weavetext.ime.models.AsrRuntime
 import com.weavetext.ime.models.ModelRepository
 import com.weavetext.ime.models.VoicePack
 import com.weavetext.ime.models.VoiceProfiles
+import com.weavetext.ime.models.Progress
 import com.weavetext.ime.voice.LOCAL_ENGINE_ID
 import com.weavetext.ime.voice.VoiceHelp
 import com.weavetext.ime.voice.VoiceUpgrade
@@ -54,6 +55,7 @@ fun VoiceUpgradeScreen() {
  * The recommended set on top of the list (runtime + small streaming model), shown until it is installed.
  */
 @Composable
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 internal fun VoicePackHeader(repo: ModelRepository) {
     val deps = LocalDeps.current
     var profileIndex by remember { mutableIntStateOf(1) }
@@ -92,20 +94,8 @@ internal fun VoicePackHeader(repo: ModelRepository) {
                     }
                 }
                 is VoicePack.State.Downloading -> {
-                    if (state.total > 0) {
-                        LinearProgressIndicator(progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
-                    } else {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        val speed = if (state.bytesPerSecond > 0) " · ${formatSize(state.bytesPerSecond)}/s" else ""
-                        val via = if (state.mirror.isNotEmpty()) " · ${state.mirror}" else ""
-                        Text(
-                            if (state.done > 0) "${formatSize(state.done)} / ${formatSize(state.total)}$speed$via" else "正在连接…",
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        DownloadProgressContent(Progress(state.done, state.total, state.bytesPerSecond, state.mirror, state.phase), Modifier.weight(1f))
                         TextButton(onClick = { pack.cancel() }) { Text("取消") }
                     }
                 }
@@ -146,6 +136,7 @@ private fun rememberUpgradeState(): VoiceUpgrade.State {
     DisposableEffect(Unit) {
         val l: (VoiceUpgrade.State) -> Unit = { state = it }
         VoiceUpgrade.addListener(l)
+        state = VoiceUpgrade.state
         onDispose { VoiceUpgrade.removeListener(l) }
     }
     return state
@@ -183,25 +174,18 @@ private fun FullBuildProgress(s: VoiceUpgrade.State) {
             }
         }
         is VoiceUpgrade.State.Downloading -> {
-            if (s.total > 0) {
-                LinearProgressIndicator(progress = { (s.done.toFloat() / s.total).coerceIn(0f, 1f) }, Modifier.fillMaxWidth())
-            } else {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                val speed = if (s.bytesPerSecond > 0) " · ${formatSize(s.bytesPerSecond)}/s" else ""
-                val via = if (s.mirror.isNotEmpty()) " · ${s.mirror}" else ""
-                Text(
-                    if (s.total > 0) "${formatSize(s.done)} / ${formatSize(s.total)}$speed$via" else "正在连接…",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                DownloadProgressContent(Progress(s.done, s.total, s.bytesPerSecond, s.mirror, s.phase), Modifier.weight(1f))
                 TextButton(onClick = { VoiceUpgrade.cancel() }) { Text("取消") }
             }
         }
         VoiceUpgrade.State.Verifying -> {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text("正在校验安装包…", style = MaterialTheme.typography.bodySmall)
+        }
+        VoiceUpgrade.State.Cancelling -> {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text("正在取消，已下载部分会保留…", style = MaterialTheme.typography.bodySmall)
         }
         is VoiceUpgrade.State.Ready -> {
             Text("下载完成。点「安装」后按系统提示确认即可；首次安装需要允许织文「安装未知应用」。", style = MaterialTheme.typography.bodyMedium)

@@ -46,6 +46,7 @@ import com.weavetext.ime.ui.keyboard.HandInkAppearance
 import com.weavetext.ime.ui.keyboard.HandInkPrefs
 import com.weavetext.ime.ui.keyboard.HandInkStyle
 import com.weavetext.ime.ui.keyboard.HandPad
+import com.weavetext.ime.ui.keyboard.HandwritingAreaMode
 import kotlin.math.roundToInt
 
 /** Insert in an existing settings page. Every scope that reads prefs owns its live subscription. */
@@ -55,6 +56,27 @@ fun HandwritingAppearanceSettings(prefs: SharedPreferences, modifier: Modifier =
     val live by rememberLivePrefs(prefs)
     val appearance = HandInkPrefs.read(live)
     Column(modifier) {
+        GroupTitle("书写区域")
+        GroupCard {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("区域高度", style = MaterialTheme.typography.bodyLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HandwritingAreaMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = WeavePrefs.handAreaMode(live) == mode,
+                            onClick = { prefs.edit().putString(WeavePrefs.HAND_AREA_MODE, mode.key).apply() },
+                            label = { Text(mode.label) },
+                            modifier = Modifier.testTag("handwriting_area_${mode.key}"),
+                        )
+                    }
+                }
+                Text(
+                    "半屏和全屏按当前窗口的可用区域扩展书写区，避开状态栏与导航按钮。切换输入方案后恢复普通高度；悬浮键盘、实体键盘和私密输入框不扩展。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         GroupTitle("手写笔迹")
         GroupCard {
             HandwritingInkPreview(prefs, Modifier.padding(16.dp))

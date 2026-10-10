@@ -134,7 +134,7 @@ final class ToolsWindow {
     static let shared=ToolsWindow()
     private var panel:InputPanel?
     func show(owner:WeaveInputController,tab:String="clipboard") {
-        owner.finishComposition();let model=ToolsModel.shared;model.tab=tab;model.reload()
+        owner.finishComposition();let model=ToolsModel.shared;model.tab = (tab == "phrases" || tab == "snippets") && !Preferences.shared.extensionEnabled("feature:phrases") ? "clipboard" : tab;model.reload()
         if panel==nil {
             let p=InputPanel(contentRect:NSRect(x:0,y:0,width:540,height:420),styleMask:[.titled,.closable,.resizable,.nonactivatingPanel],backing:.buffered,defer:false)
             p.title="织文输入工具";p.level = .floating;p.hidesOnDeactivate=false;p.isReleasedWhenClosed=false
@@ -153,7 +153,7 @@ struct ToolsView:View {
     var body:some View {
         VStack(alignment:.leading,spacing:12) {
             WindowHeading(title:"输入工具",subtitle:"常用内容随手取用",symbol:"tray.full",prefs:prefs)
-            Picker("工具",selection:$model.tab) {Text("剪贴板").tag("clipboard");Text("常用语").tag("phrases");Text("快捷模板").tag("snippets")}.pickerStyle(.segmented)
+            Picker("工具",selection:$model.tab) {Text("剪贴板").tag("clipboard");if prefs.extensionEnabled("feature:phrases") {Text("常用语").tag("phrases");Text("快捷模板").tag("snippets")}}.pickerStyle(.segmented)
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:10) {
                     if model.tab=="clipboard" {
@@ -164,10 +164,10 @@ struct ToolsView:View {
                             ForEach(model.visibleHistory) {ContentRow(item:$0,model:model)}
                             if model.history.isEmpty {Text("还没有剪贴板记录").foregroundStyle(.secondary)}
                         }
-                    } else if model.tab=="phrases" {
+                    } else if model.tab=="phrases" && prefs.extensionEnabled("feature:phrases") {
                         ForEach(model.phrases) {ContentRow(item:$0,model:model,phrase:true)}
                         if model.phrases.isEmpty {Text("在「输入工具」设置中添加常用语，也可将剪贴板文字收藏为常用语。").foregroundStyle(.secondary)}
-                    } else {
+                    } else if model.tab=="snippets" && prefs.extensionEnabled("feature:phrases") {
                         ForEach(Array(model.snippets.enumerated()),id:\.offset) {_,item in
                             Button {model.insertSnippet(item.1)} label:{VStack(alignment:.leading) {Text(item.0).font(.caption).foregroundStyle(.secondary);Text(item.1).lineLimit(4)}.frame(maxWidth:.infinity,alignment:.leading)}
                         }
@@ -178,6 +178,9 @@ struct ToolsView:View {
             Text(model.message).font(.caption).foregroundStyle(.secondary)
             HStack {Button("刷新") {model.reload()};Spacer();Button("管理…") {SettingsWindow.shared.show(page:.tools)}}
         }.padding(20).background(Theme.palette(prefs.colorTheme).surface).weaveStyle(prefs)
+            .onChange(of:prefs.extensionsEnabled) { enabled in
+                if !enabled.contains("feature:phrases") && model.tab != "clipboard" {model.tab="clipboard"}
+            }
     }
 }
 private struct ContentRow:View {
@@ -189,7 +192,7 @@ private struct ContentRow:View {
             Button {model.use(item)} label:{HStack {if !item.files.isEmpty {Image(systemName:"doc.on.clipboard")};Text(item.text).lineLimit(3).frame(maxWidth:.infinity,alignment:.leading)}}.buttonStyle(.plain)
             Button {model.copy(item)} label:{Image(systemName:"doc.on.doc")}.help("复制")
             Button {model.pin(item,phrase:phrase)} label:{Image(systemName:item.pinned ? "pin.fill" : "pin")}.help("固定 / 取消固定")
-            if !phrase && item.files.isEmpty {Button {model.phraseFrom(item.text)} label:{Image(systemName:"text.badge.plus")}.help("收藏为常用语")}
+            if !phrase && item.files.isEmpty && Preferences.shared.extensionEnabled("feature:phrases") {Button {model.phraseFrom(item.text)} label:{Image(systemName:"text.badge.plus")}.help("收藏为常用语")}
             Button {model.delete(item,phrase:phrase)} label:{Image(systemName:"trash")}.help("删除")
         }.padding(10).background(Color.secondary.opacity(0.08),in:RoundedRectangle(cornerRadius:8))
     }
@@ -205,11 +208,13 @@ struct ToolsPage:View {
                 ForEach(model.visibleHistory) {ContentRow(item:$0,model:model)}
                 Button("清空全部历史…",role:.destructive) {model.confirmClear=true}.disabled(model.history.isEmpty)
             } header:{Text("剪贴板")} footer:{Footnote("默认不记录。开启后保留 50 条未固定内容，24 小时过期；固定内容保留。敏感标记与安全输入期间的内容不会记录。文本单条最多 10 KB，图片和文件总量最多 256 MB。")}
+            if prefs.extensionEnabled("feature:phrases") {
             Section {
                 TextEditor(text:$model.draft).frame(minHeight:70)
                 Button("添加常用语") {model.addPhrase()}.disabled(model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 ForEach(model.phrases) {ContentRow(item:$0,model:model,phrase:true)}
             } header:{Text("常用语")}
+            }
             Section {
                 Button("导出个人资料…") {model.exportPersonal()}
                 Button("导入并合并个人资料…") {model.importPersonal()}

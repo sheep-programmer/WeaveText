@@ -1,6 +1,50 @@
 import AVFoundation
 import Foundation
+import Speech
 import WeaveCore
+
+final class VoicePluginSession: VoiceSessionHandle {
+    private let session: PluginSpeech
+    init(_ session: PluginSpeech) { self.session = session }
+    func feed(_ data: Data) { session.feed(data) }
+    func stop() { session.stop() }
+    func cancel() { session.cancel() }
+}
+
+/// Serialize the tap with endAudio so an in-flight buffer cannot append after stop.
+final class VoiceAudioInput {
+    private let lock = NSLock()
+    private var accepting = true
+    private var systemAccepting = true
+    private let request: SFSpeechAudioBufferRecognitionRequest?
+    private let converter: VoicePCMConverter?
+    private let plugins: VoiceSessionScope?
+    init(request: SFSpeechAudioBufferRecognitionRequest?, converter: VoicePCMConverter?, plugins: VoiceSessionScope?) {
+        self.request = request; self.converter = converter; self.plugins = plugins
+    }
+    func append(_ buffer: AVAudioPCMBuffer) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard accepting else { return }
+        if systemAccepting { request?.append(buffer) }
+        if let converter, let plugins, !plugins.isEmpty {
+            let data = try converter.convert(buffer)
+            if !data.isEmpty { plugins.feed(data) }
+        }
+    }
+    func finish() {
+        lock.lock(); defer { lock.unlock() }
+        guard accepting else { return }
+        accepting = false; endSystemAudio()
+    }
+    func finishSystem() {
+        lock.lock(); defer { lock.unlock() }
+        endSystemAudio()
+    }
+    private func endSystemAudio() {
+        guard systemAccepting else { return }
+        systemAccepting = false; request?.endAudio()
+    }
+}
 
 /// AVAudioConverter preserves resampling state between microphone chunks.
 final class VoicePCMConverter {
@@ -35,6 +79,7 @@ struct VoiceResult: Identifiable, Equatable {
     var ended=false
     var text:String {finalText+partialText}
     mutating func apply(_ event:[String:Any]) {
+        guard !ended else { return }
         switch event["event"] as? String {
         case "partial":partialText=event["text"] as? String ?? ""
         case "final":finalText += event["text"] as? String ?? "";partialText=""

@@ -23,9 +23,15 @@ import java.io.File
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-port-420dpi")
 class StyleScreenshotTest : KeyboardSnapshotSupport() {
-    private val layouts get() = StyleRepository.get(app).layoutIds
+    private val layouts get(): List<String> {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.items.filter { it.source == "bundled" }.forEach(store::install)
+        return StyleRepository.get(app).layoutIds
+    }
 
     private fun each(layout: String) {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.items.firstOrNull { it.kind == "layout" && it.id == layout && !store.installed(it) }?.let(store::install)
         for (dark in listOf(false, true)) {
             val mode = if (dark) "dark" else "light"
             val style: android.content.SharedPreferences.Editor.() -> Unit = { clear(); putString(WeavePrefs.STYLE_LAYOUT, layout) }
@@ -73,6 +79,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
     /** 每套配色主题配默认布局的 26 键（输入中）。 Every theme on the default layout, composing. */
     @Test fun themes() {
         val cands = listOf("你好", "拟好", "你", "尼", "泥", "呢", "倪").map { Candidate(it, "", false) }
+        layouts
         for (id in StyleRepository.get(app).themeIds) for (dark in listOf(false, true)) {
             val (_, c) = keyboard(dark) { clear(); putString(WeavePrefs.STYLE_THEME, id) }
             c.previewState(composing(cands = cands))
@@ -85,6 +92,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
 
     /** 英文三格建议条与浮动组合串等布局专有形态。 Layout-specific forms: English strip. */
     @Test fun englishStrip() {
+        layouts
         val (_, c) = keyboard(false) { putString(WeavePrefs.STYLE_LAYOUT, "round") }
         c.previewState(ImeState(chinese = false, engineReady = true, candidates = listOf("hello", "help", "held").map { Candidate(it, "", false) }, totalCandidates = 3))
         snap("round_english_light")
@@ -92,6 +100,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
 
     /** 「玻璃」的长按候选半透明：垫的是键盘背景，不透出下面的按键。 Glass long-press popup, translucent over the backdrop. */
     @Test fun glassPopup() {
+        layouts
         for (dark in listOf(false, true)) {
             val (k, _) = keyboard(dark) { clear(); putString(WeavePrefs.STYLE_THEME, "glass") }
             val kv = k.keyboardView
@@ -111,6 +120,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
      * On a gradient the candidate bar's right-edge fade and expand area show the backdrop itself, pixel for pixel.
      */
     @Test fun candidateFadeShowsBackdrop() {
+        layouts
         val (k, c) = keyboard(false) { clear(); putString(WeavePrefs.STYLE_THEME, "glass") }
         c.previewState(composing())
         idle()
@@ -141,7 +151,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
         panel.selectEmoji()
         idle()
         val body = (panel.view as android.view.ViewGroup).getChildAt(0) as android.view.ViewGroup
-        val grid = body.getChildAt(1) as com.weavetext.ime.ui.keyboard.ScrollGridView
+        val grid = (body.getChildAt(1) as android.view.ViewGroup).getChildAt(1) as com.weavetext.ime.ui.keyboard.ScrollGridView
         org.junit.Assert.assertTrue(grid.pageHeight() > 0f)
         val t = android.os.SystemClock.uptimeMillis()
         val x = grid.width / 2f

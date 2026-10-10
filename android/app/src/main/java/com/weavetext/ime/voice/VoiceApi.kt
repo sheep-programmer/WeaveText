@@ -1,5 +1,6 @@
 package com.weavetext.ime.voice
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.Context
 
 /**
@@ -159,14 +160,23 @@ object VoiceHub {
 
     /** 在后台线程预热离线语音管理。 Warm up offline voice management in the background. */
     fun preload(ctx: Context) {
+        if (!Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(ctx), "voice")) return
         val app = ctx.applicationContext
-        Thread({ runCatching { get(app).second.warmUp() } }, "weave-voice-init").start()
+        Thread({ runCatching { if (Extensions.feature(com.weavetext.ime.settings.WeavePrefs.of(app), "voice")) get(app).second.warmUp() } }, "weave-voice-init").start()
     }
 
     fun engines(ctx: Context): VoiceEngines = get(ctx).first
     fun recognizer(ctx: Context): VoiceRecognizer = get(ctx).second
 
+    private var extensionListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
     @Synchronized
     private fun get(ctx: Context): Pair<VoiceEngines, VoiceRecognizer> =
-        impl ?: VoiceBackend.create(ctx.applicationContext).also { impl = it }
+        impl ?: VoiceBackend.create(ctx.applicationContext).also {
+            impl = it
+            val prefs = com.weavetext.ime.settings.WeavePrefs.of(ctx)
+            extensionListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == Extensions.ENABLED && !Extensions.feature(prefs, "voice")) impl?.second?.cancel()
+            }
+            prefs.registerOnSharedPreferenceChangeListener(extensionListener)
+        }
 }

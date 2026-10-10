@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -48,6 +49,7 @@ import com.weavetext.ime.R
 sealed class Route {
     data object Onboarding : Route()
     data object Home : Route()
+    data class Market(val kind: String = "all") : Route()
     data object Schemes : Route()
     data object Fuzzy : Route()
     data object Voice : Route()
@@ -85,6 +87,7 @@ sealed class Route {
                     else -> listOf(VoiceDetail(sub))
                 }
                 "models" -> if (runtimeReady) listOf(Voice, Models) else listOf(Voice, VoiceUpgrade)
+                "market" -> listOf(Market(parts.getOrNull(1) ?: "all"))
                 "plugins" -> listOf(Voice, PluginRepositories)
                 "schemes" -> listOf(Schemes)
                 "look" -> listOf(Look) + when (parts.getOrNull(1)) { "styles" -> listOf(Styles); else -> emptyList() }
@@ -123,9 +126,17 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
         CompositionLocalProvider(LocalDeps provides deps, LocalNav provides nav) {
             BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
             AnimatedContent(nav.current, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "route") { r ->
-                when (r) {
+                val feature = when (r) {
+                    Route.Voice, is Route.VoiceDetail, Route.PluginRepositories, Route.Models, Route.VoiceUpgrade -> "voice"
+                    Route.Translation -> "translate"
+                    Route.Link -> "link"
+                    else -> null
+                }
+                if (feature != null && !Extensions.feature(p, feature)) DisabledExtensionScreen("feature")
+                else when (r) {
                     Route.Onboarding -> OnboardingScreen(statusVersion)
                     Route.Home -> HomeScreen(statusVersion)
+                    is Route.Market -> MarketScreen(r.kind)
                     Route.Schemes -> SchemesScreen()
                     Route.Fuzzy -> FuzzyScreen()
                     Route.Voice -> pluginListState.SaveableStateProvider("voice") { VoiceListScreen(statusVersion) }

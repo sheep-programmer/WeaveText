@@ -37,7 +37,7 @@ public enum CandidateOrientation: String, CaseIterable, Sendable {
     case horizontal, vertical
 }
 
-/// 候选上方的完整带声调注音。 Full toned pinyin above each candidate.
+/// 高亮候选后括号里的完整带声调拼音，默认关。 Full toned pinyin in brackets after the highlighted candidate; off by default.
 public enum PinyinHint: String, CaseIterable, Sendable {
     case off, toned
 }
@@ -58,10 +58,22 @@ public enum AppearanceMode: String, CaseIterable, Sendable {
     case system, light, dark
 }
 
-public enum ColorTheme: String, CaseIterable, Sendable {
-    case fresh, paper, mint, violet
-    public var title:String {
-        switch self {case .fresh:return "清爽";case .paper:return "纸墨";case .mint:return "薄荷";case .violet:return "暮紫"}
+public struct ColorTheme: RawRepresentable, Hashable, CaseIterable, Sendable {
+    public let rawValue: String
+    public init?(rawValue: String) {
+        let id = rawValue == "paper" ? "ink" : rawValue == "violet" ? "dusk" : rawValue
+        guard ExtensionStore.safeID(id) else { return nil }
+        self.rawValue = id
+    }
+    public static let fresh = ColorTheme(rawValue: "fresh")!
+    public static let ink = ColorTheme(rawValue: "ink")!
+    public static let mint = ColorTheme(rawValue: "mint")!
+    public static let dusk = ColorTheme(rawValue: "dusk")!
+    public static let paper = ink
+    public static let violet = dusk
+    public static let allCases: [ColorTheme] = [.fresh, .ink, .mint, .dusk]
+    public var title: String {
+        switch rawValue { case "fresh": return "清爽"; case "ink": return "墨夜"; case "mint": return "薄荷"; case "dusk": return "暮紫"; default: return ExtensionStore.shared.name(rawValue) }
     }
 }
 
@@ -75,6 +87,14 @@ public final class Preferences: ObservableObject {
     public static let fontSizes = 12...28
 
     private let d: UserDefaults
+
+    @Published public var extensionsEnabled: Set<String> { didSet { save(extensionsEnabled.sorted(), "extensionsEnabled") } }
+    public func extensionEnabled(_ key: String) -> Bool { extensionsEnabled.contains(key) }
+    public func setExtension(_ key: String, enabled: Bool) {
+        guard ExtensionRegistry.defaults.contains(key) else { return }
+        if enabled { extensionsEnabled.insert(key) } else { extensionsEnabled.remove(key) }
+        if !enabled && key == "scheme:wubi86" && schema == "wubi86" { schema = "pinyin" }
+    }
 
     @Published public var schema: String { didSet { save(schema, "schema") } }
     @Published public var toggleKey: ToggleKey { didSet { save(toggleKey.rawValue, "toggleKey") } }
@@ -107,7 +127,7 @@ public final class Preferences: ObservableObject {
         didSet { save(voiceShortcut.flatMap { try? JSONEncoder().encode($0) } ?? Data(), "voiceShortcut") }
     }
     @Published public var voiceLanguage: String { didSet { save(voiceLanguage, "voiceLanguage") } }
-    /// 候选上方显示完整声调拼音，默认开启。 Full toned pinyin above candidates, on by default.
+    /// 当前候选后显示带声调拼音，默认关闭。 Toned pinyin after the current candidate, off by default.
     @Published public var pinyinHint: PinyinHint { didSet { save(pinyinHint.rawValue, "pinyinHint") } }
     /// 手写停笔自动上屏的快慢。 How quickly a pause commits handwriting.
     @Published public var handPause: HandPause { didSet { save(handPause.rawValue, "handPause") } }
@@ -128,6 +148,7 @@ public final class Preferences: ObservableObject {
 
     public init(defaults: UserDefaults) {
         d = defaults
+        extensionsEnabled = Set(defaults.stringArray(forKey: "extensionsEnabled") ?? Array(ExtensionRegistry.defaults))
         schema = InputScheme.named(defaults.string(forKey: "schema") ?? "").id
         toggleKey = defaults.string(forKey: "toggleKey").flatMap(ToggleKey.init) ?? .shift
         pageSize = Self.clamp(defaults.object(forKey: "pageSize") as? Int ?? 7, Self.pageSizes)
@@ -151,7 +172,7 @@ public final class Preferences: ObservableObject {
         voiceShortcut = defaults.object(forKey: "voiceShortcut") == nil ? .defaultBinding :
             defaults.data(forKey: "voiceShortcut").flatMap { try? JSONDecoder().decode(VoiceShortcut.self, from: $0) }
         voiceLanguage = defaults.string(forKey: "voiceLanguage") == "en-US" ? "en-US" : "zh-CN"
-        pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .toned
+        pinyinHint = defaults.string(forKey: "pinyinHint").flatMap(PinyinHint.init) ?? .off
         handPause = defaults.string(forKey: "handPause").flatMap(HandPause.init) ?? .medium
         handLine = defaults.object(forKey: "handLine") as? Bool ?? false
         fuzzy = Set(defaults.stringArray(forKey: "fuzzy") ?? [])
@@ -177,7 +198,7 @@ public final class Preferences: ObservableObject {
         FuzzyPair.all.map { ($0.id, fuzzy.contains($0.id)) }
             + [("output.traditional", traditional), ("candidates.emoji", emoji),
                ("candidates.prediction", prediction),
-               ("input.autocorrect", autocorrect), ("wubi.auto_commit", wubiAutoCommit),
+               ("input.autocorrect", autocorrect), ("features.calculator", extensionEnabled("feature:calc")), ("wubi.auto_commit", wubiAutoCommit),
                ("wubi.pinyin_lookup", wubiPinyinLookup), ("wubi.completion", wubiCompletion),
                ("candidates.pinyin", pinyinHint != .off), ("candidates.pinyin_tones", true)]
     }

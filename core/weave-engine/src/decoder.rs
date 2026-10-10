@@ -10,6 +10,7 @@
 //!    Candidates = sentence + words starting at 0, longer coverage first, then by cost.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use weave_dict::lexicon::{Lexicon, NodeId, ROOT};
 use weave_dict::syllable::SyllableId;
@@ -42,6 +43,30 @@ const ALT_SENTENCE_MARGIN: u32 = 3500;
 pub const MAX_CANDIDATES: usize = 800;
 /// 系统词库 + 至多 15 个扩展词库（专业词库、热词）。 The system lexicon plus up to fifteen extra packs.
 pub const MAX_LEX: usize = 16;
+
+/// Deduplication is local to one start position. Keep the bounded syllable key
+/// inline so every DFS hit (including duplicates) does not allocate a Vec.
+#[derive(PartialEq, Eq)]
+struct SpanKey {
+    end: usize,
+    syllables: [SyllableId; MAX_WORD_SYLLABLES],
+    len: u8,
+}
+
+impl SpanKey {
+    fn new(end: usize, key: &[SyllableId]) -> Self {
+        let mut syllables = [0; MAX_WORD_SYLLABLES];
+        syllables[..key.len()].copy_from_slice(key);
+        Self { end, syllables, len: key.len() as u8 }
+    }
+}
+
+impl std::hash::Hash for SpanKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.end.hash(state);
+        self.syllables[..self.len as usize].hash(state);
+    }
+}
 
 /// 每个词库在前缀树上的位置（下标 0 = 系统词库，其后为扩展词库）；紧凑存放，按值传递很便宜。
 /// Position in each lexicon's trie (index 0 = system lexicon, then the extra packs); compact and cheap to copy.
@@ -267,13 +292,33 @@ impl LmParams<'_> {
     }
 
     fn word_ids(&self, word: &str) -> WordIds {
-        let chars: Vec<char> = word.chars().collect();
-        let tail = self.gram.tail_ids(&chars);
+        let mut head = [0; 3];
+        let mut head_len = 0;
+        let mut tail = [0; 3];
+        let mut tail_len = 0;
+        let mut complete = true;
+        for (at, ch) in word.chars().enumerate() {
+            if let Some(id) = self.gram.char_id(ch) {
+                if at < 3 && complete {
+                    head[head_len] = id;
+                    head_len += 1;
+                }
+                if tail_len == 3 {
+                    tail.copy_within(1..3, 0);
+                    tail[2] = id;
+                } else {
+                    tail[tail_len] = id;
+                    tail_len += 1;
+                }
+            } else {
+                complete = false;
+                tail_len = 0;
+            }
+        }
         WordIds {
-            head: Ids::from_slice(&self.gram.head_ids(word)),
-            complete: tail.len() == chars.len().min(3)
-                && chars.iter().all(|&c| self.gram.char_id(c).is_some()),
-            tail: Ids::from_slice(&tail),
+            head: Ids::from_slice(&head[..head_len]),
+            complete,
+            tail: Ids::from_slice(&tail[..tail_len]),
         }
     }
 
@@ -326,12 +371,13 @@ impl<'a> Decoder<'a> {
     pub fn decode(&self) -> Lattice {
         let n = self.graph.len;
         let mut spans: Vec<Span> = Vec::new();
-        let mut index: HashMap<(usize, usize, Vec<SyllableId>), usize> = HashMap::new();
+        let mut index: HashMap<SpanKey, usize> = HashMap::new();
+        let mut key = Vec::with_capacity(MAX_WORD_SYLLABLES);
+        let mut cuts = Vec::with_capacity(MAX_WORD_SYLLABLES);
+        let sys = self.roots();
         for start in 0..n {
+            index.clear();
             let mut budget = DFS_BUDGET;
-            let mut key = Vec::new();
-            let mut cuts = Vec::new();
-            let sys = self.roots();
             self.dfs(
                 start,
                 start,
@@ -363,9 +409,21 @@ impl<'a> Decoder<'a> {
     /// `correcting`：纠错时不把偶然拼出的短英文当成中英混打。
     /// `correcting`: do not let accidental short English fragments block pinyin correction.
     pub fn decode_with_latin(&self,english:Option<&Lexicon>,original:&[u8],raw_input:&str,english_user:Option<&UserDict>,correcting:bool)->Lattice {
+        self.decode_latin(english, original, raw_input, english_user, correcting, true)
+    }
+
+    /// Double pinyin has many English homographs. Its caller retains the plain
+    /// Chinese winner separately, so allow those spans as explicit alternatives.
+    pub(crate) fn decode_shuangpin_with_latin(&self, english: Option<&Lexicon>, original: &[u8],
+        raw_input: &str, english_user: Option<&UserDict>) -> Lattice {
+        self.decode_latin(english, original, raw_input, english_user, false, false)
+    }
+
+    fn decode_latin(&self, english: Option<&Lexicon>, original: &[u8], raw_input: &str,
+        english_user: Option<&UserDict>, correcting: bool, protect_chinese: bool) -> Lattice {
         let mut lat=self.decode();
         if original.len()!=self.graph.len{return lat;}
-        if !original.iter().any(u8::is_ascii_uppercase) && self.graph.spells_fully() {return lat;}
+        if protect_chinese && !original.iter().any(u8::is_ascii_uppercase) && self.graph.spells_fully() {return lat;}
         let english_user=english_user.filter(|u|u.entry_count()>0);
         let before=lat.spans.len();
         let positions:Vec<_>=raw_input.bytes().enumerate().filter(|(_,b)|b.is_ascii_alphabetic()).map(|(i,_)|i).collect();
@@ -385,9 +443,10 @@ impl<'a> Decoder<'a> {
                 let slice=&original[start..end];
                 let capitals=slice.iter().all(u8::is_ascii_uppercase);
                 if node.is_none() && english_user.is_none() && !capitals {break;}
-                if !capitals && chinese[end] {continue;}
+                if protect_chinese && !capitals && chinese[end] {continue;}
                 let spelling=String::from_utf8_lossy(slice).to_ascii_lowercase();
-                let known=node.and_then(|n|english.and_then(|lex|lex.entries(n).next())).filter(|e|end-start>=3 && e.cost<=13_000
+                let explicit_case = !protect_chinese && slice.iter().any(u8::is_ascii_uppercase);
+                let known=node.and_then(|n|english.and_then(|lex|lex.entries(n).next())).filter(|e|end-start>=3 && (e.cost<=13_000 || explicit_case)
                     && weave_dict::syllable::id_of(&spelling).is_none());
                 let learned=english_user.is_some_and(|u|crate::table::code_key(&spelling).is_some_and(|key|u.get(&key,&spelling).is_some()));
                 if !capitals && known.is_none() && !learned {continue;}
@@ -417,12 +476,12 @@ impl<'a> Decoder<'a> {
         pen: u32,
         budget: &mut usize,
         spans: &mut Vec<Span>,
-        index: &mut HashMap<(usize, usize, Vec<SyllableId>), usize>,
+        index: &mut HashMap<SpanKey, usize>,
     ) {
         for edge in &self.graph.out[pos] {
             if edge.kind == EdgeKind::Raw {
                 if pos == start {
-                    let k = (start, edge.end, Vec::new());
+                    let k = SpanKey::new(edge.end, &[]);
                     if let std::collections::hash_map::Entry::Vacant(e) = index.entry(k) {
                         e.insert(spans.len());
                         spans.push(Span {
@@ -524,16 +583,16 @@ impl<'a> Decoder<'a> {
                         && self.graph.out[pos]
                             .iter()
                             .any(|o| o.kind == EdgeKind::Full && o.end > edge.end);
-                    let k = (start, edge.end, key.clone());
-                    match index.get(&k) {
-                        Some(&i) => {
+                    match index.entry(SpanKey::new(edge.end, key)) {
+                        std::collections::hash_map::Entry::Occupied(e) => {
+                            let i = *e.get();
                             if p < spans[i].penalty {
                                 spans[i].penalty = p;
                                 spans[i].cuts = cuts.clone();
                             }
                         }
-                        None => {
-                            index.insert(k, spans.len());
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(spans.len());
                             spans.push(Span {
                                 start,
                                 end: edge.end,
@@ -684,7 +743,6 @@ impl<'a> Decoder<'a> {
             clean: true,
         });
         let no_raw = |_: usize, _: usize| String::new();
-        let mut words_cache: HashMap<usize, Vec<(Scored, WordIds, u64)>> = HashMap::new();
         let hash_text = |t: &str| {
             use std::hash::Hasher;
             let mut h = FastHasher::default();
@@ -702,7 +760,9 @@ impl<'a> Decoder<'a> {
             let cur = std::mem::take(&mut states[pos]);
             for &si in &by_start[pos] {
                 let span = &spans[si];
-                let words = words_cache.entry(si).or_insert_with(|| {
+                // Each span belongs to exactly one by_start slot, visited once.
+                // Score it once here instead of retaining a never-reused cache.
+                let words: Vec<_> = {
                     let limit = if span.penalty == 0 && span.start == 0
                         && self.context.is_some_and(|c| !c.is_empty())
                         && (self.lm.is_some() || self.user.has_bigrams()) {
@@ -719,7 +779,7 @@ impl<'a> Decoder<'a> {
                             (s, ids, h)
                         })
                         .collect()
-                });
+                };
                 // 只在两个干净跨度之间用搭配模型：否则它会奖励把完整音节拆成简拼。
                 // Only between two clean spans; otherwise it rewards splitting syllables.
                 let clean = span.penalty == 0 && !span.raw;
@@ -779,10 +839,10 @@ impl<'a> Decoder<'a> {
         }
         let backtrack = |end: &State| {
             let mut path = Vec::new();
-            let mut cur = end.clone();
+            let mut cur = end;
             while let Some((p, i)) = cur.back {
                 path.push((cur.span, cur.text.clone()));
-                cur = states[p][i].clone();
+                cur = &states[p][i];
             }
             path.reverse();
             path
@@ -967,6 +1027,50 @@ mod debug_tests {
         b.insert(&key, "世界", 14000);
         b.insert(&key, "视界", 15000);
         Lexicon::from_bytes(b.build()).unwrap()
+    }
+
+    #[test]
+    fn duplicate_readings_keep_the_cheapest_cuts_and_distinct_starts() {
+        let key = syllable::parse_seq("shi jie").unwrap();
+        let mut builder = Builder::new(Kind::Pinyin);
+        builder.insert(&key, "世界", 100);
+        let lex = Lexicon::from_bytes(builder.build()).unwrap();
+        let user = UserDict::in_memory();
+        let mut graph = SyllableGraph::new(4);
+        for (start, end, syl, penalty) in [
+            (0, 2, key[0], 200),
+            (0, 1, key[0], 20),
+            (1, 2, key[0], 100),
+            (1, 4, key[1], 10),
+            (2, 4, key[1], 50),
+        ] {
+            graph.push(crate::graph::Edge { start, end, syls: vec![syl], penalty,
+                kind: EdgeKind::Full, bits: Vec::new() });
+        }
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: None, lm: None };
+        let lattice = decoder.decode();
+        let spans: Vec<_> = lattice.spans.iter().filter(|s| s.key == key && s.end == 4).collect();
+        assert_eq!(spans.len(), 2);
+        assert_eq!((spans[0].start, spans[0].penalty, spans[0].cuts.as_slice()), (0, 30, &[1, 4][..]));
+        assert_eq!((spans[1].start, spans[1].penalty, spans[1].cuts.as_slice()), (1, 150, &[2, 4][..]));
+        assert_eq!(lattice.best[0].1, "世界");
+    }
+
+    #[test]
+    fn word_ids_keep_known_runs_around_unknown_characters() {
+        let mut builder = GramBuilder::default();
+        builder.push("今天", 10.0);
+        builder.push("天气", 10.0);
+        let gram = weave_dict::gram::Gram::from_bytes(builder.build()).unwrap();
+        let lm = LmParams { gram: &gram, weight: 1.0, baseline: 12.0 };
+        for word in ["", "今", "今天", "今天天气", "今天🙂气", "🙂今天", "今天🙂", "今天🙂今天天气", "今天x气"] {
+            let ids = lm.word_ids(word);
+            let chars: Vec<_> = word.chars().collect();
+            assert_eq!(ids.head, Ids::from_slice(&gram.head_ids(word)), "head of {word}");
+            assert_eq!(ids.tail, Ids::from_slice(&gram.tail_ids(&chars)), "tail of {word}");
+            assert_eq!(ids.complete, chars.iter().all(|&c| gram.char_id(c).is_some()), "completeness of {word}");
+        }
     }
 
     #[test]

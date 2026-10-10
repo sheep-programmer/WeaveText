@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -82,9 +83,11 @@ fun LookScreen() {
             SettingRow("工具栏", "选择候选栏上方显示的按钮和顺序", icon = R.drawable.ic_toolbox, onClick = { nav.push(Route.Toolbar) }) {
                 ValueChevron("${(WeavePrefs.toolbarCustom(p) ?: defaultToolbar(ctx, p)).size} 个")
             }
+            if (Extensions.feature(p, "translate")) {
             RowDivider()
             SettingRow("翻译", "配置可选的在线翻译服务", icon = R.drawable.ic_globe, onClick = { nav.push(Route.Translation) }) {
                 ValueChevron(if (TranslationSettings.onlineEnabled(p)) "已开启" else "未开启")
+            }
             }
         }
         GroupTitle("深浅色")

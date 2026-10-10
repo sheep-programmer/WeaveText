@@ -108,12 +108,17 @@ struct AboutPage: View {
                url: "https://github.com/tokio-rs/mio"),
     ]
 
-    /// 隐私说明（与 Android 的隐私页一致）。 The privacy notes, as on Android's privacy page.
+    /// 按功能说明本机处理与联网时的数据去向。 Local processing and network destinations, by feature.
     private let privacy: [(String, String)] = [
-        ("本机处理", "拼音、五笔、联想与用户词学习全部在本机完成，织文不收集、不上传你的输入内容。"),
-        ("云端热词", "默认关闭。开启后每天从公开的织文热词库下载一次词表（带签名校验），只下载、不上传，你的输入不会因此离开这台 Mac。"),
-        ("专业词库", "按需从织文的 GitHub 发布页下载，下载时只请求词库文件本身。"),
-        ("织文互联", "默认关闭。文件与你配对过的设备端到端加密直传，不经过中转。跨网直传由你主动生成连接码，地址探测服务只获取公网映射，不接收文件内容。部分网络不能直连时会提示失败。"),
+        ("本机处理", "拼音、五笔、联想与用户词学习在本机完成；普通打字的内容不发送到网络。"),
+        ("网页与自定义翻译", "主动翻译选区、粘贴或手动输入的源文时，Google 网页接收带源文的网址，可能留在浏览器历史；自定义 HTTP 服务接收源文与语言选项，目标是你配置的地址。"),
+        ("系统离线翻译", "主动翻译时由 Apple 在设备端处理源文；所需语言包由 Apple 下载和管理。"),
+        ("语音识别", "主动录音时，所选语音插件接收 PCM 音频；联网插件可向其声明或配置的服务发送音频与识别文字，目的地可在插件设置查看。内置系统引擎使用设备端识别。"),
+        ("云端热词", "默认关闭。开启后每天从公开的织文热词库下载词表与签名，直连失败时尝试随应用提供的镜像；不发送输入内容。"),
+        ("专业词库", "按需从织文的 GitHub 发布页或随应用提供的镜像下载词库文件，校验大小与 SHA-256；不发送输入内容。"),
+        ("GitHub 与扩展市场", "浏览或刷新时请求目录与发布信息，安装时下载资源文件；请求发往 GitHub 或随应用提供的镜像，不发送输入内容。GitHub 登录令牌保存在本机钥匙串，用于 GitHub 接口鉴权，退出登录时删除。"),
+        ("剪贴板与常用语", "剪贴板记录默认关闭。开启后，复制的文字、图片与文件副本保存在本机，可在输入工具中清空历史；常用语也保存在本机。"),
+        ("织文互联", "默认关闭。文字、图片与文件与你配对过的设备端到端加密直传。开启互联后，剪贴板同步默认开启，可在互联设置中关闭。跨网连接的地址探测服务获取公网映射，不接收传输内容。"),
     ]
 
     @StateObject private var removal = UninstallModel()
@@ -142,6 +147,14 @@ struct AboutPage: View {
                 .padding(.vertical, 4)
                 Link("源代码与问题反馈", destination: URL(string: Self.repo)!)
                 Link("第三方组件与数据", destination: URL(string: Self.repo + "/blob/main/docs/THIRD_PARTY.md")!)
+            }
+            Section {
+                Link("查看新版本与下载安装包", destination: URL(string: Self.repo + "/releases/latest")!)
+            } header: {
+                Text("应用更新")
+            } footer: {
+                Footnote("macOS 版通过浏览器下载安装包，再打开安装包更新；下载大小与进度可在浏览器的下载列表查看。"
+                         + "用户词、专业词库与设置会保留。")
             }
             Section("隐私") {
                 ForEach(privacy, id: \.0) { title, text in

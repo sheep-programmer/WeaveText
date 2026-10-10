@@ -1,5 +1,7 @@
 package com.weavetext.ime.style
 
+import com.weavetext.ime.extensions.ExtensionStore
+import com.weavetext.ime.extensions.Extensions
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.Configuration
@@ -49,7 +51,10 @@ class StyleRepository private constructor(private val app: Context) {
     /** 当前微调使用的背景图目录。 Directory holding the current tweak background image. */
     val currentDir = File(root, "current")
 
+    private var extensionStamp = -1L
+
     init {
+        ExtensionStore(app).migrateSelected()
         val names = app.assets.list("styles").orEmpty().filter { it.endsWith(".json") }.sorted()
         val loaded = names.map { n -> JSONObject(app.assets.open("styles/$n").bufferedReader().use { it.readText() }) }
         for (o in loaded.sortedBy { it.optInt("order", 100) }) {
@@ -58,16 +63,41 @@ class StyleRepository private constructor(private val app: Context) {
                 "theme" -> rawThemes[o.getString("id")] = o
             }
         }
+        refreshExtensions()
+    }
+
+    private fun refreshExtensions() {
+        val stamp = WeavePrefs.of(app).getLong(Extensions.STAMP, 0)
+        if (stamp == extensionStamp) return
+        extensionStamp = stamp
+        rawLayouts.keys.removeAll { it !in setOf("fresh", "classic") }
+        rawThemes.keys.removeAll { it !in setOf("fresh", "ink", "mint", "dusk", "dynamic") }
+        for (kind in listOf("theme", "layout")) {
+            java.io.File(app.filesDir, "extensions/$kind").listFiles().orEmpty().filter { it.extension == "json" }.forEach { f ->
+                runCatching {
+                    val json = JSONObject(f.readText())
+                    if (json.getString("kind") == kind && f.nameWithoutExtension == json.getString("id")) {
+                        (if (kind == "theme") rawThemes else rawLayouts)[json.getString("id")] = json
+                    }
+                }
+            }
+        }
+        for (pool in listOf(rawLayouts, rawThemes)) {
+            val ordered = pool.entries.sortedBy { it.value.optInt("order", 100) }.map { it.key to it.value }
+            pool.clear(); ordered.forEach { (id, json) -> pool[id] = json }
+        }
+        layoutCache.clear(); themeCache.clear(); lastSig = null; lastStyle = null
     }
 
     // ------------------------------------------------------------ built-ins
 
-    val layoutIds: List<String> get() = rawLayouts.keys.toList()
+    val layoutIds: List<String> get() = synchronized(this) { refreshExtensions(); rawLayouts.keys.toList() }
 
     /** 可选主题（动态取色仅 Android 12+）。 Selectable themes; dynamic colour needs Android 12+. */
-    val themeIds: List<String> get() = rawThemes.filter { !it.value.optBoolean("dynamic") || Build.VERSION.SDK_INT >= 31 }.keys.toList()
+    val themeIds: List<String> get() = synchronized(this) { refreshExtensions(); rawThemes.filter { !it.value.optBoolean("dynamic") || Build.VERSION.SDK_INT >= 31 }.keys.toList() }
 
     fun layout(id: String): LayoutStyle = synchronized(this) {
+        refreshExtensions()
         layoutCache.getOrPut(id) {
             if (id.startsWith(PACK)) {
                 val pack = pack(id.removePrefix(PACK)) ?: return@synchronized layout(DEFAULT_LAYOUT)
@@ -80,6 +110,7 @@ class StyleRepository private constructor(private val app: Context) {
     }
 
     fun theme(id: String): ThemeStyle = synchronized(this) {
+        refreshExtensions()
         themeCache.getOrPut(id) {
             val raw = if (id.startsWith(PACK)) {
                 val pack = pack(id.removePrefix(PACK)) ?: return@synchronized theme(DEFAULT_THEME)
@@ -142,7 +173,7 @@ class StyleRepository private constructor(private val app: Context) {
     fun resolve(ctx: Context, prefs: SharedPreferences, level: Int = WeavePrefs.heightLevel(prefs)): KeyboardStyle {
         val layoutId = WeavePrefs.styleLayout(prefs)
         val themeId = WeavePrefs.styleTheme(prefs)
-        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), level, prefs.getLong(WeavePrefs.STYLE_STAMP, 0), WeavePrefs.pinyinHint(prefs) != 0)
+        return resolve(ctx, layoutId, themeId, overrides(prefs), isDark(ctx, prefs), level, prefs.getLong(WeavePrefs.STYLE_STAMP, 0))
     }
 
     fun overrides(prefs: SharedPreferences): StyleOverrides =
@@ -150,11 +181,12 @@ class StyleRepository private constructor(private val app: Context) {
             .getOrDefault(StyleOverrides.NONE)
 
     fun resolve(
-        ctx: Context, layoutId: String, themeId: String, o: StyleOverrides, dark: Boolean, level: Int, stamp: Long = 0, pinyinAbove: Boolean = true,
+        ctx: Context, layoutId: String, themeId: String, o: StyleOverrides, dark: Boolean, level: Int, stamp: Long = 0,
     ): KeyboardStyle = synchronized(this) {
+        refreshExtensions()
         val cfg = ctx.resources.configuration
         val dm = ctx.resources.displayMetrics
-        val sig = listOf(layoutId, themeId, o.toJson(), dark, level, stamp, pinyinAbove, cfg.fontScale, cfg.orientation, dm.widthPixels, dm.heightPixels, dm.density).joinToString("|")
+        val sig = listOf(layoutId, themeId, o.toJson(), dark, level, stamp, cfg.fontScale, cfg.orientation, dm.widthPixels, dm.heightPixels, dm.density).joinToString("|")
         lastStyle?.let { if (sig == lastSig) return it }
         val layout = runCatching { layout(layoutId) }.getOrElse { layout(DEFAULT_LAYOUT) }
         val tid = if (themeId == AUTO) layout.theme else themeId
@@ -163,7 +195,7 @@ class StyleRepository private constructor(private val app: Context) {
         val bgSpec = o.background ?: theme.background(dark)
         val bgDir = if (o.background != null) currentDir else themeDir(tid)
         backdrop(bgSpec, bgDir, dm.density)?.let { palette = palette.copy(backdrop = it) }
-        val metrics = KbMetrics(ctx, level, KeyboardStyle.geometry(layout, o), pinyinAbove = pinyinAbove, candidateTextSize = layout.candidates.textSize)
+        val metrics = KbMetrics(ctx, level, KeyboardStyle.geometry(layout, o))
         return KeyboardStyle(layout, theme, dark, o, palette, metrics).also { lastSig = sig; lastStyle = it }
     }
 
@@ -197,6 +229,7 @@ class StyleRepository private constructor(private val app: Context) {
 
     /** 背景图或包变化后清缓存。 Drop caches after images or packs change. */
     fun invalidate() = synchronized(this) {
+        refreshExtensions()
         layoutCache.keys.removeAll { it.startsWith(PACK) }
         themeCache.keys.removeAll { it.startsWith(PACK) }
         imageCache.clear()

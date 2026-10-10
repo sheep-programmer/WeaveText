@@ -29,22 +29,28 @@ enum Theme {
 
 struct ThemePalette {
     let style:ColorTheme
+    private var definition: ThemeDefinition? { ExtensionStore.shared.theme(style.rawValue) }
     var accentHex:(UInt32,UInt32) {
-        switch style {case .fresh:return(0x316CE8,0x8AB0FF);case .paper:return(0x886044,0xD1AE88);case .mint:return(0x087E69,0x6DD6BA);case .violet:return(0x7653C7,0xBEA6FF)}
+        let accent = definition?.colors("accent", fallback:(0x2E6CF6,0x7FA6FF)) ?? (0x2E6CF6,0x7FA6FF)
+        // The keyboard's dark accent fills keys; its candidate colour is legible for small UI labels.
+        let text = definition?.colors("candidate",fallback:accent) ?? accent
+        return (accent.0,text.1)
     }
-    var canvasHex:(UInt32,UInt32) {
-        switch style {case .fresh:return(0xF5F7FB,0x171A21);case .paper:return(0xF7F4ED,0x24211C);case .mint:return(0xF1F7F4,0x172520);case .violet:return(0xF5F2FA,0x221D2D)}
+    var canvasHex:(UInt32,UInt32) { definition?.colors("background", fallback:(0xF5F7FB,0x171A21)) ?? (0xF5F7FB,0x171A21) }
+    private func color(_ key: String, _ fallback: (UInt32,UInt32)) -> Color {
+        let values = definition?.colors(key, fallback: fallback) ?? fallback
+        return Theme.dynamic(light:values.0,dark:values.1)
     }
     var accent:Color {Theme.dynamic(light:accentHex.0,dark:accentHex.1)}
-    var accentSoft:Color {accent.opacity(0.12)}
-    var candidate:Color {accent}
-    var label:Color {Color(nsColor:.labelColor)}
-    var secondary:Color {Color(nsColor:.secondaryLabelColor)}
-    var hint:Color {Color(nsColor:.secondaryLabelColor)}
+    var accentSoft:Color {color("accentSoft",(0xDCE6FD,0x1F2B47))}
+    var candidate:Color {color("candidate",(accentHex.0,accentHex.1))}
+    var label:Color {color("label",(0x1B1E23,0xE9EBEF))}
+    var secondary:Color {color("labelSecondary",(0x5E6570,0xA2A8B2))}
+    var hint:Color {color("labelHint",(0x737983,0x9AA0AA))}
     var canvas:Color {Theme.dynamic(light:canvasHex.0,dark:canvasHex.1)}
-    var surface:Color {Theme.dynamic(light:0xFFFFFF,dark:0x242830)}
+    var surface:Color {color("card",(0xFFFFFF,0x242830))}
     var sidebar:Color {canvas}
-    var divider:Color {Theme.dynamic(light:0xDCE1E8,dark:0x343A42)}
+    var divider:Color {color("divider",(0xDCE1E8,0x343A42))}
 }
 
 /// AppKit windows and their title bars must receive the same preference as SwiftUI content.
@@ -53,14 +59,19 @@ final class WindowAppearance {
     private let prefs:Preferences
     private let windows=NSHashTable<NSWindow>.weakObjects()
     private var observer:NSObjectProtocol?
+    private var extensionKeys:[ObjectIdentifier:String] = [:]
     init(prefs:Preferences) {
         self.prefs=prefs
         observer=NotificationCenter.default.addObserver(forName:Preferences.didChange,object:prefs,queue:.main) {[weak self] _ in self?.refresh()}
     }
     deinit {if let observer {NotificationCenter.default.removeObserver(observer)}}
-    func track(_ window:NSWindow) {windows.add(window);apply(window)}
+    func track(_ window:NSWindow, extensionKey:String? = nil) {
+        if let extensionKey { extensionKeys[ObjectIdentifier(window)] = extensionKey }
+        windows.add(window);apply(window)
+    }
     private func refresh() {for window in windows.allObjects {apply(window)}}
     private func apply(_ window:NSWindow) {
+        if let key = extensionKeys[ObjectIdentifier(window)], !prefs.extensionEnabled(key), window.isVisible { window.close() }
         window.appearance=CandidatePanel.appearance(prefs.appearance)
         window.titlebarAppearsTransparent=true
         window.contentView?.needsDisplay=true

@@ -128,7 +128,7 @@ final class WeaveInputController: IMKInputController {
                            shift: flags.contains(.shift), control: flags.contains(.control),
                            option: flags.contains(.option), command: flags.contains(.command),
                            capsLock: flags.contains(.capsLock))
-        if prefs.voiceShortcut?.matches(key) == true { openVoice(nil); return true }
+        if prefs.extensionEnabled("feature:voice"), prefs.voiceShortcut?.matches(key) == true { openVoice(nil); return true }
         let chineseInput = host.chinese && host.scheme.isChinese
         if !chineseInput && !prefs.englishCompletion {
             if engine.isComposing || predicting || calcResult != nil {
@@ -157,7 +157,7 @@ final class WeaveInputController: IMKInputController {
         let composing = engine.isComposing
         let ctx = KeyContext(composing: composing, chinese: chineseInput, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
-                             vMode: composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
+                             vMode: prefs.extensionEnabled("feature:calc") && composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
                              bindings: prefs.candidateKeys, englishCompletion: prefs.englishCompletion)
         let action = KeyMapper.action(for: key, in: ctx)
         if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
@@ -267,6 +267,7 @@ final class WeaveInputController: IMKInputController {
 
     /// Apply opt-out changes immediately, keeping any typed English as raw text.
     func inputOptionsDidChange() {
+        if !prefs.extensionEnabled("feature:calc") && calcResult != nil { calcResult=nil;CandidatePanel.shared.hide() }
         if !prefs.prediction { dismissPredictions() }
         if !(host.chinese && host.scheme.isChinese) && !prefs.englishCompletion {
             finishComposition()
@@ -314,7 +315,7 @@ final class WeaveInputController: IMKInputController {
     /// 光标前是算式：自己输出等号，并把结果放进只有一项的候选窗。 An expression before the caret: type the `=`
     /// ourselves and put the result in a one-item panel.
     private func offerCalc(_ client: IMKTextInput) -> Bool {
-        guard let before = textBeforeCaret(client), let expr = Calc.expression(before: before),
+        guard prefs.extensionEnabled("feature:calc"), let before = textBeforeCaret(client), let expr = Calc.expression(before: before),
               let result = WeaveSession.eval(expr) else { return false }
         insert("=", client)
         calcResult = result
@@ -402,7 +403,7 @@ final class WeaveInputController: IMKInputController {
         return true
     }
     @objc func openClipboard(_ sender:Any?) {ToolsWindow.shared.show(owner:self)}
-    @objc func openPhrases(_ sender:Any?) {ToolsWindow.shared.show(owner:self,tab:"phrases")}
+    @objc func openPhrases(_ sender:Any?) {guard prefs.extensionEnabled("feature:phrases") else { return };ToolsWindow.shared.show(owner:self,tab:"phrases")}
     @objc func openPlugins(_ sender:Any?) {SettingsWindow.shared.show(page:.plugins)}
     @discardableResult func commitVoiceText(_ text: String) -> Bool {
         guard host.activeController === self, let client = client(), !text.isEmpty else { return false }
@@ -581,7 +582,7 @@ final class WeaveInputController: IMKInputController {
         let link = LinkService.shared
         return InputMenu.make(target: self, schema: prefs.schema, chinese: host.chinese, traditional: prefs.traditional,
                               hasSchema: { self.host.engine?.hasSchema($0) ?? false },
-                              phones: link.state.connected.map(\.displayName), canSend: link.canSend, progress: link.queueTitle)
+                              phones: link.state.connected.map(\.displayName), canSend: link.canSend, progress: link.queueTitle, enabledExtensions: prefs.extensionsEnabled)
     }
 
     /// IMK 把菜单项放在字典里传来。 IMK passes the menu item inside a dictionary.
@@ -603,7 +604,7 @@ final class WeaveInputController: IMKInputController {
     }
 
     @objc func selectScheme(_ sender: Any?) {
-        guard let tag = menuItem(sender)?.tag, InputScheme.all.indices.contains(tag) else { return }
+        guard let tag = menuItem(sender)?.tag, InputScheme.all.indices.contains(tag), ExtensionRegistry.scheme(InputScheme.all[tag].id, enabled: prefs.extensionsEnabled) else { return }
         prefs.schema = InputScheme.all[tag].id
     }
 

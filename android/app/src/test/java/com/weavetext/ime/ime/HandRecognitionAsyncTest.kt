@@ -19,6 +19,94 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class HandRecognitionAsyncTest {
+    @Test fun detachingDiscardsQueuedCommitsAndCurrentRecognitionWithoutWaiting() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        val watchdog = Executors.newSingleThreadScheduledExecutor()
+        val fake = FakeEngine()
+        var applied = 0
+        val engine = object : KeyEngine by fake {
+            override fun handRecognize(strokes: List<FloatArray>): IntArray {
+                started.countDown()
+                assertTrue(release.await(3, TimeUnit.SECONDS))
+                return intArrayOf('字'.code)
+            }
+            override fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean {
+                applied++
+                return fake.handInput(strokes)
+            }
+        }
+        val ic = FakeInputConnection(FrameLayout(ApplicationProvider.getApplicationContext()))
+        val controller = InputController { ic }
+        val posted = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        controller.attachEngine(engine)
+        controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }, false)
+        controller.setPreferredSchema("hand")
+        controller.handWorker = worker
+        controller.postMain = { posted += it }
+        try {
+            val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+            controller.onHandStrokes(listOf(stroke))
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            assertTrue(controller.commitFirst())
+            controller.onHandStrokes(listOf(stroke, stroke))
+            val forced = java.util.concurrent.atomic.AtomicBoolean()
+            val timer = watchdog.schedule({ forced.set(true); release.countDown() }, 1, TimeUnit.SECONDS)
+            try {
+                assertSame(engine, controller.detachEngine())
+                assertFalse("teardown must discard jobs without waiting for recognition", forced.get())
+            } finally { timer.cancel(false) }
+            assertEquals("teardown must not apply or commit old ink", 0, applied)
+            assertEquals("", ic.text)
+
+            // A replacement controller engine must be immune to callbacks from the previous lifetime.
+            val replacement = FakeEngine()
+            controller.attachEngine(replacement)
+            controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }, false)
+            controller.setPreferredSchema("pinyin")
+            controller.onChar('n'.code)
+            release.countDown()
+            worker.submit {}.get(2, TimeUnit.SECONDS)
+            while (true) (posted.poll() ?: break).run()
+            assertEquals(0, applied)
+            assertEquals("", ic.text)
+            assertEquals("n", replacement.raw.toString())
+            assertFalse(controller.state.handRecognizing)
+        } finally { release.countDown(); watchdog.shutdownNow(); worker.shutdownNow() }
+    }
+
+    @Test fun detachingAlsoDiscardsACompletedResultWhoseMainThreadCallbackHasNotRun() {
+        val worker = Executors.newSingleThreadExecutor()
+        val fake = FakeEngine()
+        var applied = 0
+        val engine = object : KeyEngine by fake {
+            override fun handRecognize(strokes: List<FloatArray>) = intArrayOf('字'.code)
+            override fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean {
+                applied++
+                return fake.handInput(strokes)
+            }
+        }
+        val ic = FakeInputConnection(FrameLayout(ApplicationProvider.getApplicationContext()))
+        val controller = InputController { ic }
+        val posted = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        controller.attachEngine(engine)
+        controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }, false)
+        controller.setPreferredSchema("hand")
+        controller.handWorker = worker
+        controller.postMain = { posted += it }
+        try {
+            controller.onHandStrokes(listOf(floatArrayOf(0f, 0f, 1f, 1f)))
+            worker.submit {}.get(2, TimeUnit.SECONDS)
+            assertFalse("a completion callback is waiting", posted.isEmpty())
+            assertSame(engine, controller.detachEngine())
+            while (true) (posted.poll() ?: break).run()
+            assertEquals(0, applied)
+            assertTrue(fake.hand.isEmpty())
+            assertEquals("", ic.text)
+        } finally { worker.shutdownNow() }
+    }
+
     @Test fun aPenPauseQueuesTheCommitAndTheNextCharacterKeepsItsOwnInk() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)

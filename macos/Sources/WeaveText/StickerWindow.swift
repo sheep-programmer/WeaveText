@@ -200,6 +200,7 @@ final class StickerWindow: NSObject, NSWindowDelegate {
     }
 
     func show(owner: WeaveInputController? = nil) {
+        guard prefs.extensionEnabled("feature:stickers") else { return }
         model.owner = owner
         let front = NSWorkspace.shared.frontmostApplication
         if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { model.target = front }
@@ -222,7 +223,7 @@ final class StickerWindow: NSObject, NSWindowDelegate {
         hosting.autoresizingMask = [.width, .height]
         hosting.translatesAutoresizingMaskIntoConstraints = true
         p.contentView = hosting
-        appearance.track(p)
+        appearance.track(p,extensionKey:"feature:stickers")
         panel = p
         restoringFrame = true
         if let saved = defaults.dictionary(forKey: Self.frameKey) as? [String: Double],

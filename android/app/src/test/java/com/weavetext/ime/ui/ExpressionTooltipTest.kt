@@ -89,9 +89,12 @@ class ExpressionTooltipTest : KeyboardSnapshotSupport() {
         val (keyboard,_)=keyboard(false);keyboard.showPanel("symbol")
         val panel=keyboard.panelNamed("symbol") as SymbolPanel
         val catalog=ExpressionCatalog.load(app)!!
-        val cats=SymbolData.categories(emptyList(),catalog);val category=cats.indexOfFirst{it.name=="人物"}
-        panel.selectTab(category);snap("people")
-        val grid=grid(keyboard.view)!!;val index=cats[category].items.indexOf("👋")
+        val cats=SymbolData.categories(emptyList(),catalog)
+        // 人物是「表情」下的小类，不在分类列表里重复。 People is a sub-group of emoji, not a category of its own.
+        assertTrue(cats.none{it.name=="人物"});assertEquals(8,cats.size)
+        val people=cats[SymbolData.TAB_EMOJI].groups.indexOfFirst{it.name=="人物"}
+        panel.selectEmoji();panel.selectGroup(people);snap("people")
+        val grid=grid(keyboard.view)!!;val index=cats[SymbolData.TAB_EMOJI].groups[people].items.indexOf("👋")
         assertTrue(grid.onItemLong(index));assertTrue(keyboard.overlay!!.altShown)
         assertTrue(keyboard.overlay!!.infoLabel.isNotBlank());snap("skin_tone_name")
         val before=keyboard.prefs.getString(WeavePrefs.SYMBOL_RECENT,"")

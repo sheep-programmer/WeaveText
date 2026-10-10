@@ -36,6 +36,7 @@ final class CandidatePanel {
     private let hosting: ClickThroughHostingView<CandidateBar>
     private let effect = NSVisualEffectView()
     private weak var owner: WeaveInputController?
+    private var presentation = 0
     private var lastCaret = NSRect.zero
     static let cornerRadius: CGFloat = 12
     private var themeObserver:NSObjectProtocol?
@@ -77,13 +78,23 @@ final class CandidatePanel {
 
     /// 原地更新内容与位置，不重建窗口（换键不闪）。 Update in place, never rebuild (no flicker between keys).
     func show(_ state: CandidateState, caret: NSRect, owner: WeaveInputController) {
+        presentation += 1
+        let shown = presentation, epoch = owner.translationEpoch
         self.owner = owner
+        // Old SwiftUI/menu callbacks keep their original owner and presentation;
+        // they must never resolve through the panel's next active input controller.
+        let perform: ((WeaveInputController) -> Void) -> Void = { [weak self, weak owner] action in
+            guard let self, let owner, self.presentation == shown,
+                  self.owner === owner, EngineHost.shared.activeController === owner,
+                  owner.translationEpoch == epoch else { return }
+            action(owner)
+        }
         panel.appearance = Self.appearance(Preferences.shared.appearance)
-        hosting.rootView = CandidateBar(state: state, pick: { [weak self] i in self?.owner?.pick(pageIndex: i) }, policy: { [weak self] i,text,mode in self?.owner?.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) },
-                                        toggle: { [weak self] in self?.owner?.toggleExpand() },
-                                        pickExpanded: { [weak self] i in self?.owner?.pickExpanded(index: i) },
-                                        loadMore: { [weak self] in self?.owner?.loadMoreExpanded() },
-                                        pageTurn: { [weak self] delta in self?.owner?.turnPage(delta) },theme:Preferences.shared.colorTheme)
+        hosting.rootView = CandidateBar(state: state, pick: { i in perform { $0.pick(pageIndex: i) } }, policy: { i,text,mode in perform { $0.setCandidatePolicy(pageIndex:i,expectedText:text,mode:mode) } },
+                                        toggle: { perform { $0.toggleExpand() } },
+                                        pickExpanded: { i in perform { $0.pickExpanded(index: i) } },
+                                        loadMore: { perform { $0.loadMoreExpanded() } },
+                                        pageTurn: { delta in perform { $0.turnPage(delta) } },theme:Preferences.shared.colorTheme)
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.fittingSize
         let caret = usable(caret)
@@ -108,6 +119,8 @@ final class CandidatePanel {
     }
 
     func hide() {
+        presentation += 1
+        owner = nil
         if panel.isVisible { panel.orderOut(nil) }
     }
 
@@ -241,7 +254,14 @@ struct CandidateBar: View {
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(on ? palette.accentSoft : .clear))
             .contentShape(Rectangle())
             .onTapGesture { pick(i) }
+            .accessibilityElement(children:.ignore)
+            .accessibilityLabel(Text("\(i + 1)，\(c.text)"))
+            .accessibilityValue(Text(on ? "当前候选" : ""))
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {pick(i)}
+            .accessibilityAction(named:Text("复制完整候选")) {copyCandidate(c.text)}
             .contextMenu {
+                Button("复制完整候选") {copyCandidate(c.text)}
                 Button("恢复正常排序") { policy(i,c.text,"") }
                 Button("降低优先级") { policy(i,c.text,"down") }
                 if c.user {Button("删除学习记录") {policy(i,c.text,"forget")}}
@@ -249,14 +269,19 @@ struct CandidateBar: View {
         }
     }
 
+    private func copyCandidate(_ text:String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text,forType:.string)
+    }
+
+    /// 只有高亮的候选在词后用括号标拼音。 Only the highlighted candidate gets its pinyin, in brackets after the word.
     private func candidateLabel(_ c:Candidate,primary:Bool) -> some View {
-        VStack(alignment:.leading,spacing:2) {
-            if !c.pinyin.isEmpty {
-                Text(c.pinyin).font(note).foregroundStyle(palette.secondary)
-                    .lineLimit(nil).fixedSize(horizontal:false,vertical:true)
-            }
+        HStack(alignment:.lastTextBaseline,spacing:1) {
             Text(c.text.count>48 ? String(c.text.prefix(47))+"…" : c.text)
                 .help(c.text).font(font).foregroundStyle(primary ? palette.candidate : palette.label)
+            if primary && !c.pinyin.isEmpty {
+                Text("(\(c.pinyin))").font(note).foregroundStyle(palette.secondary)
+            }
         }
     }
 
@@ -308,7 +333,13 @@ struct CandidateBar: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(i == 0 ? palette.accentSoft : .clear))
                         .contentShape(Rectangle())
+                        .help(c.text)
                         .onTapGesture { pickExpanded(i) }
+                        .accessibilityElement(children:.ignore)
+                        .accessibilityLabel(Text("\(i + 1)，\(c.text)"))
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction {pickExpanded(i)}
+                        .accessibilityAction(named:Text("复制完整候选")) {copyCandidate(c.text)}
                         .onAppear { if state.expandedMore, i >= all.count - 12 { loadMore() } }
                     }
                 }

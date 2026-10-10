@@ -106,6 +106,19 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
     fun maxScroll() = (contentHeight() - height).coerceAtLeast(0f)
     fun scrollToTop() { scroll = 0f; scroller.forceFinished(true); onScrollMoved(); invalidate() }
 
+    /** Bring a keyboard-selected item into view without moving the user's text cursor. */
+    protected fun reveal(top: Float, bottom: Float) {
+        scroller.forceFinished(true)
+        scroll = when {
+            top < scroll -> top
+            bottom > scroll + height -> bottom - height
+            else -> scroll
+        }.coerceIn(0f, maxScroll())
+        onScrollMoved()
+        invalidate()
+        a11yChanged()
+    }
+
     /** 平滑滚到第 [page] 页（翻页模式）。 Smoothly scroll to [page] (paged mode). */
     fun scrollToPage(page: Int) {
         val ph = pageHeight()

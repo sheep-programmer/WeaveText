@@ -26,6 +26,10 @@ data class ImeState(
     val preeditMarks: List<PreeditMark> = emptyList(),
     val candidates: List<Candidate> = emptyList(),
     val totalCandidates: Int = 0,
+    /** 外接键盘主动选择的候选；-1 表示尚未移动，回车仍按原样输入码。 */
+    val highlightedCandidate: Int = -1,
+    /** Identifies the candidate set and editor that produced it, even if the same text appears again. */
+    val candidateGeneration: Long = 0,
     val pinyinOptions: List<String> = emptyList(),
     val composing: Boolean = false,
     val handRecognizing: Boolean = false,
@@ -188,6 +192,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
     var state = ImeState()
         private set
+    private var candidateGeneration = 0L
+    private var candidateInputEpoch = -1L
+    internal var visibleCandidates: ImeState? = null
+        private set
+    fun candidatesVisible(snapshot: ImeState?) { visibleCandidates = snapshot }
     private val listeners = mutableListOf<(ImeState) -> Unit>()
     /** 中文方案（中/英切换时保留）。 Chinese schema kept across 中/英 toggles. */
     private var chineseSchema = "pinyin"
@@ -201,6 +210,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Bumped by every engine/editor change; the last char input is undoable while [undoStamp] equals it.
      */
     private var stamp = 0
+    /** A candidate action belongs to this editor and this unchanged engine/editor state. */
+    internal val candidateContext get() = inputEpoch to stamp
     private var undoStamp = -1
     /** null = 上次输入进了内核组合；否则为直接上屏的文字。 null = went into the engine; else the committed text. */
     private var undoText: String? = null
@@ -262,7 +273,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
         replayPending()
     }
 
-    fun detachEngine(): KeyEngine? = engine.also { engine = null }
+    /** Teardown discards recognition; reading engine here would wait for it and could commit into the editor. */
+    fun detachEngine(): KeyEngine? = engineRef.also { engine = null }
 
     // ---------------------------------------------------------------- lifecycle
 
@@ -420,7 +432,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if(reconversion!=null){engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh()}
         if (keep(PendingKey(PendingKey.TEXT, text = text))) return
         val e = engine
-        if (text.length==1 && text[0].isUpperCase() && state.chinese && state.schema=="pinyin" && e?.isComposing()==true && e.inputChar(text[0].code)) {refresh();return}
+        if (text.length == 1 && text[0] in 'A'..'Z' && state.chinese &&
+            (state.schema == "pinyin" || state.schema.startsWith("shuangpin")) &&
+            e?.isComposing() == true && e.inputChar(text[0].code)) {
+            stamp++; refresh(); markUndo(null); return
+        }
         // 拼音 v 模式（v1234、v12*3）：数字与运算符继续进组合串；字母（实体键盘的大写字母）不进。
         // Pinyin v mode: digits and operators keep composing; letters (uppercase from a physical keyboard) don't.
         if (e != null && text.length == 1 && !text[0].isLetter() && state.chinese && state.schema == "pinyin" && e.isComposing() &&
@@ -527,8 +543,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
         return false
     }
 
-    /** 联想词还在候选栏时收起（空格、回车等不选联想的操作）。 Dismiss predictions on space, enter and similar. */
-    private fun dismissPredictions() {
+    /** 联想词还在候选栏时收起（空格、回车、点候选栏的叉）。 Dismiss predictions on space, enter or the bar's cross. */
+    fun dismissPredictions() {
         val e = engine ?: return
         if (!state.composing && state.candidates.isNotEmpty()) {
             e.clear()
@@ -537,9 +553,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     /** 敲下等号时，光标前是算式就把结果当候选给出。 After typing "=", offer the result when an expression precedes it. */
+    var calcEnabled = true
     var onCalc: ((List<String>) -> Unit)? = null
 
     private fun offerCalc() {
+        if (!calcEnabled) return
         val e = engine ?: return
         val cb = onCalc ?: return
         val before = editor.textBefore(64) ?: ic()?.getTextBeforeCursor(64, 0)?.toString() ?: return
@@ -640,7 +658,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val e = engine
         dismissPredictions()
         if (e != null && e.isComposing()) {
-            e.select(0)
+            e.select(state.highlightedCandidate.coerceAtLeast(0))
             refresh()
             // This separator was explicitly pressed; choosing a candidate never inserts one.
             if (!state.chinese) {
@@ -698,6 +716,27 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if(reconversion!=null) engine?.setSchema(reconversionSchema)
         reconversion=null
         refresh()
+    }
+
+    fun onVisibleCandidate(index: Int, generation: Long): Boolean {
+        if (state.candidateGeneration != generation || state.handRecognizing || state.candidates.isEmpty()) return false
+        if (index < 0 || index >= maxOf(state.candidates.size, state.totalCandidates)) return false
+        onCandidate(index)
+        return true
+    }
+
+    /** Move through candidates without changing the composition or writing into the editor. */
+    fun moveCandidate(delta: Int): Boolean {
+        if (state.handRecognizing || state.candidates.isEmpty()) return false
+        val count = maxOf(state.candidates.size, state.totalCandidates)
+        val current = state.highlightedCandidate.coerceAtLeast(0)
+        val index = (current.toLong() + delta).coerceIn(0, (count - 1).toLong()).toInt()
+        val items = if (index >= state.candidates.size) {
+            state.candidates + loadCandidates(state.candidates.size, index - state.candidates.size + 1)
+        } else state.candidates
+        if (index !in items.indices) return true
+        update { it.copy(candidates = items, highlightedCandidate = index) }
+        return true
     }
 
     /**
@@ -1279,21 +1318,30 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private fun refresh() {
         if (engineRef == null && pendingKeys.isNotEmpty()) { showPending(); return }
         val snap = drainCommit() ?: EngineSnapshot.EMPTY
+        val composing = snap.composing || handJob != null || handCommits.isNotEmpty()
+        if (candidateInputEpoch != inputEpoch || snap.commit.isNotEmpty() ||
+            snap.preedit != state.preedit || snap.candidates != state.candidates ||
+            snap.totalCandidates != state.totalCandidates || composing != state.composing) {
+            candidateGeneration++
+            candidateInputEpoch = inputEpoch
+        }
         update {
             it.copy(
                 preedit = snap.preedit,
                 preeditMarks = snap.marks,
                 candidates = snap.candidates,
                 totalCandidates = snap.totalCandidates,
+                highlightedCandidate = -1,
+                candidateGeneration = candidateGeneration,
                 pinyinOptions = snap.pinyinOptions,
-                composing = snap.composing || handJob != null || handCommits.isNotEmpty(),
+                composing = composing,
                 handRecognizing = handJob != null || handCommits.isNotEmpty(),
             )
         }
     }
 
     private inline fun update(f: (ImeState) -> ImeState) {
-        val next = f(state)
+        val next = f(state).let { if (it.highlightedCandidate >= it.candidates.size) it.copy(highlightedCandidate = -1) else it }
         if (next != state) {
             state = next
             listeners.forEach { it(next) }

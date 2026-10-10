@@ -104,6 +104,8 @@ pub struct Options {
     /// 拼音自动纠错（换位、漏字母、多字母），预编辑里标出改动。
     /// Pinyin auto-correction (swapped, missing or extra letters), with the changes marked in the preedit.
     pub autocorrect: bool,
+    /// Optional arithmetic and numeral input in v mode.
+    pub calculator: bool,
 }
 
 impl Default for Options {
@@ -125,6 +127,7 @@ impl Default for Options {
             hand_lm_weight: 0.25,
             hand_word_bonus: 2.0,
             autocorrect: true,
+            calculator: true,
         }
     }
 }
@@ -154,6 +157,7 @@ impl Options {
             "candidates.emoji" => &mut self.emoji,
             "candidates.prediction" => &mut self.prediction,
             "input.autocorrect" => &mut self.autocorrect,
+            "features.calculator" => &mut self.calculator,
             "candidates.pinyin" => &mut self.pinyin_hint,
             "candidates.pinyin_tones" => &mut self.pinyin_tones,
             _ => return false,
@@ -938,7 +942,7 @@ impl Engine {
                 // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
                 // 只在 v 之后紧跟数字或运算符（或只有 v）时才进入；very 之类的英文不受影响。
                 // Only when nothing but digits/operators follow `v` (or `v` alone), so words like "very" are untouched.
-                let in_v = self.raw.strip_prefix('v').is_some_and(|b| b.chars().all(crate::special::v_accepts));
+                let in_v = self.options.calculator && self.raw.strip_prefix('v').is_some_and(|b| b.chars().all(crate::special::v_accepts));
                 if in_v && self.consumed == 0 && crate::special::v_accepts(c) {
                     self.raw.push(c);
                     self.refresh();
@@ -956,8 +960,8 @@ impl Engine {
                 false
             }
             Schema::Shuangpin(_) => {
-                let c = c.to_ascii_lowercase();
-                if c.is_ascii_lowercase() || (c == ';' && !self.raw.is_empty()) {
+                // Preserve the literal keys; only the syllable graph is lowercased.
+                if c.is_ascii_alphabetic() || (c == ';' && !self.raw.is_empty()) {
                     self.raw.push(c);
                     self.push_long_composition();
                     self.refresh();
@@ -1673,7 +1677,7 @@ impl Engine {
                 (graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near, typos), l.keys)
             }
             Schema::Shuangpin(id) => {
-                let keys = self.rest_raw().as_bytes().to_vec();
+                let keys = self.rest_raw().to_ascii_lowercase().into_bytes();
                 (shuangpin::build_graph(id, &keys, &self.options.fuzzy), keys)
             }
             Schema::Keypad(_) => {
@@ -1788,7 +1792,7 @@ impl Engine {
 
     /// v 模式（v 后跟数字或算式）：只给计算与数字读法候选。 The v mode: arithmetic and numeral candidates only.
     fn refresh_v_mode(&mut self) -> bool {
-        if self.schema != Schema::Pinyin || self.consumed != 0 || !self.selected.is_empty() {
+        if !self.options.calculator || self.schema != Schema::Pinyin || self.consumed != 0 || !self.selected.is_empty() {
             return false;
         }
         let Some(body) = self.raw.strip_prefix('v') else { return false };
@@ -1900,14 +1904,42 @@ impl Engine {
             weight: self.options.lm_weight,
             baseline: self.options.lm_baseline,
         });
-        let original:Vec<u8>=self.rest_raw().bytes().filter(u8::is_ascii_alphabetic).collect();
+        let original: Vec<u8> = if matches!(self.schema, Schema::Shuangpin(_)) {
+            // Semicolon is a real double-pinyin key and occupies a graph position.
+            self.rest_raw().as_bytes().to_vec()
+        } else {
+            self.rest_raw().bytes().filter(u8::is_ascii_alphabetic).collect()
+        };
         // 纠错时忽略偶然拼出的短英文（ragdajia 的 rag），但保留大写、学过的词和较长英文里的混输。
         // Ignore accidental short English fragments during correction, but keep explicit capitals, learned words and longer English.
         let decode = |graph: &SyllableGraph, correcting: bool| {
             let d=Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm };
-            if self.schema==Schema::Pinyin {d.decode_with_latin(self.english.as_ref(),&original,self.rest_raw(),self.user_english.learning.then_some(&self.user_english),correcting)} else {d.decode()}
+            if self.schema == Schema::Pinyin {
+                d.decode_with_latin(self.english.as_ref(), &original, self.rest_raw(),
+                    self.user_english.learning.then_some(&self.user_english), correcting)
+            } else { d.decode() }
         };
         let lat1 = decode(&g1, false);
+        let protected_chinese = if matches!(self.schema, Schema::Shuangpin(_)) && g1.spells_fully()
+            && !lat1.best.is_empty() {
+            let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs,
+                user: &self.user_pinyin, graph: &g1, context, lm };
+            let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&original[s..e]).into_owned();
+            plain.candidates(&lat1, &raw_text, 1).into_iter().next()
+        } else { None };
+        let (g1, lat1) = if let Schema::Shuangpin(id) = self.schema {
+            if self.english.is_some() || original.iter().any(u8::is_ascii_uppercase)
+                || (self.user_english.learning && self.user_english.entry_count() > 0) {
+                let mixed = shuangpin::build_mixed_graph(id, &keys1, &self.options.fuzzy);
+                let decoder = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs,
+                    user: &self.user_pinyin, graph: &mixed, context, lm };
+                let mixed_lat = decoder.decode_shuangpin_with_latin(self.english.as_ref(), &original,
+                    self.rest_raw(), self.user_english.learning.then_some(&self.user_english));
+                if mixed_lat.best.iter().any(|(si, _)| mixed_lat.spans[*si].literal.is_some()) {
+                    (mixed, mixed_lat)
+                } else { (g1, lat1) }
+            } else { (g1, lat1) }
+        } else { (g1, lat1) };
         // 加上纠错再解一次，明显更好才采用；正常读法要靠句中简拼或原样按键才读得通、而输入里又有韵母时多半是打错了，
         // 门槛更低。 Decode again with corrections and keep it if clearly better; the bar is lower when the plain reading
         // needs mid-input abbreviations or raw keys although vowels were typed (probably a typo, not deliberate abbreviation).
@@ -1954,8 +1986,15 @@ impl Engine {
         }
         let (g, keys, lat) = chosen.unwrap_or((g1, keys1, lat1));
         let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
-        let raw_text = |s: usize, e: usize| String::from_utf8_lossy(if self.schema==Schema::Pinyin {&original[s..e]}else{&keys[s..e]}).into_owned();
+        let raw_text = |s: usize, e: usize| String::from_utf8_lossy(
+            if matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_)) { &original[s..e] }
+            else { &keys[s..e] }).into_owned();
         let mut cands = dec.candidates(&lat, &raw_text, self.cand_cap);
+        if let Some(plain) = protected_chinese {
+            cands.retain(|c| c.text != plain.text);
+            cands.insert(0, plain);
+            cands.truncate(self.cand_cap);
+        }
         if let Some(plain) = uncorrected.filter(|p| cands.first().is_some_and(|first| first.text != p.text)) {
             cands.retain(|c| c.text != plain.text);
             cands.insert(1.min(cands.len()), plain);
@@ -2036,6 +2075,7 @@ impl Engine {
             .collect();
         if matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_)) {
             self.mix_english(&lat, &keys, g.spells_fully());
+            self.offer_literal_latin();
         }
         if self.schema.is_pinyin_family() && !matches!(self.schema, Schema::Keypad(_)) {
             self.insert_dates();
@@ -2099,7 +2139,10 @@ impl Engine {
         let has_raw = lat.best.iter().any(|(si, _)| lat.spans[*si].raw);
         let pinyin_penalty: u32 = lat.best.iter().map(|(si, _)| lat.spans[*si].penalty).sum();
         let cost = best.cost as u32;
-        let pos = if has_raw || lat.best.is_empty() || (pinyin_penalty >= 3000 && cost < 16_000) {
+        let pos = if matches!(self.schema, Schema::Shuangpin(_)) && spells_fully {
+            // The retained complete Chinese reading outranks English variants.
+            3
+        } else if has_raw || lat.best.is_empty() || (pinyin_penalty >= 3000 && cost < 16_000) {
             0
         } else if pinyin_penalty > 0 && cost < 12_500 {
             1
@@ -2119,6 +2162,39 @@ impl Engine {
             action: Action::Table { text },
         };
         self.cands.insert(pos.min(self.cands.len()), cand);
+    }
+
+    /// Alphabetic technical words need an escape even without an English pack.
+    /// Keep Chinese first, and put the literal spelling before a leading English
+    /// dictionary variant so punctuation does not change case or insert apostrophes.
+    fn offer_literal_latin(&mut self) {
+        let typed = self.rest_raw();
+        if typed.len() < 2 || !typed.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return;
+        }
+        let candidate = crate::decoder::Candidate {
+            text: typed.into(), comment: String::new(), end: self.graph_len(), key: Vec::new(),
+            kind: CandKind::Raw, origin: crate::decoder::Origin::Raw,
+            words: vec![(Vec::new(), typed.into())], cost: 0,
+        };
+        let cand = Cand {
+            view: CandidateView { pinyin: String::new(), cloud: false, text: typed.into(),
+                comment: String::new(), user: false },
+            action: Action::Pinyin(candidate),
+        };
+        let prefer_literal = self.cands.first().is_some_and(|c| matches!(c.action, Action::Table { .. }));
+        if let Some(at) = self.cands.iter().position(|c| c.view.text == typed) {
+            // An exact English table hit should learn in English just like a span.
+            if prefer_literal && at > 0 {
+                self.cands.remove(at);
+                self.cands.insert(0, cand);
+            } else { self.cands[at] = cand; }
+            return;
+        }
+        let at = if prefer_literal {
+            0
+        } else { 3.min(self.cands.len()) };
+        self.cands.insert(at, cand);
     }
 
     /// 组合串中未选部分的显示：按最优路径切分。 Display of the unselected part.
@@ -2168,12 +2244,15 @@ impl Engine {
                             } else if matches!(self.schema, Schema::Keypad(_)) && locked {
                                 full.to_string()
                             } else if cut - s == 1 && !matches!(self.schema, Schema::Keypad(_)) {
-                                String::from_utf8_lossy(&keys[s..cut]).into_owned()
+                                self.rest_raw()[s..cut].to_string()
                             } else {
                                 full.to_string()
                             }
                         }
-                        None => String::from_utf8_lossy(&keys[s..cut]).into_owned(),
+                        None => if matches!(self.schema, Schema::Shuangpin(_)) {
+                            span.literal.as_ref().map(|(text, _)| text.clone())
+                                .unwrap_or_else(|| self.rest_raw()[s..cut].to_string())
+                        } else { String::from_utf8_lossy(&keys[s..cut]).into_owned() },
                     },
                     _ => String::new(),
                 };
@@ -2747,6 +2826,23 @@ mod wubi_tests {
         e.clear();
         typing(&mut e, "very");
         assert!(!e.input_char('1'));
+    }
+
+    #[test]
+    fn disabling_calculator_stops_v_mode_and_removes_existing_results() {
+        let mut e = pinyin_engine();
+        typing(&mut e, "v(128+32)*4");
+        assert_eq!(e.snapshot().candidates[0].text, "640");
+        assert!(e.options.set_flag("features.calculator", false));
+        e.refresh();
+        assert!(e.snapshot().candidates.iter().all(|c| c.text != "640"));
+        e.clear();
+        typing(&mut e, "v");
+        assert!(!e.input_char('1'));
+        e.clear();
+        assert!(e.options.set_flag("features.calculator", true));
+        typing(&mut e, "v2+3");
+        assert_eq!(e.snapshot().candidates[0].text, "5");
     }
 
     #[test]

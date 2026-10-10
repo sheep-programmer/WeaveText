@@ -138,7 +138,7 @@ struct GeneralPage: View {
                 Text("启动")
             } footer: {
                 if let error = login.error { Footnote(error) } else {
-                    Footnote("切换到织文后，从系统输入法菜单里的「织文键盘设置…」打开设置。")
+                    Footnote("切换到织文后，从系统输入法菜单里的「织文设置…」打开设置。")
                 }
             }
             Section("中英切换") {
@@ -171,6 +171,7 @@ struct GeneralPage: View {
                 Footnote("点按钮后按下想用的键，比如 [ 和 ] 翻页，或 Tab 展开全部候选。自定义的键优先于上面的默认翻页键；字母、数字、空格、回车、Esc 要用来打字，不能设置。")
             }
             Section {
+                if prefs.extensionEnabled("feature:voice") {
                 LabeledContent("打开语音悬浮窗") {
                     HStack(spacing: 6) {
                         Button(voiceRecorder.recording ? "按下组合键…" : (prefs.voiceShortcut?.label ?? "关闭")) {
@@ -182,10 +183,11 @@ struct GeneralPage: View {
                     }
                 }
                 if voiceRecorder.recording { Text(voiceRecorder.message).foregroundStyle(.orange) }
-                Button("打开表情收纳袋…") { StickerWindow.shared.show() }
+                }
+                if prefs.extensionEnabled("feature:stickers") {Button("打开表情收纳袋…") { StickerWindow.shared.show() }}
                 Button("Emoji 与颜文字…") { ExpressionsWindow.shared.show() }
             } header: {
-                Text("语音")
+                Text("输入工具")
             } footer: {
                 Footnote("切换到织文后生效，也可从输入法菜单打开。悬浮窗可拖动，点关闭按钮才关闭；点击话筒后才开始录音。系统占用的组合键无法传给输入法。")
             }
@@ -204,7 +206,7 @@ struct SchemesPage: View {
         Form {
             Section("输入方案") {
                 Picker("方案", selection: $prefs.schema) {
-                    ForEach(InputScheme.all) { scheme in
+                    ForEach(InputScheme.all.filter {ExtensionRegistry.scheme($0.id,enabled:prefs.extensionsEnabled)}) { scheme in
                         let missing = EngineHost.shared.engine?.hasSchema(scheme.id) == false
                         Text(missing ? scheme.name + "（缺少词库）" : scheme.name).tag(scheme.id).disabled(missing)
                     }
@@ -241,11 +243,11 @@ struct SchemesPage: View {
                 Footnote("联想与英文补全默认关闭，可按需开启。英文补全关闭时，输入什么就保留什么，空格、数字和标点也原样输入。开启联想后按数字选词，空格、回车或 Esc 收起；联想深度决定最多连续推荐几次。")
             }
             Section {
-                Toggle("词语上方拼音注音（默认开启）", isOn: Binding(get: {prefs.pinyinHint != .off}, set: {prefs.pinyinHint = $0 ? .toned : .off}))
+                Toggle("高亮候选拼音注音（默认关闭）", isOn: Binding(get: {prefs.pinyinHint != .off}, set: {prefs.pinyinHint = $0 ? .toned : .off}))
             } header: {
                 Text("拼音提示")
             } footer: {
-                Footnote("在每个候选词上方显示完整带声调拼音，例如 nǐ hǎo、yín háng。关闭后立即隐藏注音；轻声按规范不添加声调符号。")
+                Footnote("打开后只在当前高亮的候选词后面用括号标出完整带声调拼音，例如 银行(yín háng)，其他候选不显示。轻声按规范不添加声调符号。")
             }
             Section("输出") {
                 Toggle("自动学习用户词", isOn: $prefs.learning)
@@ -254,6 +256,7 @@ struct SchemesPage: View {
                 Toggle("繁体输出", isOn: $prefs.traditional)
                 Toggle("表情候选", isOn: $prefs.emoji)
             }
+            if prefs.extensionEnabled("scheme:wubi86") {
             Section {
                 Toggle("四码唯一时自动上屏", isOn: $prefs.wubiAutoCommit)
                 Toggle("z 键拼音反查", isOn: $prefs.wubiPinyinLookup)
@@ -261,6 +264,8 @@ struct SchemesPage: View {
             } header: { Text("五笔") } footer: {
                 Footnote("输入 z 后接拼音，可查不熟悉的字；编码补全显示尚未输入的编码。")
             }.disabled(prefs.schema != "wubi86")
+            }
+            if prefs.extensionEnabled("scheme:hand") {
             Section {
                 Toggle("多字连写", isOn: $prefs.handLine)
                 Picker("停笔自动上屏", selection: $prefs.handPause) {
@@ -273,6 +278,7 @@ struct SchemesPage: View {
             } footer: {
                 Footnote("写完停笔多久，把第一个候选上屏；写得慢选「慢」。连写模式等待时间加倍。从系统输入法菜单打开「织文手写」。")
             }
+            }
         }
         .formStyle(.grouped)
     }
@@ -280,15 +286,17 @@ struct SchemesPage: View {
 
 struct AppearancePage: View {
     @ObservedObject var prefs: Preferences
+    @ObservedObject private var store: ExtensionStore = .shared
 
     var body: some View {
         Form {
             Section {
                 LazyVGrid(columns:[GridItem(.adaptive(minimum:125),spacing:12)],spacing:12) {
-                    ForEach(ColorTheme.allCases,id:\.self) {theme in
+                    ForEach(store.themes,id:\.self) {theme in
                         ThemeChoice(theme:theme,selected:prefs.colorTheme==theme) {prefs.colorTheme=theme}
                     }
                 }.padding(.vertical,6)
+                Button("在插件市场添加主题…") {SettingsWindow.shared.show(page:.market)}
                 Picker("明暗模式",selection:$prefs.appearance) {
                     Text("跟随系统").tag(AppearanceMode.system)
                     Text("浅色").tag(AppearanceMode.light)

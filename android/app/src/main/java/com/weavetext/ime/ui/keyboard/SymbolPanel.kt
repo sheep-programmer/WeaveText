@@ -30,11 +30,18 @@ import kotlin.math.min
 class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private val grid = Grid(kb.ctx)
     private val side = SideList(kb.ctx)
+    private val subTabs = SubTabs(kb.ctx)
     private val bottomRow = BottomRow(kb.ctx)
+    /** 网格一列：上方是小类标签（有小类时），下面是网格。 The grid column: sub-group tabs (when any) over the grid. */
+    private val column = LinearLayout(kb.ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(subTabs, LinearLayout.LayoutParams(-1, kb.metrics.dp(36f).toInt()))
+        addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
+    }
     private val body = LinearLayout(kb.ctx).apply {
         orientation = LinearLayout.HORIZONTAL
         addView(side, LinearLayout.LayoutParams(-2, -1))
-        addView(grid, LinearLayout.LayoutParams(0, -1, 1f))
+        addView(column, LinearLayout.LayoutParams(0, -1, 1f))
     }
     override val view = LinearLayout(kb.ctx).apply {
         orientation = LinearLayout.VERTICAL
@@ -49,6 +56,10 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private var cats = SymbolData.categories(recent(), catalog)
     private val toneBases get() = catalog?.skinToneBases ?: SymbolData.SKIN_TONE_BASE
     private var tab = 0
+    /** 当前大类里选中的小类。 The selected sub-group of the current category. */
+    private var group = 0
+    /** 网格里显示的原始条目（选中小类时只是这一类）。 Items shown in the grid: just the sub-group when there is one. */
+    private val shownItems get() = cats[tab].groups.getOrNull(group)?.items ?: cats[tab].items
     private val tmp = RectF()
 
     private fun recent(): List<String> =
@@ -68,6 +79,9 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         sideMode = kb.style.layout.symbols.categories == "side"
         (bottomRow.layoutParams as LinearLayout.LayoutParams).height = kb.metrics.rowPitch.toInt()
         bottomRow.requestLayout()
+        (subTabs.layoutParams as LinearLayout.LayoutParams).height = kb.metrics.dp(36f).toInt()
+        subTabs.requestLayout()
+        subTabs.refresh()
         side.visibility = if (sideMode) View.VISIBLE else View.GONE
         grid.scrollToTop()
         grid.rebuild(); side.invalidate(); bottomRow.invalidate()
@@ -82,6 +96,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     override fun onShow() {
         cats = SymbolData.categories(recent(), catalog)
         if (!cats[tab].emoji && !cats[tab].kaomoji) tab = 0
+        group = group.coerceIn(0, max(0, cats[tab].groups.size - 1))
+        subTabs.refresh()
         grid.rebuild()
         grid.scrollToTop()
         side.ensureVisible()
@@ -89,7 +105,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         bottomRow.invalidate()
     }
 
-    override fun onHide() { grid.cancelPress();grid.hidePreview();tab = 0 }
+    override fun onHide() { grid.cancelPress();grid.hidePreview();tab = 0;group = 0 }
 
     /** 定位到「表情」Tab（符长按、工具箱「表情」）。 Jump to the emoji tab. */
     fun selectEmoji() = selectTab(SymbolData.TAB_EMOJI)
@@ -97,12 +113,24 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     fun selectTab(i: Int) {
         grid.cancelPress();grid.hidePreview()
         tab = i
+        group = 0
+        subTabs.refresh()
         grid.rebuild()
         grid.scrollToTop()
         side.ensureVisible()
         side.invalidate()
         bottomRow.ensureTabVisible()
         bottomRow.invalidate()
+    }
+
+    /** 切到当前大类里的第 [i] 个小类。 Switch to the [i]-th sub-group of the current category. */
+    fun selectGroup(i: Int) {
+        if (i !in cats[tab].groups.indices) return
+        grid.cancelPress();grid.hidePreview()
+        group = i
+        subTabs.refresh()
+        grid.rebuild()
+        grid.scrollToTop()
     }
 
     private fun output(s: String, single: Boolean) {
@@ -137,7 +165,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         fun rebuild() {
             val cat = cats[tab]
-            items = if (cat.emoji) cat.items.map { SymbolData.withTone(it, skinTone, toneBases) } else cat.items
+            items = if (cat.emoji) shownItems.map { SymbolData.withTone(it, skinTone, toneBases) } else shownItems
             // 左列占去一格多，多列分类少排一列。 The side column takes a column's worth of width.
             cols = if (sideMode && cat.columns > 2) cat.columns - 1 else cat.columns
             layoutRows()
@@ -216,7 +244,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onItemLong(index: Int): Boolean {
             val s = items.getOrNull(index) ?: return false
-            val base = cats[tab].items[index]
+            val base = shownItems[index]
             val entry=catalog?.entry(s)
             val emojiBase=entry?.text ?: base
             if ((cats[tab].emoji || entry?.text in toneBases) && emojiBase in toneBases) {
@@ -396,6 +424,135 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             // 与网格之间的细分隔线。 Hairline between the column and the grid.
             p.color = pal.divider
             c.drawRect(width - m.dp(0.5f), scroll + m.dp(8f), width.toFloat(), scroll + height - m.dp(8f), p)
+        }
+    }
+
+    // ------------------------------------------------------------------ sub-group tabs
+
+    /**
+     * 网格上方的小类标签（笑脸、人物……），可横向拖动；没有小类的大类不显示。
+     * Sub-group tabs above the grid (smileys, people…), draggable sideways; hidden for categories without sub-groups.
+     */
+    @SuppressLint("ViewConstructor")
+    private inner class SubTabs(c: Context) : View(c) {
+        private val text = Paint(Paint.ANTI_ALIAS_FLAG).zh().apply { textAlign = Paint.Align.CENTER }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
+        private val r = RectF()
+        private var xs = FloatArray(0)
+        private var ws = FloatArray(0)
+        private var offset = 0f
+        private var downX = 0f
+        private var downOffset = 0f
+        private var dragging = false
+        private var pressedAt = -1
+        private val names get() = cats[tab].groups.map { it.name }
+
+        fun refresh() {
+            visibility = if (cats[tab].groups.isEmpty()) View.GONE else View.VISIBLE
+            measureTabs()
+            ensureVisible()
+            invalidate()
+            a11y.invalidate()
+        }
+
+        private val padL get() = if (sideMode) kb.metrics.dp(4f) else kb.metrics.padH
+
+        private fun measureTabs() {
+            val m = kb.metrics
+            text.textSize = m.panel(13f)
+            val n = names
+            xs = FloatArray(n.size); ws = FloatArray(n.size)
+            var x = 0f
+            for (i in n.indices) {
+                text.typeface = if (i == group) medium else Typeface.DEFAULT
+                ws[i] = text.measureText(n[i]) + m.dp(22f); xs[i] = x; x += ws[i]
+            }
+        }
+
+        private fun maxOffset() = max(0f, (xs.lastOrNull() ?: 0f) + (ws.lastOrNull() ?: 0f) - (width - padL - kb.metrics.padH))
+
+        private fun ensureVisible() {
+            if (width == 0 || group !in xs.indices) return
+            val avail = width - padL - kb.metrics.padH
+            if (xs[group] < offset) offset = xs[group]
+            if (xs[group] + ws[group] > offset + avail) offset = xs[group] + ws[group] - avail
+            offset = offset.coerceIn(0f, maxOffset())
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) { measureTabs(); ensureVisible() }
+
+        private fun hitAt(x: Float): Int {
+            val xx = x - padL + offset
+            for (i in xs.indices) if (xx >= xs[i] && xx < xs[i] + ws[i]) return i
+            return -1
+        }
+
+        override fun onDraw(c: Canvas) {
+            val pal = kb.palette
+            val m = kb.metrics
+            measureTabs()
+            val n = names
+            val cy = height / 2f
+            c.save()
+            c.clipRect(padL, 0f, width - m.padH, height.toFloat())
+            for (i in n.indices) {
+                val l = padL + xs[i] - offset
+                if (l > width || l + ws[i] < 0) continue
+                val sel = i == group
+                text.typeface = if (sel) medium else Typeface.DEFAULT
+                text.textSize = m.panel(13f)
+                if (sel || i == pressedAt) {
+                    fill.color = if (sel) pal.accentSoft else pal.toolbarActive
+                    val hh = (text.descent() - text.ascent()) / 2 + m.dp(5f)
+                    r.set(l + m.dp(3f), cy - hh, l + ws[i] - m.dp(3f), cy + hh)
+                    c.drawRoundRect(r, hh, hh, fill)
+                }
+                text.color = if (sel) pal.label else pal.labelSecondary
+                c.drawText(n[i], l + ws[i] / 2, cy - (text.ascent() + text.descent()) / 2, text)
+            }
+            c.restore()
+        }
+
+        private val a11y = VirtualA11y(this, object : VirtualA11y.Source {
+            override fun a11yIds() = IntArray(names.size) { it }
+            override fun a11yBounds(id: Int, out: RectF): Boolean {
+                if (width == 0 || id !in xs.indices) return false
+                val l = padL + xs[id] - offset
+                out.set(max(l, padL), 0f, minOf(l + ws[id], width - kb.metrics.padH), height.toFloat())
+                return out.width() > 1f
+            }
+            override fun a11yLabel(id: Int): CharSequence? = names.getOrNull(id)
+            override fun a11yState(id: Int): CharSequence? = if (id == group) "已选中" else null
+            override fun a11yClick(id: Int): Boolean { selectGroup(id); return true }
+        })
+
+        override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider = a11y
+        override fun dispatchHoverEvent(event: MotionEvent): Boolean = a11y.onHover(event) || super.dispatchHoverEvent(event)
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.x; downOffset = offset; dragging = false
+                    pressedAt = hitAt(e.x)
+                    if (pressedAt >= 0) kb.feedback.key(this)
+                    invalidate()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.x - downX
+                    if (!dragging && abs(dx) > kb.metrics.dp(8f)) { dragging = true; pressedAt = -1 }
+                    if (dragging) { offset = (downOffset - dx).coerceIn(0f, maxOffset()); invalidate() }
+                }
+                MotionEvent.ACTION_UP -> {
+                    val p = pressedAt
+                    pressedAt = -1
+                    if (!dragging && p >= 0 && p != group) selectGroup(p) else invalidate()
+                    dragging = false
+                }
+                MotionEvent.ACTION_CANCEL -> { pressedAt = -1; dragging = false; invalidate() }
+            }
+            return true
         }
     }
 

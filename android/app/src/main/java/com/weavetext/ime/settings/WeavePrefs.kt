@@ -1,7 +1,9 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.Context
 import android.content.SharedPreferences
+import com.weavetext.ime.ui.keyboard.HandwritingAreaMode
 
 /**
  * 全部设置的键名与默认值（docs/design/03 §10）。设置 App 写入，IME 监听变化即时生效。
@@ -56,7 +58,7 @@ object WeavePrefs {
     const val PREDICTION = "prediction"
     /** 联想深度：连着选联想词最多接几次（1–6）。 Prediction depth: how many predictions may be picked in a row. */
     const val PREDICTION_DEPTH = "prediction_depth"
-    /** 词语上方注音：0 关、1 完整声调（默认）；旧值 2 也使用完整声调。 */
+    /** 候选拼音：0 关（默认）、1 在首选后用括号标完整声调；旧值 2 也算开。 Pinyin after the top candidate: 0 off (default), 1 on. */
     const val PINYIN_HINT = "pinyin_hint"
     /** 拼音自动纠错（默认开）：字母颠倒、漏打、多打时改正，并在拼音上标红。 Pinyin auto-correction, on by default. */
     const val AUTOCORRECT = "autocorrect"
@@ -65,6 +67,8 @@ object WeavePrefs {
     const val HAND_PAUSE = "hand_pause"
     const val HAND_AUTO_COMMIT = "hand_auto_commit"
     const val HAND_GUIDE = "hand_guide"
+    /** Docked handwriting area: keyboard / half / full. Other schemes and private fields keep normal geometry. */
+    const val HAND_AREA_MODE = "hand_area_mode"
     /** 默认中档：写得慢的人（长辈）用慢档。 Default: the middle level; slow writers pick the slow one. */
     const val HAND_PAUSE_DEFAULT = 1
     /** 各档的停笔时间（毫秒）：快 / 中 / 慢。 Pause per level in ms: fast / medium / slow. */
@@ -131,7 +135,7 @@ object WeavePrefs {
     fun of(ctx: Context): SharedPreferences = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     fun keyboards(p: SharedPreferences): List<String> =
-        (p.getString(KEYBOARDS, KEYBOARDS_DEFAULT) ?: KEYBOARDS_DEFAULT).split(',').filter { it in KEYBOARD_NAMES }
+        (p.getString(KEYBOARDS, KEYBOARDS_DEFAULT) ?: KEYBOARDS_DEFAULT).split(',').filter { it in KEYBOARD_NAMES && Extensions.scheme(p, it) }
             .ifEmpty { listOf("pinyin") }
 
     fun activeKeyboard(p: SharedPreferences): String {
@@ -166,7 +170,8 @@ object WeavePrefs {
      * which stays off until turned on in settings.
      */
     fun toolbarItems(p: SharedPreferences, styleItems: List<String>): List<String> =
-        toolbarCustom(p)?.let { listOf("menu") + it } ?: styleItems.filter { it != "stickers" }
+        (toolbarCustom(p)?.let { listOf("menu") + it } ?: styleItems.filter { it != "stickers" })
+            .filter { Extensions.tool(p, it) }
 
     fun setToolbar(p: SharedPreferences, items: List<String>?) {
         p.edit().apply { if (items == null) remove(TOOLBAR_ITEMS) else putString(TOOLBAR_ITEMS, items.joinToString(",")) }.apply()
@@ -205,15 +210,16 @@ object WeavePrefs {
     fun voiceKeepText(p: SharedPreferences) = p.getBoolean(VOICE_KEEP_TEXT, false)
     fun prediction(p: SharedPreferences) = p.getBoolean(PREDICTION, true)
     fun predictionDepth(p: SharedPreferences) = p.getInt(PREDICTION_DEPTH, 3).coerceIn(1, 6)
-    fun pinyinHint(p: SharedPreferences) = if (p.getInt(PINYIN_HINT, 1) == 0) 0 else 1
+    fun pinyinHint(p: SharedPreferences) = if (p.getInt(PINYIN_HINT, 0) == 0) 0 else 1
     fun autocorrect(p: SharedPreferences) = p.getBoolean(AUTOCORRECT, true)
     fun handPause(p: SharedPreferences) = p.getInt(HAND_PAUSE, HAND_PAUSE_DEFAULT).coerceIn(0, HAND_PAUSE_MS.size - 1)
     fun handPauseMs(p: SharedPreferences) = HAND_PAUSE_MS[handPause(p)]
     fun handAutoCommit(p: SharedPreferences) = p.getBoolean(HAND_AUTO_COMMIT, true)
     fun handGuide(p: SharedPreferences) = p.getBoolean(HAND_GUIDE, true)
+    fun handAreaMode(p: SharedPreferences) = HandwritingAreaMode.from(p.getString(HAND_AREA_MODE, null))
     fun autoPair(p: SharedPreferences) = p.getBoolean(AUTO_PAIR, true)
-    fun cloudWords(p: SharedPreferences) = p.getBoolean(CLOUD_WORDS, false)
-    fun linkEnabled(p: SharedPreferences) = p.getBoolean(LINK_ENABLED, false)
+    fun cloudWords(p: SharedPreferences) = Extensions.feature(p, "cloudwords") && p.getBoolean(CLOUD_WORDS, false)
+    fun linkEnabled(p: SharedPreferences) = Extensions.feature(p, "link") && p.getBoolean(LINK_ENABLED, false)
     fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)
     fun linkName(p: SharedPreferences) = p.getString(LINK_NAME, null)?.takeIf { it.isNotBlank() } ?: com.weavetext.ime.link.LinkManager.defaultName()
 }

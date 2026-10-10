@@ -60,6 +60,7 @@ class PinyinAnnotationDeviceTest {
                 })
                 try {
                     activity.addContentView(kb.view,FrameLayout.LayoutParams(-1,-2).apply{gravity=android.view.Gravity.BOTTOM})
+                    WeavePrefs.of(ctx).edit().putInt(WeavePrefs.PINYIN_HINT,1).commit()
                     kb.onShown()
                     "yinhang".forEach{controller.onChar(it.code)};kb.flushRender()
                     assertEquals("银行",controller.state.candidates.first().text)
@@ -68,7 +69,7 @@ class PinyinAnnotationDeviceTest {
                     val enabledHeight=kb.metrics.kbHeight
                     WeavePrefs.of(ctx).edit().putInt(WeavePrefs.PINYIN_HINT,0).commit();kb.flushRender()
                     assertTrue(controller.state.candidates.all{it.pinyin.isEmpty()})
-                    assertEquals("",kb.topBar.candidatePinyinAt(0));assertTrue(kb.metrics.kbHeight<enabledHeight)
+                    assertEquals("",kb.topBar.candidatePinyinAt(0));assertEquals(enabledHeight,kb.metrics.kbHeight,0.01f)
                     WeavePrefs.of(ctx).edit().putInt(WeavePrefs.PINYIN_HINT,1).commit();kb.flushRender()
                     assertEquals("yín háng",kb.topBar.candidatePinyinAt(0));assertEquals(enabledHeight,kb.metrics.kbHeight,0.01f)
                     val width=activity.resources.displayMetrics.widthPixels

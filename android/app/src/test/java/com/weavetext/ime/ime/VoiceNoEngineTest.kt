@@ -10,6 +10,8 @@ import com.weavetext.ime.testing.FakeEngines
 import com.weavetext.ime.testing.ScriptedRecognizer
 import com.weavetext.ime.ui.keyboard.VoiceSession
 import com.weavetext.ime.voice.VoiceAutoDownload
+import com.weavetext.ime.voice.VoiceRecognizer
+import com.weavetext.ime.voice.VoiceListener
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -70,6 +72,48 @@ class VoiceNoEngineTest {
         assertFalse(session.start())
         assertEquals(0, preparations)
         assertNull(rec.listener)
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertEquals("需要麦克风权限", session.error)
+    }
+
+    @Test fun unavailableEngineAfterFailureClearsOldErrorAndNoticeWithoutChangingSelection() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val engines = FakeEngines()
+        val rec = ScriptedRecognizer(engines)
+        val session = VoiceSession(app, InputController { null }) { rec }
+        session.start()
+        rec.listener!!.onNotice("旧引擎提示")
+        rec.listener!!.onError("旧引擎失败")
+        val selected = engines.activeId to engines.extraIds
+        engines.plugins = emptyList()
+        var guided = 0
+        session.onNoEngine = { guided++ }
+        assertFalse(session.start())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertNull(session.error)
+        assertNull(session.notice)
+        assertNull(session.results)
+        assertFalse(rec.isRunning)
+        assertEquals(1, guided)
+        assertEquals(selected, engines.activeId to engines.extraIds)
+    }
+
+    @Test fun availabilityFailureIsReportedWithoutStartingCaptureOrShowingInstallGuidance() {
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        val rec = object : VoiceRecognizer {
+            override val isRunning = false
+            override fun hasEngine(): Boolean = error("引擎列表损坏")
+            override fun start(listener: VoiceListener): Boolean = error("不应开始录音")
+            override fun stop() {}
+            override fun cancel() {}
+        }
+        var providers = 0
+        val session = VoiceSession(app, InputController { null }) { providers++; rec }
+        session.onNoEngine = { error("不是缺少引擎") }
+        assertFalse(session.start())
+        assertEquals(1, providers)
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertEquals("引擎列表损坏", session.error)
     }
 
     @Test fun failedPreparationDoesNotPreventRecordingWithAnInstalledEngine() {

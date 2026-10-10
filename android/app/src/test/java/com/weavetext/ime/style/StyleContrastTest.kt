@@ -18,6 +18,8 @@ class StyleContrastTest {
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
 
     @Test fun allBuiltInThemesMeetContrast() {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.items.filter { it.kind == "theme" && it.source == "bundled" }.forEach(store::install)
         val repo = StyleRepository.get(app)
         val failures = ArrayList<String>()
         for (id in repo.themeIds) {
@@ -38,6 +40,8 @@ class StyleContrastTest {
      * Glass popups are translucent (shown over the backdrop); text on the composited plate is ≥ 4.5:1 at every stop.
      */
     @Test fun glassPopupIsTranslucentAndReadable() {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.install(store.items.first { it.key == "theme:glass" })
         val t = StyleRepository.get(app).theme("glass")
         for (dark in listOf(false, true)) {
             val p = t.palette(dark)

@@ -114,7 +114,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         if (!holdMode && session.hasPermission()) session.start()
     }
 
-    fun stopSession() = session.detach()
+    fun stopSession() {
+        view.clearInteraction()
+        session.detach()
+    }
 
     @SuppressLint("ViewConstructor")
     inner class VoiceView(c: Context) : View(c) {
@@ -161,6 +164,14 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private var holdCancel = false
 
         fun closeFullText() { fullText = false }
+
+        /** A hidden panel must not keep deleting or handle the release of an old hold. */
+        fun clearInteraction() {
+            removeCallbacks(repeatDel)
+            removeCallbacks(expandResult)
+            pressed = NONE; pressedRow = -1; delRepeats = 0
+            holdActive = false; holdCancel = false; resultsGesture = false
+        }
 
         /** 测试用：字幕是否在显示、整页是否打开、字幕区域的中心。 For tests: caption shown, full page open, caption centre. */
         @androidx.annotation.VisibleForTesting val captionShown get() = !captionRect.isEmpty

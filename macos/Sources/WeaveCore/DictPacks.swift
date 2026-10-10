@@ -27,7 +27,8 @@ public struct DictPack: Identifiable, Equatable, Sendable {
 
     /// 「描述 · 2.3 万词 · 188 KB」。 "description · words · size".
     public var summary: String {
-        [description, PackFormat.words(words), PackFormat.size(bytes)].filter { !$0.isEmpty }.joined(separator: " · ")
+        [description, PackFormat.words(words), bytes > 0 ? PackFormat.size(bytes) : "大小未知"]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 
@@ -94,7 +95,9 @@ public enum PackFormat {
     }
 
     public static func size(_ n: Int64) -> String {
-        n >= 1 << 20 ? String(format: "%.1f MB", Double(n) / Double(1 << 20)) : "\((n + 1023) / 1024) KB"
+        if n < 1024 { return "\(max(0, n)) B" }
+        return n >= 1 << 20 ? String(format: "%.1f MB", Double(n) / Double(1 << 20))
+            : "\(n / 1024 + (n % 1024 == 0 ? 0 : 1)) KB"
     }
 }
 
@@ -104,6 +107,26 @@ public enum PackState: Equatable, Sendable {
     case downloading(done: Int64?)
     case installed
     case failed(String)
+}
+
+/// The active source and its progress; a nil progress means we are still connecting.
+public struct PackDownload: Equatable, Sendable {
+    public var source: URL
+    public var attempt: Int
+    public var sourceCount: Int
+    public var progress: FetchProgress?
+
+    public init(source: URL, attempt: Int, sourceCount: Int, progress: FetchProgress? = nil) {
+        self.source = source
+        self.attempt = attempt
+        self.sourceCount = sourceCount
+        self.progress = progress
+    }
+
+    public var sourceLabel: String {
+        let label = attempt == 1 ? "直连" : "镜像 \(attempt - 1)/\(max(1, sourceCount - 1))"
+        return source.host.map { "\(label) · \($0)" } ?? label
+    }
 }
 
 /// 专业词库的下载、校验、安装与删除；只在主线程调用。装好的文件放在 dir/<id>.wvz（内核启动时自动载入该目录）。
@@ -117,6 +140,7 @@ public final class DictPackStore: ObservableObject {
     public let catalog: DictPackCatalog
     public var packs: [DictPack] { catalog.packs }
     @Published public private(set) var states: [String: PackState] = [:]
+    @Published public private(set) var downloads: [String: PackDownload] = [:]
 
     private let dir: URL
     private let fetcher: HTTPFetching
@@ -125,6 +149,8 @@ public final class DictPackStore: ObservableObject {
     private let detach: (String) -> Void
     private let loaded: () -> Set<String>
     private var tasks: [String: Task<Void, Never>] = [:]
+    private var generations: [String: UUID] = [:]
+    private var attempts: [String: UUID] = [:]
 
     /// attach(id, path) / detach(id)：挂到内核上或卸下；loaded：内核里实际挂着的 id。
     /// Attach to or detach from the engine; loaded: the ids the engine really has attached.
@@ -139,6 +165,8 @@ public final class DictPackStore: ObservableObject {
         self.detach = detach
         self.loaded = loaded
     }
+
+    deinit { for task in tasks.values { task.cancel() } }
 
     public func file(_ id: String) -> URL { dir.appendingPathComponent(id + ".wvz") }
 
@@ -160,35 +188,48 @@ public final class DictPackStore: ObservableObject {
     public func install(_ id: String) {
         guard let pack = packs.first(where: { $0.id == id }), let url = catalog.url(for: pack) else { return }
         if case .downloading = state(id) { return }
+        let generation = UUID()
+        generations[id] = generation
         states[id] = .downloading(done: nil)
         let fetcher = fetcher
         let sources = mirrors.sources(for: url)
+        downloads[id] = PackDownload(source: url, attempt: 1, sourceCount: sources.count)
         tasks[id] = Task { @MainActor [weak self] in
-            let limit = pack.bytes > 0 ? Int(pack.bytes) + 1024 : 64 << 20
+            let limit = pack.bytes > 0 ? Int(clamping: min(pack.bytes, Int64(Int.max) - 1024)) + 1024 : 64 << 20
             // 先直连，不行再换镜像；每个来源都要对上大小与 SHA-256。
             // The direct URL first, then the mirrors; each source must match the size and SHA-256.
-            for src in sources {
+            for (index, src) in sources.enumerated() {
+                if Task.isCancelled { break }
+                let attempt = UUID()
+                guard self?.begin(pack, source: src, number: index + 1, count: sources.count,
+                                  generation: generation, attempt: attempt) == true else { return }
                 do {
-                    let r = try await fetcher.get(src, etag: nil, maxBytes: limit) { n in
-                        Task { @MainActor in self?.progress(id, n) }
-                    }
+                    let r = try await fetcher.get(src, etag: nil, maxBytes: limit, downloadProgress: { [weak self] value in
+                        Task { @MainActor [weak self] in
+                            self?.progress(pack, value, generation: generation, attempt: attempt)
+                        }
+                    })
                     try Task.checkCancellation()
                     if r.status == 200, PackCheck.verify(r.body, sha256: pack.sha256, bytes: pack.bytes) {
-                        self?.finish(pack, r.body)
+                        self?.finish(pack, r.body, generation: generation)
                         return
                     }
+                } catch is CancellationError {
+                    self?.fail(id, generation: generation, cancelled: true)
+                    return
                 } catch {
-                    if Task.isCancelled || error is CancellationError { break }
+                    if Task.isCancelled { break }
                 }
-                if Task.isCancelled { break }
-                self?.progress(id, nil)
             }
-            self?.fail(id, cancelled: Task.isCancelled)
+            self?.fail(id, generation: generation, cancelled: Task.isCancelled)
         }
     }
 
     public func cancel(_ id: String) {
+        generations[id] = nil
+        attempts[id] = nil
         tasks.removeValue(forKey: id)?.cancel()
+        downloads[id] = nil
         states[id] = nil
     }
 
@@ -206,13 +247,33 @@ public final class DictPackStore: ObservableObject {
     /// 截图用：直接给出各词库的状态。 For snapshots: set the pack states directly.
     public func preview(_ states: [String: PackState]) { self.states = states }
 
-    private func progress(_ id: String, _ n: Int64?) {
-        guard case .downloading = states[id] else { return }
-        states[id] = .downloading(done: n)
+    private func begin(_ pack: DictPack, source: URL, number: Int, count: Int,
+                       generation: UUID, attempt: UUID) -> Bool {
+        guard generations[pack.id] == generation else { return false }
+        attempts[pack.id] = attempt
+        states[pack.id] = .downloading(done: nil)
+        downloads[pack.id] = PackDownload(source: source, attempt: number, sourceCount: count)
+        return true
     }
 
-    private func finish(_ pack: DictPack, _ body: Data) {
-        guard tasks.removeValue(forKey: pack.id) != nil else { return }
+    private func progress(_ pack: DictPack, _ value: FetchProgress, generation: UUID, attempt: UUID) {
+        guard generations[pack.id] == generation, attempts[pack.id] == attempt,
+              case .downloading = states[pack.id], var download = downloads[pack.id] else { return }
+        // The verified catalog size takes precedence over a mirror's Content-Length.
+        var value = value
+        if pack.bytes > 0 { value.totalBytes = pack.bytes }
+        // Main-actor callbacks may arrive out of order within a single attempt.
+        if let previous = download.progress, previous.receivedBytes > value.receivedBytes { return }
+        download.progress = value
+        downloads[pack.id] = download
+        states[pack.id] = .downloading(done: value.receivedBytes)
+    }
+
+    private func finish(_ pack: DictPack, _ body: Data, generation: UUID) {
+        guard generations[pack.id] == generation, tasks.removeValue(forKey: pack.id) != nil else { return }
+        generations[pack.id] = nil
+        attempts[pack.id] = nil
+        downloads[pack.id] = nil
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try body.write(to: file(pack.id), options: .atomic)
@@ -224,8 +285,11 @@ public final class DictPackStore: ObservableObject {
         }
     }
 
-    private func fail(_ id: String, cancelled: Bool) {
-        guard tasks.removeValue(forKey: id) != nil else { return }
+    private func fail(_ id: String, generation: UUID, cancelled: Bool) {
+        guard generations[id] == generation, tasks.removeValue(forKey: id) != nil else { return }
+        generations[id] = nil
+        attempts[id] = nil
+        downloads[id] = nil
         states[id] = cancelled ? nil : .failed(Self.failure)
     }
 }

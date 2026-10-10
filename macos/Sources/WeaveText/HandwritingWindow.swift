@@ -68,20 +68,19 @@ final class HandwritingWindow:NSObject,NSWindowDelegate {
     static let shared=HandwritingWindow()
     private var window:NSPanel?
     private let model=HandwritingModel()
-    private var previousSchema="pinyin"
     func show(owner:WeaveInputController) {
+        guard Preferences.shared.extensionEnabled("scheme:hand") else { return }
         guard EngineHost.shared.engine?.hasSchema("hand")==true else{return}
         if window?.isVisible == true {dismiss()}
         owner.finishComposition()
         model.owner=owner
-        previousSchema=EngineHost.shared.chinese ? EngineHost.shared.scheme.id : "english"
         if window==nil {
             let panel=InputPanel(contentRect:NSRect(x:0,y:0,width:520,height:390),styleMask:[.titled,.closable,.nonactivatingPanel,.resizable],backing:.buffered,defer:false)
             panel.title="织文手写";panel.level = .floating;panel.hidesOnDeactivate=false;panel.isReleasedWhenClosed=false
             panel.becomesKeyOnlyIfNeeded=true
             panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.ignoresCycle]
             panel.contentView=ClickThroughHostingView(rootView:HandwritingView(model:model));panel.delegate=self
-            WindowAppearance.shared.track(panel)
+            WindowAppearance.shared.track(panel, extensionKey:"scheme:hand")
             window=panel;panel.center()
         }
         model.clear();EngineHost.shared.engine?.setSchema("hand")
@@ -91,7 +90,8 @@ final class HandwritingWindow:NSObject,NSWindowDelegate {
     func dismiss(owner:WeaveInputController? = nil) {
         guard model.owner != nil,owner == nil || model.owner === owner else{return}
         model.clear();model.owner=nil;window?.orderOut(nil)
-        EngineHost.shared.engine?.setSchema(previousSchema)
+        let host=EngineHost.shared
+        host.engine?.setSchema(host.chinese ? host.scheme.id : "english")
     }
     func windowWillClose(_ notification:Notification) {dismiss()}
 }
@@ -160,10 +160,8 @@ private struct CandidateChip:View {
         Button(action:action) {
             HStack(alignment:.lastTextBaseline,spacing:6) {
                 Text("\(index)").font(.caption2).foregroundStyle(primary ? Color.accentColor : .secondary)
-                VStack(spacing:2) {
-                    if !pinyin.isEmpty {Text(pinyin).font(.system(size:12)).foregroundStyle(.secondary)}
-                    Text(text).font(.system(size:26))
-                }
+                Text(text).font(.system(size:26))
+                if primary && !pinyin.isEmpty {Text("(\(pinyin))").font(.system(size:13)).foregroundStyle(.secondary)}
             }
             .padding(.horizontal,14).padding(.vertical,6).frame(minHeight:44)
             .background(RoundedRectangle(cornerRadius:10).fill(primary ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12)))

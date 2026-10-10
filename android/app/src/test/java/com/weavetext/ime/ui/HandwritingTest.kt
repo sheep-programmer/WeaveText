@@ -243,6 +243,24 @@ class HandwritingTest {
         assertEquals("", ic.text)
     }
 
+    @Test fun theLiftPositionCompletesAStrokeEvenWithoutAMoveEvent() {
+        val r = pad.rect
+        pressAt(4, r.left + 20f, r.top + 30f)
+        down[4] = (r.left + 120f) to (r.top + 35f)
+        release(4)
+        assertStroke(floatArrayOf(20f, 30f, 120f, 35f), engine.handCalls.single().single())
+        assertEquals("a stroke submits exactly once", 1, engine.handCalls.size)
+    }
+
+    @Test fun theLiftPositionAfterAMoveIsIncludedWithoutDuplicatingThePreviousPoint() {
+        val r = pad.rect
+        pressAt(0, r.left + 20f, r.top + 30f)
+        moveTo(0, r.left + 60f, r.top + 32f)
+        down[0] = (r.left + 120f) to (r.top + 35f)
+        release(0)
+        assertStroke(floatArrayOf(20f, 30f, 60f, 32f, 120f, 35f), engine.handCalls.single().single())
+    }
+
     @Test fun tinyMovesAreDroppedAndTapIsADot() {
         val r = pad.rect
         pressAt(0, r.left + 50f, r.top + 50f)

@@ -11,6 +11,8 @@ interface KeyboardUi {
     /** @param restarting 同一输入框重新开始（onStartInputView 的 restarting）。 The same field restarted. */
     fun onShown(restarting: Boolean = false) {}
     fun onHidden() {}
+    /** 输入法窗口真正显示出来之后（切应用的动画可能还在走）。 The IME window is actually showing (an app-switch animation may still run). */
+    fun onWindowShown() {}
     fun dispose() {}
     /** 由 [WeaveImeService.onComputeInsets] 调用。 Called from onComputeInsets. */
     fun computeInsets(outInsets: android.inputmethodservice.InputMethodService.Insets) {}

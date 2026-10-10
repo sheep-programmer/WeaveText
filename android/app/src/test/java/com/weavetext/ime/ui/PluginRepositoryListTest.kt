@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -85,13 +86,19 @@ class PluginRepositoryListTest {
     private fun show(dark: Boolean = false) {
         WeavePrefs.of(app).edit().putString(WeavePrefs.THEME, if (dark) "dark" else "light").commit()
         val deps = SettingsDeps(app, engines = { FakeEngines() }, models = { FakeModels(emptyMap()) },
-            status = { ImeStatus(true, true, true) }, pluginRepositories = { service })
+            status = { ImeStatus(true, true, true) }, pluginRepositories = { service }, pluginIoDispatcher = kotlinx.coroutines.Dispatchers.Unconfined)
         compose.setContent { SettingsApp(deps, Navigator(listOf(Route.Home, Route.Voice, Route.PluginRepositories))) }
         val expectedCounts = plugins.values.map { it.size }.groupingBy { it }.eachCount()
-        compose.waitUntil(10_000) {
-            expectedCounts.all { (count, repositories) ->
-                compose.onAllNodesWithText("$count 项插件").fetchSemanticsNodes().size == repositories
+        // Fake repository IO is synchronous; this test waits for recomposition rather than real worker scheduling.
+        try {
+            compose.waitUntil(30_000) {
+                expectedCounts.all { (count, repositories) ->
+                    compose.onAllNodesWithText("$count 项插件").fetchSemanticsNodes().size == repositories
+                }
             }
+        } catch (failure: Throwable) {
+            println(compose.onRoot().printToString())
+            throw failure
         }
         compose.waitForIdle()
     }

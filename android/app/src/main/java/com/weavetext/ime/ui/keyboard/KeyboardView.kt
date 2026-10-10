@@ -71,6 +71,15 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     /** 手写书写区（仅手写布局）。 The handwriting pad (handwriting layout only). */
     var hand: HandPad? = null
         private set
+    /** Body height for an expanded docked handwriting pad; other layouts always use the style's key height. */
+    var handAreaHeight = 0
+        set(value) {
+            if (field == value) return
+            cancelTouch()
+            field = value
+            relayout()
+            requestLayout()
+        }
     private val handPad = HandPad()
     var handAppearance = HandInkAppearance()
         set(value) {
@@ -146,6 +155,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         var key: Key? = null
         var downX = 0f
         var downY = 0f
+        /** Last dispatched position; lifting in place must not select a long-press alternative. */
+        var lastX = 0f
+        var lastY = 0f
         var mode = M_NONE
         /** 字符已在按下时输出。 The char was emitted on DOWN. */
         var emitted = false
@@ -225,7 +237,24 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     /** 手写布局；笔迹在重建布局（换主题等）时保留。 Handwriting layout; the ink survives rebuilds (theme changes). */
     fun setHand(list: List<Key>) {
         keys = list; side = null; hand = handPad; layoutKind = Layouts.HAND
-        builder = { w -> Layouts.layoutHand(list, handPad, w, metrics, layoutStyle.t9) }
+        builder = { w ->
+            Layouts.layoutHand(list, handPad, w, metrics, layoutStyle.t9)
+            if (handAreaHeight > 0) {
+                val body = handAreaHeight.toFloat()
+                val pitch = minOf(metrics.rowPitch, body / 4f)
+                val bottomRow = body - pitch
+                handPad.rect.bottom = (bottomRow - metrics.insetV).coerceAtLeast(handPad.rect.top)
+                // Grow the pad, keeping ordinary controls at their normal size. Only a viewport shorter
+                // than the standard keyboard compresses controls to fit; nothing extends under system bars.
+                for (key in list) {
+                    val top = if (key.row == 3 || key.code == KeyCode.ENTER) bottomRow else key.gy * pitch
+                    key.cell.top = top
+                    key.cell.bottom = top + pitch
+                    key.rect.top = top + minOf(metrics.insetV, pitch / 4f)
+                    key.rect.bottom = top + pitch - minOf(metrics.insetV, pitch / 4f)
+                }
+            }
+        }
         relayout()
     }
 
@@ -379,7 +408,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
-        val h = if (::metrics.isInitialized) metrics.mainHeight.toInt() else MeasureSpec.getSize(heightMeasureSpec)
+        val h = if (::metrics.isInitialized) {
+            if (hand != null && handAreaHeight > 0) handAreaHeight else metrics.mainHeight.toInt()
+        } else MeasureSpec.getSize(heightMeasureSpec)
         setMeasuredDimension(w, resolveSize(h, heightMeasureSpec))
     }
 
@@ -734,7 +765,16 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 if (p.mode == M_INK) { inkMove(e, i); continue }
                 movePointer(p, e.getX(i), e.getY(i), e.eventTime)
             }
-            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> ptrOf(e.getPointerId(e.actionIndex))?.let { finishPointer(it, commit = true) }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
+                val i = e.actionIndex
+                ptrOf(e.getPointerId(i))?.let { p ->
+                    // A fast gesture may deliver its last position only on UP. Process that sample before
+                    // choosing a key action or ending the stroke; only the lifting pointer is updated.
+                    if (p.mode == M_INK) inkMove(e, i)
+                    else if (e.getX(i) != p.lastX || e.getY(i) != p.lastY) movePointer(p, e.getX(i), e.getY(i), e.eventTime)
+                    finishPointer(p, commit = true)
+                }
+            }
             MotionEvent.ACTION_CANCEL -> systemCancel()
         }
         return true
@@ -779,6 +819,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (inkOwner != null) return
         val x = e.getX(index)
         val y = e.getY(index)
+        p.lastX = x; p.lastY = y
         val pad = hand
         if (pad != null && inPad(pad, x, y, e.eventTime)) {
             settleOthers()
@@ -923,6 +964,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     }
 
     private fun movePointer(p: Ptr, x: Float, y: Float, t: Long) {
+        p.lastX = x; p.lastY = y
         val m = metrics
         val dx = x - p.downX
         val dy = y - p.downY

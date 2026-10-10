@@ -69,7 +69,7 @@ final class LinkService: NSObject, ObservableObject, UNUserNotificationCenterDel
 
     private func sync() {
         guard started else { return }
-        if prefs.linkEnabled {
+        if prefs.extensionEnabled("feature:link") && prefs.linkEnabled {
             ensureRunning()
             if let h = handle, appliedName != displayName {
                 h.call(["op": "rename", "name": displayName])

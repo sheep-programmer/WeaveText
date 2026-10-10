@@ -13,6 +13,6 @@ import Testing
         #expect(restored.colorTheme == .mint && restored.appearance == .dark)
         restored.appearance = .light
         #expect(Preferences(defaults:defaults).colorTheme == .mint)
-        #expect(!restored.prediction && !restored.englishCompletion && restored.pinyinHint == .toned)
+        #expect(!restored.prediction && !restored.englishCompletion && restored.pinyinHint == .off)
     }
 }

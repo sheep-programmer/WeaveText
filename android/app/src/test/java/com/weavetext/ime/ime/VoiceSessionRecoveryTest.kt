@@ -46,6 +46,32 @@ class VoiceSessionRecoveryTest {
         override fun cancel() { cancels++; isRunning = false }
     }
 
+    /** Faults happen after acquiring capture, with synchronous callbacks during teardown. */
+    private class FaultyRecognizer : VoiceRecognizer {
+        lateinit var listener: VoiceListener
+        var startAction: (VoiceListener) -> Boolean = { true }
+        var stopFailure = false
+        var cancelFailure = false
+        var cancels = 0
+        override var isRunning = false
+        override fun start(listener: VoiceListener): Boolean {
+            this.listener = listener
+            isRunning = true
+            return startAction(listener)
+        }
+        override fun stop() {
+            if (stopFailure) error("停止失败")
+            listener.onEnd()
+        }
+        override fun cancel() {
+            cancels++
+            isRunning = false
+            listener.onFinal("取消时的迟到结果")
+            listener.onEnd()
+            if (cancelFailure) error("取消失败")
+        }
+    }
+
     private val app get() = ApplicationProvider.getApplicationContext<Application>()
     private lateinit var edit: EditText
     private lateinit var controller: InputController
@@ -62,6 +88,143 @@ class VoiceSessionRecoveryTest {
     @After fun restoreDownloads() { VoiceAutoDownload.ensureOverride = previousEnsure }
 
     private fun idle(ms: Long) = ShadowLooper.idleMainLooper(ms, TimeUnit.MILLISECONDS)
+
+    @Test fun falseStartAfterReadyReleasesCaptureAndAllowsRetry() {
+        val rec = FaultyRecognizer().apply { startAction = { it.onReady(false); false } }
+        val session = VoiceSession(app, controller) { rec }
+        assertFalse(session.start())
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertFalse(rec.isRunning)
+        assertEquals(1, rec.cancels)
+        val old = rec.listener
+        old.onPartial("旧字幕"); old.onFinal("旧结果"); old.onEnd()
+        assertEquals("", edit.text.toString())
+        rec.startAction = { true }
+        assertTrue(session.start())
+        old.onError("旧错误")
+        rec.listener.onFinal("重试成功")
+        rec.listener.onEnd()
+        assertEquals("重试成功", edit.text.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+    }
+
+    @Test fun thrownStartReleasesCaptureKeepsShownTextAndAllowsRetry() {
+        val rec = FaultyRecognizer().apply {
+            startAction = { it.onPartial("已经听到"); error("启动失败") }
+        }
+        val session = VoiceSession(app, controller) { rec }
+        assertFalse(session.start())
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertFalse(rec.isRunning)
+        assertEquals(1, rec.cancels)
+        assertEquals("已经听到", edit.text.toString())
+        rec.startAction = { true }
+        assertTrue(session.start())
+        session.cancel()
+        assertEquals("已经听到", edit.text.toString())
+    }
+
+    @Test fun providerFailureIsAnErrorAndCanBeRetried() {
+        val rec = SilentRecognizer()
+        var fail = true
+        val session = VoiceSession(app, controller) { if (fail) error("宿主不可用") else rec }
+        assertFalse(session.start())
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertFalse(session.active)
+        fail = false
+        assertTrue(session.start())
+        session.cancel()
+    }
+
+    @Test fun stopFailurePreservesInterimTextAndReleasesCapture() {
+        val rec = FaultyRecognizer().apply { stopFailure = true }
+        val session = VoiceSession(app, controller) { rec }
+        session.start()
+        rec.listener.onPartial("保留半句")
+        session.stop()
+        assertEquals(VoiceSession.State.ERROR, session.state)
+        assertEquals("保留半句", edit.text.toString())
+        assertEquals("保留半句", session.committed.toString())
+        assertFalse(rec.isRunning)
+        rec.listener.onFinal("不要重复")
+        assertEquals("保留半句", edit.text.toString())
+    }
+
+    @Test fun cancelFailureStillDropsComposingAndAllLateCallbacks() {
+        val rec = FaultyRecognizer().apply { cancelFailure = true }
+        val session = VoiceSession(app, controller) { rec }
+        session.start()
+        rec.listener.onPartial("取消这句")
+        rec.listener.onNotice("旧提示")
+        rec.listener.onLevel(0.8f)
+        session.cancel()
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertEquals("", edit.text.toString())
+        assertEquals(null, session.notice)
+        assertTrue(session.levels.all { it == 0f })
+        rec.listener.onPartial("迟到字幕"); rec.listener.onFinal("迟到结果")
+        rec.listener.onReplace("", "迟到修正"); rec.listener.onError("迟到错误")
+        assertEquals("", edit.text.toString())
+        assertEquals(null, session.error)
+    }
+
+    @Test fun finalizeTimeoutPreservesPartialExactlyOnce() {
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller) { rec }
+        session.start()
+        val old = rec.listener!!
+        old.onFinal("前半句"); old.onPartial("后半句")
+        session.stop()
+        idle(VoiceSession.FINALIZE_LIMIT_MS + 1)
+        old.onFinal("后半句。"); old.onEnd()
+        assertEquals("前半句后半句", edit.text.toString())
+        assertEquals("前半句后半句", session.committed.toString())
+        assertEquals(VoiceSession.State.IDLE, session.state)
+        assertFalse(rec.isRunning)
+    }
+
+    @Test fun failedSessionReleasesCaptureBeforeImmediateRetry() {
+        val first = ScriptedRecognizer(FakeEngines())
+        val next = SilentRecognizer()
+        var current: VoiceRecognizer = first
+        val session = VoiceSession(app, controller) { current }
+        session.start()
+        first.listener!!.onError("识别中断")
+        current = next
+        assertTrue(session.start()) // No looper idle between error and retry.
+        idle(1)
+        assertFalse("旧麦克风必须已释放", first.isRunning)
+        assertTrue("旧清理不能取消新录音", next.isRunning)
+        session.cancel()
+    }
+
+    @Test fun detachedFinalCannotWriteToAnotherAppOrANewInputEpoch() {
+        val first = EditText(app)
+        val next = EditText(app)
+        var ic = first.onCreateInputConnection(EditorInfo())
+        controller = InputController { ic }
+        val info = EditorInfo().apply { packageName = "example.first"; fieldId = 7; inputType = InputType.TYPE_CLASS_TEXT }
+        controller.onStartInput(info, false)
+        val rec = ScriptedRecognizer(FakeEngines())
+        val session = VoiceSession(app, controller) { rec }
+        session.start()
+        val old = rec.listener!!
+        old.onPartial("旧输入框")
+        session.detach()
+        ic = next.onCreateInputConnection(EditorInfo())
+        controller.onStartInput(EditorInfo().apply { packageName = "example.next"; fieldId = 7; inputType = InputType.TYPE_CLASS_TEXT }, false)
+        old.onPartial("迟到字幕"); old.onFinal("迟到结果"); old.onReplace("", "迟到修正"); old.onEnd()
+        assertEquals("", next.text.toString())
+
+        // Returning to the same package and field still creates a different editor epoch.
+        controller.onStartInput(info, false)
+        session.start()
+        val previousEpoch = rec.listener!!
+        session.stop()
+        controller.onStartInput(info, true)
+        previousEpoch.onFinal("同字段迟到结果"); previousEpoch.onEnd()
+        assertEquals("", next.text.toString())
+    }
 
     /** 可处理删除键的编辑器，测试中每次退格都会真的删字。 An editor that handles DEL in these tests. */
     private fun deletableEditor(): FakeInputConnection {

@@ -68,6 +68,7 @@ final class UserWordsModel: ObservableObject {
 /// 词库：用户词、系统词库、专业词库与云端热词（与 Android 的「词库」页同一结构）。
 /// Dictionaries: user words, the built-in lexicon, domain dictionaries and cloud hot words, laid out as on Android.
 struct DictionaryPage: View {
+    @ObservedObject var prefs:Preferences = .shared
     @ObservedObject var packs: DictPackStore
     @ObservedObject var cloud: CloudWords
     @StateObject private var model = UserWordsModel()
@@ -96,7 +97,7 @@ struct DictionaryPage: View {
                         .padding(.vertical, 2)
                     }
                 }
-                CloudWordsSection(cloud: cloud)
+                if prefs.extensionEnabled("feature:cloudwords") {CloudWordsSection(cloud: cloud)}
                 Section {
                     Button("导入用户词…") {model.importWords()}
                     Button("导出用户词…") {model.exportWords()}
@@ -104,12 +105,14 @@ struct DictionaryPage: View {
                 } header: {Text("导入与导出")} footer: {
                     Footnote("与手机端格式一致：每行「词语、拼音、词频」，列用 Tab 分隔；拼音音节用空格分隔，词频可省略。")
                 }
+                if prefs.extensionEnabled("scheme:hand") {
                 Section {
                     Button("清空个人手写字形…", role: .destructive) { model.confirmHandClear = true }
                 } header: {
                     Text("手写学习")
                 } footer: {
                     Footnote("清空后恢复内置识别，也取消手写候选的固定与降权。")
+                }
                 }
                 Section {
                     HStack {
@@ -251,7 +254,7 @@ struct DictPacksPage: View {
         Form {
             Section {
                 ForEach(store.packs) { p in
-                    PackRow(pack: p, state: store.state(p.id), install: { store.install(p.id) },
+                    PackRow(pack: p, state: store.state(p.id), download: store.downloads[p.id], install: { store.install(p.id) },
                             cancel: { store.cancel(p.id) }, remove: { removal.pack = p })
                 }
             } header: {
@@ -259,7 +262,8 @@ struct DictPacksPage: View {
                     .font(.callout).foregroundStyle(.secondary).textCase(nil)
                     .fixedSize(horizontal: false, vertical: true)
             } footer: {
-                Footnote("词表来自万象拼音（CC BY 4.0）与 THUOCL 清华开放中文词库（MIT），详见「关于」页的开源许可。")
+                Footnote("直连失败会自动尝试随应用提供的镜像，下载后校验文件完整性。"
+                         + "词表来自万象拼音（CC BY 4.0）与 THUOCL 清华开放中文词库（MIT），详见「关于」页的开源许可。")
             }
         }
         .formStyle(.grouped)
@@ -276,14 +280,28 @@ struct DictPacksPage: View {
 struct PackRow: View {
     let pack: DictPack
     let state: PackState
+    var download: PackDownload? = nil
     let install: () -> Void
     let cancel: () -> Void
     let remove: () -> Void
 
-    private var note: String {
+    var totalBytes: Int64? {
+        pack.bytes > 0 ? pack.bytes : download?.progress?.totalBytes
+    }
+
+    /// Connecting and unknown-length transfers use an indeterminate indicator.
+    var progressFraction: Double? {
+        guard case .downloading(let done) = state, let done, let total = totalBytes, total > 0 else { return nil }
+        return Double(min(max(0, done), total)) / Double(total)
+    }
+
+    var note: String {
         switch state {
         case .downloading(let done):
-            return done.map { "下载中 · \(PackFormat.size($0)) / \(PackFormat.size(pack.bytes))" } ?? "准备下载…"
+            let total = totalBytes.map(PackFormat.size) ?? "大小未知"
+            guard let done else { return "正在连接… · \(total)" }
+            return totalBytes == nil ? "下载中 · \(PackFormat.size(done)) · 大小未知"
+                : "下载中 · \(PackFormat.size(done)) / \(total)"
         case .failed(let message):
             return message
         default:
@@ -298,9 +316,16 @@ struct PackRow: View {
                     if case .failed = state { return .red }
                     return .secondary
                 }())
-                if case .downloading(let done) = state {
-                    ProgressView(value: Double(done ?? 0), total: Double(max(pack.bytes, 1)))
-                        .controlSize(.small)
+                if case .downloading = state {
+                    if let fraction = progressFraction {
+                        ProgressView(value: fraction).controlSize(.small)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    if let download {
+                        Text(download.sourceLabel).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             Spacer(minLength: 8)

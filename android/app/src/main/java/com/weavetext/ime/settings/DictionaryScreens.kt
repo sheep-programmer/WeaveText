@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -60,6 +61,7 @@ fun DictionaryScreen() {
     val deps = LocalDeps.current
     val nav = LocalNav.current
     val ctx = LocalContext.current
+    val p by rememberLivePrefs(deps.prefs)
     val dict = deps.dictionary
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -106,7 +108,7 @@ fun DictionaryScreen() {
         }
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard { PersonalShortcutsRow() }
-        CloudWordsCard()
+        if (Extensions.feature(p, "cloudwords")) CloudWordsCard()
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard {
             SettingRow("导入用户词", icon = R.drawable.ic_import, onClick = { importer.launch(arrayOf("text/plain", "*/*")) })
@@ -263,7 +265,7 @@ fun DictPacksScreen() {
                 if (i > 0) RowDivider(false)
                 val st = repo.state(p.id)
                 val sub = when (st) {
-                    is com.weavetext.ime.core.PackState.Downloading -> st.progress?.let { "下载中 · ${packSize(it.downloaded)} / ${packSize(p.bytes)}" } ?: "准备下载…"
+                    is com.weavetext.ime.core.PackState.Downloading -> "下载 ${formatSize(p.bytes)}"
                     is com.weavetext.ime.core.PackState.Failed -> st.message
                     else -> "${p.description} · ${wordCount(p.words)} · ${packSize(p.bytes)}"
                 }
@@ -273,6 +275,13 @@ fun DictPacksScreen() {
                         is com.weavetext.ime.core.PackState.Downloading -> TextButton(onClick = { repo.cancel(p.id) }) { Text("取消") }
                         else -> TextButton(onClick = { repo.install(p.id) }) { Text(if (st is com.weavetext.ime.core.PackState.Failed) "重试" else "下载") }
                     }
+                }
+                if (st is com.weavetext.ime.core.PackState.Downloading) {
+                    val progress = st.progress ?: com.weavetext.ime.models.Progress(0, p.bytes, 0, "", com.weavetext.ime.models.DownloadPhase.CONNECTING)
+                    DownloadProgressContent(
+                        progress.copy(total = progress.total.takeIf { it > 0 } ?: p.bytes),
+                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                    )
                 }
             }
         }

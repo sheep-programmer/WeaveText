@@ -1,5 +1,6 @@
 package com.weavetext.ime.ui.keyboard
 
+import com.weavetext.ime.extensions.Extensions
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
@@ -10,6 +11,7 @@ import android.os.Build
 import android.view.MotionEvent
 import android.view.View
 import com.weavetext.ime.R
+import com.weavetext.ime.style.StyleRepository
 import com.weavetext.ime.settings.WeavePrefs
 
 /**
@@ -22,7 +24,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
 
     private class Item(val id: Int, val icon: Int, val text: String?, val label: String)
 
-    private val items = listOf(
+    private val allItems = listOf(
         Item(SCHEMES, R.drawable.ic_keyboard, null, "输入方案"),
         Item(HEIGHT, R.drawable.ic_resize, null, "键盘调节"),
         Item(DARK, R.drawable.ic_moon, null, "深色模式"),
@@ -41,12 +43,20 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(TOOLBAR, R.drawable.ic_toolbox, null, "工具栏设置"),
     )
 
+    private val items get() = allItems.filter { item ->
+        val feature = when (item.id) {
+            PHRASES -> "phrases"; ENGINES -> "voice"; LINK -> "link"; TRANSLATE -> "translate"; STICKERS -> "stickers"
+            else -> null
+        }
+        feature == null || Extensions.feature(kb.prefs, feature)
+    }
+
     override fun applyTheme() = view.invalidate()
     override fun onShow() = view.invalidate()
     override fun onPref(key: String?) = view.invalidate()
 
     private fun isOn(id: Int): Boolean = when (id) {
-        DARK -> WeavePrefs.theme(kb.prefs) != "system"
+        DARK -> StyleRepository.get(kb.ctx).isDark(kb.ctx, kb.prefs)
         TRAD -> WeavePrefs.traditional(kb.prefs)
         ONE_HAND -> WeavePrefs.oneHand(kb.prefs) != 0
         FLOAT -> kb.floating
@@ -54,7 +64,6 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     }
 
     private fun label(it: Item): String = when (it.id) {
-        DARK -> when (WeavePrefs.theme(kb.prefs)) { "dark" -> "深色：开"; "light" -> "深色：关"; else -> it.label }
         ONE_HAND -> when (WeavePrefs.oneHand(kb.prefs)) { 1 -> "单手：靠左"; 2 -> "单手：靠右"; else -> it.label }
         else -> it.label
     }
@@ -65,9 +74,9 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             SCHEMES -> kb.showPanel("picker")
             HEIGHT -> kb.showPanel("height")
             DARK -> {
-                // 跟随系统 → 深色 → 浅色 → 跟随系统。 system → dark → light → system.
-                val next = when (WeavePrefs.theme(p)) { "system" -> "dark"; "dark" -> "light"; else -> "system" }
-                p.edit().putString(WeavePrefs.THEME, next).apply()
+                // 只在深色、浅色间切换，按当前实际显示取反；「跟随系统」留在设置里。
+                // Flip between dark and light from what is showing now; "follow system" stays in Settings.
+                p.edit().putString(WeavePrefs.THEME, if (StyleRepository.get(kb.ctx).isDark(kb.ctx, p)) "light" else "dark").apply()
             }
             TRAD -> p.edit().putBoolean(WeavePrefs.TRADITIONAL, !WeavePrefs.traditional(p)).apply()
             EMOJI -> { kb.showPanel("symbol"); (kb.panelNamed("symbol") as? SymbolPanel)?.selectEmoji() }
@@ -172,7 +181,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { pressed = hitAt(e.x, e.y); if (pressed >= 0) kb.feedback.key(this); invalidate() }
                 MotionEvent.ACTION_MOVE -> if (pressed >= 0 && hitAt(e.x, e.y) != pressed) { pressed = -1; invalidate() }
-                MotionEvent.ACTION_UP -> { val i = pressed; pressed = -1; invalidate(); if (i >= 0) onItem(items[i].id) }
+                MotionEvent.ACTION_UP -> { val i = pressed; pressed = -1; invalidate(); if (i >= 0) items.getOrNull(i)?.let { onItem(it.id) } }
                 MotionEvent.ACTION_CANCEL -> { pressed = -1; invalidate() }
             }
             return true

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use weave_engine::session::{paths_in, Engine, Schema};
 
 fn engine(name: &str) -> Option<Engine> {
-    let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/build");
+    let data = std::env::var_os("WEAVE_TEST_DATA_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/build"));
     if !data.join("english.wvz").exists() {
         return None;
     }

@@ -110,7 +110,9 @@ class TypingFeelTest {
         send(MotionEvent.ACTION_MOVE, 0)
     }
 
-    private fun release(id: Int) {
+    private fun release(id: Int, dx: Float = 0f, dy: Float = 0f) {
+        val (x, y) = down[id]!!
+        down[id] = (x + dx) to (y + dy)
         send(if (down.size == 1) MotionEvent.ACTION_UP else MotionEvent.ACTION_POINTER_UP, down.keys.indexOf(id))
         down.remove(id)
     }
@@ -422,6 +424,52 @@ class TypingFeelTest {
         assertEquals("", engine.raw.toString())
     }
 
+    @Test fun aSwipeWhoseLastPositionArrivesOnlyOnUpReplacesTheLetter() {
+        tap('n')
+        val q = key('q')
+        press(0, q)
+        release(0, dy = -q.rect.height() * 0.8f)
+        assertEquals("【n】1", ic.text)
+        assertEquals("", engine.raw.toString())
+    }
+
+    @Test fun pointerUpProcessesOnlyTheLiftingFingersFinalPosition() {
+        press(8, key('n'))
+        val q = key('q')
+        press(3, q)
+        // q is pointer index 1. n was already settled when q landed and must not emit again.
+        release(3, dy = -q.rect.height() * 0.8f)
+        release(8)
+        assertEquals("【n】1", ic.text)
+        assertEquals("", engine.raw.toString())
+    }
+
+    @Test fun aShortUpwardReleaseKeepsTheLetter() {
+        val q = key('q')
+        val min = maxOf(dp(KeyboardView.SWIPE_MIN_DP), kb.metrics.keyHeight * KeyboardView.SWIPE_MIN_KEY)
+        press(0, q)
+        release(0, dy = -(min - dp(2f)))
+        assertEquals("q", engine.raw.toString())
+        assertEquals("", ic.text)
+    }
+
+    @Test fun aSpaceSlideEndingWithoutAMoveEventMovesTheCursor() {
+        ic.commitText("hello", 1)
+        press(0, key(KeyCode.SPACE))
+        release(0, dx = -dp(60f))
+        assertTrue("the final release position must move the cursor", ic.cursorMoves < 0)
+        assertEquals("hello", ic.text)
+    }
+
+    @Test fun aLongPressLiftOnAnAlternativeUsesTheFinalReleasePosition() {
+        val q = key('q')
+        press(0, q)
+        hold(KeyboardView.LONG_PRESS_MS + 20)
+        release(0, dy = -(q.rect.height() / 2 + dp(6f) + maxOf(q.rect.height(), dp(44f)) / 2 + dp(4f)))
+        assertEquals("1", ic.text)
+        assertEquals("", engine.raw.toString())
+    }
+
     @Test fun shortOrSlantedUpwardDragsKeepTheLetter() {
         val q = key('q')
         val min = maxOf(dp(KeyboardView.SWIPE_MIN_DP), kb.metrics.keyHeight * KeyboardView.SWIPE_MIN_KEY)
@@ -509,6 +557,49 @@ class TypingFeelTest {
         assertEquals(word, kb.state.preedit)
         // 60 个候选里只测量可见范围（再多一屏）。 Only the visible range (plus a screen) of the 60 is measured.
         assertTrue("measured ${kb.topBar.measuredCount}", kb.topBar.measuredCount in 1 until 60)
+    }
+
+    @Test fun editorActionChangesPreservePagedCandidatesUntilTheNextInput() {
+        tap('n')
+        kb.flushRender()
+        val firstPage = kb.topBar.loadedCount
+        kb.onNeedMore()
+        val loaded = kb.topBar.loadedCount
+        assertTrue("a second page was loaded", loaded > firstPage)
+        val lastCandidate = kb.topBar.candidateAt(loaded - 1)
+        val measured = kb.topBar.measuredCount
+
+        controller.previewState(controller.state.copy(enterAction = com.weavetext.ime.ime.EnterAction.SEND))
+        kb.flushRender()
+        assertEquals("an editor action must not discard the second page", loaded, kb.topBar.loadedCount)
+        assertEquals(lastCandidate, kb.topBar.candidateAt(loaded - 1))
+        assertEquals(measured, kb.topBar.measuredCount)
+
+        tap('i')
+        kb.flushRender()
+        assertEquals("【ni】", kb.topBar.candidateAt(0))
+        assertEquals("new input replaces the old pages", firstPage, kb.topBar.loadedCount)
+    }
+
+    @Test fun candidateMetadataUpdatesStillReachTheBar() {
+        tap('n')
+        kb.flushRender()
+        val s = controller.state
+        val changed = s.candidates.mapIndexed { i, c -> if (i == 0) c.copy(pinyin = "n", isCloud = true) else c }
+        controller.previewState(s.copy(candidates = changed))
+        kb.flushRender()
+        assertEquals("n", kb.topBar.candidatePinyinAt(0))
+        assertEquals("(n)", kb.topBar.candidateHintAt(0))
+    }
+
+    @Test fun engineCandidatesReplaceLocalCandidatesEvenWhenTheEnginePayloadIsUnchanged() {
+        tap('n')
+        kb.flushRender()
+        controller.onCalc!!(listOf("640"))
+        assertEquals("640", kb.topBar.candidateAt(0))
+        controller.previewState(controller.state.copy(enterAction = com.weavetext.ime.ime.EnterAction.SEND))
+        kb.flushRender()
+        assertEquals("【n】", kb.topBar.candidateAt(0))
     }
 
     @Test fun keyLatencyGuard() {

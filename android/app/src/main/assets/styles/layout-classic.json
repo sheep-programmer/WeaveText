@@ -6,7 +6,7 @@
   "order": 2,
   "name": "经典",
   "description": "键距紧凑，左下常驻分词键，字母键带数字符号提示，工具栏首个图标着强调色",
-  "theme": "amber",
+  "theme": "fresh",
   "geometry": {
     "gapH": 4,
     "gapV": 7,

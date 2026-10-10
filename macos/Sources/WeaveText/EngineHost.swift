@@ -17,6 +17,7 @@ final class EngineHost {
     /// 云端热词（默认关闭），文件在用户目录的 cloud/。 Cloud hot words (off by default), files in the user dir's cloud/.
     let cloud: CloudWords
     private var cloudTimer: Timer?
+    private var backgroundStarted = false
 
     /// 中文模式；false 时切换到英文输入。 Chinese mode; false switches to English input.
     private(set) var chinese = true
@@ -57,6 +58,12 @@ final class EngineHost {
     /// 开始后台工作：云端热词开启时按天检查（输入法进程常驻，所以每小时看一次是否过期）。
     /// Start background work: daily hot-word checks when on (the IME stays running, so staleness is looked at hourly).
     func startBackground() {
+        backgroundStarted = true
+        updateBackground()
+    }
+    private func updateBackground() {
+        guard backgroundStarted else { return }
+        guard prefs.extensionEnabled("feature:cloudwords") else { cloudTimer?.invalidate(); cloudTimer = nil; return }
         cloud.refreshIfStale()
         guard cloudTimer == nil else { return }
         cloudTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
@@ -82,6 +89,9 @@ final class EngineHost {
 
     /// 把偏好写进内核；方案变了先收尾组合。 Push preferences into the engine; finish composing on a scheme change.
     private func apply() {
+        cloud.moduleEnabled = prefs.extensionEnabled("feature:cloudwords")
+        updateBackground()
+        if !ExtensionRegistry.scheme(prefs.schema, enabled: prefs.extensionsEnabled) { prefs.schema = "pinyin" }
         guard let engine else { return }
         if appliedSchema != prefs.schema {
             if engine.hasSchema(prefs.schema) {

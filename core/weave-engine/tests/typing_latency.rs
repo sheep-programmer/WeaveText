@@ -7,7 +7,8 @@ use std::time::Instant;
 use weave_engine::session::{paths_in, Engine};
 
 fn data() -> Option<PathBuf> {
-    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/build");
+    let d = std::env::var_os("WEAVE_TEST_DATA_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/build"));
     d.join("pinyin.wvz").exists().then_some(d)
 }
 

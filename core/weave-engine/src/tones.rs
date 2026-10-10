@@ -40,8 +40,7 @@ fn table() -> &'static Table {
     })
 }
 
-/// 去掉声调、与词库的写法一致（ü 写作 v）。 Strip the tone mark; ü is written v, like the lexicon.
-pub fn plain(toned: &str) -> String {
+fn plain_chars(toned: &str) -> impl Iterator<Item = char> + '_ {
     toned
         .chars()
         .map(|c| match c {
@@ -55,7 +54,11 @@ pub fn plain(toned: &str) -> String {
             'ḿ' => 'm',
             c => c,
         })
-        .collect()
+}
+
+/// 去掉声调、与词库的写法一致（ü 写作 v）。 Strip the tone mark; ü is written v, like the lexicon.
+pub fn plain(toned: &str) -> String {
+    plain_chars(toned).collect()
 }
 
 /// `text` 的拼音（音节以空格分隔）。`key` 是词库给这个候选用的音节（长度与字数一致时据此挑读音）。
@@ -70,18 +73,23 @@ pub fn pinyin(text: &str, key: Option<&[SyllableId]>, tones: bool) -> Option<Str
     }
     let key = key.filter(|k| k.len() == chars.len());
     let spelled: Option<Vec<&str>> = key.map(|k| k.iter().map(|&id| syllable::spelling(id)).collect());
-    let mut out: Vec<Option<String>> = vec![None; chars.len()];
+    let mut out: Vec<Option<&str>> = vec![None; chars.len()];
+    // Override lookup only needs borrowed UTF-8 slices, not a String for each
+    // possible word at each character. Keep byte boundaries for safe slicing.
+    let mut offsets = Vec::with_capacity(chars.len() + 1);
+    offsets.extend(text.char_indices().map(|(byte, _)| byte));
+    offsets.push(text.len());
     // 多音词覆盖：最长匹配，且读音必须和词库用的音节一致。 Word overrides: longest match, agreeing with the lexicon's syllables.
     let mut i = 0;
     while i < chars.len() {
         let mut hit = false;
         for len in (2..=t.longest.min(chars.len() - i)).rev() {
-            let word: String = chars[i..i + len].iter().collect();
-            let Some(reading) = t.words.get(word.as_str()) else { continue };
-            let agrees = spelled.as_ref().is_none_or(|s| reading.iter().enumerate().all(|(j, r)| plain(r) == s[i + j]));
+            let word = &text[offsets[i]..offsets[i + len]];
+            let Some(reading) = t.words.get(word) else { continue };
+            let agrees = spelled.as_ref().is_none_or(|s| reading.iter().enumerate().all(|(j, r)| plain_chars(r).eq(s[i + j].chars())));
             if agrees {
                 for (j, r) in reading.iter().enumerate() {
-                    out[i + j] = Some((*r).to_string());
+                    out[i + j] = Some(*r);
                 }
                 i += len;
                 hit = true;
@@ -99,19 +107,19 @@ pub fn pinyin(text: &str, key: Option<&[SyllableId]>, tones: bool) -> Option<Str
         let Some(readings) = t.chars.get(c) else {literal.push(*c);continue};
         has_reading = true;
         if !literal.is_empty() {parts.push(std::mem::take(&mut literal));}
-        let toned = match out[i].take() {
+        let toned = match out[i] {
             Some(r) => r,
             None => {
                 match spelled.as_ref().map(|s| s[i]) {
                     Some(want) if !want.is_empty() => readings
                         .iter()
-                        .find(|r| plain(r) == want)
-                        .map_or_else(|| readings[0].to_string(), |r| (*r).to_string()),
-                    _ => readings[0].to_string(),
+                        .find(|r| plain_chars(r).eq(want.chars()))
+                        .map_or(readings[0], |r| *r),
+                    _ => readings[0],
                 }
             }
         };
-        parts.push(if tones { toned } else { plain(&toned) });
+        parts.push(if tones { toned.to_string() } else { plain(toned) });
     }
     if !literal.is_empty() {parts.push(literal);}
     has_reading.then(|| parts.join(" "))
@@ -168,5 +176,12 @@ mod tests {
         assert!(annotated.starts_with("nǐ hǎo shì jiè"));
         assert_eq!(pinyin("今天review这个PR", None, true).as_deref(), Some("jīn tiān review zhè gè PR"));
         assert_eq!(pinyin("123", None, true), None);
+    }
+
+    #[test]
+    fn override_slices_respect_mixed_utf8_character_boundaries() {
+        let key = ids("a wo ai hao kan shu e");
+        assert_eq!(pinyin("🙂我爱好看书é", Some(&key), true).as_deref(), Some("🙂 wǒ ài hào kàn shū é"));
+        assert_eq!(pinyin("🙂我爱好看书é", Some(&key), false).as_deref(), Some("🙂 wo ai hao kan shu é"));
     }
 }

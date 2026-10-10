@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.extensions.Extensions
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.foundation.layout.Arrangement
@@ -61,7 +62,7 @@ fun ToolbarScreen() {
     val ctx = LocalContext.current
     val p by rememberLivePrefs(deps.prefs)
     val custom = WeavePrefs.toolbarCustom(p)
-    val items = custom ?: defaultToolbar(ctx, p)
+    val items = (custom ?: defaultToolbar(ctx, p)).filter { Extensions.tool(p, it) }
     fun save(next: List<String>) = WeavePrefs.setToolbar(deps.prefs, next)
 
     SubPage("工具栏", actions = {
@@ -94,7 +95,7 @@ fun ToolbarScreen() {
                 }
             }
         }
-        val rest = WeavePrefs.TOOLBAR_CHOICES.filter { it !in items }
+        val rest = WeavePrefs.TOOLBAR_CHOICES.filter { it !in items && Extensions.tool(p, it) }
         if (rest.isNotEmpty()) {
             val full = items.size >= WeavePrefs.TOOLBAR_MAX
             GroupTitle(if (full) "可以添加 · 先移除一个" else "可以添加")

@@ -82,8 +82,6 @@ class VoiceSession(
         }
     }
 
-    private fun hasEngine(): Boolean = runCatching { recognizerProvider().hasEngine() }.getOrDefault(true)
-
     fun addListener(l: () -> Unit) { listeners += l }
     private fun changed() = listeners.forEach { it() }
 
@@ -100,6 +98,45 @@ class VoiceSession(
     private fun clearTimers() {
         main.removeCallbacks(connectGuard)
         main.removeCallbacks(finalizeGuard)
+        main.removeCallbacks(timeoutCheck)
+    }
+
+    /** Invalidate first: cancel may synchronously emit onFinal/onEnd or throw. */
+    private fun releaseRecognizer() {
+        token++
+        val old = rec
+        rec = null
+        runCatching { old?.cancel() }
+    }
+
+    private fun clearTransient() {
+        results = null; detached = false
+        partial = ""; level = 0f; levels.fill(0f)
+    }
+
+    private fun fail(message: String) {
+        val res = results
+        if (res != null && res.rows().any { it.text.isNotBlank() }) {
+            // A capture failure must retain multi-engine text for an explicit choice, just like stop.
+            clearTimers()
+            releaseRecognizer()
+            val now = clock()
+            res.stop(now)
+            for (row in res.rows()) if (row.pending) {
+                if (row.text.isBlank()) res.error(row.id, message, now) else res.end(row.id, now)
+            }
+            error = message; level = 0f; levels.fill(0f)
+            enterChoosing()
+        } else if (active || state == State.CHOOSING) {
+            settle(message)
+        } else {
+            clearTimers()
+            releaseRecognizer()
+            clearTransient()
+            error = message
+            state = State.ERROR
+            changed()
+        }
     }
 
     /** 面板打开时预热识别器（如提前加载本地模型），失败不影响后续使用。 Warm up when the panel opens. */
@@ -126,15 +163,26 @@ class VoiceSession(
             settle()
         }
         if (state == State.CHOOSING) discard()
-        if (!hasPermission()) { error = "需要麦克风权限"; changed(); return false }
+        if (!hasPermission()) {
+            clearTransient(); notice = null
+            state = State.IDLE; error = "需要麦克风权限"
+            changed(); return false
+        }
         // 顶部语音键/空格按住可以绕过面板预热；已有模型也要检查后台补装。
         // 只在真正开始新会话时检查，active 的重复 start 不改变当前 capture。
         runCatching { com.weavetext.ime.voice.VoiceAutoDownload.ensure(ctx) }
-        if (!hasEngine()) {
+        // Use the same recognizer for availability and capture; a broken provider is an error, not no-engine.
+        val r = runCatching { recognizerProvider() }.getOrElse {
+            fail(it.message ?: "无法初始化语音识别"); return false
+        }
+        val available = runCatching { r.hasEngine() }.getOrElse {
+            fail(it.message ?: "无法读取语音引擎"); return false
+        }
+        if (!available) {
+            clearTransient(); notice = null
             error = null; state = State.IDLE
             changed(); onNoEngine(); return false
         }
-        val r = recognizerProvider()
         rec = r
         controller.voiceBegin()
         committed.clear(); partial = ""; error = null; notice = null; level = 0f
@@ -142,7 +190,7 @@ class VoiceSession(
         state = State.CONNECTING
         lastActivity = clock()
         val my = ++token
-        val ok = r.start(object : MultiVoiceListener {
+        val attempt = runCatching { r.start(object : MultiVoiceListener {
             // 已结束或报错的会话不能再把迟到结果写回编辑器；多引擎选结果时仍接收各引擎的收尾。
             // Ended/failed sessions must not write late results; multi-engine choosing still accepts engine completions.
             fun live() = (my == token && (active || state == State.CHOOSING)).also { if (it) lastActivity = clock() }
@@ -178,14 +226,14 @@ class VoiceSession(
                 results?.end(id, clock()); multiChanged()
             }
             override fun onPartial(text: String) {
-                if (!live()) return
+                if (!live() || results != null) return
                 enterListening()
                 partial = com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(committed.lastOrNull(), text)
                 controller.voicePartial(partial)
                 changed()
             }
             override fun onFinal(text: String) {
-                if (!live()) return
+                if (!live() || results != null) return
                 val segment = com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(committed.lastOrNull(), text)
                 controller.voiceFinal(segment)
                 committed.append(segment)
@@ -193,7 +241,7 @@ class VoiceSession(
                 changed()
             }
             override fun onReplace(old: String, new: String) {
-                if (!live()) return
+                if (!live() || results != null) return
                 controller.voiceReplace(old, new)
                 val i = committed.lastIndexOf(old)
                 if (i >= 0) committed.replace(i, i + old.length, new)
@@ -201,17 +249,7 @@ class VoiceSession(
             }
             override fun onError(message: String) {
                 if (!live()) return
-                // 先上屏已显示的文字：出错前识别出的内容不丢。 Keep the text already shown.
-                if (partial.isNotEmpty() && results == null) { controller.voiceFinal(partial); committed.append(partial) }
-                controller.voiceFinal("")
-                partial = ""
-                error = message
-                state = State.ERROR
-                clearTimers()
-                changed()
-                // 出错即结束：识别器若还在录音就停掉（放开麦克风与音频焦点）。
-                // An error ends the session: stop a recognizer that is still recording (frees the mic and focus).
-                main.post { if (my == token && state == State.ERROR && rec?.isRunning == true) { token++; rec?.cancel() } }
+                fail(message)
             }
             override fun onReady(selfEnd: Boolean) {
                 if (!live()) return
@@ -227,16 +265,20 @@ class VoiceSession(
                 if (!live()) return
                 if (results != null) {
                     // 引擎们自己结束了（未等用户停止）：直接进入结果列表。 Engines ended on their own.
+                    // Aggregate onEnd is terminal even if an engine omitted its individual end callback.
+                    val res = results!!
+                    for (row in res.rows()) if (row.pending) res.end(row.id, clock())
                     clearTimers()
-                    level = 0f
+                    level = 0f; levels.fill(0f)
                     if (active) enterChoosing() else multiChanged()
                     return
                 }
                 if (partial.isNotEmpty()) { controller.voiceFinal(partial); committed.append(partial); partial = "" }
                 controller.voiceFinal("")
                 if (state != State.ERROR) state = State.IDLE
-                level = 0f
+                level = 0f; levels.fill(0f)
                 clearTimers()
+                releaseRecognizer()
                 changed()
             }
             override fun onLevel(level: Float) {
@@ -248,13 +290,12 @@ class VoiceSession(
                 levels[levels.lastIndex] = this@VoiceSession.level
                 changed()
             }
-        })
-        if (!ok) {
-            if (state == State.CONNECTING) { state = State.ERROR; error = error ?: "无法开始录音" }
-            changed()
+        }) }
+        if (!attempt.getOrDefault(false) || error != null) {
+            fail(error ?: attempt.exceptionOrNull()?.message ?: "无法开始录音")
             return false
         }
-        if (state == State.CONNECTING) main.postDelayed(connectGuard, CONNECT_LIMIT_MS)
+        if (my == token && state == State.CONNECTING) main.postDelayed(connectGuard, CONNECT_LIMIT_MS)
         changed()
         return true
     }
@@ -270,15 +311,19 @@ class VoiceSession(
     fun stop() {
         if (!active || state == State.FINALIZING) return
         main.removeCallbacks(connectGuard)
+        val stopping = rec
+        val my = token
         if (results != null) {
-            rec?.stop()
+            // Enter Choosing before stop: synchronous completions may commit a detached session.
             enterChoosing()
-            return
+        } else {
+            state = State.FINALIZING
+            main.postDelayed(finalizeGuard, FINALIZE_LIMIT_MS)
+            changed()
         }
-        state = State.FINALIZING
-        main.postDelayed(finalizeGuard, FINALIZE_LIMIT_MS)
-        changed()
-        rec?.stop()
+        if (my == token) runCatching { stopping?.stop() }.onFailure {
+            if (my == token) fail(it.message ?: "无法停止录音")
+        }
     }
 
     /**
@@ -292,21 +337,22 @@ class VoiceSession(
         if (!active && state != State.CHOOSING) return
         val res = results
         val shown = if (res != null) res.primaryText() else partial
-        token++
-        rec?.cancel()
         clearTimers()
-        main.removeCallbacks(timeoutCheck)
+        releaseRecognizer()
         if (res != null && state == State.CHOOSING) {
             // 结果列表：上屏默认行。 Result list: commit the default row.
-            res.rows().getOrNull(res.defaultIndex())?.takeIf { it.selectable }?.let { controller.voiceFinal(it.text) }
+            res.rows().getOrNull(res.defaultIndex())?.takeIf { it.selectable }?.let {
+                controller.voiceFinal(it.text)
+                committed.clear(); committed.append(it.text)
+            }
         } else if (shown.isNotEmpty()) {
             controller.voiceFinal(shown)
             committed.append(shown)
         }
         controller.voiceFinal("")
-        results = null; detached = false; levels.fill(0f)
-        partial = ""; level = 0f
-        if (message != null) { error = message; state = State.ERROR } else state = State.IDLE
+        clearTransient()
+        error = message
+        state = if (message != null) State.ERROR else State.IDLE
         changed()
     }
 
@@ -349,7 +395,7 @@ class VoiceSession(
             // Even matching models remain separate rows: the user explicitly chooses one.
             if (detached) { val i = res.defaultIndex(); if (i >= 0) choose(i) else discard(); return }
             // 超时后不再等剩下的引擎。 Stop waiting for engines that timed out.
-            if (rec?.isRunning == true) { token++; rec?.cancel() }
+            releaseRecognizer()
         }
         changed()
     }
@@ -372,33 +418,20 @@ class VoiceSession(
 
     private fun finishMulti() {
         clearTimers()
-        main.removeCallbacks(timeoutCheck)
-        token++
-        if (rec?.isRunning == true) rec?.cancel()
-        results = null
-        detached = false
-        partial = ""; level = 0f
-        state = State.IDLE
+        releaseRecognizer()
+        clearTransient()
+        state = State.IDLE; error = null
         changed()
     }
 
     /** 取消：丢弃未确定的文本。 Cancel and drop interim text. */
     fun cancel() {
-        if (state == State.CHOOSING) { discard(); return }
-        if (!active) {
-            if (state == State.ERROR) {
-                if (rec?.isRunning == true) { token++; rec?.cancel() }
-                state = State.IDLE
-                changed()
-            }
-            return
-        }
-        token++
-        rec?.cancel()
-        controller.voiceCancel()
-        partial = ""; level = 0f
-        state = State.IDLE
+        val composing = active && results == null
         clearTimers()
+        releaseRecognizer()
+        if (composing) controller.voiceCancel()
+        clearTransient()
+        state = State.IDLE; error = null; notice = null
         changed()
     }
 

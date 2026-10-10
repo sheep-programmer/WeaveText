@@ -40,8 +40,8 @@ class StyleParserTest {
     }
 
     @Test fun builtInsParse() {
-        assertTrue(repo.layoutIds.size >= 6)
-        assertTrue(repo.themeIds.size >= 8 + 6)
+        assertEquals(setOf("fresh", "classic"), repo.layoutIds.toSet())
+        assertEquals(setOf("fresh", "ink", "mint", "dusk", "dynamic"), repo.themeIds.toSet())
         for (id in repo.layoutIds) {
             val l = repo.layout(id)
             assertEquals(id, l.id)
@@ -111,7 +111,13 @@ class StyleParserTest {
         assertRejects("版本") { StyleParser.layout(JSONObject("""{"id":"t","version":99}""")) }
     }
 
+    private fun install(key: String) {
+        val store = com.weavetext.ime.extensions.ExtensionStore(app)
+        store.install(store.items.first { it.key == key })
+    }
+
     @Test fun numberRowIsOptional() {
+        install("layout:numrow")
         val l = repo.layout("numrow")
         assertEquals(5, l.qwerty.rows.size)
         val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
@@ -200,6 +206,7 @@ class StyleParserTest {
 
     /** 符号面板结构由布局选择，默认底行分类。 The symbol panel structure is chosen per layout; bottom tabs by default. */
     @Test fun symbolPanelStructure() {
+        install("layout:bright")
         assertEquals("bottom", layout(""""name":"t"""").symbols.categories)
         assertEquals("side", layout(""""symbols":{"categories":"side"}""").symbols.categories)
         assertRejects("符号面板结构") { layout(""""symbols":{"categories":"top"}""") }
