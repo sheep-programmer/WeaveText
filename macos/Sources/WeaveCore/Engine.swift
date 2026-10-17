@@ -43,6 +43,29 @@ public final class WeaveSession {
     @discardableResult
     public func forget(_ index: Int) -> Bool { weave_forget(handle, UInt32(max(0, index))) }
 
+    /// 以词取字：第 index 个候选只上屏首字或末字。 Commit only the first or last char of a candidate.
+    @discardableResult
+    public func selectChar(_ index: Int, last: Bool) -> Bool { weave_select_char(handle, UInt32(max(0, index)), last) }
+
+    /// 组合串光标左右移动；false 表示这里不能移动。 Move the preedit caret; false when it can't move here.
+    @discardableResult
+    public func moveCaret(_ delta: Int) -> Bool { weave_move_caret(handle, Int32(clamping: delta)) }
+
+    /// 把光标放到显示串第 index 个字符附近（Int.max = 末尾）。 Caret near display char `index` (Int.max = end).
+    @discardableResult
+    public func setCaret(_ index: Int) -> Bool { weave_set_caret(handle, UInt32(clamping: max(0, index))) }
+
+    @discardableResult
+    public func deleteForward() -> Bool { weave_delete_forward(handle) }
+
+    /// 按音节移动光标；false 表示这里不能移动。 Move the caret by syllables; false when it can't move here.
+    @discardableResult
+    public func moveCaretSyllable(_ delta: Int) -> Bool { weave_move_caret_syllable(handle, Int32(clamping: delta)) }
+
+    /// 删掉光标前（forward 时为光标后）的一个音节。 Delete the syllable before (or, forward, after) the caret.
+    @discardableResult
+    public func deleteSyllable(forward: Bool) -> Bool { weave_delete_syllable(handle, forward) }
+
     public func commitFirst() { weave_commit_first(handle) }
     public func commitRaw() { weave_commit_raw(handle) }
     public func clear() { weave_clear(handle) }

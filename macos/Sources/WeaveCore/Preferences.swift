@@ -146,8 +146,47 @@ public final class Preferences: ObservableObject {
     @Published public var linkReceiveDirectory: String { didSet { save(linkReceiveDirectory, "linkReceiveDirectory") } }
     @Published public var linkPublicAddress: String { didSet { save(linkPublicAddress, "linkPublicAddress") } }
 
+    @Published public var perAppMemory: Bool { didSet { save(perAppMemory, "perAppMemory") } }
+
+    /// 按应用记住的中/英选择（`modes`）与被切过的应用次序（`order`，最新在前）。
+    /// Remembered per-app modes, plus the apps they belong to, most recent first.
+    public struct AppModes: Codable, Sendable, Equatable {
+        public var modes: [String: Bool] = [:]
+        public var order: [String] = []
+        /// 记多少应用为止；超出丢最早的。 How many apps are remembered; the oldest falls off.
+        public static let limit = 100
+        public init() {}
+    }
+
+    @Published public private(set) var appModes: AppModes {
+        didSet { d.set(try? JSONEncoder().encode(appModes), forKey: "appModes") }
+    }
+
+    /// 某个应用上次的选择；没切过就是 nil。 The mode remembered for an app, or nil if it was never switched there.
+    public func appMode(_ bundleID: String?) -> Bool? {
+        guard let bundleID, !bundleID.isEmpty else { return nil }
+        return appModes.modes[bundleID]
+    }
+
+    public var appMemoryCount: Int { appModes.order.count }
+
+    /// 记下某个应用的选择：最新的排最前，超出上限的连同取值一起丢掉。
+    /// Remember an app's choice; the newest goes first and anything past the limit is dropped along with its value.
+    public func rememberAppMode(_ bundleID: String?, chinese: Bool) {
+        guard let bundleID, !bundleID.isEmpty else { return }
+        var next = appModes
+        next.order = ([bundleID] + next.order.filter { $0 != bundleID }).prefix(AppModes.limit).map { $0 }
+        next.modes = next.modes.filter { next.order.contains($0.key) }
+        next.modes[bundleID] = chinese
+        appModes = next
+    }
+
+    public func clearAppMemory() { appModes = AppModes() }
+
     public init(defaults: UserDefaults) {
         d = defaults
+        appModes = defaults.data(forKey: "appModes").flatMap { try? JSONDecoder().decode(AppModes.self, from: $0) } ?? AppModes()
+        perAppMemory = defaults.object(forKey: "perAppMemory") as? Bool ?? true
         extensionsEnabled = Set(defaults.stringArray(forKey: "extensionsEnabled") ?? Array(ExtensionRegistry.defaults))
         schema = InputScheme.named(defaults.string(forKey: "schema") ?? "").id
         toggleKey = defaults.string(forKey: "toggleKey").flatMap(ToggleKey.init) ?? .shift

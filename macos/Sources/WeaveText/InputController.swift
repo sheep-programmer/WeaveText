@@ -13,6 +13,13 @@ final class WeaveInputController: IMKInputController {
     private var expanded = false
     private var expandedList: [Candidate] = []
     private var expandedExhausted = false
+    /// 展开网格只看单字。 The expanded grid shows single characters only.
+    private var expandedSingles = false
+    /// 展开网格下面给一排笔画键：拼音类方案才有字形表可筛。手写、英文、五笔没有这一行。
+    /// The grid's stroke row: only the pinyin-family schemas have a shape table to filter by. Hand, English and Wubi do not.
+    private var shapeFilterOffered: Bool {
+        host.chinese && host.engine != nil && ["pinyin", "shuangpin", "t9", "t14"].contains(prefs.schema)
+    }
     private static let expandedBatch = 60
     private static let expandedLimit = 600
     private var punctuation = Punctuation()
@@ -40,6 +47,9 @@ final class WeaveInputController: IMKInputController {
         super.activateServer(sender)
         host.activeController = self
         host.engine?.clear()
+        // 按应用记忆：组合已经清掉，这里认一下是哪个应用，再还原它上次的中/英。
+        // Per-app memory: the composition is already cleared, so identify the app and restore its last mode.
+        host.clientDidActivate(bundleID: (sender as? IMKTextInput)?.bundleIdentifier())
         // 换了输入框：上一次上屏与这里无关。 A new field: the previous commit has nothing to do with it.
         host.engine?.setContext(nil)
         punctuation.reset()
@@ -91,6 +101,7 @@ final class WeaveInputController: IMKInputController {
             return keyDown(event, client)
         case .leftMouseDown:
             if event.window is InputPanel { return false }
+            if placeCaretByClick(client) { return true }
             translationEpoch += 1
             if reconversionOriginal != nil { cancelReconversion() }
             dismissPredictions()
@@ -100,6 +111,21 @@ final class WeaveInputController: IMKInputController {
         default:
             return false
         }
+    }
+
+    /// 点在正在组合的拼音上：把插入点放到点击处，组合不结束。应用没说点在标记文字里时照旧处理。
+    /// A click on the composing pinyin puts the caret there and keeps composing. Anything the app doesn't report as
+    /// inside the marked text goes on as before.
+    private func placeCaretByClick(_ client: IMKTextInput) -> Bool {
+        guard let engine = host.engine, engine.isComposing, reconversionOriginal == nil, !preedit.isEmpty else { return false }
+        var inMarked: ObjCBool = false
+        let index = client.characterIndex(for: NSEvent.mouseLocation, tracking: IMKLocationToOffsetMappingMode(kIMKNearestBoundaryMode),
+                                          inMarkedRange: &inMarked)
+        guard inMarked.boolValue,
+              let at = Snapshot.markedClickIndex(index, markedRange: client.markedRange(), preedit: preedit),
+              engine.setCaret(at) else { return false }
+        refresh(client)
+        return true
     }
 
     private func flagsChanged(_ event: NSEvent, _ client: IMKTextInput) {
@@ -158,7 +184,8 @@ final class WeaveInputController: IMKInputController {
         let ctx = KeyContext(composing: composing, chinese: chineseInput, pageSize: prefs.pageSize,
                              pageKeys: prefs.pageKeys,
                              vMode: prefs.extensionEnabled("feature:calc") && composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
-                             bindings: prefs.candidateKeys, englishCompletion: prefs.englishCompletion)
+                             bindings: prefs.candidateKeys, englishCompletion: prefs.englishCompletion,
+                             caretArrows: prefs.orientation == .vertical)
         let action = KeyMapper.action(for: key, in: ctx)
         if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
             return true
@@ -166,7 +193,7 @@ final class WeaveInputController: IMKInputController {
         let wasAfterDigit = afterDigit
         afterDigit = false
         // 展开着全部候选时，任何别的按键先收起它。 Any other key first collapses the expanded list.
-        if expanded, action != .toggleExpand { expanded = false; expandedList = []; expandedExhausted = false }
+        if expanded, action != .toggleExpand { collapseExpanded() }
 
         switch action {
         case .toggleExpand:
@@ -243,6 +270,31 @@ final class WeaveInputController: IMKInputController {
             pager.highlightNext(fetch: fetch)
             showCandidates(client)
             return true
+        case .caret(let delta):
+            if reconversionOriginal != nil || !engine.moveCaret(delta) {
+                if delta < 0 { pager.highlightPrevious(fetch: fetch) } else { pager.highlightNext(fetch: fetch) }
+                showCandidates(client)
+                return true
+            }
+        case .caretHome:
+            if reconversionOriginal == nil { engine.setCaret(0) }
+        case .caretEnd:
+            if reconversionOriginal == nil { engine.setCaret(Int(UInt32.max)) }
+        case .deleteForward:
+            if reconversionOriginal == nil { engine.deleteForward() }
+        case .selectChar(let last):
+            if reconversionOriginal != nil || !engine.selectChar(pager.highlightedIndex, last: last) {
+                engine.select(pager.highlightedIndex)
+            }
+        case .caretSyllable(let delta):
+            if reconversionOriginal == nil { engine.moveCaretSyllable(delta) }
+        case .deleteSyllable(let forward):
+            // 不能按音节删（九键、五笔、重新选词）时删一个键。 Where syllables don't apply, delete one key.
+            if reconversionOriginal != nil {
+                if !forward { engine.backspace() }
+            } else if !engine.deleteSyllable(forward: forward) {
+                if forward { engine.deleteForward() } else { engine.backspace() }
+            }
         }
         refresh(client)
         return true
@@ -274,7 +326,7 @@ final class WeaveInputController: IMKInputController {
             calcResult = nil
             CandidatePanel.shared.hide()
         } else if host.engine?.isComposing == true {
-            expanded = false; expandedList = []; expandedExhausted = false
+            collapseExpanded()
             refresh(client())
         }
     }
@@ -470,7 +522,7 @@ final class WeaveInputController: IMKInputController {
 
     /// 读取内核状态：上屏、更新组合串与候选。 Read the engine: commit, update marked text and candidates.
     private func refresh(_ client: IMKTextInput?) {
-        expanded = false; expandedList = []; expandedExhausted = false
+        collapseExpanded()
         guard let engine = host.engine else { return }
         var s = engine.snapshot()
         if !s.commit.isEmpty, let client {
@@ -494,7 +546,7 @@ final class WeaveInputController: IMKInputController {
                 preedit = ""
             } else {
                 preedit = s.preedit
-                if let client { setMarked(s.preedit, client, marks: s.marks) }
+                if let client { setMarked(s.preedit, client, marks: s.marks, caret: s.caretUTF16) }
             }
             showCandidates(client)
         } else {
@@ -505,7 +557,7 @@ final class WeaveInputController: IMKInputController {
         }
     }
 
-    private func setMarked(_ text: String, _ client: IMKTextInput, marks: [PreeditMark] = []) {
+    private func setMarked(_ text: String, _ client: IMKTextInput, marks: [PreeditMark] = [], caret: Int? = nil) {
         correctionMarks = marks
         let attrs = mark(forStyle: kTSMHiliteRawText, at: NSRange(location: 0, length: (text as NSString).length))
             as? [NSAttributedString.Key: Any] ?? [.underlineStyle: NSUnderlineStyle.single.rawValue]
@@ -515,7 +567,7 @@ final class WeaveInputController: IMKInputController {
             styled.addAttribute(.foregroundColor, value: NSColor.systemRed, range: r)
         }
         client.setMarkedText(styled,
-                             selectionRange: NSRange(location: (text as NSString).length, length: 0),
+                             selectionRange: NSRange(location: min(caret ?? Int.max, (text as NSString).length), length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
@@ -523,7 +575,7 @@ final class WeaveInputController: IMKInputController {
     func toggleExpand(_ client: IMKTextInput? = nil) {
         guard !predicting, pager.total > 0, let client = client ?? self.client() else { return }
         if expanded {
-            expanded = false; expandedList = []; expandedExhausted = false
+            collapseExpanded()
         } else {
             expandedList = fetch(0, Self.expandedBatch)
             expandedExhausted = expandedList.count < Self.expandedBatch
@@ -546,9 +598,53 @@ final class WeaveInputController: IMKInputController {
     /// 滚到底附近时再取一批。 Fetch the next batch when scrolling near the end.
     func loadMoreExpanded() {
         guard expanded, !expandedExhausted, expandedList.count < Self.expandedLimit, let client = client() else { return }
+        if expandedSingles { fillSingles(expandedList.filter(\.isSingleHan).count + 24) } else { fetchExpandedBatch() }
+        showCandidates(client)
+    }
+
+    private func collapseExpanded() {
+        expanded = false; expandedList = []; expandedExhausted = false; expandedSingles = false
+    }
+
+    private func fetchExpandedBatch() {
         let more = fetch(expandedList.count, Self.expandedBatch)
         if more.count < Self.expandedBatch { expandedExhausted = true }
         expandedList += more
+    }
+
+    /// 单字多排在词后：只看单字时多取几批，直到够 `target` 个或取完。
+    /// Single chars usually rank after the words: fetch batches until `target` of them or the end.
+    private func fillSingles(_ target: Int) {
+        while !expandedExhausted, expandedList.count < Self.expandedLimit, expandedList.filter(\.isSingleHan).count < target {
+            fetchExpandedBatch()
+        }
+    }
+
+    /// 展开网格里的「单字」开关。 The expanded grid's single-char toggle.
+    func toggleExpandedSingles() {
+        guard expanded, let client = client() else { return }
+        expandedSingles.toggle()
+        if expandedSingles { fillSingles(40) }
+        showCandidates(client)
+    }
+
+    /**
+     展开网格下方按一笔笔画筛字（h 横 s 竖 p 撇 n 点 z 折）。先按 ` 开始字形码，笔画以大写发出，只跟笔画比；
+     筛完重新取候选，网格随之收窄。字形表不可用时什么都不做。
+     One stroke from the grid's stroke row (h, s, p, n, z). A ` starts the shape code first and the stroke goes out in
+     capitals so it compares strokes only; the candidates and grid then narrow. A no-op without a shape table.
+     */
+    func addShapeStroke(_ letter: Character) {
+        guard expanded, shapeFilterOffered, let engine = host.engine, let client = client() else { return }
+        guard engine.input("`") else { return }
+        engine.input(Character(letter.uppercased()))
+        // 取候选前先刷新组合串；刷新会收起网格，所以这里重新展开，筛选结果接着显示。
+        // Refresh the marked text first; it collapses the grid, so reopen it and show the filtered result.
+        refresh(client)
+        guard !predicting, pager.total > 0 else { return }
+        expandedList = fetch(0, Self.expandedBatch)
+        expandedExhausted = expandedList.count < Self.expandedBatch
+        expanded = true
         showCandidates(client)
     }
 
@@ -557,7 +653,7 @@ final class WeaveInputController: IMKInputController {
         guard let engine = host.engine, expanded, index < expandedList.count, let client = client() else { return }
         guard engine.candidates(offset: index, limit: 1).first?.text == expandedList[index].text else { return }
         if reconversionOriginal != nil && !ownsReconversion(client) { cancelReconversion(); return }
-        expanded = false; expandedList = []; expandedExhausted = false
+        collapseExpanded()
         engine.select(index)
         refresh(client)
     }
@@ -566,13 +662,17 @@ final class WeaveInputController: IMKInputController {
         guard let client else { return }
         var caret = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &caret)
+        let shown = expandedSingles ? expandedList.indices.filter { expandedList[$0].isSingleHan } : Array(expandedList.indices)
         // 联想词不高亮（空格不选它），也不翻页。 Predictions have no highlight (space doesn't pick) and no paging.
         let state = CandidateState(preedit: preedit, candidates: pager.page, highlight: predicting ? -1 : pager.highlight,
                                    hasPrevious: !predicting && pager.hasPrevious, hasNext: !predicting && pager.hasNext,
                                    orientation: prefs.orientation, fontSize: CGFloat(prefs.fontSize),
                                    hint: predicting ? "联想" : (correctionMarks.isEmpty ? "" : "已纠错 · 回车输入原文"),
                                    expandable: !predicting && pager.total > pager.page.count,
-                                   expanded: expanded ? expandedList : nil, expandedMore: expanded && !expandedExhausted)
+                                   expanded: expanded ? shown.map { expandedList[$0] } : nil,
+                                   expandedIndices: shown, expandedMore: expanded && !expandedExhausted,
+                                   expandedSingles: expandedSingles, singlesAvailable: expanded && host.chinese && prefs.schema != "hand",
+                                   shapeAvailable: expanded && shapeFilterOffered)
         CandidatePanel.shared.show(state, caret: caret, owner: self)
     }
 

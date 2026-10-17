@@ -221,10 +221,15 @@ public struct KeyContext: Equatable, Sendable {
     public var vMode: Bool
     /// 自定义的候选快捷键。 Custom candidate shortcuts.
     public var bindings = CandidateKeys()
+    /// 竖排候选：上下键选候选，左右键在拼音里移动光标；横排时左右键仍选候选。
+    /// Vertical candidates: Up/Down pick, Left/Right move the caret in the pinyin. Horizontal keeps Left/Right for picking.
+    public var caretArrows: Bool
 
     public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both,
-                vMode: Bool = false, bindings: CandidateKeys = CandidateKeys(), englishCompletion: Bool = false) {
+                vMode: Bool = false, bindings: CandidateKeys = CandidateKeys(), englishCompletion: Bool = false,
+                caretArrows: Bool = false) {
         self.bindings = bindings
+        self.caretArrows = caretArrows
         self.composing = composing
         self.vMode = vMode
         self.chinese = chinese
@@ -262,6 +267,20 @@ public enum KeyAction: Equatable, Sendable {
     case highlightNext
     /// 展开／收起全部候选。 Expand or collapse the full candidate list.
     case toggleExpand
+    /// 拼音里的光标左右移动若干按键；内核不支持时按选候选处理。
+    /// Move the caret in the pinyin by some keys; picks candidates instead where the engine can't.
+    case caret(Int)
+    /// 光标到拼音开头／末尾。 Caret to the start or end of the pinyin.
+    case caretHome
+    case caretEnd
+    /// 删除光标后的字母。 Delete the letter after the caret.
+    case deleteForward
+    /// 以词取字：高亮候选的首字或末字。 Take the first or last char of the highlighted candidate.
+    case selectChar(last: Bool)
+    /// ⌥←／⌥→：按音节移动光标。 ⌥← / ⌥→: move the caret by syllables.
+    case caretSyllable(Int)
+    /// ⌥⌫／⌥⌦：删掉光标前／后的一个音节。 ⌥⌫ / ⌥⌦: delete the syllable before / after the caret.
+    case deleteSyllable(forward: Bool)
 }
 
 /// 联想词显示时一次按键要做的事。 What a key does while predictions show.
@@ -312,7 +331,18 @@ public enum KeyMapper {
 
     /// 按键 → 动作（纯函数）。 Key → action, a pure function.
     public static func action(for key: KeyInput, in ctx: KeyContext) -> KeyAction {
-        // 快捷键一律放行。 Shortcuts always go to the app.
+        // 组合中的 ⌥ 加方向键／删除键按音节编辑，与系统文本里 ⌥ 按词移动一致。
+        // While composing, ⌥ with arrows / delete edits by syllable, like ⌥ moving by word in system text.
+        if ctx.chinese, ctx.composing, key.option, !key.command, !key.control, !key.shift {
+            switch key.keyCode {
+            case KeyCode.left: return .caretSyllable(-1)
+            case KeyCode.right: return .caretSyllable(1)
+            case KeyCode.delete: return .deleteSyllable(forward: false)
+            case KeyCode.forwardDelete: return .deleteSyllable(forward: true)
+            default: break
+            }
+        }
+        // 其余快捷键一律放行。 Other shortcuts always go to the app.
         if key.command || key.control || key.option { return .pass }
         if !ctx.chinese && !ctx.englishCompletion { return .pass }
         // 用户自定义的候选键优先于默认键，只在组合中生效。 Custom candidate keys beat the defaults, while composing only.
@@ -356,11 +386,15 @@ public enum KeyMapper {
         case KeyCode.escape: return .clear
         case KeyCode.delete: return .backspace
         case KeyCode.space: return .commitHighlighted
-        case KeyCode.left, KeyCode.up: return .highlightPrevious
-        case KeyCode.right, KeyCode.down, KeyCode.tab: return .highlightNext
+        case KeyCode.left: return ctx.caretArrows ? .caret(-1) : .highlightPrevious
+        case KeyCode.right: return ctx.caretArrows ? .caret(1) : .highlightNext
+        case KeyCode.up: return .highlightPrevious
+        case KeyCode.down, KeyCode.tab: return .highlightNext
         case KeyCode.pageUp: return .pagePrevious
         case KeyCode.pageDown: return .pageNext
-        case KeyCode.home, KeyCode.end, KeyCode.forwardDelete: return .swallow
+        case KeyCode.home: return .caretHome
+        case KeyCode.end: return .caretEnd
+        case KeyCode.forwardDelete: return .deleteForward
         default: break
         }
         guard let c = key.character else { return .swallow }
@@ -371,6 +405,8 @@ public enum KeyMapper {
         }
         if ctx.pageKeys.pagesBack(c) { return .pagePrevious }
         if ctx.pageKeys.pagesForward(c) { return .pageNext }
+        // 方括号没用来翻页时：[ 取首字，] 取末字。 Brackets not used for paging: [ takes the first char, ] the last.
+        if c == "[" || c == "]" { return .selectChar(last: c == "]") }
         if c.isASCII, !c.isWhitespace, c.asciiValue.map({ $0 >= 0x21 && $0 < 0x7f }) == true {
             return .punctuation(c)
         }

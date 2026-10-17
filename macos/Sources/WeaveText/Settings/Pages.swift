@@ -141,11 +141,20 @@ struct GeneralPage: View {
                     Footnote("切换到织文后，从系统输入法菜单里的「织文设置…」打开设置。")
                 }
             }
-            Section("中英切换") {
+            Section {
                 Picker("切换键", selection: $prefs.toggleKey) {
                     Text("单击 Shift").tag(ToggleKey.shift)
                     Text("关闭").tag(ToggleKey.none)
                 }
+                Toggle("按应用记住中/英", isOn: $prefs.perAppMemory)
+                if prefs.appMemoryCount > 0 {
+                    Button("清除按应用记忆（\(prefs.appMemoryCount) 个应用）") { prefs.clearAppMemory() }
+                        .disabled(!prefs.perAppMemory)
+                }
+            } header: {
+                Text("中英切换")
+            } footer: {
+                Footnote("按应用记忆默认开启。在某个应用里切过中/英，回到这个应用就还原；没切过的应用保持当前模式。最多记 100 个应用。只记中/英，不记方案与布局。")
             }
             Section("候选") {
                 Picker("每页候选个数", selection: $prefs.pageSize) {

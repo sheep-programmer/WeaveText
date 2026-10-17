@@ -94,6 +94,46 @@ private let busy = KeyContext(composing: true)
         #expect(KeyMapper.action(for: key("", code: KeyCode.right), in: busy) == .highlightNext)
         #expect(KeyMapper.action(for: key("", code: KeyCode.down), in: busy) == .highlightNext)
         #expect(KeyMapper.action(for: key("", code: KeyCode.pageDown), in: busy) == .pageNext)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.home), in: busy) == .caretHome)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.end), in: busy) == .caretEnd)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.forwardDelete), in: busy) == .deleteForward)
+    }
+
+    @Test func verticalCandidatesMoveThePinyinCaretWithLeftAndRight() {
+        var vertical = busy
+        vertical.caretArrows = true
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left), in: vertical) == .caret(-1))
+        #expect(KeyMapper.action(for: key("", code: KeyCode.right), in: vertical) == .caret(1))
+        #expect(KeyMapper.action(for: key("", code: KeyCode.up), in: vertical) == .highlightPrevious)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.down), in: vertical) == .highlightNext)
+    }
+
+    @Test func optionEditsThePinyinBySyllableOnlyWhileComposing() {
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left, option: true), in: busy) == .caretSyllable(-1))
+        #expect(KeyMapper.action(for: key("", code: KeyCode.right, option: true), in: busy) == .caretSyllable(1))
+        #expect(KeyMapper.action(for: key("\u{7f}", code: KeyCode.delete, option: true), in: busy) == .deleteSyllable(forward: false))
+        #expect(KeyMapper.action(for: key("", code: KeyCode.forwardDelete, option: true), in: busy) == .deleteSyllable(forward: true))
+        // 其余 ⌥ 组合、⌘ 组合以及空闲时照旧交给应用。 Other combos and idle keys still go to the app.
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left, command: true, option: true), in: busy) == .pass)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left, shift: true, option: true), in: busy) == .pass)
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left, option: true), in: idle) == .pass)
+        var english = busy
+        english.chinese = false
+        english.englishCompletion = true
+        #expect(KeyMapper.action(for: key("", code: KeyCode.left, option: true), in: english) == .pass)
+    }
+
+    @Test func theBacktickReachesTheEngineFirstWhileComposing() {
+        // 组合中 ` 先给内核（字形筛选）；内核不收时才按标点上屏。 Composing: the engine gets ` first (shape filter).
+        #expect(KeyMapper.action(for: key("`"), in: busy) == .punctuation("`"))
+    }
+
+    @Test func bracketsTakeOneCharUnlessTheyPage() {
+        #expect(KeyMapper.action(for: key("["), in: busy) == .selectChar(last: false))
+        #expect(KeyMapper.action(for: key("]"), in: busy) == .selectChar(last: true))
+        var brackets = busy
+        brackets.pageKeys = .brackets
+        #expect(KeyMapper.action(for: key("]"), in: brackets) == .pageNext)
     }
 
     @Test func digitsSelectWithinThePage() {

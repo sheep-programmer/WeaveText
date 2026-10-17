@@ -3,8 +3,10 @@ import SwiftUI
 import WeaveCore
 
 final class ExpressionsModel:ObservableObject {
-    @Published var kind="emoji" {didSet{group="全部";tip.dismiss()}}
+    @Published var kind="emoji" {didSet{group="全部";query="";tip.dismiss()}}
     @Published var group="全部" {didSet{tip.dismiss()}}
+    /// 搜索词：名称（中英文）或拼音。 The search query: a name (Chinese or English) or pinyin.
+    @Published var query="" {didSet{if query != oldValue {tip.dismiss()}}}
     @Published var message="点击输入，长按或悬停查看表情名称"
     let catalog:ExpressionCatalog?
     let tip=ExpressionTip()
@@ -13,7 +15,21 @@ final class ExpressionsModel:ObservableObject {
     }
     var entries:[NamedExpression] {kind=="emoji" ? catalog?.emoji ?? [] : catalog?.kaomoji ?? []}
     var groups:[String] {var seen=Set<String>();return ["全部"]+entries.map(\.group).filter{seen.insert($0).inserted}}
-    var visible:[NamedExpression] {entries.filter{group=="全部" || $0.group==group}}
+    private var indexes:[String:ExpressionSearch.Index]=[:]
+    private func index(_ kind:String)->ExpressionSearch.Index {
+        if let index=indexes[kind] {return index}
+        let rows=(kind=="emoji" ? catalog?.emoji ?? [] : catalog?.kaomoji ?? []).map(ExpressionSearch.Row.init)
+        let index=ExpressionSearch.Index(rows:rows);indexes[kind]=index;return index
+    }
+    /// 有搜索词时在整类里搜（跨分类）；否则按分类过滤。 With a query the whole kind is searched, across groups.
+    var visible:[NamedExpression] {
+        let q=query.trimmingCharacters(in:.whitespacesAndNewlines)
+        if !q.isEmpty {
+            let byText=Dictionary(uniqueKeysWithValues:entries.map{($0.text,$0)})
+            return index(kind).rank(q).compactMap{byText[$0.text]}
+        }
+        return entries.filter{group=="全部" || $0.group==group}
+    }
     func insert(_ entry:NamedExpression) {
         tip.dismiss()
         if EngineHost.shared.activeController?.commitVoiceText(entry.text)==true {message="已输入 \(entry.name)"}
@@ -22,15 +38,24 @@ final class ExpressionsModel:ObservableObject {
 }
 final class ExpressionsWindow:NSObject,NSWindowDelegate {
     static let shared=ExpressionsWindow()
-    private var panel:InputPanel?
+    private var panel:NSPanel?
     let model=ExpressionsModel()
     func show(owner:WeaveInputController? = nil) {
         owner?.finishComposition()
         if panel==nil {
-            let p=InputPanel(contentRect:NSRect(x:0,y:0,width:580,height:420),styleMask:[.titled,.closable,.resizable,.nonactivatingPanel],backing:.buffered,defer:false)
+            // 普通面板（和表情包窗口一样）：搜索框要能拿到键盘焦点；InputPanel 不能成为 key 窗口。
+            // A plain panel like the sticker window: the search field needs keyboard focus, and InputPanel can't be key.
+            let p=NSPanel(contentRect:NSRect(x:0,y:0,width:580,height:420),styleMask:[.titled,.closable,.resizable,.nonactivatingPanel],backing:.buffered,defer:false)
             p.title="Emoji 与颜文字";p.level = .floating;p.hidesOnDeactivate=false;p.isReleasedWhenClosed=false
             p.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.ignoresCycle];p.contentMinSize=NSSize(width:400,height:260)
-            p.contentView=ClickThroughHostingView(rootView:ExpressionsView(model:model));p.delegate=self;p.center();panel=p
+            // 与表情包窗口一致：普通 NSHostingView（ClickThroughHostingView 不让面板成为 key，搜索框就打不了字）。
+            // A plain NSHostingView like the sticker window: ClickThroughHostingView keeps the panel from becoming key.
+            let hosting=NSHostingView(rootView:ExpressionsView(model:model))
+            hosting.sizingOptions=[]
+            hosting.autoresizingMask=[.width,.height]
+            hosting.translatesAutoresizingMaskIntoConstraints=true
+            p.contentView=hosting
+            p.isMovableByWindowBackground=true;p.delegate=self;p.center();panel=p
             WindowAppearance.shared.track(p)
         }
         panel?.orderFrontRegardless()
@@ -46,7 +71,15 @@ struct ExpressionsView:View {
             HStack {
                 Picker("内容",selection:$model.kind) {Text("Emoji").tag("emoji");Text("颜文字").tag("kaomoji")}.pickerStyle(.segmented).frame(width:200)
                 Spacer()
-                Picker("分类",selection:$model.group) {ForEach(model.groups,id:\.self) {Text($0).tag($0)}}.frame(width:160)
+                Picker("分类",selection:$model.group) {ForEach(model.groups,id:\.self) {Text($0).tag($0)}}
+                    .frame(width:160).disabled(!model.query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+            }
+            HStack(spacing:6) {
+                Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索名称、拼音或英文",text:$model.query).textFieldStyle(.roundedBorder)
+                    // 回车取第一个结果，和 Android 端一致。 Enter takes the first hit, like on Android.
+                    .onSubmit {if let first=model.visible.first {model.insert(first)}}
+                if !model.query.isEmpty {Button {model.query=""} label:{Image(systemName:"xmark.circle.fill")}.buttonStyle(.plain).help("清除搜索")}
             }
             ScrollView {
                 LazyVGrid(columns:[GridItem(.adaptive(minimum:model.kind=="emoji" ? 48 : 180),spacing:6)],spacing:6) {
@@ -56,7 +89,12 @@ struct ExpressionsView:View {
                     }
                 }.padding(4)
             }
-            HStack {Text(model.message).font(.caption).foregroundStyle(.secondary);Spacer();Text("\(model.visible.count) 项").font(.caption).foregroundStyle(.secondary)}
+            HStack {
+                Text(model.query.isEmpty ? model.message : (model.visible.isEmpty ? "没有匹配的\(model.kind=="emoji" ? "表情" : "颜文字")" : "找到 \(model.visible.count) 项"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if model.query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {Text("\(model.visible.count) 项").font(.caption).foregroundStyle(.secondary)}
+            }
         }.padding(20).background(Theme.palette(prefs.colorTheme).surface).weaveStyle(prefs)
     }
 }
@@ -72,7 +110,9 @@ private struct ExpressionCell:NSViewRepresentable {
     func updateNSView(_ view:ExpressionCellView,context:Context) {update(view)}
     private func update(_ view:ExpressionCellView) {
         view.text=entry.text;view.name=entry.name;view.emoji=emoji;view.theme=theme;view.tip=tip;view.insert=insert
-        view.toolTip=entry.name;view.setAccessibilityLabel(entry.name);view.setAccessibilityRole(.button);view.needsDisplay=true
+        // 悬停与读屏都带上拼音：拼音搜出来的结果能马上对上。 Tooltip and accessibility carry the pinyin.
+        let label=entry.pinyin.isEmpty ? entry.name : "\(entry.name) · \(entry.pinyin)"
+        view.toolTip=label;view.setAccessibilityLabel(label);view.setAccessibilityRole(.button);view.needsDisplay=true
     }
 }
 final class ExpressionCellView:NSView {

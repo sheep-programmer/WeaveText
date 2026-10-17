@@ -27,6 +27,39 @@ private let dataDir = URL(fileURLWithPath: #filePath)
         #expect(e.snapshot().candidates.first?.text != "明天见")
     }
 
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/shape.wvz")))
+    func aShapeCodeAfterTheBacktickFiltersTheCandidates() throws {
+        let user = try tempDir("shape-filter")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setLearning(false)
+        for c in "shi`rc" { #expect(e.input(c)) }
+        let s = e.snapshot()
+        #expect(s.preedit == "shi`rc")
+        #expect(s.candidates.first?.text == "时")
+        // 退格先删字形码，退出筛选后字母回到拼音。 Backspace clears the code first; then letters are pinyin again.
+        for _ in 0..<3 { #expect(e.backspace()) }
+        #expect(e.snapshot().preedit == "shi")
+        e.clear()
+        for c in "zhongguo`w" { #expect(e.input(c)) }
+        #expect(e.snapshot().candidates.first?.text == "中国")
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/shape.wvz")))
+    func theUModeLooksCharsUpByTheirParts() throws {
+        let user = try tempDir("u-mode")
+        defer { try? FileManager.default.removeItem(at: user) }
+        let e = try #require(WeaveSession(dataDir: dataDir, userDir: user.path))
+        e.setLearning(false)
+        // u 之后打部件读音（品 = 口口口）或笔画（十 = 横竖），候选注出读音。 Parts or strokes after a u; readings noted.
+        for c in "ukoukoukou" { #expect(e.input(c)) }
+        let found = try #require(e.snapshot().candidates.first { $0.text == "品" })
+        #expect(found.comment == "pǐn")
+        e.clear()
+        for c in "uhs" { #expect(e.input(c)) }
+        #expect(e.snapshot().candidates.first?.text == "十")
+    }
+
     @Test(.enabled(if: FileManager.default.fileExists(atPath: dataDir + "/pinyin.wvz")))
     func correctionSettingsRefreshTheCurrentCompositionAndPreserveRawReturn() throws {
         let user=try tempDir("correction-parity")

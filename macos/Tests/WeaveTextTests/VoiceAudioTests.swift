@@ -89,4 +89,38 @@ private final class VoiceAudioProbe: VoiceSessionHandle, @unchecked Sendable {
         #expect(view.fittingSize.width<=601)
         #expect(view.fittingSize.height>200 && view.fittingSize.height<700)
     }
+
+    @Test func theExpandedGridOffersTheSingleCharFilterAndShowsOnlyWhatItIsGiven() throws {
+        _=NSApplication.shared
+        let all=["你好","拟好","你","尼","泥"].map {Candidate(text:$0)}
+        let singles=all.indices.filter {all[$0].isSingleHan}
+        let state=CandidateState(preedit:"ni'hao",candidates:Array(all.prefix(2)),highlight:0,hasPrevious:false,hasNext:true,orientation:.horizontal,fontSize:16,
+                                 expandable:true,expanded:singles.map {all[$0]},expandedIndices:singles,expandedSingles:true,singlesAvailable:true)
+        let view=NSHostingView(rootView:CandidateBar(state:state,pick:{_ in}))
+        view.frame=NSRect(origin:.zero,size:view.fittingSize)
+        view.layoutSubtreeIfNeeded()
+        #expect(singles==[2,3,4])
+        #expect(view.fittingSize.width>500)
+        if let dir=ProcessInfo.processInfo.environment["WEAVE_SNAPSHOT_DIR"], let rep=view.bitmapImageRepForCachingDisplay(in:view.bounds) {
+            view.cacheDisplay(in:view.bounds,to:rep)
+            try rep.representation(using:.png,properties:[:])?.write(to:URL(fileURLWithPath:dir).appendingPathComponent("mac_expanded_singles.png"))
+        }
+    }
+
+    @Test func theExpandedGridOffersTheStrokeRowOnlyWhereShapeFilteringWorks() throws {
+        _=NSApplication.shared
+        // 笔画键按横竖撇点折排列，发的字母必须是内核认的笔画码（大写后只按笔画比）。
+        #expect(CandidateBar.strokeKeys.map(\.glyph) == ["一","丨","丿","丶","乛"])
+        #expect(CandidateBar.strokeKeys.map(\.letter) == ["h","s","p","n","z"])
+        let all=["世","时"].map {Candidate(text:$0)}
+        func size(available:Bool)->NSSize {
+            let state=CandidateState(preedit:"shi",candidates:[all[0]],highlight:0,hasPrevious:false,hasNext:true,orientation:.horizontal,fontSize:16,
+                                     expandable:true,expanded:all,expandedIndices:Array(all.indices),shapeAvailable:available)
+            let view=NSHostingView(rootView:CandidateBar(state:state,pick:{_ in}))
+            view.layoutSubtreeIfNeeded()
+            return view.fittingSize
+        }
+        // 有笔画行时更高：多出一行五个键；不能筛的方案（手写、英文、五笔）没有这一行。
+        #expect(size(available:true).height > size(available:false).height)
+    }
 }

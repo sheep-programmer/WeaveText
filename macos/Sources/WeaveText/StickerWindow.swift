@@ -389,16 +389,37 @@ private struct StickerEditView:View {
         HStack {Button("取消",action:cancel);Button("保存"){save(fields.name,fields.group,fields.tags)}}}.padding(20).frame(minWidth:280,idealWidth:320,maxWidth:340).onAppear {fields.name=item.name;fields.group=item.group;fields.tags=item.tags.joined(separator:"，")}}
 }
 private final class StickerThumbnailModel:ObservableObject {@Published var image:NSImage?}
+/**
+ * 缩略图：把原文件读成 NSImage 交给 [StickerAnimatedImage]。动图由视图自己播放，所以 GIF 与动态 WebP
+ * 在网格里会动，而不是停在第一帧。
+ * Thumbnails read the stored file into an NSImage and hand it to [StickerAnimatedImage]. The view plays the
+ * animation itself, so GIF and animated WebP move in the grid instead of stopping at their first frame.
+ */
 private struct StickerThumbnail:View {
     var url:URL?
     @StateObject private var thumbnailModel=StickerThumbnailModel()
     var body:some View {
-        Group {if let image=thumbnailModel.image {Image(nsImage:image).resizable().scaledToFit()}else {Image(systemName:"photo").font(.largeTitle).foregroundStyle(.secondary)}}
-            .task(id:url) {thumbnailModel.image=nil;guard let url else{return};let thumbnail=await Task.detached(priority:.utility) {()->Data? in
-                guard let source=CGImageSourceCreateWithURL(url as CFURL,nil),let cg=CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:160,kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary) else{return nil}
-                return NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:])
-            }.value
-                if !Task.isCancelled {thumbnailModel.image=thumbnail.flatMap(NSImage.init(data:))}
-            }
+        Group {
+            if let image=thumbnailModel.image {StickerAnimatedImage(image:image)}
+            else {Image(systemName:"photo").font(.largeTitle).foregroundStyle(.secondary)}
+        }
+        .task(id:url) {thumbnailModel.image=nil;guard let url else{return};let loaded=await Task.detached(priority:.utility) {()->NSImage? in
+            NSImage(contentsOf:url)
+        }.value
+            if !Task.isCancelled {thumbnailModel.image=loaded}
+        }
+    }
+}
+private struct StickerAnimatedImage:NSViewRepresentable {
+    var image:NSImage
+    func makeNSView(context:Context)->NSImageView {
+        let view=NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.animates=true
+        return view
+    }
+    func updateNSView(_ view:NSImageView,context:Context) {
+        view.image=image
+        view.animates=true
     }
 }

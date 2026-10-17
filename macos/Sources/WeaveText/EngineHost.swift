@@ -21,6 +21,9 @@ final class EngineHost {
 
     /// 中文模式；false 时切换到英文输入。 Chinese mode; false switches to English input.
     private(set) var chinese = true
+    /// 正在打字的应用的包标识，按应用记忆用它分辨「哪个应用」。 The bundle id of the app being typed into, the key
+    /// the per-app memory uses.
+    private var clientBundleID: String?
 
     private init() {
         let data = Bundle.main.resourceURL?.appendingPathComponent("data").path ?? ""
@@ -131,5 +134,19 @@ final class EngineHost {
         NotificationCenter.default.post(name: Self.modeDidChange, object: self)
     }
 
-    func toggleChinese() { setChinese(!chinese) }
+    /// 用户显式切换：记在正在打字的这个应用名下（可在设置里关掉）。 An explicit switch is remembered for the app being
+    /// typed into (the setting can turn this off).
+    func toggleChinese() {
+        setChinese(!chinese)
+        if prefs.perAppMemory { prefs.rememberAppMode(clientBundleID, chinese: chinese) }
+    }
+
+    /// 换了一个应用/输入框：记下是谁，并按记忆还原它上次的中/英；没切过的应用保持当前模式。
+    /// A different app or field took focus: remember who it is and restore the mode it last used; apps never switched
+    /// in keep whatever is current.
+    func clientDidActivate(bundleID: String?) {
+        clientBundleID = bundleID
+        guard prefs.perAppMemory, let remembered = prefs.appMode(bundleID) else { return }
+        setChinese(remembered)
+    }
 }

@@ -38,17 +38,21 @@ final class HandwritingModel: ObservableObject {
             }
         }
     }
-    /// 停笔后自动上屏首选：时间来自设置（单字 0.6–1.4 秒），连写字间要留空，等两倍。 Commit the top candidate after the pen rests.
+    /// 停笔后自动上屏首选：单字用设置里的停顿时长。连写不自动上屏——字间留空本是写字的常态，在这里上屏就会清掉
+    /// 整行笔画，第二个字再写也进不了同一组，连写便与单字无异；连写由用户点候选确认。
+    /// Commit the top candidate after the pen rests: single-char mode uses the configured pause. Continuous writing never
+    /// commits here — leaving a gap between characters is normal, and committing would clear the whole line so the second
+    /// character could never join the first group, making continuous writing behave like single-char mode. The user picks
+    /// a candidate instead.
     private func scheduleIdleCommit(_ token:Int) {
         idle?.cancel()
-        guard !candidates.isEmpty else{return}
+        guard !multi, !candidates.isEmpty else{return}
         let work=DispatchWorkItem {[weak self] in
             guard let self,self.generation==token,let first=self.candidates.first else{return}
             self.choose(first,index:0)
         }
         idle=work
-        let delay=Preferences.shared.handPause.seconds
-        DispatchQueue.main.asyncAfter(deadline:.now()+(multi ? delay*2 : delay),execute:work)
+        DispatchQueue.main.asyncAfter(deadline:.now()+Preferences.shared.handPause.seconds,execute:work)
     }
     func choose(_ candidate:Candidate,index:Int) {
         guard let owner,EngineHost.shared.activeController === owner,let engine=EngineHost.shared.engine,engine.candidates(offset:index,limit:1).first?.text==candidate.text else{return}
@@ -57,7 +61,7 @@ final class HandwritingModel: ObservableObject {
     }
     func clear() {
         idle?.cancel();generation += 1;clearTick += 1;candidates=[];hasInk=false
-        message=multi ? "从左到右写 2–4 个字，字间留空，写完停笔自动上屏" : "写一个字，停笔自动上屏"
+        message=multi ? "从左到右写 2–4 个字，字间留空，写完点候选上屏" : "写一个字，停笔自动上屏"
         EngineHost.shared.engine?.clear()
     }
     func changeMode() {

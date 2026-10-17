@@ -17,7 +17,14 @@ struct CandidateState: Equatable {
     var expandable = false
     /// 展开后的候选网格（nil = 没展开）。 The expanded grid's candidates (nil = collapsed).
     var expanded: [Candidate]? = nil
+    /// 网格里每一项在全部候选中的序号（只看单字时不连续）。 Each grid item's index among all candidates (gaps when filtered).
+    var expandedIndices: [Int] = []
     var expandedMore = false
+    /// 只看单字开着／可用。 The single-char filter is on / offered.
+    var expandedSingles = false
+    var singlesAvailable = false
+    /// 展开网格下面给一排笔画键（横竖撇点折），按得动时才有。 The grid's stroke row (横竖撇点折), offered only when it can filter.
+    var shapeAvailable = false
 }
 
 /// 输入法的交互窗只能接收鼠标，不能夺走文档的键盘焦点。
@@ -94,6 +101,8 @@ final class CandidatePanel {
                                         toggle: { perform { $0.toggleExpand() } },
                                         pickExpanded: { i in perform { $0.pickExpanded(index: i) } },
                                         loadMore: { perform { $0.loadMoreExpanded() } },
+                                        toggleSingles: { perform { $0.toggleExpandedSingles() } },
+                                        stroke: { letter in perform { $0.addShapeStroke(letter) } },
                                         pageTurn: { delta in perform { $0.turnPage(delta) } },theme:Preferences.shared.colorTheme)
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.fittingSize
@@ -177,6 +186,9 @@ struct CandidateBar: View {
     var toggle: () -> Void = {}
     var pickExpanded: (Int) -> Void = {_ in}
     var loadMore: () -> Void = {}
+    var toggleSingles: () -> Void = {}
+    /// 按一笔笔画筛字（h 横 s 竖 p 撇 n 点 z 折）。 Add one stroke to the shape filter (h, s, p, n, z).
+    var stroke: (Character) -> Void = { _ in }
     /// 点翻页箭头。 Click the page arrows. (delta: -1 上一页, +1 下一页)
     var pageTurn: (Int) -> Void = { _ in }
     var widthLimit:CGFloat? = nil
@@ -262,6 +274,7 @@ struct CandidateBar: View {
             .accessibilityAction(named:Text("复制完整候选")) {copyCandidate(c.text)}
             .contextMenu {
                 Button("复制完整候选") {copyCandidate(c.text)}
+                Button("置顶这个词") { policy(i,c.text,"pin") }
                 Button("恢复正常排序") { policy(i,c.text,"") }
                 Button("降低优先级") { policy(i,c.text,"down") }
                 if c.user {Button("删除学习记录") {policy(i,c.text,"forget")}}
@@ -323,7 +336,8 @@ struct CandidateBar: View {
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 260), spacing: 2, alignment: .leading)],
                           alignment: .leading, spacing: 2) {
-                    ForEach(Array(all.enumerated()), id: \.offset) { i, c in
+                    ForEach(Array(all.enumerated()), id: \.offset) { n, c in
+                        let i = state.expandedIndices.indices.contains(n) ? state.expandedIndices[n] : n
                         HStack(alignment: .lastTextBaseline, spacing: 4) {
                             Text(c.text).font(font).foregroundStyle(i == 0 ? palette.candidate : palette.label)
                             if c.cloud { Image(systemName: "cloud.fill").font(note).foregroundStyle(.blue) }
@@ -340,14 +354,25 @@ struct CandidateBar: View {
                         .accessibilityAddTraits(.isButton)
                         .accessibilityAction {pickExpanded(i)}
                         .accessibilityAction(named:Text("复制完整候选")) {copyCandidate(c.text)}
-                        .onAppear { if state.expandedMore, i >= all.count - 12 { loadMore() } }
+                        .onAppear { if state.expandedMore, n >= all.count - 12 { loadMore() } }
                     }
                 }
             }
             .frame(width: 560, height: min(300, max(80, CGFloat((all.count + 4) / 5) * (state.fontSize + 14))))
             HStack {
-                Text("共 \(all.count)\(state.expandedMore ? "+" : "") 个 · 点选上屏，按任意键收起").font(note).foregroundStyle(palette.hint)
+                Text("\(state.expandedSingles ? "单字" : "共") \(all.count)\(state.expandedMore ? "+" : "") 个 · 点选上屏，按任意键收起").font(note).foregroundStyle(palette.hint)
                 Spacer()
+                if state.singlesAvailable {
+                    Button(action: toggleSingles) {
+                        Text("单字").font(note)
+                            .foregroundStyle(state.expandedSingles ? palette.accent : palette.secondary)
+                            .padding(.horizontal, 8).frame(height: 22)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(state.expandedSingles ? palette.accentSoft : .clear))
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).help("只看单字").accessibilityLabel("只看单字")
+                        .accessibilityValue(state.expandedSingles ? "已开启" : "已关闭")
+                }
                 Button(action: toggle) {
                     Image(systemName: "chevron.up")
                         .font(.system(size: max(9, state.fontSize * 0.6), weight: .semibold))
@@ -356,8 +381,33 @@ struct CandidateBar: View {
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).help("收起").accessibilityLabel("收起")
             }.padding(.horizontal, 6)
+            if state.shapeAvailable { strokeRow }
         }
     }
+
+    /// 展开网格下面的笔画键：与手机上那排一致，按一下加一笔字形码，候选随之收窄。
+    /// The stroke row under the grid, matching the phone's: each press adds one stroke to the shape code and narrows
+    /// the candidates.
+    @ViewBuilder private var strokeRow: some View {
+        HStack(spacing: 4) {
+            Text("笔画").font(note).foregroundStyle(palette.hint)
+            ForEach(Self.strokeKeys, id: \.letter) { key in
+                Button(action: { stroke(key.letter) }) {
+                    Text(key.glyph).font(Font.system(size: max(11, state.fontSize * 0.86)))
+                        .foregroundStyle(palette.secondary)
+                        .frame(maxWidth: .infinity).frame(height: 24)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(palette.accentSoft.opacity(0.5)))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("加一笔\(key.reading)").accessibilityLabel("笔画筛选：\(key.reading)")
+            }
+        }.padding(.horizontal, 6).padding(.top, 2)
+    }
+
+    /// 笔画键按横竖撇点折的顺序排列，字母是内核认的笔画码。
+    /// The stroke keys in 横竖撇点折 order; the letters are the shape codes the engine understands.
+    static let strokeKeys: [(glyph:String, letter:Character, reading:String)] = [
+        ("一", "h", "横"), ("丨", "s", "竖"), ("丿", "p", "撇"), ("丶", "n", "点"), ("乛", "z", "折"),
+    ]
 
     @ViewBuilder private func arrows(vertical: Bool) -> some View {
         if state.hasPrevious || state.hasNext {

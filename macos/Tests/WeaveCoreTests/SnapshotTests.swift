@@ -53,4 +53,25 @@ import Testing
         // 越界的标记被截断，不崩。 Out-of-range marks are clamped.
         #expect(PreeditMark.ranges([PreeditMark(start: 3, end: 9, kind: .replace)], in: "abcd") == [NSRange(location: 3, length: 1)])
     }
+
+    @Test func onlyOneHanCharacterCountsAsASingle() {
+        #expect(Candidate(text: "你").isSingleHan)
+        #expect(Candidate(text: "𠀀").isSingleHan, "extension B is still one character")
+        #expect(!Candidate(text: "你好").isSingleHan)
+        #expect(!Candidate(text: "a").isSingleHan)
+        #expect(!Candidate(text: "👌").isSingleHan)
+        #expect(!Candidate(text: "").isSingleHan)
+    }
+
+    @Test func aClickInTheMarkedTextMapsToAnEngineIndex() {
+        let marked = NSRange(location: 10, length: 6)
+        #expect(Snapshot.markedClickIndex(13, markedRange: marked, preedit: "ni'hao") == 3, "document index")
+        #expect(Snapshot.markedClickIndex(2, markedRange: marked, preedit: "ni'hao") == 2, "relative index")
+        #expect(Snapshot.markedClickIndex(40, markedRange: marked, preedit: "ni'hao") == nil)
+        #expect(Snapshot.markedClickIndex(NSNotFound, markedRange: marked, preedit: "ni'hao") == nil)
+        // 𠀀 占两个 UTF-16 单元，内核按一个字计。 𠀀 is two UTF-16 units but one engine char.
+        let none = NSRange(location: NSNotFound, length: 0)
+        #expect(Snapshot.markedClickIndex(3, markedRange: none, preedit: "𠀀hao") == 2)
+        #expect(Snapshot.markedClickIndex(1, markedRange: none, preedit: "𠀀hao") == 0)
+    }
 }

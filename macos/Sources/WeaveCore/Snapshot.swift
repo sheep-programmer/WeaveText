@@ -17,6 +17,13 @@ public struct Candidate: Decodable, Equatable, Sendable {
         self.cloud = cloud
     }
 
+    /// 一个汉字的候选（展开网格「只看单字」）。 One Han character (the expanded grid's single-char filter).
+    public var isSingleHan: Bool {
+        let scalars = text.unicodeScalars
+        guard scalars.count == 1, let s = scalars.first else { return false }
+        return s.properties.isIdeographic
+    }
+
     private enum CodingKeys: String, CodingKey { case text, comment, user, cloud, pinyin }
 
     public init(from decoder: Decoder) throws {
@@ -85,9 +92,13 @@ public struct Snapshot: Decodable, Equatable, Sendable {
     public var schema: String
     /// 预编辑里的纠错标记。 Auto-correction marks in the preedit.
     public var marks: [PreeditMark]
+    /// 组合串光标（Unicode 标量下标），nil 表示在末尾。 Preedit caret (scalar index); nil at the end.
+    public var caret: Int?
 
     public init(commit: String = "", preedit: String = "", composing: Bool = false, predicting: Bool = false,
-                total: Int = 0, candidates: [Candidate] = [], schema: String = "pinyin", marks: [PreeditMark] = []) {
+                total: Int = 0, candidates: [Candidate] = [], schema: String = "pinyin", marks: [PreeditMark] = [],
+                caret: Int? = nil) {
+        self.caret = caret
         self.commit = commit
         self.preedit = preedit
         self.composing = composing
@@ -98,7 +109,7 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         self.marks = marks
     }
 
-    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, predicting, total, candidates, schema, marks }
+    private enum CodingKeys: String, CodingKey { case commit, preedit, composing, predicting, total, candidates, schema, marks, caret }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -110,6 +121,39 @@ public struct Snapshot: Decodable, Equatable, Sendable {
         candidates = try c.decodeIfPresent([Candidate].self, forKey: .candidates) ?? []
         schema = try c.decodeIfPresent(String.self, forKey: .schema) ?? "pinyin"
         marks = try c.decodeIfPresent([PreeditMark].self, forKey: .marks) ?? []
+        caret = try c.decodeIfPresent(Int.self, forKey: .caret)
+    }
+
+    /// 光标在 preedit 里的 UTF-16 位置（在末尾时为长度）。 The caret as a UTF-16 offset into `preedit` (its length at the end).
+    public var caretUTF16: Int {
+        let end = (preedit as NSString).length
+        guard let c = caret, c >= 0 else { return end }
+        let scalars = preedit.unicodeScalars
+        guard c < scalars.count else { return end }
+        return String(String.UnicodeScalarView(scalars.prefix(c))).utf16.count
+    }
+
+    /// 点在已标记文字里的位置 → 内核的显示字符下标（Unicode 标量）。`index` 可能是文档下标或相对标记文字的下标，
+    /// 两种都认；对不上时为 nil。
+    /// A click in the marked text → the engine's display index (Unicode scalars). Clients report `index` either
+    /// in document terms or relative to the marked text; both are accepted, nil when neither fits.
+    public static func markedClickIndex(_ index: Int, markedRange: NSRange, preedit: String) -> Int? {
+        let length = (preedit as NSString).length
+        guard index != NSNotFound, index >= 0 else { return nil }
+        let relative: Int
+        if markedRange.location != NSNotFound, index >= markedRange.location, index <= markedRange.location + length {
+            relative = index - markedRange.location
+        } else if index <= length {
+            relative = index
+        } else { return nil }
+        // 数完全在点击位置之前的字；落在代理对中间时算到前一个字。 Count chars wholly before the click (a split pair rounds down).
+        var used = 0, count = 0
+        for s in preedit.unicodeScalars {
+            used += s.utf16.count
+            if used > relative { break }
+            count += 1
+        }
+        return count
     }
 
     public static func decode(_ json: String) -> Snapshot? {
