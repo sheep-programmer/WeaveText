@@ -10,8 +10,8 @@
   (Xiaohe / Ziranma / Microsoft / Sogou), T9, 14-key (two letters per key), handwriting (single
   characters, any stroke order, cursive strokes; write 2–4 characters in a row and pick from the
   candidates — a pause never commits), Wubi 86, English with suggestions.*
-- **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 76.0%。
-  *Beam search, a character collocation model and user learning: 76.0% top-1 on a 1000-sentence benchmark.*
+- **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.7%。
+  *Beam search, a character collocation model and user learning: 75.7% top-1 on a 1000-sentence benchmark.*
 - **联想与学习**：上屏后推荐下一个词（你的搭配优先，其次词库长词的接续）；用户词随时间淡出，
   选错马上退格即撤销学习，连着打的两段第二次出现时记成新词。
   *Next-word prediction after a commit (your own pairs first, then continuations of lexicon phrases); learned words

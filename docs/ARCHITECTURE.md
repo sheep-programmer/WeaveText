@@ -206,17 +206,21 @@ cd core && cargo run --release --example eval -- --data ../data/build \
 |---|---|---|---|
 | 全拼，仅词频 / pinyin, unigram only | 67.2% | 72.9% | 93.68% |
 | 全拼 + 搭配模型 / + collocation model | 71.7% | 75.5% | 94.68% |
-| 全拼 + 搭配模型 + 扩展词库（当前默认）/ + extended vocabulary (default) | **76.0%** | **80.0%** | **95.89%** |
-| 小鹤双拼（默认配置）/ Xiaohe (default) | 76.0% | 79.9% | 95.91% |
-| 九键（默认配置）/ T9 (default) | 49.0% | 55.7% | 85.68% |
+| 全拼 + 搭配模型 + 扩展词库（当前默认）/ + extended vocabulary (default) | **75.7%** | **80.0%** | **95.85%** |
+| 小鹤双拼（默认配置）/ Xiaohe (default) | 75.7% | 79.9% | 95.87% |
+| 九键（默认配置）/ T9 (default) | 49.2% | 55.9% | 85.66% |
 
-中文：搭配模型来自上游的 LTS 资产，上游会原地替换该文件（2026-10-16 换过一次，上游未公布内容说明）；
-`data/build.sh` 按校验值固定版本。换成新版后上表按同一评测集重跑，前一版为 75.6% / 79.6% / 95.84%
-（小鹤 75.8% / 79.7% / 95.88%，九键 48.8% / 55.5% / 85.56%）。
-*The collocation model comes from the upstream LTS asset, which upstream replaces in place (last changed
-2026-10-16 without a published changelog); `data/build.sh` pins it by digest. The table was rerun on the same
-set with that version; the previous one scored 75.6% / 79.6% / 95.84% (Xiaohe 75.8% / 79.7% / 95.88%,
-T9 48.8% / 55.5% / 85.56%).*
+中文：搭配模型来自上游的 LTS 资产，上游会原地替换该文件（2026-10-16、2026-10-17 各换过一次，两次都没有公布内容说明，
+旧字节上游也不再提供）；`data/build.sh` 按校验值固定当前版本。换成 10-17 版后上表按同一评测集重跑，10-16 版为
+76.0% / 80.0% / 95.89%（小鹤 76.0% / 79.9% / 95.91%，九键 49.0% / 55.7% / 85.68%），再往前一版为
+75.6% / 79.6% / 95.84%（小鹤 75.8% / 79.7% / 95.88%，九键 48.8% / 55.5% / 85.56%）。上表中仅词频与「+ 搭配模型」两行、
+以及上面的纠错与耗时数字是更早的模型上测的，未随每次替换重测。
+*The collocation model comes from the upstream LTS asset, which upstream replaces in place (2026-10-16 and again
+2026-10-17, neither with a published changelog, and the old bytes are gone); `data/build.sh` pins the current one by
+digest. The table was rerun on the same set with the 10-17 version; the 10-16 one scored 76.0% / 80.0% / 95.89%
+(Xiaohe 76.0% / 79.9% / 95.91%, T9 49.0% / 55.7% / 85.68%) and the one before that 75.6% / 79.6% / 95.84%
+(Xiaohe 75.8% / 79.7% / 95.88%, T9 48.8% / 55.5% / 85.56%). The unigram and unigram-plus-model rows, the
+correction figures above and the timings were measured on an earlier model and were not rerun.*
 
 中文：整句逐键输入的总耗时（M 系列 Mac，含搭配模型）：全拼约 13 ms/句（< 1 ms/键），双拼约 3 ms/句，
 九键约 53 ms/句。关键优化：删除「悬空」简拼边（CPU 降约 5 倍、准确率不变）、简拼位图扫描、字 id 直查表。

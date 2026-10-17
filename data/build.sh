@@ -39,9 +39,11 @@ fi
 "$DICTGEN" letters "$OUT/english.wvl" "$WX/en.dict.yaml"
 # 字符搭配模型：万象 RIME-LMDG（CC BY 4.0）剪枝为 2~3 字搭配。 Collocation model from RIME-LMDG.
 GRAM_SRC="$REF/wanxiang-lts-zh-hans.gram"
-# 上游 LTS 资产会被原地替换（2026-10-16 换过一次），网址固定不了版本，只能靠校验值区分。
-# The upstream LTS asset is replaced in place (it changed on 2026-10-16); only the digest pins a version.
-GRAM_SHA=20f968dfe5dc461d23c355b93aa63925d6d36a5fb8f459ccd5c4dcd1cae6e6b9
+# 上游 LTS 资产会被原地替换（2026-10-16、2026-10-17 各换过一次），网址固定不了版本，只能靠校验值区分。
+# 旧字节上游不再提供，换一次就必须跟着换一次校验值。
+# The upstream LTS asset is replaced in place (once on 2026-10-16, again on 2026-10-17); only the digest pins a
+# version, and the old bytes are gone, so a replacement means updating the digest.
+GRAM_SHA=1849e5e4acbdbfaf41fceeb86b739d5d0c85d574bd8a688562cba1e6beb78488
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 if [ ! -f "$GRAM_SRC" ] || [ "$(sha256 "$GRAM_SRC")" != "$GRAM_SHA" ]; then
   curl -fsSL --retry 3 -o "$GRAM_SRC.part" "https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram"
