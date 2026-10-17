@@ -130,13 +130,13 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 │                                                 │  App 保持全高，不被压缩
 │             (App 内容 / app content)             │  App keeps full height
 │                                                 │
-│        ┌──────────── ━━━ ─────── ⧉ ┐            │  拖动条 22dp：中间横条，右侧 ⧉ = 停靠
+│        ╭──────────── ━━━ ─────── × ╮            │  顶条 28dp：中间横条拖动，× = 停靠，两角缩放
 │        │ ◎  ⌨  🎙  ‹I›  📋  ⌄       │            │  顶栏 / 候选栏照常工作
 │        │ Q W E R T Y U I O P        │            │  卡片宽 75%（横屏 50%，≤ 480dp）
 │        │  A S D F G H J K L         │            │  圆角 16dp，投影 8dp
 │        │ ⇧ Z X C V B N M ⌫          │            │  键高用「紧凑」档，比例协调
 │        │ 符 123 ,  ␣  。 中 ⏎        │            │
-│        └────────────────────────────┘            │
+│        ╰────────────────────────────╯            │  底边 14dp：下方两角缩放（关掉下方两角时不留）
 └─────────────────────────────────────────────────┘
 ```
 
@@ -149,8 +149,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *Drag the handle; the card is clamped on screen.*
 - **记忆位置**：位置以「可移动范围内的比例」保存，横竖屏各一份（`float_pos_port` / `float_pos_land`），换屏幕尺寸也不会跑出屏幕；
   默认水平居中、贴近底部。*Position stored as fractions per orientation; default centred at the bottom.*
-- **停靠**：双击横条，或点横条右侧 ⧉，或再点工具箱「悬浮键盘」，回到常规底部键盘。
-  *Double-tap the handle, tap ⧉, or toggle again to dock.*
+- **停靠**：双击横条，或点横条右侧 ×，或再点工具箱「悬浮键盘」，回到常规底部键盘。
+  *Double-tap the handle, tap ×, or toggle again to dock.*
 - **卡片内一切照常**：候选栏、展开候选、工具箱、符号、剪贴板、语音面板与引擎弹层都在卡片内；按键气泡、组合串浮层与按住说话语音条跟随卡片。
   悬浮时单手模式不生效（卡片本身已足够小）。*All panels work inside the card; bubbles follow it; one-hand mode is
   ignored while floating.*
@@ -162,19 +162,23 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 
 ### 5.3 缩放 / Resize
 
-- 缩放手柄在顶部拖动条的**左端**（44dp 宽、与拖动条等高，画两层直角标记），与右端的停靠按钮对称；它**不占任何按键的触控区**
-  （此前放在右下角，会压住回车键的一角）。向左上拖放大、向右下拖缩小，卡片**整体缩放**，按键保持比例：缩放系数取宽、高相对变化的平均值。
-  *The grip sits at the left end of the top drag bar (44dp wide, bar height), mirroring the dock button on the
-  right, so no key loses touch area (the old bottom-right grip covered a corner of Enter). Drag up/left to grow,
-  down/right to shrink; the whole card scales by the average of the relative width and height change.*
+- 四个角都能缩放（设置里可关掉任意几个，至少留一个）。上方两角在 28dp 顶条里，下方两角在 14dp 底边里，**不占任何按键的触控区**；
+  启用的角只画一小段贴着圆角的淡弧，没有文字说明，关掉下方两角时底边也不留。触控区 48dp 宽、与所在的条等高；极矮的窗口顶条收成 22dp。
+  拖离卡片放大、拖向卡片缩小，卡片**整体缩放**，按键保持比例：缩放系数取宽、高相对变化的平均值。
+  *All four corners resize (any can be turned off, at least one stays). The top two sit in the 28dp top bar, the bottom
+  two in a 14dp bottom strip, so no key loses touch area; an enabled corner shows only a short faint arc along the
+  rounded corner, with no caption, and the bottom strip goes away when both bottom corners are off. Targets are 48dp
+  wide and as tall as their bar; very short windows shrink the top bar to 22dp. Dragging outward grows the card,
+  inward shrinks it; the whole card scales by the average of the relative width and height change.*
 - 范围 0.7–1.3，并且：宽不小于 220dp、不超过窗口宽的 95%，高不超过窗口高的 65%（横屏窗口矮时高度上限先起作用）。
   *Scale 0.7–1.3, at least 220dp wide, at most 95% of the window width and 65% of its height.*
 - 缩放只改悬浮卡片的行距（可低于常规档的 40dp 下限，最低 32dp），不影响停靠后的键盘高度。
   *Only the floating card's row pitch changes (down to 32dp); the docked height is unaffected.*
-- 横竖屏各记一份（`float_size_port` / `float_size_land`）；缩放中卡片**右下角**不动（再夹回屏幕内），松手后记下新位置。
-  *Remembered per orientation; the bottom-right corner stays put while resizing (then clamped on screen).*
-- `FloatingGeometryTest` 检查手柄与停靠按钮都在拖动条内、与键区不相交，中间留出拖动区。
-  *`FloatingGeometryTest` checks that the grip and dock button stay in the bar, clear of the key area.*
+- 横竖屏各记一份（`float_size_port` / `float_size_land`）；缩放中**对角**不动（贴着屏幕边时平移避让），松手后记下新位置。
+  *Remembered per orientation; the opposite corner stays put while resizing (sliding away from screen edges).*
+- `FloatingResizeTest`、`FloatingGeometryTest` 检查各角与关闭按钮互不重叠、都不压键区；`TypingFeelTest` 检查顶条与底边的高度。
+  *`FloatingResizeTest` and `FloatingGeometryTest` check the corners and close button stay apart and clear of the keys;
+  `TypingFeelTest` checks the bar heights.*
 
 ![缩小后的悬浮卡片 / A smaller floating card](../../android/app/src/test/snapshots/keyboard_floating_small_light.png)
 

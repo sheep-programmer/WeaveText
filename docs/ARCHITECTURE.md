@@ -111,7 +111,7 @@ sentence raw, 16.0 ms packed with a 12 MB cache, identical accuracy. 16 KiB bloc
    **自动纠错 / Auto-correction** — 全拼再解一次带纠错边的图（相邻字母颠倒、漏一个字母、多一个字母；只从用完整音节走到的
    位置猜），纠错读法比正常读法好出一截才采用：正常读法读不出来、要靠句中简拼或原样按键时门槛 500，句中出现零声母音节时
    5000，否则不纠错。预编辑显示纠正后的拼写，`Snapshot.marks` 标出改动（swap / insert / replace / delete），界面标红。
-   模拟评测（每句一个错）：颠倒 4.7% → 56.8%，多打 0.4% → 63.0%，漏打 5.2% → 25.9%，干净输入不变（75.6%），
+   模拟评测（每句一个错）：颠倒 4.7% → 56.8%，多打 0.4% → 63.0%，漏打 5.2% → 25.9%，干净输入不变（76.0%），
    计算量 +9%。*Full pinyin decodes a second graph with typo edges (swapped, missing, extra letter; only guessed from
    positions reached through whole syllables) and keeps it when clearly better — margin 500 when the plain reading fails
    or needs mid-input abbreviations / raw keys, 5000 when a zero-initial syllable appears mid-input, no correction
@@ -206,9 +206,17 @@ cd core && cargo run --release --example eval -- --data ../data/build \
 |---|---|---|---|
 | 全拼，仅词频 / pinyin, unigram only | 67.2% | 72.9% | 93.68% |
 | 全拼 + 搭配模型 / + collocation model | 71.7% | 75.5% | 94.68% |
-| 全拼 + 搭配模型 + 扩展词库（当前默认）/ + extended vocabulary (default) | **75.6%** | **79.6%** | **95.84%** |
-| 小鹤双拼（默认配置）/ Xiaohe (default) | 75.8% | 79.7% | 95.88% |
-| 九键（默认配置）/ T9 (default) | 48.8% | 55.5% | 85.56% |
+| 全拼 + 搭配模型 + 扩展词库（当前默认）/ + extended vocabulary (default) | **76.0%** | **80.0%** | **95.89%** |
+| 小鹤双拼（默认配置）/ Xiaohe (default) | 76.0% | 79.9% | 95.91% |
+| 九键（默认配置）/ T9 (default) | 49.0% | 55.7% | 85.68% |
+
+中文：搭配模型来自上游的 LTS 资产，上游会原地替换该文件（2026-10-16 换过一次，上游未公布内容说明）；
+`data/build.sh` 按校验值固定版本。换成新版后上表按同一评测集重跑，前一版为 75.6% / 79.6% / 95.84%
+（小鹤 75.8% / 79.7% / 95.88%，九键 48.8% / 55.5% / 85.56%）。
+*The collocation model comes from the upstream LTS asset, which upstream replaces in place (last changed
+2026-10-16 without a published changelog); `data/build.sh` pins it by digest. The table was rerun on the same
+set with that version; the previous one scored 75.6% / 79.6% / 95.84% (Xiaohe 75.8% / 79.7% / 95.88%,
+T9 48.8% / 55.5% / 85.56%).*
 
 中文：整句逐键输入的总耗时（M 系列 Mac，含搭配模型）：全拼约 13 ms/句（< 1 ms/键），双拼约 3 ms/句，
 九键约 53 ms/句。关键优化：删除「悬空」简拼边（CPU 降约 5 倍、准确率不变）、简拼位图扫描、字 id 直查表。

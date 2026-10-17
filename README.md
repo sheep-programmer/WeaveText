@@ -5,12 +5,13 @@
 
 ## 特性 / Features
 
-- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、14 键（每键两个字母）、手写（单字，笔顺不限、可连笔）、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
+- **输入方案**：全拼（整句、简拼、模糊音、常见错拼纠正、中英混输）、双拼（小鹤 / 自然码 / 微软 / 搜狗）、九键、14 键（每键两个字母）、手写（单字，笔顺不限、可连笔；连写可横向写 2–4 个字一起识别，停笔不上屏、点候选确认）、五笔 86（四码唯一自动上屏、顶屏、`z` 键拼音反查）、英文联想。
   *Schemes: full pinyin (sentences, abbreviations, fuzzy sounds, typo correction, mixed English), double pinyin
   (Xiaohe / Ziranma / Microsoft / Sogou), T9, 14-key (two letters per key), handwriting (single
-  characters, any stroke order, cursive strokes), Wubi 86, English with suggestions.*
-- **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 75.6%。
-  *Beam search, a character collocation model and user learning: 75.6% top-1 on a 1000-sentence benchmark.*
+  characters, any stroke order, cursive strokes; write 2–4 characters in a row and pick from the
+  candidates — a pause never commits), Wubi 86, English with suggestions.*
+- **整句更准**：束搜索 + 字符搭配语言模型 + 用户学习；1000 句原创评测集首选整句 76.0%。
+  *Beam search, a character collocation model and user learning: 76.0% top-1 on a 1000-sentence benchmark.*
 - **联想与学习**：上屏后推荐下一个词（你的搭配优先，其次词库长词的接续）；用户词随时间淡出，
   选错马上退格即撤销学习，连着打的两段第二次出现时记成新词。
   *Next-word prediction after a commit (your own pairs first, then continuations of lexicon phrases); learned words
@@ -30,10 +31,15 @@
   用户词写只追加日志。
   *Zero deployment and small: precompiled, block-compressed dictionaries are read straight from the APK and decoded
   on demand — about 24 MB for all data, nothing extracted. User words go to an append-only log.*
-- **表情收纳袋**：工具栏收纳图片，支持相册／文件／系统分享／兼容来源的拖入；原 GIF、WebP 保留，分组、标签、收藏、最近使用及 Android／Mac 备份互导。可选悬浮窗，Mac 从系统输入法菜单打开；插入与发送仍依赖目标 App 的支持。
-- **键盘**：主流输入法式布局、亮/暗主题、候选展开、符号、光标编辑、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想；
+- **表情收纳袋**：工具栏收纳图片，支持相册／文件／系统分享／兼容来源的拖入；原 GIF、WebP 保留，动图在管理页、键盘面板与 Mac 收纳窗里都会播放；分组、标签、收藏、最近使用及 Android／Mac 备份互导。可选悬浮窗，Mac 从系统输入法菜单打开；插入与发送仍依赖目标 App 的支持。
+- **键盘**：主流输入法式布局、亮/暗主题、候选展开（可只看单字、按笔画筛选）、长按候选置顶或降频、组合串中移动插入点与退格撤回选词、以词取字、字形筛选（拼音后按 `` ` `` 输入笔画或部件拼音）、u 模式拆字查字（u 后打部件拼音或笔画，注出读音）、符号、表情与颜文字按名称搜索（中文、英文、拼音，离线）、光标编辑（选择、复制、剪切、粘贴、多步撤销与重做）、英文大写锁定（双击或长按 Shift）、按应用记住中/英（在某个应用里切过，回到它就还原）、剪贴板（默认不记录）、常用语、单手、键盘高度、繁体输出、表情联想；
   可拖动、可缩放的悬浮键盘，宽屏（横屏、平板、折叠屏）自动分体，可选数字行布局；多指快速输入不丢键，字符按下即出。
-  *mainstream-IME-style layout, light/dark, candidate grid, symbols, cursor panel, clipboard (off by default),
+  *mainstream-IME-style layout, light/dark, candidate grid (with single-char and stroke filters), a movable caret inside the
+  composition, backspace undoing a pick, taking one char of a word, a shape filter (`` ` `` after the pinyin, then strokes
+  or component pinyin), u-mode lookup of unknown chars by their parts or strokes (with readings), symbols, emoji and
+  kaomoji search by name offline (Chinese, English or pinyin), cursor
+  panel (select, copy, cut, paste, multi-step undo and redo), English caps lock (double-tap or long-press Shift),
+  per-app Chinese/English memory (a switch made in one app comes back when you return), clipboard (off by default),
   phrases, one-handed mode, height, traditional output, emoji suggestions; a draggable, resizable floating keyboard,
   automatic split on wide screens, an optional number row; fast multi-finger typing without dropped keys, chars on press.*
 - **离线语音**：使用前下载语音包，识别在手机上完成。中文默认实时字幕与终稿复核配合，旧中文实时用户在 Wi-Fi 下补装终稿；支持可选标点、SenseVoice、Paraformer、Dolphin 和 TeleSpeech；Silero 辅助整句分句。点按说话可停顿思考，第二次点击才结束；波纹随真实麦克风音量变化。下载支持镜像、断点续传、大小与 SHA-256 校验（见 [docs/models.md](docs/models.md)）。
