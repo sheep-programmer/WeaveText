@@ -11,6 +11,7 @@ Every new dependency must be registered here.
 | 万象拼音词库（`zi`、`jichu`、`diming`、`renming`、`mingren`、`shici`、`lianxiang`、`duoyin`、`en`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 拼音字词与词频、英文词频 | 构建时去声调并编译为 `pinyin.wvl` / `english.wvl`；应用「关于」页署名 |
 | 简繁转换表（`STPhrases`、`STCharacters`） | [OpenCC](https://github.com/BYVoid/OpenCC)，经 rime_wanxiang 整理 | Apache-2.0 / CC BY 4.0 | 繁体输出 | 内容不变，以分块压缩文件 `st_*.wvz` 随包分发 |
 | 表情联想表（`emoji.txt`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | CC BY 4.0 | 词后表情候选 | 内容不变，以分块压缩文件 `emoji.wvz` 随包分发 |
+| 字形表（`shape.wvz`，来自 `wanxiang_reverse.dict.yaml`） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang)（提交 `516b1bb6`） | CC BY 4.0 | 字形筛选（辅助码）与 u 模式拆字查字：笔画与部件读音 | 由 `core/weave-dict/src/bin/shapegen.rs` 可复现生成，只收拼音字库里的字，去掉来源标记后转为织文格式 |
 | 字符搭配模型（`grammar.wvg`） | [amzxyz/RIME-LMDG](https://github.com/amzxyz/RIME-LMDG) `wanxiang-lts-zh-hans.gram` | CC BY 4.0 | 整句组词 | 构建时读取原始模型，剪枝为 2~3 字搭配并转为织文格式 |
 | 五笔 86 码表 | [rime/rime-wubi](https://github.com/rime/rime-wubi) | LGPL-3.0 | 五笔 86 编码 | 作为**独立、可替换**的数据文件 `wubi86.wvz` 分发，附许可证全文与源地址；后续计划替换为自建码表 |
 | 专业词库（可选下载：`med`、`drug`、`chem`、`species`、`celeb`、`dialect` 等） | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) 的领域词表（`yixue`、`yaopin`、`huaxue`、`wuzhong`、`yiren`、`fangyan`，提交 `516b1bb6`） | CC BY 4.0 | 领域词候选 | 由 `data/packs.sh` 可复现构建，与基础词库同尺度计分并整体靠后；不随 APK 分发，用户在「词库 › 专业词库」按需下载 |
@@ -20,7 +21,7 @@ Every new dependency must be registered here.
 | 手写识别网络（`hand_net.wvz`） | 由 `tools/handnet/` 从上面同一份 Make Me a Hanzi 笔画中线，以及霞鹜文楷、Noto Sans/Serif SC、马善政、智莽行、刘建毛草、龙藏、站酷小薇、站酷快乐等字体（均为 SIL OFL 1.1）的字形骨架合成样本训练 | Arphic Public License（字体部分：OFL 1.1 只约束字体本身，不约束由其渲染的图像） | 手写输入（与模板匹配融合，连笔、潦草书写） | 训练脚本在仓库内，可复现；权重作为**独立数据文件**分发，未使用任何只限研究用途的手写数据库 |
 
 *Wanxiang data (CC BY 4.0) is tone-stripped and compiled into `pinyin.wvl` / `english.wvl`, attributed on the
-About page. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvz` with the license
+About page; its reverse-lookup table (strokes and component readings) becomes `shape.wvz` for the shape filter and the u-mode lookup. The Wubi 86 table (LGPL-3.0) ships as a separate, replaceable data file `wubi86.wvz` with the license
 text and source link; a self-built table is planned.*
 
 署名 / Attribution: 「本应用词库数据部分来自万象拼音（amzxyz/rime_wanxiang），依 CC BY 4.0 授权使用，已做格式转换。」

@@ -114,6 +114,8 @@ pub fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
         e.u8(m.kind as u8);
         e.str(&m.removed);
     }
+    // 组合串光标（Unicode 标量下标），-1 表示在末尾。 Preedit caret (scalar index); -1 at the end.
+    e.i32(s.caret.map_or(-1, |c| c as i32));
     e.0
 }
 
@@ -487,6 +489,41 @@ index_op!(
     Java_com_weavetext_ime_core_NativeEngine_nativeForget,
     |e, i| e.forget_candidate(i)
 );
+index_op!(
+    Java_com_weavetext_ime_core_NativeEngine_nativeSetCaret,
+    |e, i| e.set_caret(i)
+);
+bool_op!(
+    Java_com_weavetext_ime_core_NativeEngine_nativeDeleteForward,
+    |e| e.delete_forward()
+);
+
+/// 组合串光标左右移动若干按键。 Move the preedit caret by some keys.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeMoveCaret(_env: JNIEnv, _c: JClass, h: jlong, delta: jint) -> jboolean {
+    jbool(with_engine(h, false, |e| e.move_caret(delta)))
+}
+
+/// 组合串光标按音节移动若干次。 Move the preedit caret by some syllables.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeMoveCaretSyllable(_env: JNIEnv, _c: JClass, h: jlong, delta: jint) -> jboolean {
+    jbool(with_engine(h, false, |e| e.move_caret_syllable(delta)))
+}
+
+/// 删掉组合串光标前（forward 为真时为光标后）的一个音节。 Delete the syllable before (or after) the preedit caret.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeDeleteSyllable(_env: JNIEnv, _c: JClass, h: jlong, forward: jboolean) -> jboolean {
+    jbool(with_engine(h, false, |e| e.delete_syllable(forward != JNI_FALSE)))
+}
+
+/// 以词取字：取第 index 个候选的首字或末字。 Take the first or last char of candidate `index`.
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSelectChar(_env: JNIEnv, _c: JClass, h: jlong, index: jint, last: jboolean) -> jboolean {
+    if index < 0 {
+        return JNI_FALSE;
+    }
+    jbool(with_engine(h, false, |e| e.select_char(index as usize, last != JNI_FALSE)))
+}
 
 #[no_mangle]
 pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeSetLearning(

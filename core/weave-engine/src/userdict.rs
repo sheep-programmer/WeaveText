@@ -495,6 +495,11 @@ impl UserDict {
         out
     }
 
+    /// 一个词都没学过（根下没有分支）。 Nothing learned yet: the root has no branches.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.first().is_none_or(|n| n.children.is_empty())
+    }
+
     pub fn find(&self, key: &[u16]) -> Option<UNodeId> {
         key.iter().try_fold(UROOT, |n, &s| self.child(n, s))
     }

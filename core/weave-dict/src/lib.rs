@@ -7,6 +7,7 @@ pub mod hand;
 pub mod handnet;
 pub mod follow;
 pub mod lexicon;
+pub mod shape;
 pub mod syllable;
 
 pub use lexicon::{Builder, Entry, Kind, Lexicon, NodeId, ROOT};

@@ -85,6 +85,7 @@ pub fn snapshot_json(s: &Snapshot) -> Value {
         "pinyinOptions": s.pinyin_options,
         "schema": s.schema,
         "marks": s.marks.iter().map(|m| json!({ "start": m.start, "end": m.end, "kind": m.kind.key(), "removed": m.removed })).collect::<Vec<_>>(),
+        "caret": s.caret,
     })
 }
 
@@ -248,6 +249,42 @@ pub extern "C" fn weave_select_pinyin(h: *mut WeaveEngine, index: u32) -> bool {
 #[no_mangle]
 pub extern "C" fn weave_forget(h: *mut WeaveEngine, index: u32) -> bool {
     with(h, false, |e| e.forget_candidate(index as usize))
+}
+
+/// 以词取字：取第 index 个候选的首字（last = false）或末字。 Take the first (last = false) or last char of a candidate.
+#[no_mangle]
+pub extern "C" fn weave_select_char(h: *mut WeaveEngine, index: u32, last: bool) -> bool {
+    with(h, false, |e| e.select_char(index as usize, last))
+}
+
+/// 组合串光标左右移动若干按键；false 表示这里不能移动。 Move the preedit caret by some keys; false when it can't.
+#[no_mangle]
+pub extern "C" fn weave_move_caret(h: *mut WeaveEngine, delta: i32) -> bool {
+    with(h, false, |e| e.move_caret(delta))
+}
+
+/// 把组合串光标放到显示串第 index 个字符附近。 Put the preedit caret near display character `index`.
+#[no_mangle]
+pub extern "C" fn weave_set_caret(h: *mut WeaveEngine, index: u32) -> bool {
+    with(h, false, |e| e.set_caret(index as usize))
+}
+
+/// 组合串光标按音节移动若干次。 Move the preedit caret by some syllables.
+#[no_mangle]
+pub extern "C" fn weave_move_caret_syllable(h: *mut WeaveEngine, delta: i32) -> bool {
+    with(h, false, |e| e.move_caret_syllable(delta))
+}
+
+/// 删掉组合串光标前（forward 为真时为光标后）的一个音节。 Delete the syllable before (or after) the preedit caret.
+#[no_mangle]
+pub extern "C" fn weave_delete_syllable(h: *mut WeaveEngine, forward: bool) -> bool {
+    with(h, false, |e| e.delete_syllable(forward))
+}
+
+/// 删除组合串光标后的一个按键。 Delete the key after the preedit caret.
+#[no_mangle]
+pub extern "C" fn weave_delete_forward(h: *mut WeaveEngine) -> bool {
+    with(h, false, |e| e.delete_forward())
 }
 
 #[no_mangle]

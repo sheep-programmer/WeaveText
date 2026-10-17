@@ -60,7 +60,7 @@ impl Engine {
             .iter()
             .cloned()
             .enumerate()
-            .map(|(i, mut c)| {
+            .map(|(i, c)| {
                 let mode = self.policy_mode(&c);
                 let partial = matches!(&c.action,Action::Pinyin(p) if p.end<total);
                 let raw = self.schema == Schema::English && i == 0;
@@ -116,6 +116,9 @@ impl Engine {
         let stale:Vec<String> = self.cands.iter().filter(|c|self.policy_scope(c)==scope)
             .map(|c|self.policy_key(c)).filter(|k|self.personal.get(k)=="pin").collect();
         for key in stale {self.personal.set(key,String::new());}
+        // 降频过的词又被选中：降频作废，之后照常按学习排序。 Choosing a demoted word again cancels the demotion.
+        let own=self.policy_key(candidate);
+        if self.personal.get(&own)=="down" {self.personal.set(own,String::new());}
     }
     pub fn features(&mut self, cmd: &Value) -> Value {
         match cmd["op"].as_str().unwrap_or("") {

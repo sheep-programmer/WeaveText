@@ -149,6 +149,20 @@ fn an_old_manual_priority_yields_when_the_user_changes_their_choice() {
 }
 
 #[test]
+fn a_demoted_word_comes_back_when_the_user_keeps_choosing_it() {
+    let dir=directory("demoted");let paths=fixture(&dir);let mut e=Engine::new(&paths);
+    e.options.prediction=false;
+    let candidates=type_keys(&mut e,"shi");let i=candidates.iter().position(|s|s=="时").unwrap();
+    assert!(e.features(&serde_json::json!({"op":"policy","index":i,"text":"时","mode":"down"}))["ok"].as_bool().unwrap());
+    assert_ne!(type_keys(&mut e,"shi")[1],"时","demoted");
+    // 降频过的词又被选：降频作废，照常学习。 Choosing a demoted word again cancels the demotion.
+    choose(&mut e,"shi","时");
+    assert_eq!(type_keys(&mut e,"shi")[0],"时");
+    drop(e);let mut e=Engine::new(&paths);assert_eq!(type_keys(&mut e,"shi")[0],"时");
+    drop(e);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn changing_the_word_for_an_abbreviation_supersedes_a_different_pinned_reading() {
     let dir=directory("abbreviated-priority");let paths=fixture(&dir);
     let mut builder=Builder::new(Kind::Pinyin);

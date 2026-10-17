@@ -28,6 +28,14 @@ bool weave_backspace(WeaveEngine *h);
 bool weave_select(WeaveEngine *h, uint32_t index);
 bool weave_select_pinyin(WeaveEngine *h, uint32_t index);
 bool weave_forget(WeaveEngine *h, uint32_t index);
+/* 以词取字、组合串光标、向后删除与按音节移动／删除。
+ * Take one char of a word; preedit caret, forward delete, and moving / deleting by syllable. */
+bool weave_select_char(WeaveEngine *h, uint32_t index, bool last);
+bool weave_move_caret(WeaveEngine *h, int32_t delta);
+bool weave_set_caret(WeaveEngine *h, uint32_t index);
+bool weave_delete_forward(WeaveEngine *h);
+bool weave_move_caret_syllable(WeaveEngine *h, int32_t delta);
+bool weave_delete_syllable(WeaveEngine *h, bool forward);
 void weave_commit_first(WeaveEngine *h);
 void weave_commit_raw(WeaveEngine *h);
 void weave_clear(WeaveEngine *h);

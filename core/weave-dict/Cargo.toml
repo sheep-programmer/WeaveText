@@ -34,3 +34,7 @@ path = "src/bin/handgen.rs"
 [[bin]]
 name = "followgen"
 path = "src/bin/followgen.rs"
+
+[[bin]]
+name = "shapegen"
+path = "src/bin/shapegen.rs"

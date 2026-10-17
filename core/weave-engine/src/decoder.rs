@@ -41,6 +41,9 @@ const SPAN_LIST_LIMIT: usize = 600;
 const ALT_SENTENCE_MARGIN: u32 = 3500;
 /// 候选总数上限。 Hard cap on listed candidates.
 pub const MAX_CANDIDATES: usize = 800;
+/// 长词因学过的词让位时，在「拆开后打平」之上再多让的 cost（盖过词边界的搭配代价）。
+/// Extra cost a phrase yields beyond breaking even with its pieces, covering the boundary collocation cost.
+const PHRASE_YIELD: u32 = 1500;
 /// 系统词库 + 至多 15 个扩展词库（专业词库、热词）。 The system lexicon plus up to fifteen extra packs.
 pub const MAX_LEX: usize = 16;
 
@@ -621,6 +624,140 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// 一个读音单独打时，学过的词顶替了系统首选：(学过的词, 它的 cost, 被顶替的词)。要用过至少两次（点错一次不该
+    /// 改写之后的句子），且两个音节以上才算——单字的偏好（再 / 在）带进句子弊大于利。本来就是首选、只是用得多的词
+    /// （手机）不算：含别的读法的长词（收集起来）是按上下文来的。
+    /// A learned word that leads its reading when typed alone, displacing the system's first choice: (word, its cost,
+    /// the displaced word). It must have been used at least twice (one stray pick should not rewrite later sentences),
+    /// and only for two syllables and up: carrying a single char's preference (再 over 在) into sentences would do
+    /// more harm than good. A word that was first anyway (手机) does not count: phrases spelling it otherwise
+    /// (收集起来) come from context.
+    fn learned_winner(&self, key: &[u16]) -> Option<(&'a str, u32, String)> {
+        if key.len() < 2 {
+            return None;
+        }
+        let user = self.user;
+        let entries = user.entries(user.find(key)?);
+        if entries.is_empty() {
+            return None;
+        }
+        let tick = user.tick();
+        let top = self.sys_cost(key, None)?;
+        let mut best: Option<(&'a str, u32)> = None;
+        for ue in entries {
+            if crate::userdict::decayed(ue.count, tick.saturating_sub(ue.last)) < 1.5 {
+                continue;
+            }
+            let mut cost = match self.sys_cost(key, Some(&ue.text)) {
+                Some(sys) => learn_cost::promoted(sys, top, tick, ue),
+                None => learn_cost::user_only(key.len(), tick, ue),
+            };
+            if self.user.preferred(key, &ue.text) {
+                cost = cost.min(top.saturating_sub(1200));
+            }
+            if best.is_none_or(|(_, c)| cost < c) {
+                best = Some((ue.text.as_str(), cost));
+            }
+        }
+        let (learned, cost) = best.filter(|&(_, c)| c < top)?;
+        let shown = (0..self.lex_count())
+            .filter_map(|i| {
+                let lex = self.lexicon(i)?;
+                let e = lex.entries(lex.find(key)?).next()?;
+                Some((e.cost, lex.text(e.text_id, key)))
+            })
+            .min()?
+            .1;
+        (shown != learned).then_some((learned, cost, shown))
+    }
+
+    /// 某读音下某个词（None = 首选）在各词库里的最低 cost。 Lowest cost of a word (None: the best) over all lexicons.
+    fn sys_cost(&self, key: &[u16], text: Option<&str>) -> Option<u32> {
+        (0..self.lex_count())
+            .filter_map(|i| {
+                let lex = self.lexicon(i)?;
+                let n = lex.find(key)?;
+                match text {
+                    Some(t) => lex.find_entry(n, key, t),
+                    None => lex.entries(n).next(),
+                }
+                .map(|e| e.cost as u32)
+            })
+            .min()
+    }
+
+    /// 长词里有一段读音用户学了别的词（选过「她们」，长词「他们说」里的「他们」）：长词往后让，整句改用学过的词。
+    /// 让的幅度是那一段单独打时被超过的差距，再加上长词本来比拆开便宜的部分，所以拆开的句子能赢。
+    /// A longer phrase spelling part of its reading differently from what the user learned (他们说 after picking 她们)
+    /// gives way, so the sentence uses the learned word: it loses the margin that part lost when typed alone, plus
+    /// the bonus a phrase has over its pieces.
+    fn demote_overridden_phrases(&self, key: &[u16], out: &mut [Scored]) {
+        let n = key.len();
+        if n < 3 || self.user.is_empty() {
+            return;
+        }
+        let winners = self.override_winners(key);
+        if winners.is_empty() {
+            return;
+        }
+        for s in out.iter_mut() {
+            if s.origin == Origin::Raw {
+                continue;
+            }
+            s.cost = s.cost.saturating_add(self.override_penalty(key, &winners, &s.text, s.cost));
+        }
+    }
+
+    /// 这个词里有哪些片段读音被用户学成了别的词。 Sub-ranges of this reading where the user learned another word.
+    fn override_winners(&self, key: &[u16]) -> Vec<(usize, usize, &'a str, u32)> {
+        let n = key.len();
+        let mut winners: Vec<(usize, usize, &str, u32)> = Vec::new();
+        for a in 0..n {
+            for b in a + 2..=n {
+                if b - a == n {
+                    continue;
+                }
+                if let Some((w, c, _)) = self.learned_winner(&key[a..b]) {
+                    winners.push((a, b, w, c));
+                }
+            }
+        }
+        winners
+    }
+
+    /// 整句候选 `text` 因让位要多付的代价（0 = 它没有被顶替的部分）。 Extra cost `text` pays for giving way.
+    fn override_penalty(&self, key: &[u16], winners: &[(usize, usize, &str, u32)], text: &str, cost: u32) -> u32 {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() != key.len() {
+            return 0;
+        }
+        let n = key.len();
+        let mut penalty = 0;
+        for &(a, b, w, cw) in winners {
+            let part: String = chars[a..b].iter().collect();
+            if part == w {
+                continue;
+            }
+            let Some(sys) = self.sys_cost(&key[a..b], Some(&part)) else { continue };
+            let tick = self.user.tick();
+            let top = self.sys_cost(&key[a..b], None).unwrap_or(sys);
+            let cp = self.user.get(&key[a..b], &part).map_or(sys, |ue| learn_cost::promoted(sys, top, tick, ue));
+            if cw >= cp {
+                continue;
+            }
+            // 拆开后其余部分的系统 cost（查不到按 0，宁可少让）。 System cost of the rest; 0 when not a word.
+            let rest = |r: std::ops::Range<usize>| -> u32 {
+                if r.is_empty() { return 0; }
+                let t: String = chars[r.clone()].iter().collect();
+                self.sys_cost(&key[r], Some(&t)).unwrap_or(0)
+            };
+            let pieces = sys + rest(0..a) + rest(b..n);
+            let bonus = pieces.saturating_sub(cost);
+            penalty = penalty.max(cp - cw + bonus + PHRASE_YIELD);
+        }
+        penalty
+    }
+
     /// 某跨度的词（按 cost 升序，含跨度惩罚）。 Words of a span, ascending cost incl. penalty.
     pub fn span_words(
         &self,
@@ -647,10 +784,15 @@ impl<'a> Decoder<'a> {
                 lex.entries(n).next().map(|e| e.cost as u32)
             })
             .min();
+        // 有搭配模型时不按每本词库各取 limit：那样主词库的低频词会把扩展词库的同音词全挤掉，
+        // 模型看不到它们。改为合在一起按 cost 取前 limit。
+        // With a collocation model, take the cheapest `limit` across all lexicons instead of `limit` from
+        // each: otherwise the main lexicon's low-frequency entries hide every extension-lexicon homophone.
+        let per_lex = if self.lm.is_some() { usize::MAX } else { limit };
         if let Some(t) = top {
             for i in 0..self.lex_count() {
                 let (Some(lex), Some(n)) = (self.lexicon(i), span.sys.get(i)) else { continue };
-                for e in lex.entries(n).take(limit) {
+                for e in lex.entries(n).take(per_lex) {
                     let text = lex.text(e.text_id, &span.key);
                     let cost = e.cost as u32;
                     // 同一个词出现在多个词库：取最低 cost（系统词库内部不重复，不必查）。
@@ -703,8 +845,19 @@ impl<'a> Decoder<'a> {
         for s in &mut out {
             s.cost += span.penalty;
         }
+        // 让位放在「近期明确选词」之后：整段输入最近选过的词（按空格接受首选也会记一条）不能把被顶替的长词重新
+        // 顶回首位，否则学过的短词永远抢不回长句。让位后的代价是绝对值，不受保底影响。
+        // Demotion runs after the recent-choice floor: a recent pick of the *whole* reading (space on the
+        // default candidate records one too) must not lift the overridden phrase back to the top, or a
+        // learned short word could never win its longer sentence. The demoted cost is absolute either way.
+        self.demote_overridden_phrases(&span.key, &mut out);
         out.sort_by_key(|s| (s.cost, !self.user.preferred(&span.key, &s.text)));
-        out.truncate(limit);
+        // 并列代价不截断：截断掉谁等于按词库顺序投票，模型本该看到全部同音词。
+        // Do not cut ties at the limit: cutting would vote by lexicon order, and the model should see all.
+        if out.len() > limit {
+            let cut = out[limit].cost;
+            out.truncate(out.iter().rposition(|s| s.cost <= cut).map_or(limit, |p| p + 1));
+        }
         out
     }
 
@@ -763,18 +916,30 @@ impl<'a> Decoder<'a> {
                 // Each span belongs to exactly one by_start slot, visited once.
                 // Score it once here instead of retaining a never-reused cache.
                 let words: Vec<_> = {
-                    let limit = if span.penalty == 0 && span.start == 0
-                        && self.context.is_some_and(|c| !c.is_empty())
-                        && (self.lm.is_some() || self.user.has_bigrams()) {
+                    // 有搭配模型时每个跨度都要让模型挑：只给跨度开头留大池子，会让“迟”“圣”这类
+                    // 低频同音词连参赛资格都没有（你吃早饭了吗 → 你迟早反了吗）。
+                    // With a collocation model every span is model-scored: limiting the larger pool to the
+                    // first span left low-frequency homophones out of the race entirely.
+                    let limit = if self.lm.is_some() || self.user.has_bigrams() {
+                        SPAN_TOP
+                    } else if span.penalty == 0 && span.start == 0 {
                         SPAN_TOP
                     } else { SPECULATIVE_TOP };
                     let mut w = self.span_words(span, limit, &no_raw);
                     if span.raw && span.literal.is_none() {
                         w[0].text = String::new();
                     }
+                    // 学过的词顶替了系统首选（她们 顶 他们）：搭配模型按被顶替的词来算，上下文不再把它压回去。
+                    // A learned word that displaced the system's first choice (她们 over 他们) is scored by the
+                    // collocation model as the displaced word, so context does not push it back.
+                    let alias = if self.lm.is_some() && !span.raw { self.learned_winner(&span.key) } else { None };
                     w.into_iter()
                         .map(|s| {
-                            let ids = self.lm.map(|lm| lm.word_ids(&s.text)).unwrap_or_default();
+                            let lm_text = match &alias {
+                                Some((learned, _, shown)) if *learned == s.text => shown.as_str(),
+                                _ => s.text.as_str(),
+                            };
+                            let ids = self.lm.map(|lm| lm.word_ids(lm_text)).unwrap_or_default();
                             let h = hash_text(&s.text);
                             (s, ids, h)
                         })
@@ -891,6 +1056,13 @@ impl<'a> Decoder<'a> {
             let span = &lat.spans[si];
             if span.end != n || span.raw { continue; }
             if let Some(choice) = self.user.choice(&span.key).filter(|c| self.user.preferred(&span.key, &c.text)) {
+                // 用户在这个读音里学过的短词顶替过它（他们在「她们」之后）：不置顶，交给让位后的打分。
+                // A shorter word the user learned in part of this reading displaces it: no front-loading.
+                let winners = self.override_winners(&span.key);
+                if !winners.is_empty() {
+                    let base = self.sys_cost(&span.key, Some(&choice.text)).unwrap_or(0);
+                    if self.override_penalty(&span.key, &winners, &choice.text, base) > 0 { continue; }
+                }
                 preferred.push((choice, span));
             }
         }

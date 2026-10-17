@@ -5,8 +5,10 @@
 //! The UI feeds keys to [`Engine`] and reads back a [`Snapshot`] (commit text, preedit,
 //! candidates).
 
+mod editing;
 mod features;
 mod handrank;
+mod shape;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -210,6 +212,9 @@ pub struct Snapshot {
     pub schema: String,
     /// 预编辑里被自动纠错改动的地方（界面用红色标出）。 Places in the preedit changed by auto-correction (shown in red).
     pub marks: Vec<PreeditMark>,
+    /// 组合串里的光标（按显示字符计）；None 表示在末尾。
+    /// Caret inside the preedit, in displayed characters; None when it sits at the end.
+    pub caret: Option<usize>,
 }
 
 /// 纠错改动的种类（数值用于 JNI 编码）。 Kind of an auto-correction change (values used by the JNI encoding).
@@ -324,6 +329,8 @@ pub struct Paths {
     pub gram_model: Option<Source>,
     /// 联想接续表（.wvf）。 Prediction follow table.
     pub follow: Option<Source>,
+    /// 字形表（.wvs，辅助码筛选）。 Shape table for the shape filter.
+    pub shape: Option<Source>,
     /// 用户数据目录。 User data directory.
     pub user_dir: Option<PathBuf>,
     /// 扩展拼音词库（专业词库、热词）：(id, 来源)。 Extra pinyin lexicons (domain packs, hot words): (id, source).
@@ -332,7 +339,7 @@ pub struct Paths {
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
 /// Resource key → raw file name; packed copies are named `<key>.wvz`.
-pub const RESOURCES: [(&str, &str); 10] = [
+pub const RESOURCES: [(&str, &str); 11] = [
     ("pinyin", "pinyin.wvl"),
     ("wubi86", "wubi86.wvl"),
     ("english", "english.wvl"),
@@ -343,6 +350,7 @@ pub const RESOURCES: [(&str, &str); 10] = [
     ("hand", "hand.wvh"),
     ("hand_net", "hand_net.wvn"),
     ("follow", "follow.wvf"),
+    ("shape", "shape.wvs"),
 ];
 
 impl Paths {
@@ -365,6 +373,7 @@ impl Paths {
             "hand" => &mut self.hand,
             "hand_net" => &mut self.hand_net,
             "follow" => &mut self.follow,
+            "shape" => &mut self.shape,
             _ => return false,
         };
         *slot = Some(src);
@@ -419,6 +428,15 @@ pub struct Engine {
     cands: Vec<Cand>,
     preedit: String,
     marks: Vec<PreeditMark>,
+    /// 组合串里的光标：raw 中的字节位置，总在一个按键之后；None 表示在末尾（见 editing.rs）。
+    /// Caret inside the composition: a byte position in raw, always right after a key; None at the end (see editing.rs).
+    caret: Option<usize>,
+    /// 未选部分第 i 个按键之前的位置在显示串里的字符下标（含已选文字），长度 = 按键数 + 1。
+    /// Display index (selected text included) of the spot before the i-th key of the rest; keys + 1 long.
+    caret_map: Vec<usize>,
+    /// 最近的操作是选词（或退格撤回选词）：此时退格先撤回上一次选的词。
+    /// The latest action was a pick (or backspace undoing one): backspace now undoes the previous pick first.
+    undo_picks: bool,
     t9_options: Vec<T9Unit>,
     commit: String,
     last_word: Option<String>,
@@ -442,6 +460,10 @@ pub struct Engine {
     emoji: Emoji,
     gram: Option<Gram>,
     follow: Option<weave_dict::follow::Follow>,
+    /// 字形表，以及正在输入的字形码（按过 ` 之后为 Some，见 shape.rs）。
+    /// The shape table, and the shape code being typed (Some after a `, see shape.rs).
+    shapes: Option<weave_dict::shape::Shapes>,
+    shape: Option<String>,
     /// 单字读音索引（首次联想时建立）。 Char readings, built at the first prediction.
     readings: Option<crate::predict::Readings>,
     /// 最近上屏的几个字（联想的上文）。 The last few committed chars, the prediction context.
@@ -538,6 +560,9 @@ impl Engine {
             cands: Vec::new(),
             preedit: String::new(),
             marks: Vec::new(),
+            caret: None,
+            caret_map: Vec::new(),
+            undo_picks: false,
             t9_options: Vec::new(),
             commit: String::new(),
             last_word: None,
@@ -554,6 +579,8 @@ impl Engine {
             cands_more: false,
             gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
             follow: paths.follow.as_ref().and_then(|p| weave_dict::follow::Follow::open_source(p).ok()),
+            shapes: paths.shape.as_ref().and_then(|p| weave_dict::shape::Shapes::open_source(p).ok()),
+            shape: None,
             readings: None,
             recent: String::new(),
             predicting: false,
@@ -672,7 +699,8 @@ impl Engine {
     /// 刷新后处理：插入表情、繁体显示。 Post-process candidates: emoji, traditional display.
     fn decorate(&mut self) {
         self.add_pinyin_hints();
-        if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 {
+        // 拆字查字（u 模式）只列字，不插表情。 Lookups by shape (the u mode) list chars only, no emoji.
+        if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 && self.u_code().is_none() {
             let mut i = 0;
             let mut inserted = 0;
             // 手写每个候选都是单字，各带一个表情会把别的字挤出候选栏：只给首选配一个。
@@ -718,6 +746,9 @@ impl Engine {
             for m in &mut self.marks {
                 m.start = (m.start as isize + delta).max(0) as usize;
                 m.end = (m.end as isize + delta).max(0) as usize;
+            }
+            for at in &mut self.caret_map {
+                *at = (*at as isize + delta).max(0) as usize;
             }
         }
     }
@@ -918,7 +949,8 @@ impl Engine {
             }
             _ => Near::NONE,
         };
-        if nb == Near::NONE {
+        // 光标在组合串中间时不记邻键（邻键表只按末尾追加）。 No neighbour info mid-composition (the table only appends).
+        if nb == Near::NONE || self.caret.is_some() {
             return self.input_char(c);
         }
         // 先记下邻键再输入，刷新时即可用上。 Record the neighbour first so the refresh already uses it.
@@ -937,6 +969,10 @@ impl Engine {
         self.drop_predictions();
         self.predict_depth = 0;
         self.last_learned = None;
+        self.undo_picks = false;
+        if let Some(handled) = self.shape_key(c) {
+            return handled;
+        }
         match self.schema {
             Schema::Pinyin => {
                 // v 模式：v 之后可以输入数字与算式。 The v mode takes digits and operators after `v`.
@@ -949,10 +985,10 @@ impl Engine {
                     return true;
                 }
                 if c.is_ascii_alphabetic() || (c == '\'' && !self.rest_raw().is_empty()) {
-                    if c == '\'' && self.raw.ends_with('\'') {
+                    if c == '\'' && self.raw[..self.caret.unwrap_or(self.raw.len())].ends_with('\'') {
                         return true;
                     }
-                    self.raw.push(c);
+                    self.insert_key(c);
                     self.push_long_composition();
                     self.refresh();
                     return true;
@@ -962,7 +998,7 @@ impl Engine {
             Schema::Shuangpin(_) => {
                 // Preserve the literal keys; only the syllable graph is lowercased.
                 if c.is_ascii_alphabetic() || (c == ';' && !self.raw.is_empty()) {
-                    self.raw.push(c);
+                    self.insert_key(c);
                     self.push_long_composition();
                     self.refresh();
                     return true;
@@ -1013,7 +1049,7 @@ impl Engine {
             }
             Schema::English => {
                 if c.is_ascii_alphabetic() || (c == '\'' && !self.raw.is_empty()) {
-                    self.raw.push(c);
+                    self.insert_key(c);
                     self.push_long_composition();
                     self.refresh();
                     return true;
@@ -1037,6 +1073,9 @@ impl Engine {
         if self.schema == Schema::Hand {
             self.hand_strokes.pop();
             self.refresh();
+            return true;
+        }
+        if self.shape_backspace() || self.backspace_edit() {
             return true;
         }
         let rest_empty = match self.schema {
@@ -1137,16 +1176,7 @@ impl Engine {
                     raw_before: self.raw.len(),
                     intentional,
                 };
-                if cand.end >= total {
-                    self.selected.push(sel);
-                    self.commit_selected();
-                } else {
-                    self.consumed += self.units_for(cand.end);
-                    self.selected.push(sel);
-                    // 跳过紧跟着的分隔符。 Skip a following separator.
-                    self.skip_separators();
-                    self.refresh();
-                }
+                self.push_selection(sel, cand.end >= total, cand.end);
             }
         }
         true
@@ -1333,7 +1363,11 @@ impl Engine {
         self.cands.clear();
         self.preedit.clear();
         self.marks.clear();
+        self.caret = None;
+        self.caret_map.clear();
+        self.undo_picks = false;
         self.t9_options.clear();
+        self.shape = None;
     }
 
     // ------------------------------------------------------------ user dictionary management
@@ -1440,6 +1474,7 @@ impl Engine {
             pinyin_options: self.t9_options.iter().map(t9_option_label).collect(),
             schema: self.schema.key(),
             marks: self.marks.clone(),
+            caret: self.caret_shown(),
         }
     }
 
@@ -1492,6 +1527,7 @@ impl Engine {
                     raw_before: self.raw.len(),
                     intentional: false,
                 };
+                self.caret = None;
                 self.selected.push(sel);
                 self.commit_selected();
                 // 只上屏到一半：剩下的按键留在组合里继续拼，保留正常输入的手感。
@@ -1693,7 +1729,13 @@ impl Engine {
         self.cands_more = false;
         self.t9_options.clear();
         self.marks.clear();
+        self.caret_map.clear();
         let selected: String = self.selected.iter().map(|s| s.text.as_str()).collect();
+        // 字形筛选要从完整的候选里挑。 The shape filter picks from the full list.
+        let cap = self.cand_cap;
+        if self.shape_filtering() {
+            self.cand_cap = crate::decoder::MAX_CANDIDATES;
+        }
         match self.schema {
             s if s.is_pinyin_family() => self.refresh_pinyin(selected),
             Schema::Wubi86 => self.refresh_wubi(),
@@ -1701,9 +1743,15 @@ impl Engine {
             Schema::Hand => self.refresh_hand(),
             _ => {}
         }
+        self.cand_cap = cap;
+        self.filter_by_shape();
         self.decorate();
         self.apply_personal_policies();
         self.mark_cloud_candidates();
+        if let Some(code) = &self.shape {
+            self.preedit.push(shape::SHAPE_KEY);
+            self.preedit.push_str(code);
+        }
     }
 
     fn mark_cloud_candidates(&mut self) {
@@ -1886,7 +1934,7 @@ impl Engine {
     }
 
     fn refresh_pinyin(&mut self, selected: String) {
-        if self.refresh_v_mode() {
+        if self.refresh_v_mode() || self.refresh_u_mode() {
             return;
         }
         let (g1, keys1) = self.build_graph();
@@ -2058,9 +2106,10 @@ impl Engine {
             }
         }
         self.cands_more = cands.len() >= self.cand_cap.min(crate::decoder::MAX_CANDIDATES);
-        let (rest, marks) = self.display_rest(&lat, &keys);
+        let (rest, marks, map) = self.display_rest(&lat, &keys);
         let at = selected.chars().count();
         self.marks = marks.into_iter().map(|m| PreeditMark { start: m.start + at, end: m.end + at, ..m }).collect();
+        self.caret_map = map.into_iter().map(|i| i + at).collect();
         self.preedit = format!("{selected}{rest}");
         self.cands = cands
             .into_iter()
@@ -2198,9 +2247,11 @@ impl Engine {
     }
 
     /// 组合串中未选部分的显示：按最优路径切分。 Display of the unselected part.
-    fn display_rest(&self, lat: &Lattice, keys: &[u8]) -> (String, Vec<PreeditMark>) {
+    /// 另返回每个按键位置在显示串里的下标（见 `caret_map`）。 Also returns each key position's display index (see `caret_map`).
+    fn display_rest(&self, lat: &Lattice, keys: &[u8]) -> (String, Vec<PreeditMark>, Vec<usize>) {
         let mut parts: Vec<String> = Vec::new();
         let mut marks = Vec::new();
+        let mut map = vec![usize::MAX; keys.len() + 1];
         // 已排好的字符数（含音节间的分隔符）。 Characters laid out so far (separators included).
         let mut shown = 0;
         let locks: Vec<(usize, usize, T9Unit)> = if matches!(self.schema, Schema::Keypad(_)) {
@@ -2256,12 +2307,25 @@ impl Engine {
                     },
                     _ => String::new(),
                 };
-                shown += piece.chars().count() + 1;
+                // 照打的音节逐键对应；改写过的（纠错、双拼全拼）按比例落在音节里。
+                // Pieces shown as typed map key by key; rewritten ones (corrections, double pinyin) map proportionally.
+                let len = piece.chars().count();
+                for k in s..cut.min(keys.len()) {
+                    map[k] = shown + ((k - s) * len).div_ceil(cut - s).min(len);
+                }
+                shown += len + 1;
                 parts.push(piece);
                 s = cut;
             }
         }
-        (parts.join("'"), marks)
+        let text = parts.join("'");
+        let end = text.chars().count();
+        for (k, at) in map.iter_mut().enumerate() {
+            if *at == usize::MAX || k == keys.len() {
+                *at = end;
+            }
+        }
+        (text, marks, map)
     }
 
     fn wubi_code_of(&mut self, text: &str) -> String {
@@ -2336,6 +2400,7 @@ impl Engine {
 
     fn refresh_english(&mut self) {
         self.preedit = self.raw.clone();
+        self.caret_map = (0..=self.raw.len()).collect();
         let typed = self.raw.clone();
         let cap = typed.chars().next().is_some_and(|c| c.is_ascii_uppercase());
         let all_caps = typed.len() > 1 && typed.chars().all(|c| !c.is_ascii_lowercase());
@@ -3002,6 +3067,89 @@ mod typo_tests {
             assert_eq!(e.snapshot().commit, "休班");
         }
         assert_eq!(typing(&mut e, "xiuba").candidates[0].text, "休班");
+    }
+
+    #[test]
+    fn a_learned_word_carries_into_longer_phrases_that_spell_it_differently() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        // 词库里的长词「他们说」比「她们」+「说」便宜（实际词库的 cost）。 Real costs: the phrase beats the parts.
+        for (py, text, cost) in [("ta men", "他们", 7151), ("ta men", "她们", 9911), ("shuo", "说", 7268), ("ta men shuo", "他们说", 11700),
+            ("dou", "都", 6889), ("ta men dou", "他们都", 11307), ("ta", "他", 6735), ("ta", "她", 7032), ("ta shuo", "他说", 9835),
+            ("ta men zhi jian", "他们之间", 14000), ("zhi jian", "之间", 8000)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        e.options.prediction = false;
+        assert_eq!(typing(&mut e, "tamenshuo").candidates[0].text, "他们说");
+        let pick = |e: &mut Engine, input: &str, word: &str| {
+            let s = typing(e, input);
+            let i = s.candidates.iter().position(|c| c.text == word).unwrap();
+            assert!(e.select(i));
+            assert_eq!(e.snapshot().commit, word);
+        };
+        pick(&mut e, "tamen", "她们");
+        // 选过一次：单独打时在前，句子不变（点错一次不改写句子）。 One pick: first alone, sentences unchanged.
+        assert_eq!(typing(&mut e, "tamen").candidates[0].text, "她们");
+        e.clear();
+        assert_eq!(typing(&mut e, "tamenshuo").candidates[0].text, "他们说");
+        e.clear();
+        pick(&mut e, "tamen", "她们");
+        // 选过两次：含「他们」的长词让位，整句用学过的词。 Two picks: the phrases spelling 他们 give way.
+        for (input, want) in [("tamenshuo", "她们说"), ("tamendou", "她们都"), ("tamenzhijian", "她们之间")] {
+            let s = typing(&mut e, input);
+            assert_eq!(s.candidates[0].text, want, "{input}");
+            assert!(s.candidates.iter().any(|c| c.text.starts_with("他们")), "the phrase stays reachable: {input}");
+            e.clear();
+        }
+        // 单字的偏好不带进句子（选过「她」，「他说」不变）。 A single char's preference stays out of phrases.
+        pick(&mut e, "ta", "她");
+        pick(&mut e, "ta", "她");
+        assert_eq!(typing(&mut e, "tashuo").candidates[0].text, "他说");
+        e.clear();
+        // 再选回「他们」，长词也回来。 Picking 他们 again brings the phrase back.
+        pick(&mut e, "tamen", "他们");
+        pick(&mut e, "tamen", "他们");
+        assert_eq!(typing(&mut e, "tamenshuo").candidates[0].text, "他们说");
+    }
+
+    #[test]
+    fn a_recent_whole_input_choice_does_not_block_a_learned_word_inside_it() {
+        let mut b = Builder::new(Kind::Pinyin);
+        let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
+        for (py, text, cost) in [("ta men", "他们", 7151), ("ta men", "她们", 9911), ("shuo", "说", 7268),
+            ("ta men shuo", "他们说", 11700), ("ta", "他", 6735), ("ta", "她", 7032)] {
+            b.insert(&key(py), text, cost);
+        }
+        let mut e = Engine::with_lexicons(Some(Lexicon::from_bytes(b.build()).unwrap()), None, None);
+        e.options.emoji = false;
+        e.options.prediction = false;
+        let first = |e: &mut Engine, input: &str| {
+            let s = typing(e, input);
+            let text = s.candidates[0].text.clone();
+            assert!(e.select(0), "{input}");
+            assert_eq!(e.snapshot().commit, text);
+            text
+        };
+        // 按空格接受首选也算一次明确选词：整段输入的「近期选词」保底把长词压在首位。
+        // Accepting the default with space counts as an intentional choice: the recent-choice floor pins the phrase.
+        assert_eq!(first(&mut e, "tamenshuo"), "他们说");
+        let pick = |e: &mut Engine, input: &str, word: &str| {
+            let s = typing(e, input);
+            let i = s.candidates.iter().position(|c| c.text == word).unwrap();
+            assert!(e.select(i));
+            assert_eq!(e.snapshot().commit, word);
+        };
+        pick(&mut e, "tamen", "她们");
+        pick(&mut e, "tamen", "她们");
+        // 学过的短词仍然抢回长句：保底压在让位之前，救不回被顶替的长词。
+        // The learned short word still wins the sentence: the floor runs before demotion and cannot restore the phrase.
+        assert_eq!(typing(&mut e, "tamenshuo").candidates[0].text, "她们说");
+        e.clear();
+        pick(&mut e, "tamen", "他们");
+        pick(&mut e, "tamen", "他们");
+        assert_eq!(typing(&mut e, "tamenshuo").candidates[0].text, "他们说");
     }
 
     #[test]

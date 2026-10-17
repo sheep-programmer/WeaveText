@@ -28,7 +28,7 @@ DICTGEN="$ROOT/core/target/release/dictgen"
 WX="$REF/rime_wanxiang/dicts"
 stamp="$OUT/.stamp"
 newest=$(find "$WX" "$REF/rime-wubi/wubi86.dict.yaml" "$REF/makemeahanzi/graphics.txt" "$ROOT/data/hand/hand_net.wvn" "$DICTGEN" "$0" -newer "$stamp" 2>/dev/null | head -1 || true)
-if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ] && [ -f "$OUT/hand.wvz" ] && [ -f "$OUT/hand_net.wvz" ] && [ -f "$OUT/follow.wvz" ]; then
+if [ -f "$stamp" ] && [ -z "$newest" ] && [ -f "$OUT/pinyin.wvz" ] && [ -f "$OUT/grammar.wvz" ] && [ -f "$OUT/hand.wvz" ] && [ -f "$OUT/hand_net.wvz" ] && [ -f "$OUT/follow.wvz" ] && [ -f "$OUT/shape.wvz" ]; then
   echo "dictionaries up to date"; exit 0
 fi
 # 基础字词 + 地名/人名/名人/诗词/联想长词/多音词：整句评测 71.7% → 75.6%。
@@ -39,7 +39,9 @@ fi
 "$DICTGEN" letters "$OUT/english.wvl" "$WX/en.dict.yaml"
 # 字符搭配模型：万象 RIME-LMDG（CC BY 4.0）剪枝为 2~3 字搭配。 Collocation model from RIME-LMDG.
 GRAM_SRC="$REF/wanxiang-lts-zh-hans.gram"
-GRAM_SHA=71bc2ef5bb0d6af519ede62ca7e85c6cefa9b6916a1a09390b6924e39fdd5059
+# 上游 LTS 资产会被原地替换（2026-10-16 换过一次），网址固定不了版本，只能靠校验值区分。
+# The upstream LTS asset is replaced in place (it changed on 2026-10-16); only the digest pins a version.
+GRAM_SHA=20f968dfe5dc461d23c355b93aa63925d6d36a5fb8f459ccd5c4dcd1cae6e6b9
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 if [ ! -f "$GRAM_SRC" ] || [ "$(sha256 "$GRAM_SRC")" != "$GRAM_SHA" ]; then
   curl -fsSL --retry 3 -o "$GRAM_SRC.part" "https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram"
@@ -56,9 +58,12 @@ cp "$REF/rime_wanxiang/opencc/wanxiang/STPhrases.txt" "$REF/rime_wanxiang/opencc
 cp "$ROOT/data/hand/hand_net.wvn" "$OUT/hand_net.wvn"
 # 联想接续表：词库里常用长词按前缀记下剩余部分（0.47 MB）。 Prediction follow table from common lexicon phrases.
 "$ROOT/core/target/release/followgen" "$OUT/pinyin.wvl" "$OUT/follow.wvf"
+# 字形表：万象反查词典里的笔画与部件读音，只收拼音字库里的字（2.3 MB，压缩后 0.8 MB）。
+# Shape table: strokes and component readings from Wanxiang's reverse lookup, chars of the pinyin char list only.
+"$ROOT/core/target/release/shapegen" "$REF/rime_wanxiang/wanxiang_reverse.dict.yaml" "$OUT/shape.wvs" "$WX/zi.dict.yaml"
 PACK="$ROOT/core/target/release/wvpack"
 for pair in pinyin:pinyin.wvl wubi86:wubi86.wvl english:english.wvl grammar:grammar.wvg \
-    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh hand_net:hand_net.wvn follow:follow.wvf; do
+    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh hand_net:hand_net.wvn follow:follow.wvf shape:shape.wvs; do
   "$PACK" "$OUT/${pair#*:}" "$OUT/${pair%%:*}.wvz"
 done
 touch "$stamp"
