@@ -38,6 +38,16 @@ class WeaveImeService : InputMethodService() {
             Thread(r, "weave-hand").apply { isDaemon = true }
         }
         controller.postMain = { main.post(it) }
+        // 按应用记住中/英：开关与数据都在设置里，这里只把它们接到控制器上（关掉即不生效，数据保留）。
+        // Per-app mode memory: the switch and the data live in settings; this only wires them to the controller.
+        controller.appModeMemory = object : AppModeMemory {
+            private val p get() = com.weavetext.ime.settings.WeavePrefs.of(this@WeaveImeService)
+            override fun mode(pkg: String?) =
+                if (com.weavetext.ime.settings.WeavePrefs.perAppMemory(p)) com.weavetext.ime.settings.WeavePrefs.appMode(p, pkg) else null
+            override fun remember(pkg: String?, chinese: Boolean) {
+                if (com.weavetext.ime.settings.WeavePrefs.perAppMemory(p)) com.weavetext.ime.settings.WeavePrefs.rememberAppMode(p, pkg, chinese)
+            }
+        }
     }
 
     /** 正在后台加载内核。 The engine is loading in the background. */

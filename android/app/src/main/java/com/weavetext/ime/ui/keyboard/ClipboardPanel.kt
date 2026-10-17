@@ -159,9 +159,12 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     override val toolIndex = if (mode == Mode.CLIPBOARD) 4 else 0
     private val header = Header(kb.ctx)
     private val grid = Cards(kb.ctx)
+    /** 搜索行：默认收着，点表头的放大镜才出现（表头文档见 [headerIcons]）。 The search row, opened from the header. */
+    private val searchRow = SearchRow(kb.ctx, kb, if (mode == Mode.CLIPBOARD) "搜索剪贴板" else "搜索常用语")
     override val view = LinearLayout(kb.ctx).apply {
         orientation = LinearLayout.VERTICAL
         addView(header, LinearLayout.LayoutParams(-1, kb.metrics.dp(44f).toInt()))
+        addView(searchRow, LinearLayout.LayoutParams(-1, 0))
         addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
@@ -174,6 +177,10 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     /** 显示可管理的历史（常用语总是）。 Showing a manageable list. */
     private val historyShown get() = mode == Mode.PHRASES || (!privateField && !asking && repo.recording)
     private var items: List<ClipItem> = emptyList()
+    /** 全部条目（搜索前）。 All items, before the query filters them. */
+    private var allItems: List<ClipItem> = emptyList()
+    private var search = SearchQuery()
+    private var searching = false
     private var pinnedOnly = false
     private var selecting = false
     private val selected = HashSet<Long>()
@@ -185,28 +192,134 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         repo.addListener { if (view.visibility == View.VISIBLE) reload() }
         grid.onPressFeedback = { kb.feedback.key(grid) }
         grid.onLongFeedback = { kb.feedback.haptic(grid) }
+        searchRow.onClose = { closeSearch() }
+        searchRow.onClear = { search.clear(); reload() }
     }
 
     override fun applyTheme() {
         (header.layoutParams as LinearLayout.LayoutParams).height = kb.metrics.dp(44f).toInt()
+        updateSearchRow()
         header.invalidate(); grid.rebuild()
     }
 
     override fun onShow() {
         selecting = false; selected.clear(); confirmClear = false; actionFor = -1; pinnedOnly = false
+        closeSearch()
         reload()
         grid.scrollToTop()
     }
 
+    override fun onHide() { closeSearch() }
+
+    /** 搜索框开着时，键盘上的字母、退格与空格归这里。 While searching, the keyboard's letters go to the query. */
+    override val searchOpen get() = searching
+
+    override fun leaveSearch(): Boolean {
+        if (!searching) return false
+        closeSearch()
+        return true
+    }
+
+    /** 打开搜索：表头多一行输入，列表随输入的词过滤。 Open the search row. */
+    private fun openSearch() {
+        if (searching) return
+        searching = true
+        updateSearchRow()
+        reload()
+    }
+
+    private fun closeSearch() {
+        if (!searching && !search.active) return
+        searching = false
+        search.clear()
+        updateSearchRow()
+        reload()
+    }
+
+    private fun updateSearchRow() {
+        (searchRow.layoutParams as LinearLayout.LayoutParams).height =
+            if (searching) kb.metrics.dp(38f).toInt() else 0
+        searchRow.requestLayout()
+    }
+
+    /**
+     * 一条记录是否命中查询：字面按词匹配（媒体条目用它的文件名／说明），中文内容还可以通过内核把拼音读成的词命中
+     * ——搜索框只能收字母，打 weixiao 想找含「微笑」的那条复制记录。
+     * Whether an item matches: every term literally (media items by their name), or — because the box only takes
+     * letters — any reading the engine gave the typed pinyin, so weixiao finds a clip containing 微笑.
+     */
+    private fun matches(item: ClipItem, terms: List<String>, readings: List<String>): Boolean {
+        val text = item.text.lowercase()
+        if (terms.isNotEmpty() && terms.all { text.contains(it) }) return true
+        return readings.any { text.contains(it.lowercase()) }
+    }
+
+    override fun onKey(key: Key): Boolean {
+        if (!searching) return false
+        val had = search.active
+        // 空查询只吃字母、退格与空格：回车与功能键照旧走面板与编辑器。
+        // With an empty query only letters, backspace and space are taken; Enter and function keys pass through.
+        if (!had && key.code != KeyCode.DELETE && key.code !in 'a'.code..'z'.code && key.code !in '0'.code..'9'.code) return false
+        val handled = when (key.code) {
+            // 删空之后再按一次退格就收搜索行（这一下不再透传给编辑器）。
+            // One more backspace on an empty query closes the row, and that press does not reach the editor.
+            KeyCode.DELETE -> if (search.backspace()) true else { closeSearch(); true }
+            KeyCode.SPACE -> search.commitComposing() || had
+            KeyCode.ENTER -> { commitFirst(); true }
+            else -> when {
+                key.code in 'a'.code..'z'.code -> { search.letter(key.code.toChar()); true }
+                // 数字进查询（订单号、验证码这类内容几乎都得按数字搜）。
+                // Digits go in: order numbers and codes are searched by their digits.
+                key.code in '0'.code..'9'.code -> { search.literal(key.code.toChar().toString()); true }
+                else -> false
+            }
+        }
+        if (handled) reload()
+        return handled
+    }
+
+    override fun onKeyText(key: Key, text: String): Boolean {
+        if (!searching) return false
+        val handled = when {
+            text.length == 1 && text[0].isLetter() -> { search.letter(text[0]); true }
+            text.length == 1 && text[0].isDigit() -> { search.literal(text); true }
+            search.active -> search.literal(text)
+            else -> false
+        }
+        if (handled) reload()
+        return handled
+    }
+
+    /** 回车：先确定拼音，再上屏第一个结果。 Enter settles the pinyin, then inserts the first hit. */
+    private fun commitFirst() {
+        search.commitComposing()
+        reload()
+        items.firstOrNull()?.let { commit(it) }
+    }
+
+    @androidx.annotation.VisibleForTesting
+    fun searchResultsForTest(): List<ClipItem> = items
+
     fun reload() {
         val now = System.currentTimeMillis()
-        items = when {
+        allItems = when {
             privateField || asking -> emptyList()
             mode == Mode.CLIPBOARD && !repo.recording -> repo.currentItem()?.let { listOf(it) } ?: emptyList()
             pinnedOnly -> store.list(now).filter { it.pinned }
             else -> store.list(now)
         }
+        val query = search.text.trim()
+        val terms = ExpressionSearch.terms(query)
+        // 拼音读法（weixiao → 微笑）：中文模式下内核帮搜索框把字母读成词。 Readings from the engine in Chinese mode.
+        val readings = if (searching && query.isNotEmpty()) kb.controller.lookupText(query.filter { it in 'a'..'z' }) else emptyList()
+        items = if (searching && query.isNotEmpty()) allItems.filter { matches(it, terms, readings) } else allItems
         selected.retainAll(items.map { it.id }.toSet())
+        if (searching) {
+            searchRow.show(search.committed.toString(), search.composing.toString())
+            // 读屏播报结果数，打字时不用摸列表。 Announce the hit count.
+            if (search.active) kb.topBar.showAction(
+                if (items.isEmpty()) "没有匹配的${if (mode == Mode.CLIPBOARD) "剪贴板" else "常用语"}" else "找到 ${items.size} 项", null, 1200, null)
+        }
         grid.rebuild()
         header.invalidate()
     }
@@ -251,6 +364,18 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         kb.topBar.showAction("已添加为常用语", null, 2000, null)
     }
 
+    /**
+     * 表头按钮的图标，从右往左排：第一项画在最右一格，动作也按这个次序分派（见 onHeader），两者必须一致。
+     * Header icons, ordered right to left: entry 0 is the rightmost cell and the actions are dispatched in that same
+     * order (see onHeader), so the two have to agree.
+     */
+    private fun headerIcons(): IntArray =
+        if (mode == Mode.CLIPBOARD) intArrayOf(R.drawable.ic_delete, R.drawable.ic_edit, R.drawable.ic_pin, R.drawable.ic_search)
+        else intArrayOf(R.drawable.ic_plus, R.drawable.ic_edit, R.drawable.ic_search)
+
+    @androidx.annotation.VisibleForTesting
+    fun headerIconsForTest(): IntArray = headerIcons()
+
     // ------------------------------------------------------------------ header
 
     @SuppressLint("ViewConstructor")
@@ -258,7 +383,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
         private val medium = if (Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.DEFAULT, 500, false) else Typeface.DEFAULT_BOLD
         /** 右侧按钮区（从右往左）。 Right-side hit areas, right to left. */
-        private val hits = Array(3) { RectF() }
+        private val hits = Array(4) { RectF() }
         private var hitCount = 0
         private var pressed = -2
 
@@ -288,13 +413,12 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                 }
                 else -> {
                     drawTitle(c, cy)
-                    val icons = if (mode == Mode.CLIPBOARD) intArrayOf(R.drawable.ic_delete, R.drawable.ic_edit, R.drawable.ic_pin)
-                    else intArrayOf(R.drawable.ic_edit, R.drawable.ic_plus)
+                    val icons = headerIcons()
                     var right = width - m.dp(8f)
                     for ((i, ic) in icons.withIndex()) {
                         val r = hits[i]
                         r.set(right - m.dp(36f), cy - m.dp(18f), right, cy + m.dp(18f))
-                        val on = mode == Mode.CLIPBOARD && ic == R.drawable.ic_pin && pinnedOnly
+                        val on = (mode == Mode.CLIPBOARD && ic == R.drawable.ic_pin && pinnedOnly) || (ic == R.drawable.ic_search && searching)
                         if (on || pressed == i) {
                             p.color = if (on) pal.accentSoft else pal.toolbarActive
                             c.drawRoundRect(r, m.dp(10f), m.dp(10f), p)
@@ -373,13 +497,15 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
             i == -1 -> kb.closePanel()
             !historyShown -> if (i == 0 && !privateField && !asking) setRecording(true)
             mode == Mode.CLIPBOARD -> when (i) {
-                0 -> if (items.any { !it.pinned }) { confirmClear = true; header.invalidate() }
-                1 -> if (items.isNotEmpty()) { selecting = true; actionFor = -1; reload() }
+                0 -> if (allItems.any { !it.pinned }) { confirmClear = true; header.invalidate() }
+                1 -> if (allItems.isNotEmpty()) { selecting = true; actionFor = -1; reload() }
                 2 -> { pinnedOnly = !pinnedOnly; reload() }
+                3 -> if (searching) closeSearch() else openSearch()
             }
             else -> when (i) {
                 0 -> addPhrase()
-                1 -> if (items.isNotEmpty()) { selecting = true; actionFor = -1; reload() }
+                1 -> if (allItems.isNotEmpty()) { selecting = true; actionFor = -1; reload() }
+                2 -> if (searching) closeSearch() else openSearch()
             }
         }
     }
@@ -469,6 +595,11 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                 y += rowH + gap
             }
             bottom = y + pad
+            // 列表变短（删除、清空、切「只看已固定」、过期裁剪）后把滚动位置收回可用范围，否则内容整体被推到
+            // 视口上方，整块面板（连空状态提示）都画不出来，看起来像记录被清空了。
+            // After the list shrinks (a delete, a clear, pinned-only, expiry) pull the scroll back into range; otherwise
+            // the whole content sits above the viewport and nothing is drawn — not even the empty-state hint.
+            scroll = scroll.coerceIn(0f, maxScroll())
             invalidate()
             a11yChanged()
         }
@@ -494,7 +625,10 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                 return -1
             }
             for (i in rects.indices) if (rects[i].contains(x, y)) {
-                if (items[i].id == actionFor) {
+                // 只有真正记录下来的条目才有动作：当前剪贴板那张卡片的 id 是 -1，它不是历史项，固定和删除都无从下手。
+                // Only recorded entries carry actions: the current-clipboard card has id -1 and is not a history entry,
+                // so pinning or deleting it has nothing to act on.
+                if (items[i].id >= 0 && items[i].id == actionFor) {
                     for (a in 0..2) if (actions[a].contains(x, y)) return ACTION_BASE + a
                 }
                 return i
@@ -598,7 +732,7 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
                     else { p.style = Paint.Style.STROKE; p.strokeWidth = m.dp(1.5f); c.drawCircle(cx, cy, m.dp(7.5f), p); p.style = Paint.Style.FILL }
                     if (sel) kb.icons.draw(c, R.drawable.ic_check, pal.onAccent, cx, cy, m.dp(12f))
                 }
-                if (item.id == actionFor) drawActions(c, rc, item)
+                if (item.id >= 0 && item.id == actionFor) drawActions(c, rc, item)
             }
         }
 

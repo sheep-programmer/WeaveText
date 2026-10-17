@@ -87,12 +87,17 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             handPad.configure(value, if (::metrics.isInitialized) metrics.density else resources.displayMetrics.density)
             invalidateInk()
         }
-    /** 手写停笔多久算写完一个字（毫秒，来自设置）。 Pause that ends a handwritten char, in ms (from settings). */
+    /**
+     * 手写停笔多久算写完一个字（毫秒，来自设置）。既用来判断贴边起笔算不算写字，也用来决定单字模式何时上屏；
+     * 关闭自动上屏时仍是这个时间：它描述的是「一笔刚写完」，不是「要不要上屏」。
+     * Pause that ends a handwritten char, in ms (from settings). It decides both whether ink started at the pad's edge
+     * counts as writing and when single-char mode commits; it keeps its value when auto-commit is off, because it
+     * describes how recently a stroke was drawn, not whether to commit.
+     */
     var handPauseMs = HandPad.COMMIT_PAUSE_MS
     /**
-     * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。连续连写也按逐字确认，不等待整行。
-     * Idle time after the pen lifts before the top candidate commits by itself; 0 = never. Continuous writing
-     * confirms one character at a time instead of waiting for a whole line.
+     * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。
+     * Idle time after the pen lifts before the top candidate commits by itself; 0 = never.
      */
     var handIdleMs = HandPad.COMMIT_PAUSE_MS
         set(value) {
@@ -105,6 +110,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
     var handLineMode = false
         set(value) { if (field != value) { field = value; invalidate(); a11y.invalidate() } }
+    /** 单字模式下停笔是否自动上屏（连写不看它，连写只按候选确认）。 Whether a pause commits by itself in single-char mode. */
+    var handAutoCommitOn = true
     var handGuide = true
         set(value) { if (field != value) { field = value; invalidate() } }
     var handRecognizing = false
@@ -117,6 +124,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (handIdleMs <= 0L) return
         val pad = hand ?: return
         if (inkOwner != null || pad.drawing || pad.strokes.isEmpty()) return
+        // 连写由用户点候选确认，关闭自动上屏时也一样，否则一行字还没写完就先上屏了。
+        // Continuous writing is confirmed by picking a candidate, and so is auto-commit off: a half-written line would
+        // otherwise commit.
+        if (handLineMode || !handAutoCommitOn) return
         if (host?.onHandCommit() != true) return
         pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
         invalidate()
@@ -290,6 +301,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         a11y.invalidate()
     }
 
+
     /** 标签或状态变化后通知无障碍服务。 Tell accessibility services labels changed. */
     fun labelsChanged() {
         invalidate()
@@ -350,7 +362,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
 
         override fun a11yLabel(id: Int): CharSequence? {
-            if (id == PAD_ID) return if (handLineMode) "手写区，写完一个字再写下一个，前一个笔迹会淡出" else "手写区，用手指书写一个字"
+            if (id == PAD_ID) return if (handLineMode) "手写区，横向写几个字，字间留空，写完点候选上屏" else "手写区，用手指书写一个字"
             if (id >= SIDE_BASE) return side?.items?.getOrNull(id - SIDE_BASE)?.let { VirtualA11y.speak(it) }
             return keys.getOrNull(id)?.let { describe(it) }
         }
@@ -673,7 +685,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             text.typeface = Typeface.DEFAULT
             text.color = p.labelHint
             text.textAlign = Paint.Align.LEFT
-            c.drawText(if (handLineMode) "连续连写 · 写完再写下一个" else "单字 · 在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
+            c.drawText(if (handLineMode) "连写 · 写完一行点候选" else "单字 · 在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
             text.textAlign = Paint.Align.CENTER
         }
         if (handRecognizing || handRecognitionFailed) {
@@ -828,9 +840,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             p.key = null
             p.mode = M_INK
             inkOwner = p
-            // 停笔够久后落笔：先上屏上一个字的首选。 Pen down after a pause commits the previous char first.
-            // 按事件时刻算停顿：主线程忙时处理得晚，不会被误当成停笔。 Pause by event time, so a busy main thread doesn't fake one.
-            if (pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
+            // 停笔够久后落笔：先上屏上一个字的首选。连写与关闭自动上屏时不这样做——前者的字间停顿是正常的，
+            // 后者的笔迹要留给用户自己确认。按事件时刻算停顿：主线程忙时处理得晚，不会被误当成停笔。
+            // Pen down after a pause commits the previous char first. Continuous writing skips this (pausing between
+            // characters is normal), as does auto-commit off (the ink waits for the user). Pause by event time, so a
+            // busy main thread doesn't fake one.
+            if (!handLineMode && handAutoCommitOn && pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
                 if (host?.onHandCommit() == true) pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
             }
             // 书写要跟手：这根手指的移动不等下一帧批量送达。 Ink must follow the finger: moves are not batched per frame.
@@ -1142,7 +1157,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                     if (commit && pad.end(evTime) != null) {
                         host?.onHandStroke(pad.strokes)
                         removeCallbacks(handIdle)
-                        if (handIdleMs > 0) postDelayed(handIdle, handIdleMs)
+                        // 连写与关闭自动上屏都不排队：落笔后不会有超时上屏。 Continuous writing and auto-commit off
+                        // queue nothing: no timed commit follows a stroke.
+                        if (handIdleMs > 0 && !handLineMode && handAutoCommitOn) postDelayed(handIdle, handIdleMs)
                     } else pad.cancel()
                 }
             }
@@ -1199,6 +1216,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         private const val M_DONE = 10
         /** 在书写区写字。 Writing on the handwriting pad. */
         private const val M_INK = 11
+        /** 在 26 键上滑行（划过的字母键合成一串字母）。 Sliding across the 26-key letters. */
         private const val MAX_POINTERS = 4
         const val LONG_PRESS_MS = 450L
         /**

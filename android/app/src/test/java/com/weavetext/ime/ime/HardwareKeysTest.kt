@@ -87,6 +87,70 @@ class HardwareKeysTest {
         assertEquals("", ic.text)
     }
 
+    @Test fun arrowsMoveTheCaretInsideTheCompositionWhenTheEngineAllowsIt() {
+        engine.caretEditing = true
+        type("nhao")
+        repeat(3) { assertTrue(press(KeyEvent.KEYCODE_DPAD_LEFT)) }
+        assertTrue(controller.state.composing)
+        assertEquals(1, controller.state.preeditCaret)
+        type("i")
+        assertEquals("nihao", engine.raw.toString())
+        assertEquals(2, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_MOVE_END))
+        assertEquals(null, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_MOVE_HOME))
+        assertEquals(0, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_FORWARD_DEL))
+        assertEquals("ihao", engine.raw.toString())
+        assertEquals("", ic.text)
+    }
+
+    @Test fun ctrlArrowsAndCtrlDeleteWorkBySyllable() {
+        val ctrl = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        engine.caretEditing = true
+        type("womenzoule")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_LEFT, ctrl))
+        assertEquals(8, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_LEFT, ctrl))
+        assertEquals(6, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_DEL, ctrl))
+        // 假内核两个字母一个音节：wo|me|nz|ou|le。 The fake pairs letters: wo|me|nz|ou|le.
+        assertEquals("womeoule", engine.raw.toString())
+        assertEquals(4, controller.state.preeditCaret)
+        assertTrue(press(KeyEvent.KEYCODE_FORWARD_DEL, ctrl))
+        assertEquals("womele", engine.raw.toString())
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_RIGHT, ctrl))
+        assertEquals(null, controller.state.preeditCaret)
+        assertEquals("", ic.text)
+        // 不支持音节编辑的方案：Ctrl+退格删一个键，Ctrl+方向键像其他快捷键一样交给 App。
+        // Without syllable editing: Ctrl+Backspace deletes one key, Ctrl+arrows go to the app like other shortcuts.
+        engine.caretEditing = false
+        assertTrue(press(KeyEvent.KEYCODE_DEL, ctrl))
+        assertEquals("womel", engine.raw.toString())
+        assertFalse(press(KeyEvent.KEYCODE_DPAD_LEFT, ctrl))
+        assertEquals("womel", ic.text)
+    }
+
+    @Test fun forwardDeleteOutsideACompositionBelongsToTheApp() {
+        assertFalse(press(KeyEvent.KEYCODE_FORWARD_DEL))
+    }
+
+    @Test fun bracketsTakeTheFirstOrLastCharOfTheChosenCandidate() {
+        type("ab")
+        assertTrue(press(KeyEvent.KEYCODE_DPAD_DOWN))
+        assertTrue(press(KeyEvent.KEYCODE_RIGHT_BRACKET))
+        assertEquals(listOf(1 to true), engine.charPicks)
+        assertEquals("1", ic.text)
+        type("cd")
+        assertTrue(press(KeyEvent.KEYCODE_LEFT_BRACKET))
+        assertEquals(0 to false, engine.charPicks.last())
+        assertEquals("1【", ic.text)
+        // 不在组合中：[ 照常是标点。 Not composing: [ is punctuation as before.
+        assertTrue(press(KeyEvent.KEYCODE_LEFT_BRACKET))
+        assertEquals(2, engine.charPicks.size)
+        assertEquals("1【【", ic.text)
+    }
+
     @Test fun enterOutsideACompositionBelongsToTheApp() {
         assertFalse(press(KeyEvent.KEYCODE_ENTER))
     }

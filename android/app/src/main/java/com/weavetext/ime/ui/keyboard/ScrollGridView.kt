@@ -171,9 +171,14 @@ abstract class ScrollGridView(ctx: Context) : View(ctx) {
                 if (longFired) { onLongMove(e.x, e.y); return true }
                 velocity?.addMovement(e)
                 val dy = e.y - downY
-                if (!dragging && (abs(dy) > 8 * density || abs(e.x - downX) > 8 * density)) {
+                // 只有纵向位移作废这次点按：这些网格都只纵向滚动，横向位移什么也不改变，不该让斜着的轻点白白失效。
+                // 横向滚动由需要它的子类自己做手势（符号面板的底行与分类列）。
+                // Only vertical movement cancels the tap: these grids scroll vertically, so a sideways slip changes
+                // nothing and must not throw the tap away. Subclasses that need horizontal scrolling run that gesture
+                // themselves (the symbol panel's bottom row and category column).
+                if (!dragging && abs(dy) > 8 * density) {
                     removeCallbacks(longPress)
-                    if (abs(dy) > 8 * density) dragging = true
+                    dragging = true
                     pressed = -1
                     invalidate()
                 }

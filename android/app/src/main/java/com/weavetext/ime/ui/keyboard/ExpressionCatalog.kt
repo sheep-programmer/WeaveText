@@ -4,12 +4,13 @@ import android.content.Context
 import android.graphics.Paint
 import org.json.JSONObject
 
-/** Offline Unicode/CLDR names and curated kaomoji, shared with the Mac build. */
+/** Offline Unicode/CLDR names (Chinese and English) and curated kaomoji, shared with the Mac build. */
 class ExpressionCatalog private constructor(json: JSONObject) {
-    data class Item(val text: String, val name: String, val group: String)
+    data class Item(val text: String, val name: String, val group: String, val english: String = "", val pinyin: String = "")
     private fun read(json: JSONObject, key: String): List<Item> {
         val array=json.getJSONArray(key)
-        return (0 until array.length()).map {i->val o=array.getJSONObject(i);Item(o.getString("text"),o.getString("name"),o.getString("group"))}
+        return (0 until array.length()).map {i->val o=array.getJSONObject(i)
+            Item(o.getString("text"),o.getString("name"),o.getString("group"),o.optString("english",""),o.optString("pinyin",""))}
     }
     val emoji=read(json,"emoji")
     /** Filter once for this system font so older phones never show missing-glyph squares. */
@@ -18,6 +19,9 @@ class ExpressionCatalog private constructor(json: JSONObject) {
     private val emojiKeys=emoji.map{normalize(it.text)}.toSet()
     private val supportedKeys by lazy{supportedEmoji.map{normalize(it.text)}.toSet()}
     fun displayable(text:String)=normalize(text) !in emojiKeys || (normalize(text) in supportedKeys && Paint().hasGlyph(text))
+    /** 搜索用的行：中文名、英文名、分类与名字的拼音（颜文字没有英文名）。 Rows for name search. */
+    fun searchRows(items: List<Item>): List<ExpressionSearch.Row> =
+        items.map { ExpressionSearch.Row(it.text, it.name, it.english, it.group, it.pinyin) }
     val skinToneBases=json.getJSONArray("skinToneBases").let {a->(0 until a.length()).map{a.getString(it)}.toSet()}
     private val items=(emoji+kaomoji).associateBy{normalize(it.text)}
     fun entry(text: String): Item? = items[normalize(text)]

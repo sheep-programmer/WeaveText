@@ -364,7 +364,13 @@ class StickerShelfView(
     }
 }
 
-class StickerImageView(ctx:Context):ImageView(ctx) {
+/**
+ * 表情预览：静态图解码成位图，动图解码成会播放的 [AnimatedImageDrawable]，所以看到的和原文件一致。
+ * [targetPx] 是解码后的最长边，格子越大传得越大。
+ * Sticker preview: stills become a bitmap, animations a playing [AnimatedImageDrawable], so the tile shows what
+ * the stored file holds. [targetPx] is the decoded long edge; larger tiles pass a larger value.
+ */
+class StickerImageView(ctx:Context,private val targetPx:Int=128):ImageView(ctx) {
     @Volatile private var identity=""
     @Volatile internal var previewError:String?=null
         private set
@@ -379,7 +385,7 @@ class StickerImageView(ctx:Context):ImageView(ctx) {
             if(identity!=id)return@execute
             val image=runCatching {
                 if(Build.VERSION.SDK_INT>=28)android.graphics.ImageDecoder.decodeDrawable(android.graphics.ImageDecoder.createSource(file)) {decoder,info,_->
-                    val scale=128f/maxOf(info.size.width,info.size.height).coerceAtLeast(1);decoder.setTargetSize(maxOf(1,(info.size.width*minOf(1f,scale)).toInt()),maxOf(1,(info.size.height*minOf(1f,scale)).toInt()))
+                    val scale=targetPx.toFloat()/maxOf(info.size.width,info.size.height).coerceAtLeast(1);decoder.setTargetSize(maxOf(1,(info.size.width*minOf(1f,scale)).toInt()),maxOf(1,(info.size.height*minOf(1f,scale)).toInt()))
                 } else bitmapPreview(file)
             }.getOrElse {previewError=it.message;bitmapPreview(file)}
             main.post {if(identity==id){setImageDrawable(image);if(Build.VERSION.SDK_INT>=28 && isAttachedToWindow)(image as? AnimatedImageDrawable)?.start()}}
@@ -388,7 +394,7 @@ class StickerImageView(ctx:Context):ImageView(ctx) {
     fun stop(){if(Build.VERSION.SDK_INT>=28)(drawable as? AnimatedImageDrawable)?.stop()}
     private fun bitmapPreview(file:File):android.graphics.drawable.Drawable? {
         val bounds=BitmapFactory.Options().apply {inJustDecodeBounds=true};BitmapFactory.decodeFile(file.path,bounds)
-        val sample=maxOf(1,maxOf(bounds.outWidth,bounds.outHeight)/128)
+        val sample=maxOf(1,maxOf(bounds.outWidth,bounds.outHeight)/targetPx)
         return BitmapFactory.decodeFile(file.path,BitmapFactory.Options().apply {inSampleSize=sample})?.let {android.graphics.drawable.BitmapDrawable(resources,it)}
     }
     override fun onAttachedToWindow(){super.onAttachedToWindow();binding?.let {(file,id)->bind(file,id)};if(Build.VERSION.SDK_INT>=28)(drawable as? AnimatedImageDrawable)?.start()}

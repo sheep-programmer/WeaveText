@@ -116,6 +116,9 @@ object WeavePrefs {
     const val SYMBOL_RECENT = "symbol_recent"
     const val EMOJI_SKIN = "emoji_skin"
 
+    /** 按应用记住中/英（默认开）。 Remember the Chinese/English choice per app (on by default). */
+    const val PER_APP_MEMORY = "per_app_memory"
+
     const val ONBOARDING_DONE = "onboarding_done"
     const val MIC_SKIPPED = "mic_skipped"
 
@@ -222,4 +225,40 @@ object WeavePrefs {
     fun linkEnabled(p: SharedPreferences) = Extensions.feature(p, "link") && p.getBoolean(LINK_ENABLED, false)
     fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)
     fun linkName(p: SharedPreferences) = p.getString(LINK_NAME, null)?.takeIf { it.isNotBlank() } ?: com.weavetext.ime.link.LinkManager.defaultName()
+    fun perAppMemory(p: SharedPreferences) = p.getBoolean(PER_APP_MEMORY, true)
+
+    // ---------------------------------------------------------------- 按应用记忆 / per-app memory
+
+    /**
+     * 每个应用记住它上次的中/英选择：在微信里切成英文，去别的应用照旧中文，回到微信还是英文。只记中/英，
+     * 不记布局与方案（那是全局偏好）；密码框等不允许中文的输入框不参与。记住的是「用户显式切过的」，没切过的
+     * 应用按字段类型走默认。包名列表单独存一份，超过上限就丢最早的，避免长期使用后无限增长。
+     * Per-app Chinese/English memory: the choice made in one app is restored when returning to it. Only the mode is
+     * remembered (layouts and schemas are global preferences), and fields that cannot take Chinese never take part.
+     */
+    /** 取值与名单的键前缀、名单键与上限（上限与 Mac 端一致）。 The value/order key prefix, the order key and the limit. */
+    const val APP_MODE_PREFIX = "app_mode:"
+    const val APP_MODE_ORDER = "app_mode_order"
+    const val APP_MODE_MAX = 100
+
+    fun appMode(p: SharedPreferences, pkg: String?): Boolean? =
+        pkg?.takeIf { it.isNotEmpty() && p.contains(APP_MODE_PREFIX + it) }?.let { p.getBoolean(APP_MODE_PREFIX + it, true) }
+
+    fun rememberAppMode(p: SharedPreferences, pkg: String?, chinese: Boolean) {
+        if (pkg.isNullOrEmpty()) return
+        val order = (p.getString(APP_MODE_ORDER, "") ?: "").split('\n').filter { it.isNotEmpty() && it != pkg }
+        val kept = (listOf(pkg) + order).take(APP_MODE_MAX)
+        val dropped = order.drop(APP_MODE_MAX - 1)
+        val e = p.edit().putBoolean(APP_MODE_PREFIX + pkg, chinese).putString(APP_MODE_ORDER, kept.joinToString("\n"))
+        dropped.forEach { e.remove(APP_MODE_PREFIX + it) }
+        e.apply()
+    }
+
+    fun appMemoryCount(p: SharedPreferences) = (p.getString(APP_MODE_ORDER, "") ?: "").split('\n').count { it.isNotEmpty() }
+
+    fun clearAppMemory(p: SharedPreferences) {
+        val e = p.edit()
+        (p.getString(APP_MODE_ORDER, "") ?: "").split('\n').filter { it.isNotEmpty() }.forEach { e.remove(APP_MODE_PREFIX + it) }
+        e.remove(APP_MODE_ORDER).apply()
+    }
 }

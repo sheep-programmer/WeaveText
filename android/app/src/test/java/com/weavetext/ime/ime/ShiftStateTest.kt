@@ -40,6 +40,17 @@ class ShiftStateTest {
         assertEquals(ShiftState.ONCE, s.value)
     }
 
+    @Test fun aLongPressLocksAndATapUnlocks() {
+        val s = ShiftState()
+        assertTrue(s.lock())
+        assertEquals(ShiftState.LOCK, s.value)
+        assertFalse(s.consume())
+        s.tap(1000)
+        assertEquals(ShiftState.OFF, s.value)
+        s.tap(3000)
+        assertEquals(ShiftState.ONCE, s.value)
+    }
+
     @Test fun lockCanBeDisabled() {
         val s = ShiftState()
         s.tap(1000, allowLock = false); s.tap(1100, allowLock = false)

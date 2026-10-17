@@ -31,6 +31,52 @@ class FakeEngine : KeyEngine {
 
     /** 最近一次 setLearning。 The last setLearning value. */
     var learningValue = true
+    /** 打开后支持组合串光标（按 raw 下标），与真内核一样在末尾时为 null。 Opt-in preedit caret over raw; null at the end. */
+    var caretEditing = false
+    var caret: Int? = null
+    /** 以词取字的调用：(序号, 是否末字)。 selectChar calls: (index, last). */
+    val charPicks = ArrayList<Pair<Int, Boolean>>()
+    override fun moveCaret(delta: Int): Boolean {
+        if (!caretEditing || raw.isEmpty()) return false
+        val to = ((caret ?: raw.length) + delta).coerceIn(0, raw.length)
+        caret = to.takeIf { it < raw.length }
+        return true
+    }
+    override fun setCaret(index: Int): Boolean {
+        if (!caretEditing || raw.isEmpty()) return false
+        caret = index.takeIf { it < raw.length }
+        return true
+    }
+    override fun deleteForward(): Boolean {
+        val at = caret ?: return raw.isNotEmpty()
+        raw.deleteCharAt(at)
+        if (at >= raw.length) caret = null
+        return true
+    }
+    /** 假内核按每两个字母一个音节。 The fake treats every two letters as a syllable. */
+    override fun moveCaretSyllable(delta: Int): Boolean {
+        if (!caretEditing || raw.isEmpty()) return false
+        val at = caret ?: raw.length
+        val to = if (delta < 0) (at - 1).coerceAtLeast(0) / 2 * 2 else minOf(raw.length, at / 2 * 2 + 2)
+        caret = to.takeIf { it < raw.length }
+        return true
+    }
+    override fun deleteSyllable(forward: Boolean): Boolean {
+        if (!caretEditing || raw.isEmpty()) return false
+        val at = caret ?: raw.length
+        val (from, to) = if (forward) at to minOf(raw.length, at / 2 * 2 + 2) else (at - 1).coerceAtLeast(0) / 2 * 2 to at
+        raw.delete(from, to)
+        caret = from.takeIf { it < raw.length }
+        return true
+    }
+    override fun selectChar(index: Int, last: Boolean): Boolean {
+        if (raw.isEmpty()) return false
+        charPicks += index to last
+        val t = cand(index).text
+        pending.append(if (last) t.last() else t.first())
+        raw.clear(); caret = null
+        return true
+    }
     private fun composes(c: Char) = c in 'a'..'z' || (schema == "english" && c in 'A'..'Z') ||
         // 与真内核一样：v 之后的数字进入 v 模式。 Like the real engine: digits after "v" stay in the v mode.
         (schema == "pinyin" && c.isDigit() && raw.startsWith("v") && raw.drop(1).all { it.isDigit() }) ||
@@ -52,12 +98,21 @@ class FakeEngine : KeyEngine {
         if (!composes(c)) return false
         predictions = emptyList()
         inputs++
-        raw.append(c)
+        val at = caret
+        if (at != null) { raw.insert(at, c); caret = at + 1 } else raw.append(c)
         return true
     }
     /** 只认 a*b 形式的假计算。 A fake calculator that only knows a*b. */
     override fun evaluate(expr: String): String? =
         expr.split('*').takeIf { it.size == 2 }?.let { (a, b) -> (a.toLongOrNull() ?: return null) * (b.toLongOrNull() ?: return null) }?.toString()
+
+    /**
+     * 组合串 → 真内核会给出的候选文字（默认没有）。面板搜索框把拼音读成中文时用得到：搜索框只能收字母，
+     * 打到「weixiao」得先由内核读成「微笑」才能去匹配中文内容。
+     * Composition → the text a real engine would offer (empty by default). The panel search boxes read typed pinyin
+     * through the engine, so Chinese content can be found from letters.
+     */
+    var readings: Map<String, List<String>> = emptyMap()
 
     /** 带邻键的按键：(字母, 邻键, 贴近度)。 Keys fed with a neighbour: (letter, neighbour, closeness). */
     val nearCalls = ArrayList<Triple<Char, Char, Float>>()
@@ -69,7 +124,8 @@ class FakeEngine : KeyEngine {
     override fun backspace(): Boolean {
         if (handing) { hand.removeAt(hand.size - 1); return true }
         if (raw.isEmpty()) { predictions = emptyList(); return false }
-        raw.setLength(raw.length - 1)
+        val at = caret
+        if (at != null) { if (at > 0) { raw.deleteCharAt(at - 1); caret = at - 1 } } else raw.setLength(raw.length - 1)
         return true
     }
     override fun select(index: Int): Boolean {
@@ -81,6 +137,7 @@ class FakeEngine : KeyEngine {
         }
         pending.append(cand(index).text)
         raw.clear()
+        caret = null
         hand.clear()
         predict()
         return true
@@ -88,8 +145,8 @@ class FakeEngine : KeyEngine {
     override fun selectPinyin(index: Int) = false
     override fun forget(index: Int) = false
     override fun commitFirst() { if (raw.isNotEmpty() || handing) select(0); predictions = emptyList() }
-    override fun commitRaw() { pending.append(raw); raw.clear(); hand.clear(); predictions = emptyList() }
-    override fun clear() { raw.clear(); hand.clear(); predictions = emptyList() }
+    override fun commitRaw() { pending.append(raw); raw.clear(); caret = null; hand.clear(); predictions = emptyList() }
+    override fun clear() { raw.clear(); caret = null; hand.clear(); predictions = emptyList() }
     override fun flush() {}
     override fun isComposing() = raw.isNotEmpty() || handing
     override fun setLearning(on: Boolean) { learningValue = on }
@@ -103,12 +160,17 @@ class FakeEngine : KeyEngine {
         if (!composing && predictions.isNotEmpty()) {
             return EngineSnapshot(commit, "", false, predictions.map { Candidate(it, "", false) }, predictions.size, emptyList(), schema)
         }
-        return EngineSnapshot(commit, raw.toString(), composing, if (composing) List(60) { cand(it) } else emptyList(), if (composing) 800 else 0, emptyList(), schema)
+        return EngineSnapshot(commit, raw.toString(), composing, if (composing) List(60) { cand(it) } else emptyList(), if (composing) 800 else 0, emptyList(), schema, caret = caret)
     }
-    override fun candidates(offset: Int, limit: Int): List<Candidate> =
-        if (!isComposing() && predictions.isNotEmpty()) predictions.drop(offset).take(limit).map { Candidate(it, "", false) }
-        else if (handing) (offset until minOf(12, offset + limit)).map { cand(it) }
-        else if (raw.isEmpty()) emptyList() else (offset until minOf(800, offset + limit)).map { cand(it) }
+    override fun candidates(offset: Int, limit: Int): List<Candidate> {
+        readings[raw.toString()]?.let { readings -> return readings.drop(offset).take(limit).map { Candidate(it, "", false) } }
+        return when {
+            !isComposing() && predictions.isNotEmpty() -> predictions.drop(offset).take(limit).map { Candidate(it, "", false) }
+            handing -> (offset until minOf(12, offset + limit)).map { cand(it) }
+            raw.isEmpty() -> emptyList()
+            else -> (offset until minOf(800, offset + limit)).map { cand(it) }
+        }
+    }
 }
 
 /**

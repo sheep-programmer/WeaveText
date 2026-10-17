@@ -47,6 +47,7 @@ class TypingFeelTest {
     private lateinit var engine: FakeEngine
     private lateinit var ic: FakeInputConnection
     private lateinit var kv: KeyboardView
+    private val menuActions = mutableListOf<Int>()
 
     private val host = object : ImeWindowHost {
         override fun hideKeyboard() {}
@@ -61,7 +62,9 @@ class TypingFeelTest {
         File(app.filesDir, "clipboard").deleteRecursively()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val frame = FrameLayout(activity)
-        ic = FakeInputConnection(frame)
+        ic = object : FakeInputConnection(frame) {
+            override fun performContextMenuAction(id: Int): Boolean { menuActions += id; return true }
+        }
         controller = InputController { ic }
         engine = FakeEngine()
         kb = WeaveKeyboard(activity, controller, host)
@@ -177,6 +180,17 @@ class TypingFeelTest {
         assertTrue("right edge must stay clear", card.translationX + card.width <= kb.view.width - 126)
     }
 
+    @Test fun floatingChromeIsThinAndDropsTheBottomStripWithoutBottomCorners() {
+        kb.toggleFloating()
+        idle()
+        val card = kb.board.parent as android.view.View
+        assertEquals(kb.metrics.dp(28f + 14f), (card.height - kb.board.height).toFloat(), 2f)
+        com.weavetext.ime.settings.FloatingResizeSettings.write(WeavePrefs.of(app),
+            setOf(com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_LEFT, com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_RIGHT))
+        idle()
+        assertEquals(kb.metrics.dp(28f), (card.height - kb.board.height).toFloat(), 2f)
+    }
+
     @Test fun floatingKeyboardFitsAConstrainedWindowWithoutShrinkingForever() {
         kb.toggleFloating()
         idle()
@@ -238,6 +252,58 @@ class TypingFeelTest {
         release(0)
         assertEquals("b", engine.raw.toString())
         assertFalse("the drag moved the cursor, so no space", ic.text.contains(' '))
+    }
+
+    @Test fun longPressingShiftLocksCapitalsInEnglishButNotIntoChinese() {
+        controller.toggleChinese(); idle()
+        press(0, key(KeyCode.SHIFT))
+        hold(KeyboardView.LONG_PRESS_MS + 20)
+        release(0)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift_lock, key(KeyCode.SHIFT).icon)
+        tap('o'); tap('k')
+        assertEquals("OK", engine.raw.toString())
+        // 切到中文：锁定不带过去，字母照常打拼音。 Switching to Chinese drops the lock; letters are pinyin again.
+        controller.toggleChinese(); idle()
+        tap('n')
+        assertEquals("n", engine.raw.toString())
+        // 中文里长按 Shift 不锁定，松手仍是一次大写。 In Chinese a long press does not lock; it is one capital.
+        controller.reset(); idle()
+        press(0, key(KeyCode.SHIFT))
+        hold(KeyboardView.LONG_PRESS_MS + 20)
+        release(0)
+        tap('a'); tap('b')
+        assertTrue(ic.text, ic.text.endsWith("A"))
+        assertEquals("b", engine.raw.toString())
+    }
+
+    @Test fun theCursorPanelCutsTheSelection() {
+        ic.commitText("hello", 1)
+        ic.setSelection(0, 5)
+        kb.showPanel("cursor"); idle()
+        fun pads(view: android.view.View): List<android.view.View> = when {
+            view.javaClass.name.endsWith(".PadView") -> listOf(view)
+            view is ViewGroup -> (0 until view.childCount).flatMap { pads(view.getChildAt(it)) }
+            else -> emptyList()
+        }
+        val pad = pads(kb.view).first { it.visibility == android.view.View.VISIBLE }
+        val provider = pad.accessibilityNodeProvider!!
+        val labels = (0 until 15).map { provider.createAccessibilityNodeInfo(it)?.contentDescription?.toString() }
+        val cut = labels.indexOf("剪切")
+        assertTrue(labels.toString(), cut >= 0 && "复制" in labels && "粘贴" in labels && "全选" in labels)
+        // 撤销 / 重做：多次撤销交给编辑器，网页字段与终端里退回 Ctrl+Z / Ctrl+Shift+Z。 Undo/redo reach the editor.
+        val undo = labels.indexOf("撤销")
+        val redo = labels.indexOf("重做")
+        assertTrue(labels.toString(), undo >= 0 && redo >= 0)
+        assertTrue(provider.performAction(undo, android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK, null))
+        assertTrue(provider.performAction(redo, android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK, null))
+        assertEquals(listOf(android.R.id.undo, android.R.id.redo), menuActions)
+        assertEquals("已选中文字", kb.topBar.actionMessage)
+        assertTrue(provider.performAction(cut, android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK, null))
+        assertEquals(listOf(android.R.id.undo, android.R.id.redo, android.R.id.cut), menuActions)
+        // 选区没了，提示条随之收起。 With the selection gone, its strip goes too.
+        ic.setSelection(0, 0)
+        (kb.panel as com.weavetext.ime.ui.keyboard.CursorPanel).onSelection(false)
+        assertEquals(null, kb.topBar.actionMessage)
     }
 
     @Test fun secondFingerTypesWhileFirstHoldsTheLongPressPopup() {

@@ -26,7 +26,10 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private val header = Header(ctx)
     private val grid = Grid(ctx)
     private val side = PadView(ctx, kb)
+    /** 字形筛选的笔画键（横竖撇点折），在网格下面。 Stroke keys of the shape filter, below the grid. */
+    private val strokes = PadView(ctx, kb)
     private var showPinyin = false
+    private var singleOnly = false
 
     override val view: ViewGroup = object : ViewGroup(ctx) {
         override fun onMeasure(ws: Int, hs: Int) {
@@ -36,8 +39,10 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             val m = kb.metrics
             val sideW = m.dp(64f).toInt()
             val top = m.topBar.toInt()
+            val row = strokeRow(h - top)
             header.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(top, MeasureSpec.EXACTLY))
-            grid.measure(MeasureSpec.makeMeasureSpec(w - sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h - top, MeasureSpec.EXACTLY))
+            grid.measure(MeasureSpec.makeMeasureSpec(w - sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h - top - row, MeasureSpec.EXACTLY))
+            strokes.measure(MeasureSpec.makeMeasureSpec(w - sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(row, MeasureSpec.EXACTLY))
             side.measure(MeasureSpec.makeMeasureSpec(sideW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h - top, MeasureSpec.EXACTLY))
         }
 
@@ -47,12 +52,14 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             val m = kb.metrics
             val sideW = m.dp(64f).toInt()
             val top = m.topBar.toInt()
+            val row = strokeRow(h - top)
             header.layout(0, 0, w, top)
-            grid.layout(0, top, w - sideW, h)
+            grid.layout(0, top, w - sideW, h - row)
+            strokes.layout(0, h - row, w - sideW, h)
             side.layout(w - sideW, top, w, h)
         }
     }.apply {
-        addView(header); addView(grid); addView(side)
+        addView(header); addView(grid); addView(side); addView(strokes)
         setOnTouchListener { _, _ -> true }
         // 空白处的悬停也吃掉，读屏不会摸到下面的键。 Swallow hover over blank parts too, away from the hidden keys.
         setOnHoverListener { _, _ -> true }
@@ -68,22 +75,43 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 1 -> kb.controller.reset()
                 2 -> kb.closePanel()
                 3 -> { showPinyin = !showPinyin; k.active = showPinyin; reload() }
+                4 -> { singleOnly = !singleOnly; k.active = singleOnly; reload() }
             }
         }
-        side.keys = buildSide(false)
+        side.keys = buildSide(false, false)
         side.layouter = { w, h -> layoutSide(w, h) }
+        strokes.onTap = { k -> kb.controller.onShapeStroke(STROKE_LETTERS[k.id]) }
+        strokes.keys = "一丨丿丶乛".mapIndexed { i, g -> PadKey(i, g.toString()).apply { description = "笔画筛选：" + "横竖撇点折"[i] } }
+        strokes.visibility = View.GONE
+        strokes.layouter = { w, h ->
+            val m = kb.metrics
+            strokes.keys.forEachIndexed { i, k ->
+                k.cell.set(i * w / strokes.keys.size, 0f, (i + 1) * w / strokes.keys.size, h)
+                k.rect.set(k.cell)
+                k.rect.inset(m.insetH, m.insetV)
+                k.textSize = m.label(17f)
+            }
+        }
         grid.onPressFeedback = { kb.feedback.key(grid) }
         grid.onLongFeedback = { kb.feedback.haptic(grid) }
     }
 
-    private fun buildSide(t9: Boolean): List<PadKey> {
+    private fun buildSide(t9: Boolean, singles: Boolean): List<PadKey> {
         val list = ArrayList<PadKey>()
         if (t9) list += PadKey(3, "拼音")
+        if (singles) list += PadKey(4, "单字").apply { description = "只看单字" }
         list += PadKey(0, icon = R.drawable.ic_backspace).apply { repeat = true }
         list += PadKey(1, "重输")
         list += PadKey(2, "返回")
         return list
     }
+
+    /**
+     * 笔画键这一行的高度（横屏矮时最多占五分之一）；不能按字形筛选的方案（手写、英文、五笔）没有这一行。
+     * The stroke row's height (at most a fifth when landscape is short); none for hand, English or Wubi.
+     */
+    private var strokesShown = false
+    private fun strokeRow(avail: Int): Int = if (strokesShown) minOf(kb.metrics.dp(44f).toInt(), avail / 5) else 0
 
     private fun layoutSide(w: Float, h: Float) {
         val m = kb.metrics
@@ -99,13 +127,18 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
     override fun applyTheme() {
         kb.paintBackground(view)
-        header.invalidate(); grid.rebuild(); side.relayout()
+        header.invalidate(); grid.rebuild(); side.relayout(); strokes.relayout()
     }
 
     override fun onShow() {
         val t9 = (kb.state.schema == "t9" || kb.state.schema == "t14") && kb.state.chinese
+        // 中文词候选才有「只看单字」；手写本来就是单字。 The single-char filter is for Chinese words; handwriting is single chars already.
+        val singles = kb.state.chinese && kb.state.schema != "hand" && kb.state.schema != "english"
         showPinyin = false
-        side.keys = buildSide(t9)
+        singleOnly = false
+        side.keys = buildSide(t9, singles)
+        val shown = singles && kb.state.schema != "wubi86"
+        if (shown != strokesShown) { strokesShown = shown; strokes.visibility = if (shown) View.VISIBLE else View.GONE; view.requestLayout() }
         grid.scrollToTop()
         reload()
         grid.highlight(kb.state.highlightedCandidate, force = true)
@@ -115,6 +148,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         // 组合删空时网格随即收起：按住的退格不能接着删已上屏的字。 The grid closes as the composition empties:
         // a held backspace must not go on deleting committed text.
         side.cancelPress()
+        strokes.cancelPress()
     }
 
     override fun onState(s: ImeState) {
@@ -148,19 +182,42 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         shownGeneration = s.candidateGeneration
         shownMarks = s.preeditMarks
         header.set(s.preedit, s.preeditMarks)
+        if (singleOnly) fillSingles(32)
         grid.rebuild()
         grid.scrollToTop()
         header.invalidate()
     }
 
     private fun loadMore() {
-        val s = kb.state
-        if (cands.size >= s.totalCandidates) return
-        val more = kb.controller.loadCandidates(cands.size, 30)
-        if (more.isEmpty()) return
-        cands.addAll(more)
-        grid.rebuild()
+        val before = cands.size
+        if (singleOnly) fillSingles(singles() + 24) else fetchMore()
+        if (cands.size > before) grid.rebuild()
     }
+
+    private fun fetchMore(): Boolean {
+        if (cands.size >= kb.state.totalCandidates) return false
+        val more = kb.controller.loadCandidates(cands.size, 30)
+        cands.addAll(more)
+        return more.isNotEmpty()
+    }
+
+    /**
+     * 单字通常排在词后面：只看单字时多取几页，直到够填满几屏或候选取完。
+     * Single chars usually rank after the words: with the filter on, fetch pages until a few screens are filled or
+     * the candidates run out.
+     */
+    private fun fillSingles(target: Int) {
+        var batches = 0
+        while (singles() < target && batches++ < 10 && fetchMore()) Unit
+    }
+
+    private fun singles() = cands.count { isSingle(it.text) }
+
+    /** 网格里显示的候选在 [cands] 中的下标。 Indices into [cands] of the candidates the grid shows. */
+    private var shown = IntArray(0)
+
+    private fun shownIndices(): IntArray =
+        if (singleOnly) cands.indices.filter { isSingle(cands[it].text) }.toIntArray() else IntArray(cands.size) { it }
 
     @SuppressLint("ViewConstructor")
     private inner class Header(c: Context) : View(c) {
@@ -221,9 +278,12 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             invalidate()
             a11yChanged()
         }
+        /** 高亮候选在网格中的位置，被过滤掉时为 -1。 Grid position of the highlighted candidate; -1 when filtered out. */
+        private fun highlightedAt() = if (highlighted < 0) -1 else shown.indexOf(highlighted)
+        private fun candAt(i: Int): Candidate? = shown.getOrNull(i - nPinyin)?.let(cands::getOrNull)
         private fun revealHighlighted() {
-            val i = highlighted + nPinyin
-            if (revealPending && width > 0 && height > 0 && i * 4 + 3 < rects.size) {
+            val i = highlightedAt() + nPinyin
+            if (revealPending && width > 0 && height > 0 && i >= nPinyin && i * 4 + 3 < rects.size) {
                 reveal(rects[i * 4 + 1], rects[i * 4 + 3])
                 revealPending = false
             }
@@ -243,7 +303,8 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             val unit = width / 4f
             val rowH = m.dp(max(52f, 19f * m.candScale + 26f))
             nPinyin = pinyin.size
-            val all = pinyin + cands.map { it.text }
+            shown = shownIndices()
+            val all = pinyin + shown.map { cands[it].text }
             labels = all.toTypedArray()
             rects = FloatArray(all.size * 4)
             var y = 0f
@@ -259,7 +320,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
                 var used = 0
                 val spans = ArrayList<Int>()
                 while (i < all.size) {
-                    val cand = cands.getOrNull(i - nPinyin)
+                    val cand = candAt(i)
                     val wordW = text.measureText(all[i]) + (if(cand?.isCloud==true) m.dp(18f) else 0f)
                     val w = wordW + m.dp(24f)
                     val span = ceil(w / unit).toInt().coerceIn(1, 4)
@@ -281,9 +342,9 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             out.set(rects[index * 4], rects[index * 4 + 1], rects[index * 4 + 2], rects[index * 4 + 3])
         }
         override fun a11yLabel(index: Int): CharSequence? = labels.getOrNull(index)?.let {
-            val candidate = cands.getOrNull(index - nPinyin)
+            val candidate = candAt(index)
             if (index < nPinyin) "拼音 $it" else it + (if(candidate?.isCloud==true) "，云端词" else "") +
-                (if (index - nPinyin == highlighted) "，已选中，按空格确认" else "")
+                (if (highlighted >= 0 && index - nPinyin == highlightedAt()) "，已选中，按空格确认" else "")
         }
 
         private fun layoutRow(from: Int, to: Int, spans: IntArray, y: Float, rowH: Float, unit: Float): Float {
@@ -309,10 +370,11 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onItemTap(index: Int) {
             if (index < nPinyin) { kb.controller.onPinyinOption(index); return }
-            kb.controller.onVisibleCandidate(index - nPinyin, shownGeneration)
+            shown.getOrNull(index - nPinyin)?.let { kb.controller.onVisibleCandidate(it, shownGeneration) }
         }
 
-        override fun onItemLong(index: Int): Boolean = index >= nPinyin && kb.onCandidateLongVisible(index - nPinyin, shownGeneration)
+        override fun onItemLong(index: Int): Boolean =
+            shown.getOrNull(index - nPinyin)?.let { kb.onCandidateLongVisible(it, shownGeneration) } ?: false
         override fun a11yLongLabel(index: Int): CharSequence? = if (index >= nPinyin) "查看完整候选与操作" else null
 
         override fun onScrolledNearEnd() = loadMore()
@@ -324,22 +386,23 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             text.textSize = m.dp(19f) * m.candScale
             val top = scroll
             val bottom = scroll + height
+            val lit = highlightedAt()
             for (i in labels.indices) {
                 val l = rects[i * 4]; val t = rects[i * 4 + 1]; val r = rects[i * 4 + 2]; val b = rects[i * 4 + 3]
                 if (b < top || t > bottom) continue
-                if (i == pressed || i == nPinyin + highlighted && highlighted >= 0) {
+                if (i == pressed || lit >= 0 && i == nPinyin + lit) {
                     line.color = p.toolbarActive
                     c.drawRect(l, t, r, b, line)
                 }
                 val isPy = i < nPinyin
                 text.color = when {
                     isPy -> p.candidateFirst
-                    i == nPinyin + highlighted || highlighted < 0 && i == nPinyin -> p.candidateFirst
+                    lit >= 0 && i == nPinyin + lit || highlighted < 0 && i == nPinyin && shown.firstOrNull() == 0 -> p.candidateFirst
                     else -> p.label
                 }
                 text.textSize = if (isPy) m.dp(15f) else m.dp(19f) * m.candScale
                 // 最多占 4 格，更长的候选在格内中间省略。 At most 4 units wide: longer candidates are ellipsized in the middle.
-                val cloud=!isPy && cands.getOrNull(i-nPinyin)?.isCloud==true
+                val cloud=!isPy && candAt(i)?.isCloud==true
                 val maxW = r - l - m.dp(if(cloud) 34f else 16f)
                 val label = labels[i].let { if (maxW > 0f && text.measureText(it) > maxW) TextUtils.ellipsize(it, text, maxW, TextUtils.TruncateAt.MIDDLE).toString() else it }
                 val badgeW=if(cloud)m.dp(18f)else 0f
@@ -354,6 +417,11 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         }
     }
 }
+
+/** 一个汉字的候选（「只看单字」）。 A candidate that is one Han character (for the single-char filter). */
+internal fun isSingle(text: String): Boolean =
+    text.isNotEmpty() && text.codePointCount(0, text.length) == 1 &&
+        Character.UnicodeScript.of(text.codePointAt(0)) == Character.UnicodeScript.HAN
 
 /**
  * 键盘选择浮层（02 §2.4）：覆盖主区域。 Layout picker over the main area.

@@ -39,6 +39,18 @@ abstract class KbPanel(val kb: WeaveKeyboard) {
     open fun onHide() {}
     open fun applyTheme() {}
     open fun onState(s: ImeState) {}
+    /**
+     * 键盘上的一个键先交给面板（面板打开着搜索框时，字母进查询而不是上屏）；返回 true 表示已处理。
+     * Offer a key to the panel first (with a search box open, letters go to the query instead of the editor);
+     * true means the panel handled it.
+     */
+    open fun onKey(key: Key): Boolean = false
+    /** 同上，字符键的输出文字（上滑、长按与九键字母）。 Same for a char key's output text. */
+    open fun onKeyText(key: Key, text: String): Boolean = false
+    /** 搜索框开着：键盘上的键交给面板（见 [onKey]），空格只分隔词。 A search box is open: keys go to the panel. */
+    open val searchOpen: Boolean get() = false
+    /** 退出搜索；没有搜索时返回 false。 Leave the search; false when there was none. */
+    open fun leaveSearch(): Boolean = false
 }
 
 /**
@@ -102,13 +114,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private val handle = FloatHandle(service)
     private val grips = FloatingResizeCorner.entries.map { ResizeGrip(service, it) }
     private val floatClose = FloatCloseButton(service)
-    private val bottomHandle = FloatFooter(service)
+    private val bottomHandle = View(service)
     private val resizeSession = FloatingResizeController()
     /** 悬浮卡片的缩放（按当前方向读取）。 Floating card scale for the current orientation. */
     private var floatScale = 1f
     private var floatingViewportWidth = 0
     private var floatingBaseMainHeight = 0f
-    private var floatingControlHeightDp = HANDLE_DP
+    private var floatingControlHeightDp = TOP_BAR_DP
     /** 正在拖动缩放：布局时保持右下角不动，不按保存的比例重新放置。 Resizing: layout keeps the bottom-right corner. */
     private var resizing = false
     val board = FrameLayout(service)
@@ -453,17 +465,20 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (floating) {
             val kbH = m.kbHeight.toInt()
             val handleH = m.dp(floatingControlHeightDp).toInt()
+            val policy = FloatingResizeSettings.read(prefs)
+            // 底边只在启用了下方的角时留一条细边放缩放手柄。 A thin bottom strip only when a bottom corner can resize.
+            val bottomH = if (policy.corners.any { it.verticalSign > 0 }) m.dp(BOTTOM_BAR_DP).toInt() else 0
             val available = ((floatingViewportWidth.takeIf { it > 0 } ?: root.width.takeIf { it > 0 } ?: ctx.resources.displayMetrics.widthPixels) - navLeft - navRight).coerceAtLeast(1)
             val w = (FloatingGeometry.cardWidth(available, m.landscape, m.density) * floatScale).toInt()
-            card.layoutParams = FrameLayout.LayoutParams(w, handleH * 2 + kbH)
+            val cardH = handleH + kbH + bottomH
+            card.layoutParams = FrameLayout.LayoutParams(w, cardH)
             handle.layoutParams = FrameLayout.LayoutParams(-1, handleH)
             handle.visibility = View.VISIBLE
-            // Reserve both control bars: all four 48dp targets stay outside candidates and keys.
-            bottomHandle.layoutParams = FrameLayout.LayoutParams(-1, handleH, android.view.Gravity.BOTTOM)
-            bottomHandle.visibility = View.VISIBLE
-            val policy = FloatingResizeSettings.read(prefs)
+            // 手柄都在顶条和底边里，不压住候选和按键。 The grips stay in the bars, clear of candidates and keys.
+            bottomHandle.layoutParams = FrameLayout.LayoutParams(-1, bottomH, android.view.Gravity.BOTTOM)
+            bottomHandle.visibility = if (bottomH > 0) View.VISIBLE else View.GONE
             for (grip in grips) {
-                val g = FloatingGeometry.gripBox(grip.corner, w, handleH * 2 + kbH, handleH, m.density)
+                val g = FloatingGeometry.gripBox(grip.corner, w, cardH, if (grip.corner.verticalSign < 0) handleH else bottomH, m.density)
                 grip.layoutParams = FrameLayout.LayoutParams(g.width, g.height, android.view.Gravity.TOP or android.view.Gravity.LEFT).apply {
                     leftMargin = g.left; topMargin = g.top
                 }
@@ -478,7 +493,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             board.setPadding(0, 0, 0, 0)
             card.outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) =
-                    outline.setRoundRect(0, 0, view.width, view.height, m.dp(16f))
+                    outline.setRoundRect(0, 0, view.width, view.height, m.dp(CARD_RADIUS_DP))
             }
             card.clipToOutline = true
             card.elevation = m.dp(8f)
@@ -660,6 +675,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private fun onState(s: ImeState) {
         val previousArea = handAreaMode()
         if (s.preedit != state.preedit || s.candidates != state.candidates || s.privateField) candidatePopup?.dismiss()
+        // 英文里锁定的大写不带进中文：否则切过去后字母直接上屏成大写，打不了拼音。
+        // A caps lock from English does not carry into Chinese, where it would commit capitals instead of pinyin.
+        if (s.chinese && !state.chinese && shift.value == com.weavetext.ime.ime.ShiftState.LOCK) shift.reset()
         state = s
         if (previousArea != handAreaMode()) applyGeometry()
         if (s.engineReady && !wasReady) {
@@ -714,7 +732,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (prev != null && previous != null && previous.preedit == s.preedit &&
             previous.preeditMarks == s.preeditMarks && previous.candidates == s.candidates &&
             previous.totalCandidates == s.totalCandidates && previous.chinese == s.chinese
-            && previous.candidateGeneration == s.candidateGeneration
+            && previous.candidateGeneration == s.candidateGeneration && previous.preeditCaret == s.preeditCaret
         ) {
             topBar.setHighlightedCandidate(s.highlightedCandidate)
             return
@@ -724,6 +742,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             english = !s.chinese, keepScroll = prev != null && prev.preedit == s.preedit,
             marks = s.preeditMarks,
             generation = s.candidateGeneration,
+            caret = s.preeditCaret,
         )
         candidateState = s
         topBar.setHighlightedCandidate(s.highlightedCandidate)
@@ -888,6 +907,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onKey(key: Key) {
         val s = state
+        // 面板开着搜索框：字母、退格、空格、回车与标点先给面板，查询不会写进编辑框。
+        // A panel search box is open: letters, backspace, space, enter and punctuation go to it, not to the editor.
+        panel?.let { p -> if (p.searchOpen && p.onKey(key)) return }
         topBar.clearAction()
         when (key.code) {
             KeyCode.SHIFT -> onShift()
@@ -908,6 +930,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             }
             KeyCode.BACK -> { numberMode = false; refreshLayout() }
             // 双击空格打句号在控制器里统一处理。 The double-space period lives in the controller.
+            // 搜索框开着时，空格由面板当作分隔词（见上面的 onKey），不会到这里。
+            // With a search box open the panel takes space as a separator (see onKey above), so this never runs then.
             KeyCode.SPACE -> controller.onSpace()
             KeyCode.LANG -> {
                 if (numberMode) numberMode = false
@@ -974,6 +998,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onKeyText(key: Key, text: String) {
+        panel?.let { p -> if (p.searchOpen && p.onKeyText(key, text)) return }
         topBar.clearAction()
         if (key.code == KeyCode.LANG) {
             val kb = WeavePrefs.KEYBOARD_NAMES.entries.firstOrNull { it.value == text }?.key ?: return
@@ -1001,11 +1026,16 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onKeyRevert(key: Key) { controller.undoLastInput() }
 
-    override fun cursorDragAllowed() = !state.composing
+    // 组合中滑动空格移动拼音里的光标（九键、五笔等不支持时不滑）。 While composing, the space slide moves the caret in the pinyin.
+    override fun cursorDragAllowed() = !state.composing || controller.canMoveComposingCaret()
 
     override fun onCursorSteps(steps: Int) {
-        if (state.composing) return
+        if (state.composing) { controller.moveComposingCaret(steps); return }
         controller.moveCursor(steps)
+    }
+
+    override fun onPreeditTap(index: Int) {
+        if (controller.placeComposingCaret(index)) feedback.tick(topBar)
     }
 
     override fun onDeleteRepeat(count: Int): Boolean {
@@ -1018,17 +1048,28 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         return true
     }
 
-    /** 单字或连续连写都按停顿确认当前字；连续连写的下一次落笔会先确认上一字。 */
+    /**
+     * 停笔确认的设置。单字按停顿上屏；连写要横向写 2–4 个字，字间本来就会停顿，所以不按停顿上屏，
+     * 笔画留在画布里攒成一行，由用户点候选确认。是否按停顿上屏由 [KeyboardView.handLineMode] 与
+     * [KeyboardView.handAutoCommitOn] 在提交处判断；[KeyboardView.handPauseMs] 始终是设置里的判字时间——
+     * 它还用来说明「刚写过一笔」，决定贴边起笔算不算写字，设成无限会让这个判断失效。
+     * Pause settings for handwriting. Single-char mode commits on a pause; continuous writing puts 2–4 characters in one
+     * line and pauses between them are normal, so it never commits on a pause. [KeyboardView.handLineMode] and
+     * [KeyboardView.handAutoCommitOn] decide that at the commit sites, and `handPauseMs` always keeps the configured
+     * value: it also tells the view how recently a stroke was drawn, which decides whether ink started at the pad's
+     * edge counts as writing, so an unbounded value would break that.
+     */
     private fun applyHandPause(p: android.content.SharedPreferences) {
         val pause = WeavePrefs.handPauseMs(p)
         val line = p.getBoolean(WeavePrefs.HAND_LINE, false)
         val auto = WeavePrefs.handAutoCommit(p)
         keyboardView.handLineMode = line
+        keyboardView.handAutoCommitOn = auto
         keyboardView.handGuide = WeavePrefs.handGuide(p)
-        // 连写按“一个字完成 → 下一个字”处理：下一次落笔前达到停顿阈值就确认上一字，
-        // 而不是把两个字的笔画继续堆在同一块画布里。
-        keyboardView.handPauseMs = if (line) pause else if (!auto) Long.MAX_VALUE else pause
-        keyboardView.handIdleMs = if (!auto) 0L else pause
+        keyboardView.handPauseMs = pause
+        // 延迟多久检查一次停笔；关不关自动上屏由 handAutoCommitOn 决定。 How soon to check the pause; whether it
+        // commits is handAutoCommitOn's business.
+        keyboardView.handIdleMs = pause
     }
 
     private fun updateHandModeLabel() {
@@ -1057,6 +1098,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onLongPressFunc(key: Key): Int = when (key.code) {
+        // 英文长按 Shift 锁定大写（中文里 Shift 是临时大写或分词，不锁定）。
+        // Long-press Shift locks capitals in English (in Chinese it is a one-off capital or the separator).
+        KeyCode.SHIFT -> if (state.chinese) 0 else {
+            if (shift.lock()) updateLabels()
+            feedback.haptic(keyboardView)
+            KeyboardView.LONG_CONSUMED
+        }
         KeyCode.HAND_MODE -> {
             if (keyboardView.redoStroke()) controller.replaceHandInk(keyboardView.hand?.strokes.orEmpty())
             KeyboardView.LONG_CONSUMED
@@ -1180,12 +1228,25 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 setOnClickListener{popup.dismiss(); if (current()) operation()}
             })
         }
+        // 以词取字：组合中的多字候选可以只上屏首字或末字。重新选词时不做这两项——那时一个候选就是整段替换选区，
+        // 菜单上写着「只上屏首字」却把整词覆盖上去，与实际做的事对不上。
+        // Commit one character of a composing multi-char candidate. Reconversion is left out: there a candidate replaces
+        // the whole selection, so a menu line promising a single character would not match what happens.
+        val chars = c.text.codePointCount(0, c.text.length)
+        if (!controller.isReconverting && state.composing && state.chinese && state.schema != "hand" && chars in 2..12) {
+            val first = String(Character.toChars(c.text.codePointAt(0)))
+            val last = String(Character.toChars(c.text.codePointBefore(c.text.length)))
+            action("只上屏首字「$first」") { controller.onVisibleCandidateChar(index, generation, last = false) }
+            action("只上屏末字「$last」") { controller.onVisibleCandidateChar(index, generation, last = true) }
+        }
         action("复制完整候选") {
             ctx.getSystemService(android.content.ClipboardManager::class.java)
                 ?.setPrimaryClip(android.content.ClipData.newPlainText("候选词", c.text))
             topBar.showAction("已复制完整候选", null, 1800, null)
         }
-        if(mode=="pin") action("恢复正常排序") {controller.candidatePolicy(index,c.text,"")}
+        // 置顶与降频是同一组排序策略，同一时刻只有一个生效。置顶的词一直排在最前，直到取消。
+        // Pinning and demoting are the same ranking policy, only one at a time: a pinned word stays first until cleared.
+        action(if(mode=="pin") "恢复正常排序" else "置顶这个词") {controller.candidatePolicy(index,c.text,if(mode=="pin") "" else "pin")}
         action(if(mode=="down") "恢复正常排序" else "降低优先级") {controller.candidatePolicy(index,c.text,if(mode=="down") "" else "down")}
         if(c.isUser) action("删除学习记录") {if(controller.loadCandidates(index,1).firstOrNull()?.text==c.text)controller.onForgetCandidate(index)}
         popup.showAtLocation(view,android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL,0,metrics.dp(90f).toInt())
@@ -1329,6 +1390,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun handleBack(): Boolean {
         if (engineSheet.shown) { engineSheet.hide(); return true }
+        // 搜索框开着：先退出搜索，再按一次才收面板。 With a search box open, back leaves search first.
+        if (panel?.let { it.searchOpen && it.leaveSearch() } == true) return true
         if (panel != null) { closePanel(); return true }
         if (numberMode) { numberMode = false; refreshLayout(); return true }
         return false
@@ -1421,9 +1484,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val candidateH = m.kbHeight - m.mainHeight
         val availableH = windowH - navInset - m.dp(33f)
         val minimumBody = m.dp(32f * 4)
-        val control = if (candidateH + m.dp(HANDLE_DP * 2) + minimumBody > availableH) 24f else HANDLE_DP
+        val bottom = if (FloatingResizeSettings.read(prefs).corners.any { it.verticalSign > 0 }) BOTTOM_BAR_DP else 0f
+        val control = if (candidateH + m.dp(TOP_BAR_DP + bottom) + minimumBody > availableH) COMPACT_TOP_BAR_DP else TOP_BAR_DP
         if (control != floatingControlHeightDp) { floatingControlHeightDp = control; applyGeometry() }
-        val fixedH = candidateH + m.dp(control * 2)
+        val fixedH = candidateH + m.dp(control + bottom)
         if (baseW <= 0 || baseBody <= 0 || availableH < fixedH + minimumBody) return
         val hi = minOf(FloatingGeometry.MAX_SCALE, availableW * 0.95f / baseW, (availableH - fixedH) / baseBody)
         val lo = maxOf(FloatingGeometry.MIN_SCALE, m.dp(220f) / baseW).coerceAtMost(hi)
@@ -1489,9 +1553,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         override fun onDraw(canvas: android.graphics.Canvas) {
             val m = metrics
             paint.color = palette.labelHint
-            val w = m.dp(36f)
+            val w = m.dp(28f)
             val cy = height / 2f
-            canvas.drawRoundRect(width / 2f - w / 2, cy - m.dp(2f), width / 2f + w / 2, cy + m.dp(2f), m.dp(2f), m.dp(2f), paint)
+            canvas.drawRoundRect(width / 2f - w / 2, cy - m.dp(1.5f), width / 2f + w / 2, cy + m.dp(1.5f), m.dp(1.5f), m.dp(1.5f), paint)
         }
 
         @SuppressLint("ClickableViewAccessibility")
@@ -1530,16 +1594,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             setOnClickListener { feedback.key(this); toggleFloating() }
         }
         override fun onDraw(canvas: android.graphics.Canvas) {
-            icons.draw(canvas, R.drawable.ic_close, palette.icon, width / 2f, height / 2f, metrics.dp(20f))
-        }
-    }
-
-    private inner class FloatFooter(c: Context) : View(c) {
-        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { textAlign = android.graphics.Paint.Align.CENTER }
-        override fun onDraw(canvas: android.graphics.Canvas) {
-            paint.color = palette.labelHint
-            paint.textSize = metrics.dp(11f)
-            canvas.drawText("拖动边角调整大小", width / 2f, (height - paint.fontMetrics.ascent - paint.fontMetrics.descent) / 2f, paint)
+            icons.draw(canvas, R.drawable.ic_close, palette.labelHint, width / 2f, height / 2f, metrics.dp(16f))
         }
     }
 
@@ -1588,10 +1643,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     /**
-     * 悬浮卡片的缩放手柄：在顶部拖动条的左端（不占键区），向左上拖放大、向右下拖缩小，右下角不动；
-     * 按键保持比例，范围见 [FloatingGeometry.clampScale]，横竖屏各记一份。
-     * Resize grip at the left end of the top drag bar (outside the key area): drag up/left to grow,
-     * down/right to shrink, with the bottom-right corner fixed; remembered per orientation.
+     * 悬浮卡片的缩放手柄：四个角（可在设置里关掉），上方两角在顶条里、下方两角在底边里，不占键区；拖离卡片放大、
+     * 拖向卡片缩小，对角不动；按键保持比例，范围见 [FloatingGeometry.clampScale]，横竖屏各记一份。
+     * Resize grips at the corners (each can be turned off): the top two in the top bar, the bottom two in the bottom
+     * strip, outside the keys. Dragging outward grows the card, inward shrinks it, with the opposite corner fixed;
+     * remembered per orientation.
      */
     private fun resizeBounds() = FloatingGeometry.Box(navLeft, floatMinTop(), root.width - navRight, floatMaxBottom())
 
@@ -1603,20 +1659,17 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
         init { contentDescription = corner.contentDescription }
 
+        /** 贴着圆角的一小段弧，淡淡的，只提示这里能拖。 A short faint arc hugging the rounded corner, just a hint. */
         override fun onDraw(canvas: android.graphics.Canvas) {
             val m = metrics
             paint.color = palette.labelHint
-            paint.strokeWidth = m.dp(1.5f)
+            paint.alpha = paint.alpha * 3 / 5
+            paint.strokeWidth = m.dp(2f)
             canvas.save()
             canvas.scale(if (corner.horizontalSign > 0) -1f else 1f, if (corner.verticalSign > 0) -1f else 1f, width / 2f, height / 2f)
-            val l = width / 2f - m.dp(6f)
-            val t = height / 2f - m.dp(6f)
-            for (i in 0..1) {
-                val o = m.dp(4f) * i
-                val len = m.dp(10f) - o
-                canvas.drawLine(l + o, t + o, l + o + len, t + o, paint)
-                canvas.drawLine(l + o, t + o, l + o, t + o + len, paint)
-            }
+            val c = m.dp(CARD_RADIUS_DP)
+            val r = c - m.dp(4f)
+            canvas.drawArc(c - r, c - r, c + r, c + r, 200f, 50f, false, paint)
             canvas.restore()
         }
 
@@ -1820,7 +1873,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     companion object {
         /** 悬浮卡片使用的键高档位。 Height level used by the floating card. */
         const val FLOAT_LEVEL = 0
-        private const val HANDLE_DP = 48f
+        /** 悬浮卡片的顶条（拖动、关闭、上方两角）与底边（下方两角）。 Floating top bar and bottom strip heights. */
+        private const val TOP_BAR_DP = 28f
+        private const val COMPACT_TOP_BAR_DP = 22f
+        private const val BOTTOM_BAR_DP = 14f
+        private const val CARD_RADIUS_DP = 16f
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

@@ -52,6 +52,7 @@ fun SchemesScreen() {
     var showScheme by remember { mutableStateOf(false) }
     var showDepth by remember { mutableStateOf(false) }
     var showHand by remember { mutableStateOf(false) }
+    var showClearApps by remember { mutableStateOf(false) }
     val enabled = WeavePrefs.keyboards(p)
     // 已启用的在前（按用户顺序），其余在后。 Enabled first (user order), then the rest.
     val order = enabled + ALL_KEYBOARDS.filter { it !in enabled && Extensions.scheme(p, it) }
@@ -77,6 +78,20 @@ fun SchemesScreen() {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
+        GroupTitle("中/英")
+        GroupCard {
+            SwitchRow(
+                "按应用记住中/英",
+                "在某个应用里切过中/英，回到这个应用就还原；没切过的应用按输入框类型给默认，密码框等不参与",
+                checked = WeavePrefs.perAppMemory(p), subtitleMaxLines = 3,
+            ) { p.edit().putBoolean(WeavePrefs.PER_APP_MEMORY, it).apply() }
+            RowDivider(false)
+            val apps = WeavePrefs.appMemoryCount(p)
+            SettingRow(
+                "清除按应用记忆", if (apps == 0) "还没有记住的应用" else "已记住 $apps 个应用",
+                enabled = apps > 0 && WeavePrefs.perAppMemory(p), onClick = { showClearApps = true },
+            ) { Chevron() }
+        }
         GroupTitle("拼音")
         GroupCard {
             val scheme = WeavePrefs.SHUANGPIN_SCHEMES.firstOrNull { it.first == WeavePrefs.shuangpinScheme(p) }?.second ?: ""
@@ -114,7 +129,7 @@ fun SchemesScreen() {
         GroupCard {
             ClearHandLearningRow()
             RowDivider(false)
-            SwitchRow("连续连写", "一个字完成后再写下一个，前一个字的墨迹会慢慢淡出；键盘右侧也可切换", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
+            SwitchRow("连续连写", "横向写 2–4 个字，字间留空；停笔不上屏，写完点候选确认。键盘右侧也可切换", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
                 p.edit().putBoolean(WeavePrefs.HAND_LINE,it).apply()
             }
             RowDivider(false)
@@ -143,6 +158,18 @@ fun SchemesScreen() {
         }
         }
         GroupCard { SettingRow("更多输入方案", "在插件市场启用手写与五笔", onClick = { nav.push(Route.Market("scheme")) }) { Chevron() } }
+    }
+
+    if (showClearApps) {
+        AlertDialog(
+            onDismissRequest = { showClearApps = false },
+            title = { Text("清除按应用记忆") },
+            text = { Text("清掉后每个应用都回到默认的中/英，下次在哪个应用里切换会重新记。") },
+            confirmButton = {
+                TextButton(onClick = { WeavePrefs.clearAppMemory(p); showClearApps = false }) { Text("清除") }
+            },
+            dismissButton = { TextButton(onClick = { showClearApps = false }) { Text("取消") } },
+        )
     }
 
     if (showDepth) {

@@ -171,10 +171,10 @@ class HandwritingTest {
         assertEquals(1, pad.strokes.size)
         stroke(0.6f, 0.5f, 0.9f, 0.5f)
         hold(10000)
-        assertEquals("1笔0", ic.text)
-        assertEquals(1, pad.strokes.size)
+        assertEquals("连写不按停笔上屏，两个字都留着", "", ic.text)
+        assertEquals(2, pad.strokes.size)
         tap(KeyCode.SPACE)
-        assertEquals("1笔01笔0", ic.text)
+        assertEquals("2笔0", ic.text)
         assertTrue(pad.strokes.isEmpty())
     }
 
@@ -306,7 +306,7 @@ class HandwritingTest {
         release(0)
     }
 
-    @Test fun continuousLineConfirmsThePreviousCharacterBeforeTheNextOne() {
+    @Test fun continuousLineKeepsEveryCharacterOnTheCanvasUntilTheUserPicks() {
         WeavePrefs.of(app).edit()
             .putBoolean(WeavePrefs.HAND_LINE, true)
             .putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false)
@@ -314,11 +314,83 @@ class HandwritingTest {
         idle()
         stroke(0.1f, 0.5f, 0.4f, 0.5f)
         hold(HandPad.COMMIT_PAUSE_MS + 50)
-        assertEquals("manual continuous mode keeps the first char until the next stroke", "", ic.text)
+        assertEquals("连写不因停笔上屏", "", ic.text)
+        assertEquals("第一个字仍留在画布里", 1, pad.strokes.size)
         stroke(0.6f, 0.5f, 0.9f, 0.5f)
-        assertEquals("the next char starts only after the first one is finished", "1笔0", ic.text)
-        assertEquals("the new char owns the live canvas", 1, pad.strokes.size)
-        assertTrue("the old char is removed from the live ink for the fade layer", pad.fadeStart >= 0L || !android.animation.ValueAnimator.areAnimatorsEnabled())
+        assertEquals("第二个字接在同一个画布上，不是另起一个字", "", ic.text)
+        assertEquals("两个字一起构成这一行", 2, pad.strokes.size)
+        assertEquals("两次识别都基于同一行已写的笔画", 2, engine.hand.size)
+    }
+
+    @Test fun continuousLineKeepsTheStrokesOfSeveralCharactersUntilTheUserPicks() {
+        WeavePrefs.of(app).edit()
+            .putBoolean(WeavePrefs.HAND_LINE, true)
+            .putBoolean(WeavePrefs.HAND_AUTO_COMMIT, true)
+            .commit()
+        idle()
+        stroke(0.1f, 0.5f, 0.3f, 0.5f)
+        // 写字之间自然有停顿（要把手指移到下一个字的位置）。连写不能因此把上一个字上屏并清空画布，
+        // 否则第二个字永远进不了同一组，连写就跟单字没有区别。
+        hold(HandPad.COMMIT_PAUSE_MS + 400)
+        assertEquals("连写不按停笔自动上屏", "", ic.text)
+        assertEquals("第一个字的墨迹留着", 1, pad.strokes.size)
+        stroke(0.6f, 0.5f, 0.9f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS + 400)
+        assertEquals("第二个字也留在画布里", 2, pad.strokes.size)
+        assertEquals("两个字一起交给识别器", 2, engine.hand.size)
+        assertEquals("仍然没有自动上屏，等用户点候选", "", ic.text)
+        kb.onCandidate(0)
+        assertEquals("2笔0", ic.text)
+        assertTrue("确认后才清空画布", pad.strokes.isEmpty())
+    }
+
+    @Test fun singleCharModeStillConfirmsOnAPause() {
+        // 单字模式保持原有的停笔确认，别把两种模式的差别抹掉。
+        WeavePrefs.of(app).edit()
+            .putBoolean(WeavePrefs.HAND_LINE, false)
+            .putBoolean(WeavePrefs.HAND_AUTO_COMMIT, true)
+            .commit()
+        idle()
+        stroke(0.1f, 0.5f, 0.3f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS + 400)
+        assertEquals("1笔0", ic.text)
+        assertEquals("单字模式上屏后清空画布", 0, pad.strokes.size)
+    }
+
+    @Test fun aLineStopsCollectingStrokesAtTheEngineLimit() {
+        // 连写在一行里攒字，笔画不能无限涨：内核超过 256 笔就完全不识别。
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_LINE, true).commit()
+        idle()
+        val r = pad.rect
+        repeat(HandPad.MAX_STROKES + 5) { i ->
+            stroke(0.1f + (i % 5) * 0.05f, 0.3f + (i % 3) * 0.05f, 0.15f + (i % 5) * 0.05f, 0.35f + (i % 3) * 0.05f)
+        }
+        assertEquals("画布留的笔画不超过内核上限", HandPad.MAX_STROKES, pad.strokes.size)
+        assertTrue("上限内仍然送出识别", engine.hand.size <= HandPad.MAX_STROKES)
+        hold(HandPad.COMMIT_PAUSE_MS + 400)
+        assertEquals("连写始终不自动上屏", "", ic.text)
+        assertTrue(r.width() > 0f)
+    }
+
+    @Test fun inkStartedAtTheEdgeCountsOnlyWhileACharacterIsInProgress() {
+        // 判字时间表示「一笔刚写完」。关闭自动上屏时它仍然有效：刚写完一笔时贴边起笔算继续写这个字，
+        // 但过了判字时间还去点书写区边缘，就不该再画墨迹——否则那个位置根本按不到键。
+        // The pause means "a stroke was just drawn" and still holds with auto-commit off: ink started at the pad's edge
+        // continues the character right after a stroke, but a tap there long afterwards must not draw ink, or that spot
+        // could never reach a key.
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        idle()
+        val r = pad.rect
+        stroke(0.4f, 0.4f, 0.6f, 0.6f)
+        // 刚刚抬笔：贴边起笔仍算写字（在 8dp 容差内）。
+        val x = r.left - 4f
+        val y = r.centerY()
+        pressAt(0, x, y); moveTo(0, x - 10f, y); release(0)
+        assertEquals("刚写完一笔，边缘起笔算继续写", 2, pad.strokes.size)
+        // 过了判字时间：同样的位置不再起笔。
+        hold(HandPad.COMMIT_PAUSE_MS + 500)
+        pressAt(1, x, y); moveTo(1, x - 10f, y); release(1)
+        assertEquals("停笔超过判字时间后，边缘落笔不再画墨迹", 2, pad.strokes.size)
     }
 
     @Test fun commitKeysClearInk() {

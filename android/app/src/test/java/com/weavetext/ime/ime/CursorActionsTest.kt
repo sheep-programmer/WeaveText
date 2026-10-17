@@ -55,12 +55,27 @@ class CursorActionsTest {
         assertEquals(0, d.metaState and KeyEvent.META_SHIFT_ON)
     }
 
-    @Test fun arrowInSelectModeCarriesShift() {
+    @Test fun arrowInSelectModeHoldsShift() {
         c.cursorArrow(KeyEvent.KEYCODE_DPAD_UP, select = true)
-        val d = downs().single()
-        assertEquals(KeyEvent.KEYCODE_DPAD_UP, d.keyCode)
-        assertEquals(KeyEvent.META_SHIFT_ON, d.metaState and KeyEvent.META_SHIFT_ON)
-        assertEquals(2, ic.keys.size) // down + up
+        // Shift 键本身按下、方向键、Shift 抬起：普通文本框靠 Shift 键按下的状态扩选。
+        // Shift down, the arrow, Shift up: plain text views extend the selection while the Shift key is down.
+        assertEquals(listOf(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_DPAD_UP), downs().map { it.keyCode })
+        assertEquals(KeyEvent.META_SHIFT_ON, downs()[1].metaState and KeyEvent.META_SHIFT_ON)
+        assertEquals(KeyEvent.KEYCODE_SHIFT_LEFT, ic.keys.last().keyCode)
+        assertEquals(KeyEvent.ACTION_UP, ic.keys.last().action)
+    }
+
+    @Test fun leftAndRightInSelectModeMoveTheFocusAndKeepTheAnchor() {
+        c.cursorArrow(KeyEvent.KEYCODE_DPAD_LEFT, select = true)
+        c.cursorArrow(KeyEvent.KEYCODE_DPAD_LEFT, select = true)
+        assertEquals(11, ic.selStart); assertEquals(9, ic.selEnd)
+        c.cursorArrow(KeyEvent.KEYCODE_DPAD_RIGHT, select = true)
+        assertEquals(11, ic.selStart); assertEquals(10, ic.selEnd)
+        assertEquals(emptyList<KeyEvent>(), ic.keys)
+        // 读不到文本时退回到带 Shift 的方向键。 Without readable text: the arrow with Shift held.
+        setup(extract = false)
+        c.cursorArrow(KeyEvent.KEYCODE_DPAD_LEFT, select = true)
+        assertEquals(listOf(KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_DPAD_LEFT), downs().map { it.keyCode })
     }
 
     @Test fun homeAndEndMoveCaret() {
@@ -82,7 +97,8 @@ class CursorActionsTest {
     @Test fun fallsBackToCtrlHomeEndWithoutExtractedText() {
         setup(extract = false)
         c.cursorToEdge(end = true, select = true)
-        val d = downs().single()
+        assertEquals(KeyEvent.KEYCODE_SHIFT_LEFT, downs().first().keyCode)
+        val d = downs().last()
         assertEquals(KeyEvent.KEYCODE_MOVE_END, d.keyCode)
         assertEquals(KeyEvent.META_CTRL_ON, d.metaState and KeyEvent.META_CTRL_ON)
         assertEquals(KeyEvent.META_SHIFT_ON, d.metaState and KeyEvent.META_SHIFT_ON)

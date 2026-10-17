@@ -4,9 +4,13 @@ import android.view.KeyEvent
 
 /**
  * 实体键盘：上下 / Tab 选候选，PageUp / PageDown 每次移动九项，空格确认；未选候选时回车原样上屏。
+ * 组合中左右键、Home / End 在拼音里移动光标，Delete 删光标后的字母，[ ] 取候选的首字 / 末字；
+ * 加 Ctrl 时左右键按音节移动，Ctrl+退格 / Ctrl+Delete 删掉一个音节。
  * Ctrl+空格切换中/英。其余组合键（Ctrl/Alt/Meta 快捷键等）交还给 App。
  * Physical-keyboard keys: letters, digits, punctuation, space, enter and backspace go through the engine;
- * arrows/Tab navigate candidates, PageUp/PageDown move nine items, Space confirms; Ctrl+Space
+ * arrows/Tab navigate candidates, PageUp/PageDown move nine items, Space confirms. While composing, Left/Right and
+ * Home/End move the caret inside the pinyin, Delete removes the letter after it, and [ ] take the first / last char
+ * of the candidate; with Ctrl, Left/Right move by syllable and Ctrl+Backspace / Ctrl+Delete remove one. Ctrl+Space
  * toggles Chinese/English. Other shortcuts (Ctrl/Alt/Meta) go back to the app.
  */
 class HardwareKeys(private val controller: InputController) {
@@ -28,6 +32,14 @@ class HardwareKeys(private val controller: InputController) {
         if (keyCode == KeyEvent.KEYCODE_SPACE && e.isCtrlPressed && !e.isAltPressed && !e.isMetaPressed) {
             if (e.repeatCount == 0) controller.toggleChinese()
             return true
+        }
+        if (composing && e.isCtrlPressed && !e.isAltPressed && !e.isMetaPressed && !e.isShiftPressed) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT ->
+                    if (controller.moveComposingCaretBySyllable(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)) return true
+                KeyEvent.KEYCODE_DEL -> { if (!controller.deleteComposingSyllable(false)) controller.onBackspace(); return true }
+                KeyEvent.KEYCODE_FORWARD_DEL -> { if (!controller.deleteComposingSyllable(true)) controller.deleteComposingForward(); return true }
+            }
         }
         // 快捷键交给 App（组合中先上屏原始字母）。 Shortcuts belong to the app (flush the raw letters first).
         if (e.isCtrlPressed || e.isAltPressed || e.isMetaPressed) {
@@ -79,9 +91,29 @@ class HardwareKeys(private val controller: InputController) {
             }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
             KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END -> {
+                if (composing && !e.isShiftPressed) {
+                    val moved = when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_LEFT -> controller.moveComposingCaret(-1)
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> controller.moveComposingCaret(1)
+                        KeyEvent.KEYCODE_MOVE_HOME -> controller.placeComposingCaret(0)
+                        else -> controller.placeComposingCaret(Int.MAX_VALUE)
+                    }
+                    if (moved) return true
+                }
                 if (composing) controller.commitRaw()
                 return false
             }
+            KeyEvent.KEYCODE_FORWARD_DEL -> return composing && controller.deleteComposingForward()
+        }
+        // 以词取字：[ 取首字，] 取末字（高亮的候选，没有高亮时为首选）。 [ takes the first char, ] the last one.
+        if (composing && s.chinese && !e.isShiftPressed && s.schema != "hand" && s.candidates.isNotEmpty() && !vMode(s) &&
+            (keyCode == KeyEvent.KEYCODE_LEFT_BRACKET || keyCode == KeyEvent.KEYCODE_RIGHT_BRACKET)) {
+            val last = keyCode == KeyEvent.KEYCODE_RIGHT_BRACKET
+            val i = s.highlightedCandidate.coerceAtLeast(0)
+            val visible = controller.visibleCandidates
+            if (visible != null) controller.onVisibleCandidateChar(i, visible.candidateGeneration, last)
+            else controller.onCandidateChar(i, last)
+            return true
         }
         // 拼音 v 模式（v12*3）里数字是输入的一部分，不选候选。 In the pinyin v mode digits are input, not candidate picks.
         if ((composing || s.highlightedCandidate >= 0) && keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 && !e.isShiftPressed && s.candidates.isNotEmpty() && !vMode(s)) {

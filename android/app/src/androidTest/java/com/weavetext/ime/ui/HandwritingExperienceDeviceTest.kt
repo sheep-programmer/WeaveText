@@ -125,10 +125,20 @@ class HandwritingExperienceDeviceTest {
                 scenario.onActivity { assertTrue(prefs.getBoolean(WeavePrefs.HAND_LINE, false)) }
                 var left = 0f; var right = 0f
                 scenario.onActivity { val r = kb.keyboardView.hand!!.rect; left = r.left + half * 1.2f; right = r.right - half * 1.2f }
+                // 连写要能真正攒住多个字：写字之间长时间停顿也不能把上一个字上屏、清空画布，
+                // 否则第二个字永远进不了同一组。 Continuous writing must really collect several characters: a long pause
+                // between them may not commit the first and clear the canvas, or the second can never join the group.
                 stroke(left - half, cy, left + half, cy); stroke(left, cy - half, left, cy + half)
+                awaitRecognition()
+                Thread.sleep(WeavePrefs.HAND_PAUSE_MS[WeavePrefs.HAND_PAUSE_DEFAULT] + 600)
+                scenario.onActivity {
+                    assertEquals("连写不因停笔自动上屏", "", controller.state.preedit)
+                    assertTrue("上一个字仍留在画布里", kb.keyboardView.hand!!.strokes.isNotEmpty())
+                }
                 stroke(right - half, cy, right + half, cy); stroke(right, cy - half, right, cy + half)
                 awaitRecognition()
                 scenario.onActivity { activity ->
+                    assertEquals("两个字都留在同一块画布上", 4, kb.keyboardView.hand!!.strokes.size)
                     val index = controller.state.candidates.indexOfFirst { it.text == "十十" }
                     assertTrue(controller.state.candidates.map { it.text }.toString(), index >= 0)
                     val bitmap = Bitmap.createBitmap(kb.view.width, kb.view.height, Bitmap.Config.ARGB_8888)

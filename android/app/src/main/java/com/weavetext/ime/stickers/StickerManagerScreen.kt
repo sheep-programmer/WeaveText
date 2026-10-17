@@ -71,9 +71,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -500,20 +499,28 @@ private fun StickerTile(
 /** 收藏星标的颜色，与键盘面板一致。 Favourite star colour, shared with the keyboard panel. */
 private val FAVORITE = androidx.compose.ui.graphics.Color(0xFFF5A623)
 
+/**
+ * 网格里的表情：静态图与动图都交给 [StickerImageView]，动图在这里同样会播放。
+ * A grid tile hands both stills and animations to [StickerImageView], so an animation plays here too.
+ */
 @Composable
 private fun StickerThumbnail(repository: StickerRepository, item: Sticker) {
-    var image by remember(item.id) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(item.id) {
-        val file = runCatching { repository.store.file(item) }.getOrNull() ?: return@LaunchedEffect
-        image = StickerThumbs.load(file, item.id, 256)
+    val file = remember(item.id) { runCatching { repository.store.file(item) }.getOrNull() }
+    if (file == null) {
+        StickerThumbnailPlaceholder()
+        return
     }
-    val bitmap = image
-    if (bitmap != null) {
-        Image(bitmap, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-    } else {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(painterResource(R.drawable.ic_sticker_bag), null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    AndroidView(
+        factory = { context -> StickerImageView(context, 256) },
+        update = { view -> view.bind(file, item.id) },
+        modifier = Modifier.fillMaxSize(),
+    )
+}
+
+@Composable
+private fun StickerThumbnailPlaceholder() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Icon(painterResource(R.drawable.ic_sticker_bag), null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

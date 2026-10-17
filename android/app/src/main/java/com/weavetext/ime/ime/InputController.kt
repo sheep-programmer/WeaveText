@@ -11,6 +11,16 @@ import com.weavetext.ime.core.EngineSnapshot
 import com.weavetext.ime.core.KeyEngine
 import com.weavetext.ime.core.PreeditMark
 
+/**
+ * 按应用记住中/英（由输入法服务注入；不注入就是不做这件事）。记住的是用户显式切过的那一次。
+ * Per-app Chinese/English memory, injected by the IME service; absent means the feature is off. Only an explicit
+ * switch by the user is remembered.
+ */
+interface AppModeMemory {
+    fun mode(pkg: String?): Boolean?
+    fun remember(pkg: String?, chinese: Boolean)
+}
+
 /** 回车键此刻的语义（决定回车键文字与颜色）。 What Enter does right now. */
 enum class EnterAction { NEWLINE, SEND, SEARCH, GO, NEXT, DONE, PREVIOUS }
 
@@ -24,6 +34,8 @@ data class ImeState(
     val preedit: String = "",
     /** 预编辑里的纠错标记。 Correction marks in the preedit. */
     val preeditMarks: List<PreeditMark> = emptyList(),
+    /** 组合串里的光标（preedit 下标）；null 表示在末尾。 Caret inside the preedit (index); null at the end. */
+    val preeditCaret: Int? = null,
     val candidates: List<Candidate> = emptyList(),
     val totalCandidates: Int = 0,
     /** 外接键盘主动选择的候选；-1 表示尚未移动，回车仍按原样输入码。 */
@@ -121,6 +133,12 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
     private var reconversion: Triple<String,Int,Int>? = null
     private var reconversionSchema = "pinyin"
+    /**
+     * 正在为一段已有文字重新选词。此时候选整词替换那段选区，拆分单个字上屏没有意义。
+     * Re-choosing for existing text. A candidate replaces that whole selection, so committing a single character of it
+     * means nothing.
+     */
+    val isReconverting: Boolean get() = reconversion != null
     fun feature(command: org.json.JSONObject): org.json.JSONObject = runCatching { org.json.JSONObject(engine?.features(command.toString()) ?: "{}") }.getOrDefault(org.json.JSONObject())
     fun reselect(): Boolean {
         if (isSensitiveField || state.composing) return false
@@ -234,6 +252,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Keys pressed before the engine has loaded (a cold start): kept and replayed in order once it is ready,
      * instead of committing the pinyin letters as they are.
      */
+    /** 按应用记忆（服务注入；测试给假实现）。 Per-app memory, injected by the service. */
+    var appModeMemory: AppModeMemory? = null
+    /** 当前输入框所属应用。 Package of the field being typed in. */
+    private var currentPackage: String? = null
     private val pendingKeys = ArrayList<PendingKey>()
     private var replaying = false
     /** 上次加载内核失败（重新加载成功前按键照没有内核时处理）。 The last engine load failed. */
@@ -284,6 +306,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (!restarting) discardHand()
         endReconversion()
         editorInfo = info
+        currentPackage = info?.packageName
         engine?.let(::syncClock)
         editor.reset(info?.initialSelStart ?: -1, info?.initialSelEnd ?: -1)
         val e = engine
@@ -340,7 +363,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val forceAscii = (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_FORCE_ASCII != 0
         val latinOnly = password || urlOrEmail || numeric || forceAscii
         val kind = if (latinOnly) 1 else 0
-        val chinese = if (keepMode && kind == fieldKind) state.chinese else !latinOnly
+        // 允许中文的输入框里，优先用这个应用上次显式选过的模式；没记过就按字段类型走默认。
+        // In a field that can take Chinese, the mode the user last chose in this app wins; otherwise the field rules.
+        val remembered = if (latinOnly) null else appModeMemory?.mode(currentPackage)
+        val chinese = if (keepMode && kind == fieldKind) state.chinese else remembered ?: !latinOnly
         fieldKind = kind
         if (chinese != state.chinese || !keepMode) applyMode(chinese)
         update {
@@ -520,14 +546,23 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /**
      * 成对符号：输入「“（《【」等左半边时补上右半边、光标停在中间；紧接着输入右半边时只把光标移过去，不重复插入。
+     * 有选中文字时两个分支都不接手：右半边该替换选区，不是跨过选区后面那个恰好相同的符号；左半边交给调用方按
+     * 普通输入替换选区。
      * Paired punctuation: an opening mark also inserts its closing mark with the cursor between; typing the closing
-     * mark right after just steps over it.
+     * mark right after just steps over it. With a selection neither branch applies: the closing mark has to replace the
+     * selection rather than step over a matching mark that merely sits after it, and the opening mark is left to the
+     * caller so plain input replaces the selection.
      */
     private fun pairText(c: Char): Boolean {
         if (!autoPair || keyEventsOnly || isSensitiveField) return false
+        // 这里只处理成对符号本身；选区查询是跨进程调用，普通字符不该为它付代价。
+        // Only paired marks are handled here, and the selection query is a cross-process call that an ordinary
+        // character must not pay for.
+        val paired = PAIRS.containsKey(c) || c in CLOSERS
+        if (!paired) return false
         val ic = ic() ?: return false
+        if (!ic.getSelectedText(0).isNullOrEmpty()) return false
         PAIRS[c]?.let { close ->
-            if (!ic.getSelectedText(0).isNullOrEmpty()) return false
             ic.beginBatchEdit()
             ic.commitText(c.toString(), 1)
             ic.commitText(close.toString(), 0)
@@ -536,7 +571,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             markUndo(null)
             return true
         }
-        if (c in CLOSERS && ic.getTextAfterCursor(1, 0)?.firstOrNull() == c) {
+        if (ic.getTextAfterCursor(1, 0)?.firstOrNull() == c) {
             moveCursor(1)
             return true
         }
@@ -718,6 +753,97 @@ class InputController(private val icProvider: () -> InputConnection?) {
         refresh()
     }
 
+    /**
+     * 以词取字：第 [index] 个候选只上屏首字或末字（[last]），吃掉整个词的输入。重新选词时仍整词替换。
+     * Take the first or the [last] char of candidate [index], consuming the input of the whole word. Reconversion
+     * still replaces with the whole word.
+     */
+    /**
+     * 字形筛选加一笔（[letter] 为 h s p n z 之一，以大写发给内核，只按笔画比）：没在筛选就先开始；内核不支持（没有
+     * 字形表、不是拼音类方案）时什么都不做。
+     * Add a stroke to the shape filter ([letter] is one of h s p n z, sent in capitals so it compares strokes only),
+     * starting the filter first; a no-op when the engine can't (no shape table, not a pinyin-like schema).
+     */
+    fun onShapeStroke(letter: Char) {
+        if (reconversion != null || state.handRecognizing || !state.composing) return
+        val e = engine ?: return
+        if (!e.inputChar('`'.code)) return
+        e.inputChar(letter.uppercaseChar().code)
+        stamp++
+        refresh()
+        markUndo(null)
+    }
+
+    fun onCandidateChar(index: Int, last: Boolean) {
+        if (state.handRecognizing) return
+        if (reconversion != null) { onCandidate(index); return }
+        val e = engine ?: return
+        if (!e.selectChar(index, last)) e.select(index)
+        refresh()
+    }
+
+    fun onVisibleCandidateChar(index: Int, generation: Long, last: Boolean): Boolean {
+        if (state.candidateGeneration != generation || state.handRecognizing || state.candidates.isEmpty()) return false
+        if (index < 0 || index >= maxOf(state.candidates.size, state.totalCandidates)) return false
+        onCandidateChar(index, last)
+        return true
+    }
+
+    /**
+     * 组合串里左右移动光标（方向键、空格滑动）；false 表示这里不能移动（没有组合、九键、五笔、重新选词等），调用方照旧处理。
+     * Move the caret inside the composition (arrows, space slide); false when it can't move here (nothing composing,
+     * keypad, wubi, reconversion…), and the caller goes on as before.
+     */
+    fun moveComposingCaret(delta: Int): Boolean {
+        val e = engine ?: return false
+        if (reconversion != null || state.handRecognizing || !e.moveCaret(delta)) return false
+        if (delta != 0) refresh()
+        return true
+    }
+
+    /** 组合串光标按音节移动（Ctrl+方向键）；false 表示这里不能移动。 Move the caret by syllables; false when it can't. */
+    fun moveComposingCaretBySyllable(delta: Int): Boolean {
+        val e = engine ?: return false
+        if (reconversion != null || state.handRecognizing || !e.moveCaretSyllable(delta)) return false
+        refresh()
+        return true
+    }
+
+    /**
+     * Ctrl+退格／Ctrl+Delete：删掉光标前／后的一个音节；false 表示这里不按音节删（九键、五笔、重新选词等），调用方按单键处理。
+     * Ctrl+Backspace / Ctrl+Delete: delete the syllable before / after the caret; false where syllables don't apply
+     * (keypad, wubi, reconversion…), and the caller deletes one key instead.
+     */
+    fun deleteComposingSyllable(forward: Boolean): Boolean {
+        val e = engine ?: return false
+        if (reconversion != null || state.handRecognizing || !e.deleteSyllable(forward)) return false
+        refresh()
+        return true
+    }
+
+    /** 能否在组合串里移动光标（不改动状态）。 Whether the caret can move inside the composition (no state change). */
+    fun canMoveComposingCaret(): Boolean = state.composing && moveComposingCaret(0)
+
+    /** 把组合串光标放到 preedit 第 [index] 个 UTF-16 单元附近（点按组合串、Home/End）。 Put the caret near preedit index [index]. */
+    fun placeComposingCaret(index: Int): Boolean {
+        val e = engine ?: return false
+        val p = state.preedit
+        // 内核按 Unicode 标量计。 The engine counts Unicode scalars.
+        val scalar = if (index >= p.length) Int.MAX_VALUE else p.codePointCount(0, index.coerceAtLeast(0))
+        if (reconversion != null || state.handRecognizing || !e.setCaret(scalar)) return false
+        refresh()
+        return true
+    }
+
+    /** Delete 键：删组合串光标后的按键；没有组合时返回 false。 Forward delete inside the composition; false when idle. */
+    fun deleteComposingForward(): Boolean {
+        val e = engine ?: return false
+        if (state.handRecognizing || !e.isComposing()) return false
+        e.deleteForward()
+        refresh()
+        return true
+    }
+
     fun onVisibleCandidate(index: Int, generation: Long): Boolean {
         if (state.candidateGeneration != generation || state.handRecognizing || state.candidates.isEmpty()) return false
         if (index < 0 || index >= maxOf(state.candidates.size, state.totalCandidates)) return false
@@ -844,7 +970,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
         endReconversion()
         engine?.commitRaw()
         drainCommit()
-        applyMode(!state.chinese)
+        val next = !state.chinese
+        applyMode(next)
+        // 用户显式切了：记在这个应用名下。 The user switched explicitly: remember it for this app.
+        appModeMemory?.remember(currentPackage, next)
         refresh()
     }
 
@@ -957,6 +1086,28 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
+    /**
+     * 用内核把一段拼音换成候选文字（面板搜索用）：面板搜索框只能收字母，中文内容的剪贴板要按中文搜，就得让内核
+     * 把 weixiao 读成「微笑」。读到的候选只是查询词，先原样上屏？不——这里不上屏、不学习、不留组合状态。
+     * 内核已经在组合中（用户打了一半拼音就去开面板）时返回空：宁可只按字面搜，也不能悄悄清掉用户打了一半的拼音。
+     * Turn a run of pinyin into candidate text for a panel search box (Chinese clipboard text can then be found by
+     * pinyin). Nothing is committed or learned and no composition is left behind. While the engine is already
+     * composing — the user opened a panel mid-word — this returns nothing rather than clearing their pinyin.
+     */
+    fun lookupText(pinyin: String, limit: Int = 6): List<String> {
+        val e = engineRef ?: return emptyList()
+        if (pinyin.isEmpty() || !state.chinese || e.isComposing()) return emptyList()
+        var taken = 0
+        for (c in pinyin.lowercase()) {
+            if (!e.inputChar(c.code)) break
+            taken++
+        }
+        if (taken == 0) return emptyList()
+        val out = e.candidates(0, limit).map { it.text }.filter { it.isNotBlank() }
+        e.clear()
+        return out
+    }
+
     fun reset() {
         discardHand()
         endReconversion()
@@ -1115,15 +1266,52 @@ class InputController(private val icProvider: () -> InputConnection?) {
             moveCursor(if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
             return
         }
-        sendKey(keyCode, if (select) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0)
+        if (select && (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) &&
+            !keyEventsOnly && extendSelection(keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) return
+        if (select) sendShifted(keyCode) else sendKey(keyCode)
+    }
+
+    /**
+     * 扩选模式左右移动：锚点不动，焦点按字形簇挪一格（直接设选区，不依赖编辑器怎么理解 Shift）。读不到文本时返回 false。
+     * Left/right in selection mode: the anchor stays and the focus moves one grapheme cluster, set directly rather
+     * than relying on how the editor reads Shift. False when the text cannot be read.
+     */
+    private fun extendSelection(right: Boolean): Boolean {
+        val ic = ic() ?: return false
+        val et = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0) ?: return false
+        val text = et.text?.toString() ?: return false
+        val (anchor, focus) = et.selectionStart to et.selectionEnd
+        if (anchor !in 0..text.length || focus !in 0..text.length) return false
+        val bi = android.icu.text.BreakIterator.getCharacterInstance()
+        bi.setText(text)
+        val next = if (right) bi.following(focus) else bi.preceding(focus)
+        // 已到这段文字的边上：不动。 Already at the edge of the text: stay.
+        if (next == android.icu.text.BreakIterator.DONE) return true
+        ic.setSelection(et.startOffset + anchor, et.startOffset + next)
+        return true
+    }
+
+    /**
+     * 带 Shift 的方向键：先按下 Shift 键本身再发方向键。普通文本框只认 Shift 键按下的状态，光在事件上标 Shift 不会扩选。
+     * An arrow with Shift: press the Shift key itself first. Plain text views only extend the selection while a
+     * Shift key is down; a Shift flag on the arrow event alone does nothing there.
+     */
+    private fun sendShifted(code: Int, meta: Int = 0) {
+        val ic = ic() ?: return
+        val shift = KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
+        val now = android.os.SystemClock.uptimeMillis()
+        val flags = KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT, 0, shift, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags))
+        sendKeyTo(ic, code, meta or shift)
+        ic.sendKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags))
     }
 
     /** 按词移动（Ctrl+←/→），扩选模式下连带选中。 Move by word (Ctrl+←/→), extending the selection when selecting. */
     fun cursorWord(right: Boolean, select: Boolean) {
         commitRawIfComposing()
-        var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
-        if (select) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
-        sendKey(if (right) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, meta)
+        val meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        val code = if (right) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
+        if (select) sendShifted(code, meta) else sendKey(code, meta)
     }
 
     /**
@@ -1160,9 +1348,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         val et = ic.getExtractedText(android.view.inputmethod.ExtractedTextRequest(), 0)
         if (et?.text == null) {
-            var meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
-            if (select) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
-            sendKey(if (end) KeyEvent.KEYCODE_MOVE_END else KeyEvent.KEYCODE_MOVE_HOME, meta)
+            val meta = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+            val code = if (end) KeyEvent.KEYCODE_MOVE_END else KeyEvent.KEYCODE_MOVE_HOME
+            if (select) sendShifted(code, meta) else sendKey(code, meta)
             return
         }
         val target = if (end) et.startOffset + et.text.length else 0
@@ -1329,6 +1517,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
             it.copy(
                 preedit = snap.preedit,
                 preeditMarks = snap.marks,
+                preeditCaret = snap.caret,
                 candidates = snap.candidates,
                 totalCandidates = snap.totalCandidates,
                 highlightedCandidate = -1,

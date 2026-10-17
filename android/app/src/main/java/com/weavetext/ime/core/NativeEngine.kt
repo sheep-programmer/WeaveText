@@ -19,6 +19,18 @@ interface KeyEngine {
     fun select(index: Int): Boolean
     fun selectPinyin(index: Int): Boolean
     fun forget(index: Int): Boolean
+    /** 以词取字：取第 [index] 个候选的首字或末字（[last]）。 Take the first or the [last] char of a candidate. */
+    fun selectChar(index: Int, last: Boolean): Boolean = false
+    /** 组合串光标左右移动若干按键；false 表示这里不能移动。 Move the preedit caret; false when it can't. */
+    fun moveCaret(delta: Int): Boolean = false
+    /** 把组合串光标放到显示串第 [index] 个字符附近。 Put the preedit caret near display char [index]. */
+    fun setCaret(index: Int): Boolean = false
+    /** 删除组合串光标后的按键（Delete 键）。 Delete the key after the preedit caret. */
+    fun deleteForward(): Boolean = false
+    /** 组合串光标按音节移动（Ctrl+方向键）。 Move the preedit caret by syllables (Ctrl+arrows). */
+    fun moveCaretSyllable(delta: Int): Boolean = false
+    /** 删掉光标前（[forward] 时为光标后）的一个音节。 Delete the syllable before (or, [forward], after) the caret. */
+    fun deleteSyllable(forward: Boolean): Boolean = false
     fun commitFirst()
     fun commitRaw()
     fun clear()
@@ -82,6 +94,12 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
     override fun select(index: Int): Boolean = nativeSelect(handle, index)
     override fun selectPinyin(index: Int): Boolean = nativeSelectPinyin(handle, index)
     override fun forget(index: Int): Boolean = nativeForget(handle, index)
+    override fun selectChar(index: Int, last: Boolean): Boolean = nativeSelectChar(handle, index, last)
+    override fun moveCaret(delta: Int): Boolean = nativeMoveCaret(handle, delta)
+    override fun setCaret(index: Int): Boolean = index >= 0 && nativeSetCaret(handle, index)
+    override fun deleteForward(): Boolean = nativeDeleteForward(handle)
+    override fun moveCaretSyllable(delta: Int): Boolean = nativeMoveCaretSyllable(handle, delta)
+    override fun deleteSyllable(forward: Boolean): Boolean = nativeDeleteSyllable(handle, forward)
     override fun commitFirst() { nativeCommitFirst(handle) }
 
     override fun handInput(strokes: List<FloatArray>): Boolean {
@@ -204,6 +222,12 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeSelect(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeSelectPinyin(h: Long, index: Int): Boolean
         @JvmStatic private external fun nativeForget(h: Long, index: Int): Boolean
+        @JvmStatic private external fun nativeSelectChar(h: Long, index: Int, last: Boolean): Boolean
+        @JvmStatic private external fun nativeMoveCaret(h: Long, delta: Int): Boolean
+        @JvmStatic private external fun nativeSetCaret(h: Long, index: Int): Boolean
+        @JvmStatic private external fun nativeDeleteForward(h: Long): Boolean
+        @JvmStatic private external fun nativeMoveCaretSyllable(h: Long, delta: Int): Boolean
+        @JvmStatic private external fun nativeDeleteSyllable(h: Long, forward: Boolean): Boolean
         @JvmStatic private external fun nativeCommitFirst(h: Long): Boolean
         @JvmStatic private external fun nativeHandInput(h: Long, xy: FloatArray, lens: IntArray): Boolean
         @JvmStatic private external fun nativeHandModels(h: Long): Long
@@ -259,6 +283,8 @@ data class EngineSnapshot(
     val pinyinOptions: List<String>,
     val schema: String,
     val marks: List<PreeditMark> = emptyList(),
+    /** 组合串光标（preedit 的 UTF-16 下标）；null 表示在末尾。 Preedit caret (UTF-16 index); null at the end. */
+    val caret: Int? = null,
 ) {
     companion object {
         val EMPTY = EngineSnapshot("", "", false, emptyList(), 0, emptyList(), "pinyin")
@@ -292,7 +318,9 @@ data class EngineSnapshot(
             val opts = List(m) { b.str() }
             val schema = b.str()
             val marks = if (b.remaining() >= 4) decodeMarks(b, preedit) else emptyList()
-            return EngineSnapshot(commit, preedit, flags and 1 != 0, cands, total, opts, schema, marks)
+            val caret = if (b.remaining() >= 4) b.int.takeIf { it in 0 until preedit.codePointCount(0, preedit.length) }
+                ?.let { preedit.offsetByCodePoints(0, it) } else null
+            return EngineSnapshot(commit, preedit, flags and 1 != 0, cands, total, opts, schema, marks, caret)
         }
 
         /** 内核按 Unicode 标量计位置，这里换成 UTF-16 下标；越界的丢掉。 Scalar positions to UTF-16 indices; drops bad ones. */

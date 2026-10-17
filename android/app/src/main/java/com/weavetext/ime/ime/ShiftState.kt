@@ -1,11 +1,11 @@
 package com.weavetext.ime.ime
 
 /**
- * 英文 Shift 三态（02 §4）：关 → 单次 → 关；300ms 内双击 → 锁定；锁定再单击 → 关。
+ * 英文 Shift 三态（02 §4）：关 → 单次 → 关；400ms 内双击或长按 → 锁定；锁定再单击 → 关。
  * 单次态输入一个字母后回到关；句首自动大写进入单次态。纯逻辑，便于单元测试。
- * English Shift tri-state (02 §4). Pure logic for unit tests.
+ * English Shift tri-state (02 §4): a double tap within 400 ms or a long press locks. Pure logic for unit tests.
  */
-class ShiftState(private val doubleTapMs: Long = 300) {
+class ShiftState(private val doubleTapMs: Long = 400) {
     var value = OFF
         private set
     private var lastTap = Long.MIN_VALUE / 2
@@ -30,6 +30,9 @@ class ShiftState(private val doubleTapMs: Long = 300) {
         auto = false
         return set(next)
     }
+
+    /** 长按 Shift：直接锁定大写。 Long press on Shift: lock capitals. */
+    fun lock(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; return set(LOCK) }
 
     /** 输出一个字母后调用；单次态回到关。 Call after a letter; ONCE falls back to OFF. */
     fun consume(): Boolean { auto = false; return if (value == ONCE) set(OFF) else false }

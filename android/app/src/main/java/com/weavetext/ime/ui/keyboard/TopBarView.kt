@@ -35,6 +35,8 @@ interface TopBarHost {
     fun onToolbarLongEnd(index: Int, cancelled: Boolean) {}
     fun onToolbarLongMove(index: Int, dy: Float) {}
     fun onCandidate(index: Int)
+    /** 点按或拖过组合串：把光标放到 preedit 第 [index] 个字符处。 A tap or drag on the preedit: caret to char [index]. */
+    fun onPreeditTap(index: Int) {}
     /** 候选长按；返回 false 表示没有长按功能，这次按下仍按点击处理。 Candidate long-press; false = none, still a tap. */
     fun onCandidateLong(index: Int): Boolean
     fun onExpand()
@@ -78,9 +80,26 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var marks: List<PreeditMark> = emptyList()
     /** [preeditShown] 每个字符的样式，见 [styledPreedit]。 Per-character style of [preeditShown], see [styledPreedit]. */
     private var preeditStyle = ByteArray(0)
+    /** 组合串光标（preedit 下标），null 在末尾。 Preedit caret (index), null at the end. */
+    private var caret: Int? = null
+    /** 左侧省略时从显示串第几个字符开始（-1 = 没省略）。 Where the left-ellipsized text starts (-1 = not cut). */
+    private var preeditCut = -1
+    /** 组合串画在哪里（点按定位光标用）。 Where the preedit was drawn, for caret taps. */
+    private var preeditLeft = 0f
+    private var preeditRight = 0f
+    private var pressedPreedit = false
+    private var preeditTapAt = -1
     private val markLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val markPath = Path()
     private var english = false
+    /**
+     * 这一栏是本地候选列表（九键标点、计算结果），不是英文联想词。它借 [english] 换取「不显示组合串、
+     * 候选行居中」，但那不等于英文三格建议条：后者只显示三个，本地列表要能滚动看全。
+     * This bar holds a local candidate list (9-key punctuation, a calculator result), not English suggestions. It borrows
+     * [english] for "no preedit, centred row", but that must not turn it into the three-slot English strip: a local list
+     * has to stay scrollable so every entry is reachable.
+     */
+    private var localTexts = false
     // 缓冲区复用，只增不减；只测量到可见范围再多一屏，滚动时再补。
     // Buffers are reused and only grow; only the visible range plus one screen is measured, the rest on scroll.
     private val texts = ArrayList<String>(64)
@@ -186,7 +205,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     /** 组合串浮在栏上方。 Composing text floats above the bar. */
     private val floating get() = layout.candidates.preedit == "floating"
     /** 英文三格建议条。 Three-slot English suggestion strip. */
-    private val strip get() = english && layout.candidates.english == "strip3" && highlightedCandidate < 3
+    private val strip get() = english && !localTexts && layout.candidates.english == "strip3" && highlightedCandidate < 3
     /** 输入中左侧常驻工具按钮的宽度。 Width of the leading tool button while composing. */
     private fun leadW() = if (layout.toolbar.show == "always") metrics.dp(44f) else 0f
 
@@ -224,9 +243,12 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         preedit: String, items: List<Candidate>, total: Int, english: Boolean, keepScroll: Boolean,
         marks: List<PreeditMark> = emptyList(),
         generation: Long = 0,
+        caret: Int? = null,
     ) {
-        val marksChanged = marks != this.marks
+        val marksChanged = marks != this.marks || caret != this.caret
         this.marks = marks
+        this.caret = caret
+        localTexts = false
         var changed = generation != candidateGeneration || preedit != this.preedit || items.size != texts.size
         candidateGeneration = generation
         if (!changed) for (i in items.indices) if (items[i].text != texts[i] || items[i].comment != comments[i] || items[i].pinyin != pinyins[i] || items[i].isCloud != cloudBadges.getOrElse(i){false}) { changed = true; break }
@@ -237,8 +259,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 
     /** 设置纯文字候选（本地标点列表、预览）。 Set plain text candidates (local lists, previews). */
     fun setCandidateTexts(preedit: String, items: List<String>, total: Int, english: Boolean, keepScroll: Boolean) {
-        val marksChanged = marks.isNotEmpty()
+        val marksChanged = marks.isNotEmpty() || caret != null
         marks = emptyList()
+        caret = null
+        localTexts = true
         val changed = preedit != this.preedit || items != texts
         texts.clear(); comments.clear(); pinyins.clear(); cloudBadges.clear()
         for (t in items) { texts += t; comments += "";pinyins += "";cloudBadges += false }
@@ -330,6 +354,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         if (a11y.enabled) announceForAccessibility(if (label != null) "$msg，$label" else msg)
     }
 
+    /** 正在显示的提示条文字。 The message of the action strip being shown. */
+    val actionMessage: String? get() = actionMsg
+
     fun clearAction() {
         if (actionMsg == null) return
         actionMsg = null; actionLabel = null; action = null
@@ -381,13 +408,22 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
         val maxPre = width * 0.6f
         val (disp, style) = styledPreedit(preedit, marks)
         if (small.measureText(disp) > maxPre) {
+            // 光标在中间时省略要留住光标所在处。 With the caret inside, keep the spot around it visible.
+            val keep = caret?.let { (styledIndex(preedit, marks, it) - 4).coerceAtLeast(0) } ?: disp.length
             var start = 0
-            while (start < disp.length && small.measureText("…" + disp.substring(start)) > maxPre) start++
-            preeditShown = "…" + disp.substring(start)
-            preeditStyle = byteArrayOf(STYLE_PLAIN) + style.copyOfRange(start, style.size)
+            while (start < disp.length && start < keep && small.measureText("…" + disp.substring(start)) > maxPre) start++
+            var end = disp.length
+            if (small.measureText("…" + disp.substring(start)) > maxPre) {
+                while (end > start + 1 && small.measureText("…" + disp.substring(start, end) + "…") > maxPre) end--
+            }
+            val tail = if (end < disp.length) "…" else ""
+            preeditShown = "…" + disp.substring(start, end) + tail
+            preeditStyle = byteArrayOf(STYLE_PLAIN) + style.copyOfRange(start, end) + (if (tail.isEmpty()) ByteArray(0) else byteArrayOf(STYLE_PLAIN))
+            preeditCut = start
         } else {
             preeditShown = disp
             preeditStyle = style
+            preeditCut = -1
         }
     }
 
@@ -433,6 +469,32 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             i = j
         }
         return cx
+    }
+
+    /** 光标在 [preeditShown] 里的下标；在末尾或被省略掉时为 null。 Caret index in [preeditShown]; null at the end or when cut off. */
+    private fun caretShownAt(): Int? {
+        val c = caret ?: return null
+        val d = styledIndex(preedit, marks, c)
+        val i = if (preeditCut < 0) d else if (d < preeditCut) return null else d - preeditCut + 1
+        return i.coerceAtMost(preeditShown.length)
+    }
+
+    /** 横向位置 [x] 换成最近的 preedit 下标交给宿主（同一处不重复通知）。 Nearest preedit index to [x], sent once per spot. */
+    private fun tapPreedit(x: Float) {
+        val s = preeditShown
+        small.textSize = metrics.dp(12.5f) * metrics.candScale
+        small.typeface = Typeface.DEFAULT
+        var best = 0
+        var bestD = Float.MAX_VALUE
+        for (i in 0..s.length) {
+            val d = abs(preeditLeft + small.measureText(s, 0, i) - x)
+            if (d < bestD) { bestD = d; best = i }
+        }
+        val styled = if (preeditCut < 0) best else (best - 1).coerceAtLeast(0) + preeditCut
+        val index = (0..preedit.length).minByOrNull { abs(styledIndex(preedit, marks, it) - styled) } ?: preedit.length
+        if (index == preeditTapAt) return
+        preeditTapAt = index
+        host.onPreeditTap(index)
     }
 
     /** 测量候选直到内容宽度超过 [x]。 Measure candidates until the content reaches [x]. */
@@ -598,8 +660,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 c.drawArc(tmp,(SystemClock.uptimeMillis()%1000)*0.36f,100f,false,cloudSpinner)
                 postInvalidateOnAnimation()
             }
+            preeditLeft = x
+            preeditRight = end
             if (cursorOn) {
-                val cx = end + m.dp(1f)
+                val cx = caretShownAt()?.let { x + small.measureText(preeditShown, 0, it) } ?: (end + m.dp(1f))
                 fill.color = p.candidateFirst
                 c.drawRect(cx, base - m.dp(10.5f) * m.candScale, cx + m.dp(1f), base + m.dp(1.5f), fill)
             }
@@ -639,7 +703,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             c.drawText(sh, l + m.dp(12f), base, text)
             // 英文：首项就是正在敲的单词，带上光标，每个字母当帧可见。 English: the first item is the word being typed, with a caret.
             if (i == 0 && english && cursorOn && preedit.isNotEmpty() && texts[0] == preedit) {
-                val cx = l + m.dp(12f) + text.measureText(sh) + m.dp(1f)
+                val at = caret?.takeIf { sh == preedit && it < sh.length }
+                val cx = l + m.dp(12f) + (if (at != null) text.measureText(sh, 0, at) else text.measureText(sh) + m.dp(1f))
                 fill.color = p.candidateFirst
                 c.drawRect(cx, base + text.ascent() * 0.8f, cx + m.dp(1f), base + m.dp(1.5f), fill)
             }
@@ -866,7 +931,14 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                     val right = width - (if (sideButton) expandW() else 0f)
                     if (e.x >= right) return true
                     if (!strip && e.x < leadW()) { pressedTool = 0; invalidate(); return true }
-                    // 组合串那一行不可操作，点在它上面按横向位置算候选。 The preedit line isn't interactive: map by x.
+                    // 点在组合串文字上：定位光标（左右拖动跟着移）；组合串行的其余地方按横向位置算候选。
+                    // On the preedit text: place the caret (dragging moves it); elsewhere on that line, map by x to a candidate.
+                    if (!english && !floating && preedit.isNotEmpty() && e.y < rowTop() &&
+                        e.x >= preeditLeft - m.dp(6f) && e.x <= preeditRight + m.dp(16f)) {
+                        pressedPreedit = true
+                        preeditTapAt = -1
+                        return true
+                    }
                     pressedCand = candAt(e.x)
                     if (pressedCand >= 0) {
                         host.feedback?.key(this)
@@ -891,6 +963,10 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 val dx = e.x - downX
                 val dy = e.y - downY
                 if (longTool >= 0) { host.onToolbarLongMove(longTool, dy); return true }
+                if (pressedPreedit) {
+                    if (dragging || abs(dx) > m.dp(8f)) { dragging = true; tapPreedit(e.x) }
+                    return true
+                }
                 if (candidateMode && actionMsg == null && pressedTool < 0) {
                     if (strip) return true
                     if (!dragging && abs(dx) > m.dp(8f)) {
@@ -925,6 +1001,12 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                     if (actionRect.contains(e.x, e.y)) { val a = action; clearAction(); a?.invoke() }
                     return true
                 }
+                if (pressedPreedit) {
+                    pressedPreedit = false
+                    if (!dragging) tapPreedit(e.x)
+                    dragging = false
+                    return true
+                }
                 if (candidateMode && pressedTool >= 0) {
                     pressedTool = -1
                     host.onToolbar(tools[0])
@@ -953,6 +1035,7 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
+                pressedPreedit = false
                 if (longTool >= 0) host.onToolbarLongEnd(longTool, true)
                 longTool = -1
                 pressedCand = -1; pressedTool = -1; pressedChip = false
@@ -992,13 +1075,38 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
 }
 
 /**
+ * 同 [styledPreedit]：preedit 下标 [index] 在显示串里的位置（插回的多打字母算在光标前）。
+ * Where preedit index [index] lands in the [styledPreedit] text (re-inserted extra letters count before it).
+ */
+internal fun styledIndex(preedit: String, marks: List<PreeditMark>, index: Int): Int =
+    index + marks.sumOf { if (it.kind == PreeditMark.Kind.DELETE && it.start in 0..index) it.removed.length else 0 }
+
+/** 字形筛选用的笔画字母（横竖撇点折）。 Stroke letters of the shape filter (h s p n z). */
+internal const val STROKE_LETTERS = "hspnz"
+private const val STROKE_GLYPHS = "一丨丿丶乛"
+
+/**
+ * 组合串末尾的字形码若是笔画键打的（大写 HSPNZ），显示成笔画（shi`HS → shi`一丨）；外接键盘打的小写字母可能是部件
+ * 拼音，照原样显示。字数不变，标记与光标的下标照旧。
+ * A shape code from the stroke keys (capital HSPNZ) at the end is shown as strokes (shi`HS → shi`一丨); lowercase from a
+ * physical keyboard may be component pinyin and stays as typed. The length stays, so mark and caret indices hold.
+ */
+internal fun shapeShown(preedit: String): String {
+    val at = preedit.lastIndexOf('`')
+    val code = preedit.substring(at + 1)
+    if (at < 0 || code.isEmpty() || code.any { it.lowercaseChar() !in STROKE_LETTERS || !it.isUpperCase() }) return preedit
+    return preedit.substring(0, at + 1) + code.map { STROKE_GLYPHS[STROKE_LETTERS.indexOf(it.lowercaseChar())] }.joinToString("")
+}
+
+/**
  * 组合串加上纠错标记后的显示文字与每个字符的样式：去掉的多打字母插回原处（划掉显示），补上 / 换掉的字母
  * [TopBarView.STYLE_FIXED]，换回来的两个字母 [TopBarView.STYLE_SWAP]。
  * The preedit with its correction marks as display text plus a style per character: dropped extra letters are put back
  * in place (drawn struck through), added / replaced letters are [TopBarView.STYLE_FIXED], swapped pairs
  * [TopBarView.STYLE_SWAP].
  */
-internal fun styledPreedit(preedit: String, marks: List<PreeditMark>): Pair<String, ByteArray> {
+internal fun styledPreedit(raw: String, marks: List<PreeditMark>): Pair<String, ByteArray> {
+    val preedit = shapeShown(raw)
     if (marks.isEmpty()) return preedit to ByteArray(preedit.length)
     val style = ByteArray(preedit.length)
     for (mk in marks) {
