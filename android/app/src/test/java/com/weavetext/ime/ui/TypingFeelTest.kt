@@ -287,7 +287,10 @@ class TypingFeelTest {
         }
         val pad = pads(kb.view).first { it.visibility == android.view.View.VISIBLE }
         val provider = pad.accessibilityNodeProvider!!
-        val labels = (0 until 15).map { provider.createAccessibilityNodeInfo(it)?.contentDescription?.toString() }
+        // 键位按面板自己的顺序给出，不假定固定 15 个。 The pad reports its own keys, so no fixed count is assumed.
+        var n = 0
+        while (provider.createAccessibilityNodeInfo(n) != null) n++
+        val labels = (0 until n).map { provider.createAccessibilityNodeInfo(it)?.contentDescription?.toString() }
         val cut = labels.indexOf("剪切")
         assertTrue(labels.toString(), cut >= 0 && "复制" in labels && "粘贴" in labels && "全选" in labels)
         // 撤销 / 重做：多次撤销交给编辑器，网页字段与终端里退回 Ctrl+Z / Ctrl+Shift+Z。 Undo/redo reach the editor.

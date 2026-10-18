@@ -10,6 +10,12 @@ package com.weavetext.ime.ui.keyboard
  * 汉字与表情可以通过 [set] 直接放进查询（例如长按表情把名字填入搜索）。
  * Han characters and emoji can be put straight into the query with [set], e.g. long-pressing an entry to search its name.
  */
+/** 26 键上会以字符码进 [WeaveKeyboard.onKey] 的标点键（中文模式的 ，。 也发这两个码）。 Panels take them into the query. */
+internal val PUNCT_KEYS = intArrayOf(','.code, '.'.code)
+
+/** 面板搜索框是否收这个字符键。 Whether a panel search box accepts this punctuation key. */
+internal fun isPunctKey(code: Int) = code in PUNCT_KEYS
+
 class SearchQuery {
     /** 组合中的字母（原始拼音）。 Letters being composed (raw pinyin). */
     val composing = StringBuilder()

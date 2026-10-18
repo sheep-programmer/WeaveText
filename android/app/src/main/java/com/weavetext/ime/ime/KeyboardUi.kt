@@ -18,6 +18,11 @@ interface KeyboardUi {
     fun computeInsets(outInsets: android.inputmethodservice.InputMethodService.Insets) {}
     /** 系统返回键：先关闭面板；返回 true 表示已处理。 Back key: close a panel first. */
     fun handleBack(): Boolean = false
+    /**
+     * 实体键盘按键：面板搜索框开着时先给查询；返回 true 表示已处理。 Physical key: with a panel search open it goes
+     * to the query first; true means it was handled.
+     */
+    fun hardwareToPanel(keyCode: Int, event: android.view.KeyEvent): Boolean = false
     fun onSelectionChanged(selStart: Int, selEnd: Int) {}
     /** 实体键盘模式下代替软键盘显示的候选栏。 The candidate bar shown instead of the keys with a physical keyboard. */
     val candidatesView: View? get() = null

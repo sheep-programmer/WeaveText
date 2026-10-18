@@ -47,6 +47,11 @@ abstract class KbPanel(val kb: WeaveKeyboard) {
     open fun onKey(key: Key): Boolean = false
     /** 同上，字符键的输出文字（上滑、长按与九键字母）。 Same for a char key's output text. */
     open fun onKeyText(key: Key, text: String): Boolean = false
+    /**
+     * 同上，上滑 / 长按改写刚按下的字符键：按下时进查询的那个字母先撤掉，再放入新的文字。
+     * Same for a swipe-up / long-press replace: the letter the press put in the query is taken back, then the new text.
+     */
+    open fun onKeyReplace(key: Key, text: String): Boolean = false
     /** 搜索框开着：键盘上的键交给面板（见 [onKey]），空格只分隔词。 A search box is open: keys go to the panel. */
     open val searchOpen: Boolean get() = false
     /** 退出搜索；没有搜索时返回 false。 Leave the search; false when there was none. */
@@ -909,7 +914,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val s = state
         // 面板开着搜索框：字母、退格、空格、回车与标点先给面板，查询不会写进编辑框。
         // A panel search box is open: letters, backspace, space, enter and punctuation go to it, not to the editor.
-        panel?.let { p -> if (p.searchOpen && p.onKey(key)) return }
+        panel?.let { p -> if (p.searchOpen && p.onKey(key)) { searchKeySwallowed = key.isChar; return } }
+        searchKeySwallowed = false
         topBar.clearAction()
         when (key.code) {
             KeyCode.SHIFT -> onShift()
@@ -998,7 +1004,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onKeyText(key: Key, text: String) {
-        panel?.let { p -> if (p.searchOpen && p.onKeyText(key, text)) return }
+        panel?.let { p ->
+            if (p.searchOpen && p.onKeyText(key, text)) { searchKeySwallowed = key.isChar; return }
+        }
+        searchKeySwallowed = false
         topBar.clearAction()
         if (key.code == KeyCode.LANG) {
             val kb = WeavePrefs.KEYBOARD_NAMES.entries.firstOrNull { it.value == text }?.key ?: return
@@ -1019,12 +1028,36 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         afterKey()
     }
 
+    /**
+     * 上滑 / 长按改写刚按下的字符键。字符键按下即输出，改写 = 撤回上一次输出再输出新的那一个。
+     * 搜索框开着时那几个字母根本没进编辑器：它们进了查询，撤回会把前面上屏的正文删掉，所以只把新字符送进查询。
+     * Swipe / long-press replaces the char just pressed. Char keys emit on DOWN, so a replace undoes that emission and
+     * types the new one. With a panel search open the letters went to the query, not the document; undoing there would
+     * delete previously committed text, so only the new character goes into the query.
+     */
     override fun onKeyReplace(key: Key, text: String) {
-        controller.undoLastInput()
+        val swallowed = searchKeySwallowed
+        searchKeySwallowed = false
+        val panelTook = panel?.let { p -> p.searchOpen && p.onKeyReplace(key, text) } == true
+        if (panelTook) return
+        // 按下那一下被搜索框吃掉时没有东西可撤回；面板这次也不收，就照常进编辑器。
+        // Nothing to undo when the press went to the search box; if this panel doesn't take the text, it goes to the editor as usual.
+        if (!swallowed) controller.undoLastInput()
         onKeyText(key, text)
     }
 
-    override fun onKeyRevert(key: Key) { controller.undoLastInput() }
+    /**
+     * 系统取消（通知栏、返回手势）时撤回按下即输出的那一下；同样只在它真的进了编辑器时撤。
+     * A system cancel takes back the emission of a char key pressed on DOWN — only when it actually reached the editor.
+     */
+    override fun onKeyRevert(key: Key) {
+        if (!searchKeySwallowed) controller.undoLastInput()
+        searchKeySwallowed = false
+    }
+
+    /** 按下即输出、但被面板搜索框吃掉的那一下（没有进编辑器，改写与取消时不必撤回）。 A char key emitted on DOWN that the
+     * panel search box swallowed (never reached the editor, so nothing to undo). */
+    private var searchKeySwallowed = false
 
     // 组合中滑动空格移动拼音里的光标（九键、五笔等不支持时不滑）。 While composing, the space slide moves the caret in the pinyin.
     override fun cursorDragAllowed() = !state.composing || controller.canMoveComposingCaret()
@@ -1386,6 +1419,33 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     fun onEngineChanged() {
         (panels["voice"] as? VoicePanel)?.let { it.view.refreshEngine(); it.view.invalidate() }
+    }
+
+    /**
+     * 实体键盘：面板搜索框开着时字母、数字、标点、退格、空格与回车进查询，正文一个字也不动。
+     * 其余键（方向键、快捷键、Esc）照旧走内核与 App。
+     * Physical keys: with a panel search open, letters, digits, punctuation, backspace, space and enter go into the
+     * query and nothing reaches the document. Other keys (arrows, shortcuts, Esc) keep their usual routing.
+     */
+    override fun hardwareToPanel(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        val p = panel ?: return false
+        if (!p.searchOpen) return false
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
+        val key = when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DEL -> Key(KeyCode.DELETE)
+            android.view.KeyEvent.KEYCODE_SPACE -> Key(KeyCode.SPACE)
+            android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> Key(KeyCode.ENTER)
+            else -> {
+                val ch = event.getUnicodeChar(event.metaState)
+                if (ch == 0 || ch and android.view.KeyCharacterMap.COMBINING_ACCENT != 0 ||
+                    Character.isISOControl(ch)) return false
+                Key(ch)
+            }
+        }
+        if (key.code >= 0 && !(key.code in 'a'.code..'z'.code || key.code in 'A'.code..'Z'.code ||
+                key.code in '0'.code..'9'.code || isPunctKey(key.code))) return false
+        val ch = if (key.code >= 0) String(Character.toChars(key.code)) else null
+        return if (ch == null) p.onKey(key) else p.onKeyText(key, ch)
     }
 
     override fun handleBack(): Boolean {

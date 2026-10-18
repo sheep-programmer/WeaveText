@@ -35,10 +35,17 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private val subTabs = SubTabs(kb.ctx)
     private val bottomRow = BottomRow(kb.ctx)
     private val searchRow = SearchRow(kb.ctx, kb, "搜索表情名称")
-    /** 网格一列：上方是搜索行与小类标签（有小类时），下面是网格。 The grid column: the search row and sub-group tabs over the grid. */
+    /**
+     * 搜索时面板盖住了主键盘，字母没有地方打，所以搜索行下方自带一排字母键；锁定或没有搜索时收起。
+     * While searching the panel covers the main keyboard, so letters have nowhere to go: the search row brings its
+     * own letter pad. It folds away when the panel is unlocked or nothing is being searched.
+     */
+    private val searchKeys = PanelKeys(kb.ctx, kb)
+    /** 网格一列：上方是搜索行、字母键与小类标签（有小类时），下面是网格。 The grid column: the search row, its letter pad and sub-group tabs over the grid. */
     private val column = LinearLayout(kb.ctx).apply {
         orientation = LinearLayout.VERTICAL
         addView(searchRow, LinearLayout.LayoutParams(-1, kb.metrics.dp(38f).toInt()))
+        addView(searchKeys, LinearLayout.LayoutParams(-1, -2))
         addView(subTabs, LinearLayout.LayoutParams(-1, kb.metrics.dp(36f).toInt()))
         addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
     }
@@ -66,6 +73,8 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private val shownItems get() = if (search.active) searchItems else cats[tab].groups.getOrNull(group)?.items ?: cats[tab].items
     /** 搜索状态与结果。 Search state and results. */
     private val search = SearchQuery()
+    /** 点开搜索行后才铺开字母键。 The letter pad unfolds once the search row is tapped. */
+    private var typing = false
     private var searchItems: List<String> = emptyList()
     /** 目录的搜索索引（首搜时建一次，之后每次按键只匹配）。 Search indexes, built on first use and reused. */
     private var emojiIndex: ExpressionSearch.Index? = null
@@ -92,12 +101,24 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         // The state lives in the panel ([SearchQuery]); the row only displays it, so neither side echoes back.
         searchRow.onClose = { exitSearch() }
         searchRow.onClear = { search.clear(); updateSearch() }
+        // 点搜索行就把字母键亮出来：面板盖住主键盘，这里是唯一能打字的地方。
+        // Tapping the row raises the letter pad: the panel covers the main keyboard, so this is the only place to type.
+        searchRow.onOpen = {
+            if (!typing) {
+                typing = true
+                kb.feedback.key(searchRow)
+                updateSearchRow()
+            }
+        }
+        searchKeys.onLetter = { c -> if (search.letter(c)) updateSearch() }
+        searchKeys.onBackspace = { if (search.backspace()) updateSearch() else if (search.active) exitSearch() }
     }
 
     /** 退出搜索：清掉查询，网格回到分类列表。 Leave search: clear the query and show the category again. */
     private fun exitSearch() {
         search.clear()
         searchItems = emptyList()
+        typing = false
         updateSearchRow()
         subTabs.refresh()
         grid.rebuild(); grid.scrollToTop()
@@ -107,8 +128,10 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     private fun searchable() = cats[tab].emoji || cats[tab].kaomoji
 
     /**
-     * 搜索行在表情与颜文字分类里一直显示，所以这些分类里的字母一律进查询（不会在表情面板上打出英文词）。
-     * The row is always there on the emoji and kaomoji categories, so letters there always go to the query.
+     * 表情与颜文字分类里字母一律进查询（不会在表情面板上打出英文词）；第一条字母同时把面板自带的字母键
+     * 铺开，因为面板盖住主键盘，别处没有能显示查询的地方。
+     * Letters on the emoji and kaomoji categories always go to the query rather than the editor; the first one also
+     * unfolds the panel's own letter pad, since the panel covers the main keyboard.
      */
     override val searchOpen get() = searchable()
 
@@ -120,10 +143,24 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     }
 
     private fun updateSearchRow() {
-        searchRow.visibility = if (searchable()) View.VISIBLE else View.GONE
+        val show = searchable()
+        // 行始终显示时，清空查询（退出搜索、换分类、重开面板）也必须把旧文字从行上抹掉，
+        // 否则显示的还是一个已经不起作用的筛选词。
+        // The row stays visible on these tabs, so clearing the query (leaving the search, switching tabs, reopening
+        // the panel) must also clear the text, or it keeps showing a filter that no longer applies.
+        searchRow.show(search.committed.toString(), search.composing.toString())
+        searchRow.visibility = if (show) View.VISIBLE else View.GONE
         (searchRow.layoutParams as LinearLayout.LayoutParams).height =
-            if (searchable()) kb.metrics.dp(38f).toInt() else 0
+            if (show) kb.metrics.dp(38f).toInt() else 0
+        // 字母键点开搜索行之后才铺开：面板盖住主键盘，没有它打不了字母；不点则网格保持整屏。
+        // The letter pad unfolds once the row is tapped: the panel covers the main keyboard so letters need it, while
+        // leaving it folded keeps the grid full-height until then.
+        val pad = show && typing
+        searchKeys.visibility = if (pad) View.VISIBLE else View.GONE
+        (searchKeys.layoutParams as LinearLayout.LayoutParams).height =
+            if (pad) LinearLayout.LayoutParams.WRAP_CONTENT else 0
         searchRow.requestLayout()
+        searchKeys.requestLayout()
     }
 
     /**
@@ -153,30 +190,44 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     }
 
     /**
-     * 搜索中键盘上的键：字母进拼音，空格确定拼音，回车选第一个结果。空白查询时只吃字母、退格与空格——
-     * 回车照旧上屏/搜索 App，方向键与功能区照旧。 Keys while searching; with an empty query only letters, backspace
-     * and space are taken, so Enter still acts on the editor and function keys still work.
+     * 搜索中键盘上的键：字母进拼音，空格确定拼音，回车选第一个结果。空白查询时只吃字母、数字与标点——
+     * 回车照旧上屏/搜索 App，方向键与功能区照旧。 Keys while searching; with an empty query only letters, digits and
+     * punctuation are taken, so Enter still acts on the editor and function keys still work.
      */
     override fun onKey(key: Key): Boolean {
         if (!searchable()) return false
         val had = search.active
-        if (!had && key.code != KeyCode.DELETE && !queryKey(key.code)) return false
+        if (!had && key.code != KeyCode.DELETE && key.code != KeyCode.SPACE && !queryKey(key.code)) return false
         val handled = when (key.code) {
             // 退格删空后退出搜索；已经空着时让编辑器退格。 Backspace past empty leaves; an empty search passes it on.
             KeyCode.DELETE -> if (search.backspace()) true else { if (had) exitSearch(); had }
-            KeyCode.SPACE -> search.commitComposing() || had
+            // 空格与标点：搜索行在就归搜索框，没东西可确定也吃掉按键——查询空着时一个空格或逗号
+            // 溜进编辑器，会变成正文里的空格（或句号）、标点。
+            // Space and punctuation belong to the box while the row is there, even with nothing to settle: letting
+            // an empty-query space or comma through would type a space / Chinese punctuation into the document.
+            KeyCode.SPACE -> { search.commitComposing(); true }
+            // 回车：有查询就选第一个结果；查询空着时照旧交给编辑器（搜索 App、换行）。
+            // Enter picks the first hit while there is a query; with an empty box it still reaches the editor.
             KeyCode.ENTER -> if (had) { commitFirstResult(); true } else false
             // 搜索行一出现，字母就开始搜索（查询为空也收）：表情标签页里字母不会是直接上屏的英文。
             // Letters start a search as soon as the row is there (even with an empty query); no stray English on the tab.
-            // 数字同样进查询（表情名里有「100 分」这类），到长度上限也吃掉按键，别溜进编辑器。
-            // Digits go in too (names contain things like 100 分); at the length limit the key is still eaten.
+            // 数字与标点同样进查询（表情名里有「100 分」这类），到长度上限也吃掉按键，别溜进编辑器。
+            // Digits and punctuation go in too (names contain things like 100 分); at the length limit the key is
+            // still eaten.
             else -> when {
                 key.code in 'a'.code..'z'.code -> { search.letter(key.code.toChar()); true }
-                key.code in '0'.code..'9'.code -> { search.literal(key.code.toChar().toString()); true }
+                key.code in '0'.code..'9'.code || isPunctKey(key.code) -> {
+                    search.literal(String(Character.toChars(key.code))); true
+                }
                 else -> false
             }
         }
-        if (handled) updateSearch()
+        if (handled) {
+            // 外接键盘打的字母同样把字母键亮出来：屏幕上要有地方显示正在打的查询。
+            // Letters from a hardware keyboard raise the pad too, so the query has somewhere visible to appear.
+            if (!typing && search.active) { typing = true; updateSearchRow() }
+            updateSearch()
+        }
         return handled
     }
 
@@ -185,15 +236,32 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         val handled = when {
             text.length == 1 && text[0].isLetter() -> { search.letter(text[0]); true }
             text.length == 1 && text[0].isDigit() -> { search.literal(text); true }
-            search.active -> search.literal(text)
+            text.length == 1 && !text[0].isLetterOrDigit() && !text[0].isWhitespace() -> { search.literal(text); true }
             else -> false
         }
-        if (handled) updateSearch()
+        if (handled) {
+            if (!typing) { typing = true; updateSearchRow() }
+            updateSearch()
+        }
         return handled
     }
 
-    /** 搜索收得下的键：字母与数字。 Keys the search takes: letters and digits. */
-    private fun queryKey(code: Int) = code in 'a'.code..'z'.code || code in '0'.code..'9'.code
+    /**
+     * 上滑 / 长按改写：按下时进查询的是 [key] 这个字母（已确定或仍在组合串里），先撤掉它再放入新文字，
+     * 查询里不会留下「w1」这种按下的字母加改写的内容。
+     * Swipe-up / long-press replace: undo the letter the press put in the query (settled or still composing), then add
+     * the new text, so the query never keeps both "w" and the rewritten "1".
+     */
+    override fun onKeyReplace(key: Key, text: String): Boolean {
+        if (!searchable()) return false
+        // 按下时字母先进组合串；没有就删最后一个查询字符（标点键等）。 The press composed a letter; otherwise
+        // backspace the last query char (punctuation keys and the like).
+        if (!search.composing.isEmpty()) search.composing.setLength(search.composing.length - 1) else search.backspace()
+        return onKeyText(key, text)
+    }
+
+    /** 搜索收得下的键：字母、数字与标点。 Keys the search takes: letters, digits and punctuation. */
+    private fun queryKey(code: Int) = code in 'a'.code..'z'.code || code in '0'.code..'9'.code || isPunctKey(code)
 
     private fun buildIndex(kaomoji: Boolean): ExpressionSearch.Index? {
         val cat = catalog ?: return null
@@ -203,6 +271,14 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
     /** 搜索结果（测试与无障碍用）。 The current search results (tests and accessibility). */
     @androidx.annotation.VisibleForTesting
     fun searchResults(): List<String> = searchItems
+
+    /** 搜索行上显示的字（测试用：退出搜索后不能留着旧词）。 What the row shows (tests: leaving must clear it). */
+    @androidx.annotation.VisibleForTesting
+    fun searchTextForTest(): String = searchRow.text
+
+    /** 冒烟脚本用：等同于点一下搜索行，把字母键铺开。 For smoke scripts: the same as tapping the search row. */
+    @androidx.annotation.VisibleForTesting
+    fun openSearchForTest() { searchRow.onOpen?.invoke() }
 
     /** 回车：把拼音确定下来（去掉下划线）并选第一个结果。 Enter settles the pinyin and takes the first hit. */
     private fun commitFirstResult() {
@@ -246,7 +322,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         bottomRow.invalidate()
     }
 
-    override fun onHide() { grid.cancelPress();grid.hidePreview();tab = 0;group = 0;search.clear();searchItems = emptyList() }
+    override fun onHide() { grid.cancelPress();grid.hidePreview();tab = 0;group = 0;search.clear();searchItems = emptyList();typing = false }
 
     /** 定位到「表情」Tab（符长按、工具箱「表情」）。 Jump to the emoji tab. */
     fun selectEmoji() = selectTab(SymbolData.TAB_EMOJI)
@@ -258,6 +334,7 @@ class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
         // 换分类时清掉查询：表情与颜文字各搜各的。 Switching categories clears the query: each kind searches its own names.
         search.clear()
         searchItems = emptyList()
+        typing = false
         updateSearchRow()
         subTabs.refresh()
         grid.rebuild()

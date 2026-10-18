@@ -151,6 +151,65 @@ class ExpressionSearchPanelTest {
         assertNotNull(kb.panel)
     }
 
+    @Test fun leavingOrSwitchingClearsTheQueryOnTheRow() {
+        kb.showPanel("symbol"); val p = panel(); p.selectEmoji(); idle()
+        text("weixiao"); idle()
+        assertEquals("weixiao", p.searchTextForTest())
+        // 收起搜索：网格回到全部表情，行上不能还挂着旧词（看着像还在筛选）。
+        // Leave the search: the grid shows everything again and the row must not keep the old query.
+        assertTrue(kb.handleBack()); idle()
+        assertTrue(p.searchResults().isEmpty())
+        assertEquals("退出搜索后行上不应留着旧词", "", p.searchTextForTest())
+        text("gou"); idle()
+        assertEquals("gou", p.searchTextForTest())
+        // 换分类同样清空查询与行上的字。 Switching tabs clears both too.
+        p.selectTab(SymbolData.TAB_KAOMOJI); idle()
+        assertEquals("", p.searchTextForTest())
+    }
+
+    @Test fun spaceAndPunctuationWithAnEmptyQueryNeverReachTheEditor() {
+        kb.showPanel("symbol"); val p = panel(); p.selectEmoji(); idle()
+        // 查询空着时按空格：面板吃掉，正文里不能出现空格（也不触发双空格变句号）。
+        // Space on an empty query is eaten by the panel: no space in the document, no double-space period.
+        key(KeyCode.SPACE); key(KeyCode.SPACE); idle()
+        assertEquals("空格不能落进正文", "", ic.text)
+        // 逗号在查询空着时同样归搜索框；它进的是查询（标点可以搜索），正文不受影响。
+        // A comma on an empty query belongs to the box as well; it goes into the query, not the document.
+        key(','.code); idle()
+        assertEquals("，不能落进正文", "", ic.text)
+        assertEquals(",", p.searchTextForTest().trim())
+        // 标点在查询里起作用之后，字母照常接上。 Letters still append after it.
+        text("abc"); idle()
+        assertTrue(p.searchTextForTest().contains(","))
+    }
+
+    @Test fun swipeUpDuringASearchRewritesTheQueryInsteadOfTheDocument() {
+        // 先上屏一个字，再打开搜索：上滑改写不能把它当成「刚输出的字母」撤掉。
+        // Commit a character, then open the search: the swipe must not undo it as the char just emitted.
+        controller.onText("好"); idle()
+        kb.showPanel("symbol"); val p = panel(); p.selectEmoji(); idle()
+        assertTrue("先有正文", ic.text.isNotEmpty())
+        val committed = ic.text
+        kb.onKey(Key('w'.code)); idle()
+        assertEquals("w", p.searchTextForTest())
+        kb.onKeyReplace(Key('w'.code), "1"); idle()
+        assertEquals("上滑不能删掉已经上屏的字", committed, ic.text)
+        assertFalse("按下的字母先撤掉，不留 w1", p.searchTextForTest().contains("w1"))
+        assertEquals("改写后的字符进了查询", "1", p.searchTextForTest())
+    }
+
+    @Test fun physicalKeyboardTypesIntoTheSearchBox() {
+        kb.showPanel("symbol"); val p = panel(); p.selectEmoji(); idle()
+        val down = android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_W)
+        assertTrue("实体键盘的字母进查询", kb.hardwareToPanel(android.view.KeyEvent.KEYCODE_W, down))
+        idle()
+        assertEquals("w", p.searchTextForTest())
+        assertEquals("正文不受影响", "", ic.text)
+        // 方向键与快捷键不抢：照旧交给内核与 App。 Arrows and shortcuts keep their usual routing.
+        val left = android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_LEFT)
+        assertFalse(kb.hardwareToPanel(android.view.KeyEvent.KEYCODE_DPAD_LEFT, left))
+    }
+
     @Test fun symbolCategoriesCannotBeSearchedAndHideNothingElse() {
         kb.showPanel("symbol"); val p = panel()
         val cats = SymbolData.categories(emptyList(), catalog())

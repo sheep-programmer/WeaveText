@@ -29,6 +29,9 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
     var onClose: (() -> Unit)? = null
     /** 清除按钮（面板清空自己的查询）。 The clear button (the panel clears its own query). */
     var onClear: (() -> Unit)? = null
+    /** 点搜索区本身：面板据此把字母键盘展开（面板盖住主键盘时没有别的地方能打字）。 Tapping the field itself lets the
+     * panel raise its own letter pad, since it covers the main keyboard. */
+    var onOpen: (() -> Unit)? = null
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG).zh()
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -36,6 +39,8 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
     private val search = RectF()
     private val clear = RectF()
     private val close = RectF()
+    /** 可点的输入区：放大镜到清除键之间。 The tappable field between the magnifier and the clear button. */
+    private val field = RectF()
     private var pressed = NONE
     /** 已确定的查询。 The committed query. */
     private var query = ""
@@ -60,6 +65,7 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
         search.set(pad, m.dp(2f), pad + m.dp(30f), height - m.dp(2f))
         close.set(width - pad - m.dp(34f), m.dp(2f), width - pad, height - m.dp(2f))
         clear.set(close.left - m.dp(34f), m.dp(2f), close.left, height - m.dp(2f))
+        field.set(search.left, m.dp(2f), clear.left, height - m.dp(2f))
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) = geometry()
@@ -125,6 +131,7 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
     private fun hitAt(x: Float, y: Float): Int = when {
         close.contains(x, y) -> CLOSE
         active && clear.contains(x, y) -> CLEAR
+        field.contains(x, y) -> FIELD
         else -> NONE
     }
 
@@ -142,6 +149,7 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
                 if (i != NONE && i == hitAt(e.x, e.y)) when (i) {
                     CLEAR -> onClear?.invoke()
                     CLOSE -> onClose?.invoke()
+                    FIELD -> onOpen?.invoke()
                 }
                 invalidate()
             }
@@ -151,15 +159,23 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
     }
 
     private val a11y = VirtualA11y(this, object : VirtualA11y.Source {
-        override fun a11yIds() = intArrayOf(CLEAR, CLOSE).filter { it != CLEAR || active }.toIntArray()
+        override fun a11yIds() = intArrayOf(FIELD) + intArrayOf(CLEAR, CLOSE).filter { it != CLEAR || active }.toIntArray()
         override fun a11yBounds(id: Int, out: RectF): Boolean {
             geometry()
-            out.set(if (id == CLEAR) clear else close)
+            out.set(when (id) { FIELD -> field; CLEAR -> clear; else -> close })
             return !out.isEmpty
         }
-        override fun a11yLabel(id: Int) = if (id == CLEAR) "清除搜索" else "退出搜索"
+        override fun a11yLabel(id: Int) = when (id) {
+            FIELD -> if (active) "搜索：$text" else placeholder
+            CLEAR -> "清除搜索"
+            else -> "退出搜索"
+        }
         override fun a11yClick(id: Int): Boolean {
-            if (id == CLEAR) onClear?.invoke() else onClose?.invoke()
+            when (id) {
+                FIELD -> onOpen?.invoke()
+                CLEAR -> onClear?.invoke()
+                else -> onClose?.invoke()
+            }
             return true
         }
     })
@@ -169,6 +185,7 @@ class SearchRow(ctx: Context, private val kb: WeaveKeyboard, placeholder: String
 
     companion object {
         private const val NONE = -1
+        private const val FIELD = 0
         private const val CLEAR = 1
         private const val CLOSE = 2
         /** 查询上限（字符）。 Max query length in chars. */

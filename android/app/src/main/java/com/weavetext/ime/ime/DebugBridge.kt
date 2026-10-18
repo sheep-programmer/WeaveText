@@ -23,7 +23,11 @@ import com.weavetext.ime.BuildConfig
  * 语音回调 / Voice callbacks: `{voice-partial:TEXT}` `{voice-final:TEXT}` `{voice-replace:OLD|NEW}` `{voice-cancel}`。
  * 每批按键后在 logcat（tag `WeaveSmoke`）输出按键数、平均/最大单键耗时和当前候选前 5 个。
  */
-class DebugBridge(private val controller: InputController) {
+class DebugBridge(
+    private val controller: InputController,
+    /** 可开面板的键盘（仅调试版）；为 null 时面板令牌被忽略。 The keyboard that can open panels (debug only); null ignores panel tokens. */
+    private val ui: (() -> com.weavetext.ime.ui.keyboard.WeaveKeyboard?)? = null,
+) {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val keys = intent.getStringExtra("keys") ?: return
@@ -105,6 +109,20 @@ class DebugBridge(private val controller: InputController) {
             }
             t.startsWith("sel:") -> t.removePrefix("sel:").toIntOrNull()?.let(controller::onCandidate)
             t.startsWith("py:") -> t.removePrefix("py:").toIntOrNull()?.let(controller::onPinyinOption)
+            // 打开面板：`{panel:symbol}`、`{panel:cursor}`……，`{emoji}` 直接落在表情分类。
+            // Open a panel; `{emoji}` lands on the emoji tab. Panels are the one place a script could not reach before.
+            t.startsWith("panel:") -> {
+                val name = t.removePrefix("panel:")
+                ui?.invoke()?.let { kb -> if (name == "symbol") kb.showPanel("symbol") else kb.showPanel(name) }
+            }
+            t == "emoji" -> ui?.invoke()?.let { kb ->
+                kb.showPanel("symbol")
+                (kb.panelNamed("symbol") as? com.weavetext.ime.ui.keyboard.SymbolPanel)?.selectEmoji()
+            }
+            t == "close-panel" -> ui?.invoke()?.closePanel()
+            // 展开面板里的搜索行（等同点一下它），冒烟脚本才能点到字母键。
+            // Unfold the panel's search row, as tapping it would, so a script can reach the letter pad.
+            t == "open-search" -> (ui?.invoke()?.panelNamed("symbol") as? com.weavetext.ime.ui.keyboard.SymbolPanel)?.openSearchForTest()
             // 与用户设置里选方案一样：中文状态才切换，密码框等英文框只记下。 Like choosing it in settings: applied only in Chinese mode.
             t.startsWith("schema:") -> controller.setPreferredSchema(t.removePrefix("schema:"))
             t.startsWith("opt:") -> {

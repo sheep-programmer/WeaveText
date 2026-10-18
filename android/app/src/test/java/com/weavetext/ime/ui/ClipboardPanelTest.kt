@@ -250,6 +250,26 @@ class ClipboardPanelTest {
         assertEquals("查询不进编辑器", "", ic.text)
     }
 
+    @Test fun spaceAndPunctuationStayOutOfTheEditor() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
+        copy("他说「好」")
+        copy("a,b")
+        val panel = openPanel("clipboard")
+        openSearch(panel)
+        // 查询空着时：空格与标点都归搜索框，正文一个字也不动。
+        // Empty query: space and punctuation belong to the search box, and the document stays untouched.
+        kb.onKey(Key(KeyCode.SPACE)); kb.onKey(Key(KeyCode.SPACE)); kb.onKey(Key(','.code))
+        idle()
+        assertEquals("空格与标点不能落进正文", "", ic.text)
+        // 逗号进了查询：只留下含逗号的那条。 The comma went into the query: only the clip with a comma matches.
+        assertEquals("标点进查询", 1, panel.searchResultsForTest().size)
+        assertEquals("a,b", panel.searchResultsForTest().first().text)
+        // 长按 / 上滑送来的引号同样进查询（走字符输出那条路）。 A quote from long-press goes in too (the text path).
+        kb.onKeyText(Key('w'.code), "「"); idle()
+        assertEquals("引号也进查询", 0, panel.searchResultsForTest().size)
+        assertEquals("", ic.text)
+    }
+
     @Test fun leavingSearchWithBackKeepsThePanelOpen() {
         WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
         copy("订单号 88123")

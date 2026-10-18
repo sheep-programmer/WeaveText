@@ -153,11 +153,16 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         lastStrokeEnd = t
         val geom = cur.copyOf(curN * 2)
         val displaySamples = samples.copyOf(curN * SAMPLE_SIZE)
-        // 连写会在一行里攒多个字，笔画数要有上限：内核超过 256 笔就不再识别，再留下去只会是一堆认不出的墨迹。
-        // Continuous writing keeps several characters on one canvas, so the stroke count needs a ceiling: past 256
-        // strokes the engine stops recognising, and keeping more would only show ink nothing can read.
-        if (done.size < MAX_STROKES) { done += geom; doneSamples += displaySamples }
-        fill(finishedInk, geom, displaySamples, curN, ended = true)
+        // 连写会在一行里攒多个字，笔画数要有上限：内核一次最多认 256 笔（连写按 4 组算，也是 256），
+        // 超过就整段不认。到上限后新笔既不收也不画——画了却在下一次重画（撤销、换主题）时消失更糟。
+        // Continuous writing keeps several characters on one canvas, so the stroke count needs a ceiling: the engine
+        // takes at most 256 strokes per recognition and rejects anything longer. Past the ceiling a stroke is neither
+        // kept nor drawn; drawing it only to have it vanish on the next redraw (undo, theme change) is worse.
+        if (done.size < MAX_STROKES) {
+            done += geom
+            doneSamples += displaySamples
+            fill(finishedInk, geom, displaySamples, curN, ended = true)
+        }
         curN = 0
         rebuild()
         clearRedo()

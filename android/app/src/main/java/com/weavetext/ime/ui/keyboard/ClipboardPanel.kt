@@ -161,10 +161,17 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     private val grid = Cards(kb.ctx)
     /** 搜索行：默认收着，点表头的放大镜才出现（表头文档见 [headerIcons]）。 The search row, opened from the header. */
     private val searchRow = SearchRow(kb.ctx, kb, if (mode == Mode.CLIPBOARD) "搜索剪贴板" else "搜索常用语")
+    /**
+     * 搜索时面板盖住了主键盘，字母没有地方打，所以搜索行下方自带一排字母键。
+     * While searching the panel covers the main keyboard, so letters have nowhere to go: the search row brings its
+     * own letter pad.
+     */
+    private val searchKeys = PanelKeys(kb.ctx, kb)
     override val view = LinearLayout(kb.ctx).apply {
         orientation = LinearLayout.VERTICAL
         addView(header, LinearLayout.LayoutParams(-1, kb.metrics.dp(44f).toInt()))
         addView(searchRow, LinearLayout.LayoutParams(-1, 0))
+        addView(searchKeys, LinearLayout.LayoutParams(-1, 0))
         addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
@@ -193,7 +200,16 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         grid.onPressFeedback = { kb.feedback.key(grid) }
         grid.onLongFeedback = { kb.feedback.haptic(grid) }
         searchRow.onClose = { closeSearch() }
-        searchRow.onClear = { search.clear(); reload() }
+        // 清除只清查询，搜索行开着：重新显示时要把行上的旧字一起抹掉。 Clear only the query; the row stays open.
+        searchRow.onClear = { search.clear(); updateSearchRow(); reload() }
+        // 点搜索行就把字母键亮出来：面板盖住主键盘，这里是唯一能打字的地方。
+        // Tapping the row raises the letter pad: the panel covers the main keyboard, so this is the only place to type.
+        searchRow.onOpen = {
+            kb.feedback.key(searchRow)
+            openSearch()
+        }
+        searchKeys.onLetter = { c -> if (search.letter(c)) reload() }
+        searchKeys.onBackspace = { if (search.backspace()) reload() else closeSearch() }
     }
 
     override fun applyTheme() {
@@ -237,9 +253,17 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     }
 
     private fun updateSearchRow() {
+        // 查询清零后行上不能还留着旧词：清除、退出搜索都走这里。
+        // A cleared query must not leave its old text behind: clear and leave both come through here.
+        searchRow.show(search.committed.toString(), search.composing.toString())
         (searchRow.layoutParams as LinearLayout.LayoutParams).height =
             if (searching) kb.metrics.dp(38f).toInt() else 0
+        // 字母键跟着搜索行一起出现与收起。 The letter pad appears and folds with the search row.
+        searchKeys.visibility = if (searching) View.VISIBLE else View.GONE
+        (searchKeys.layoutParams as LinearLayout.LayoutParams).height =
+            if (searching) LinearLayout.LayoutParams.WRAP_CONTENT else 0
         searchRow.requestLayout()
+        searchKeys.requestLayout()
     }
 
     /**
@@ -257,20 +281,26 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
     override fun onKey(key: Key): Boolean {
         if (!searching) return false
         val had = search.active
-        // 空查询只吃字母、退格与空格：回车与功能键照旧走面板与编辑器。
-        // With an empty query only letters, backspace and space are taken; Enter and function keys pass through.
-        if (!had && key.code != KeyCode.DELETE && key.code !in 'a'.code..'z'.code && key.code !in '0'.code..'9'.code) return false
+        // 空查询只吃字母、数字、退格与空格：回车与功能键照旧走面板与编辑器。
+        // With an empty query only letters, digits, backspace and space are taken; Enter and function keys pass through.
+        if (!had && key.code != KeyCode.DELETE && key.code != KeyCode.SPACE && key.code !in 'a'.code..'z'.code &&
+            key.code !in '0'.code..'9'.code && !isPunctKey(key.code)) return false
         val handled = when (key.code) {
             // 删空之后再按一次退格就收搜索行（这一下不再透传给编辑器）。
             // One more backspace on an empty query closes the row, and that press does not reach the editor.
             KeyCode.DELETE -> if (search.backspace()) true else { closeSearch(); true }
-            KeyCode.SPACE -> search.commitComposing() || had
+            // 空格归搜索框，空查询也吃掉：否则会在正文里打出一个空格（或两个空格变句号）。
+            // Space belongs to the box even with an empty query, or it types into the document.
+            KeyCode.SPACE -> { search.commitComposing(); true }
             KeyCode.ENTER -> { commitFirst(); true }
             else -> when {
                 key.code in 'a'.code..'z'.code -> { search.letter(key.code.toChar()); true }
                 // 数字进查询（订单号、验证码这类内容几乎都得按数字搜）。
                 // Digits go in: order numbers and codes are searched by their digits.
                 key.code in '0'.code..'9'.code -> { search.literal(key.code.toChar().toString()); true }
+                // 标点同样进查询（引号、括号常是内容的一部分），不能落进正文。
+                // Punctuation goes in too (quotes and brackets are often part of a clip); it must not reach the text.
+                isPunctKey(key.code) -> { search.literal(String(Character.toChars(key.code))); true }
                 else -> false
             }
         }
@@ -283,11 +313,18 @@ class ClipboardPanel(kb: WeaveKeyboard, private val mode: Mode) : KbPanel(kb) {
         val handled = when {
             text.length == 1 && text[0].isLetter() -> { search.letter(text[0]); true }
             text.length == 1 && text[0].isDigit() -> { search.literal(text); true }
-            search.active -> search.literal(text)
+            text.length == 1 && !text[0].isLetterOrDigit() && !text[0].isWhitespace() -> { search.literal(text); true }
             else -> false
         }
         if (handled) reload()
         return handled
+    }
+
+    /** 上滑 / 长按改写：先撤掉按下时进查询的那个字符，再放入新的文字。 Replace: take back the pressed char, then add the new text. */
+    override fun onKeyReplace(key: Key, text: String): Boolean {
+        if (!searching) return false
+        if (!search.composing.isEmpty()) search.composing.setLength(search.composing.length - 1) else search.backspace()
+        return onKeyText(key, text)
     }
 
     /** 回车：先确定拼音，再上屏第一个结果。 Enter settles the pinyin, then inserts the first hit. */

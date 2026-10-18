@@ -24,7 +24,7 @@ class WeaveImeService : InputMethodService() {
     private val stateListener: (ImeState) -> Unit = { updateCandidatesShown(it) }
 
     /** 仅调试版生效的冒烟测试入口。 Smoke-test hook, active in debug builds only. */
-    private val debugBridge by lazy { DebugBridge(controller) }
+    private val debugBridge by lazy { DebugBridge(controller) { ui as? com.weavetext.ime.ui.keyboard.WeaveKeyboard } }
 
     override fun onCreate() {
         super.onCreate()
@@ -157,6 +157,10 @@ class WeaveImeService : InputMethodService() {
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
         if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.repeatCount == 0 && isInputViewShown && ui?.handleBack() == true) return true
+        // 面板搜索框开着：实体键盘打的字也进查询，不能落进正文——屏幕键盘已经被面板盖住，查询只有这一个地方能打。
+        // A panel search box is open: physical keys must reach the query too, not the document — the panel covers the
+        // on-screen keyboard, so this is the only way to type into the search.
+        if (isInputViewShown && event.repeatCount == 0 && ui?.hardwareToPanel(keyCode, event) == true) return true
         // 实体键盘：有编辑框、且不是只收按键的终端类输入框时经过内核。 Physical keys go through the engine in real text fields.
         val editor = currentInputEditorInfo
         if (currentInputConnection != null && editor != null && editor.inputType != android.text.InputType.TYPE_NULL &&
