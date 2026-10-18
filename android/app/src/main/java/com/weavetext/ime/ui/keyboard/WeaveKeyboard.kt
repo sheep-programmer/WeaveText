@@ -39,23 +39,6 @@ abstract class KbPanel(val kb: WeaveKeyboard) {
     open fun onHide() {}
     open fun applyTheme() {}
     open fun onState(s: ImeState) {}
-    /**
-     * 键盘上的一个键先交给面板（面板打开着搜索框时，字母进查询而不是上屏）；返回 true 表示已处理。
-     * Offer a key to the panel first (with a search box open, letters go to the query instead of the editor);
-     * true means the panel handled it.
-     */
-    open fun onKey(key: Key): Boolean = false
-    /** 同上，字符键的输出文字（上滑、长按与九键字母）。 Same for a char key's output text. */
-    open fun onKeyText(key: Key, text: String): Boolean = false
-    /**
-     * 同上，上滑 / 长按改写刚按下的字符键：按下时进查询的那个字母先撤掉，再放入新的文字。
-     * Same for a swipe-up / long-press replace: the letter the press put in the query is taken back, then the new text.
-     */
-    open fun onKeyReplace(key: Key, text: String): Boolean = false
-    /** 搜索框开着：键盘上的键交给面板（见 [onKey]），空格只分隔词。 A search box is open: keys go to the panel. */
-    open val searchOpen: Boolean get() = false
-    /** 退出搜索；没有搜索时返回 false。 Leave the search; false when there was none. */
-    open fun leaveSearch(): Boolean = false
 }
 
 /**
@@ -173,12 +156,22 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     /** 横屏时侧边导航栏占的宽度（左、右）。 Side navigation bar widths in landscape (left, right). */
     private var navLeft = 0
     private var navRight = 0
-    private var navigationBars = NavigationClearance.Edges()
+    private var navigationBars = NavigationClearance.seed(navigationModeForSeed(), navigationBarHeightRes())
+    /** 等着复核的小读数（见 acceptNavigationBars）。 A smaller reading waiting for a second opinion. */
+    private var pendingBars: NavigationClearance.Edges? = null
+    /** 第一次量到那份小读数的时刻。 When that reading was first seen. */
+    private var pendingSince = 0L
     private var handSafeTop = 0
     private var handBodyHeight = 0
     private var handViewportWidth = 0
     private val navigationLayout = Runnable { refreshNavigationInsets() }
-    /** 切应用动画结束后的补测；单独一个，布局刷新不会把它取消。 The post-animation recheck; separate so layout refreshes don't cancel it. */
+    /** 复核小读数的复读。 The second read which decides whether a smaller reading is real. */
+    private val navigationConfirm = Runnable { refreshNavigationInsets() }
+    /**
+     * 显示后的补测时刻（毫秒）：切应用的动画、窗口定位、系统重算边衬都要落在这些点之后，早先量到的可能是过渡值。
+     * Recheck times after the keyboard shows (ms): an app-switch animation, the window being positioned and the
+     * system's own recompute all land after them, and an earlier reading may have been taken mid-transition.
+     */
     private val navigationSettled = Runnable { refreshNavigationInsets() }
     private var navigationObserver: ViewTreeObserver? = null
     private val navigationGlobalLayout = ViewTreeObserver.OnGlobalLayoutListener { postNavigationRefresh() }
@@ -193,6 +186,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         navigationObserver?.takeIf { it.isAlive }?.removeOnGlobalLayoutListener(navigationGlobalLayout)
         navigationObserver = null
         root.removeCallbacks(navigationLayout)
+        root.removeCallbacks(navigationConfirm)
+        root.removeCallbacks(navigationSettled)
     }
 
     /**
@@ -207,11 +202,73 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val source = host.window?.decorView?.rootWindowInsets ?: lastSignal ?: root.rootWindowInsets
         // 未挂载时没有新信息，保留已经知道的占位。No new information while detached: retain known bars.
         if (source != null) {
-            navigationBars = computeBarEdges(source)
+            acceptNavigationBars(computeBarEdges(source))
             val top = safeTop(source)
             if (handSafeTop != top) { handSafeTop = top; root.requestLayout() }
         }
         updateNavigationClearance()
+    }
+
+    /**
+     * 收下一份导航栏占位。变大的、平级的、侧边的立刻用：多留一条空白只是不好看，少留就把键压在系统按键下面。
+     * 把某条边整个收成 0 的要隔开 [NAV_CONFIRM_MS] 再量到同一份读数才认——切应用、窗口进出场、系统重算边衬时
+     * 会先报 0，而且那一下往往连着几次刷新都在，按次数认就等于没认。
+     * Take a navigation reading. Growing, unchanged and sideways changes apply at once: a spare strip is only ugly,
+     * too little puts keys under the system buttons. Giving an edge up entirely waits for a second agreeing reading at
+     * least [NAV_CONFIRM_MS] later: an app switch or a window entering reports zero first, and that zero shows up in
+     * several refreshes in a row, so counting reads would amount to taking it at face value.
+     */
+    private fun acceptNavigationBars(measured: NavigationClearance.Edges) {
+        val held = pendingBars
+        // 隔开一段时间又量到同一份读数：这是系统的真实状态，收下。
+        // The same reading again, long enough after: that is the real state, take it.
+        if (held != null && measured == held && android.os.SystemClock.uptimeMillis() - pendingSince >= NAV_CONFIRM_MS) {
+            root.removeCallbacks(navigationConfirm)
+            pendingBars = null
+            navigationBars = measured
+            return
+        }
+        if (!NavigationClearance.dropsToZero(navigationBars, measured)) {
+            root.removeCallbacks(navigationConfirm)
+            pendingBars = null
+            navigationBars = measured
+            return
+        }
+        // 归零的读数先记下，留白照旧；到点由 navigationConfirm 复核。
+        // A zero reading is remembered while the strip stays; navigationConfirm re-reads it later.
+        if (held != measured) {
+            pendingBars = measured
+            pendingSince = android.os.SystemClock.uptimeMillis()
+            root.removeCallbacks(navigationConfirm)
+            root.postDelayed(navigationConfirm, NAV_CONFIRM_MS)
+        }
+    }
+
+    /**
+     * 系统资源里的导航栏高度；手势导航下不用。同一份资源在 [computeBarEdges] 里也读过。
+     * lint 不建议用这个内部资源——它是第一帧唯一的来源，边衬还没分发时拿不到别的数，按需保留。
+     * The platform's navigation bar height; unused under gesture navigation, and read for [computeBarEdges] too. Lint
+     * discourages this internal resource, but before any inset is dispatched it is the only number available and the
+     * first frame needs it, so the use is kept deliberately.
+     */
+    @SuppressLint("InternalInsetResource")
+    private fun navigationBarHeightRes(): Int {
+        @SuppressLint("DiscouragedApi")
+        val id = ctx.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        return if (id != 0) ctx.resources.getDimensionPixelSize(id) else 0
+    }
+
+    private fun navigationModeForSeed(): Int =
+        android.provider.Settings.Secure.getInt(ctx.contentResolver, "navigation_mode", 0)
+
+    /**
+     * 显示之后补几次边衬：切应用的动画走完、窗口真正定位好都不在 onShown 那一瞬。
+     * Re-read the insets a few times after showing: the app-switch animation ends and the window is positioned
+     * well after the instant of onShown.
+     */
+    private fun scheduleNavigationSettle() {
+        root.removeCallbacks(navigationSettled)
+        for (delay in NAV_SETTLE_MS) root.postDelayed(navigationSettled, delay)
     }
 
     private fun safeTop(insets: WindowInsets): Int = if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -396,6 +453,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         })
         prefs.registerOnSharedPreferenceChangeListener(this)
         applyAllPrefs()
+        // 第一帧就按预留下来的导航栏定高，不等边衬分发。 Size the first frame with the reserved bar already in it.
+        refreshNavigationInsets()
         controller.addListener(stateListener)
         cloudWords.addListener(cloudListener);cloudListener()
         // 敲等号后的计算结果：点一下接在等号后面。 A result after "=": tap to append it.
@@ -912,10 +971,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onKey(key: Key) {
         val s = state
-        // 面板开着搜索框：字母、退格、空格、回车与标点先给面板，查询不会写进编辑框。
-        // A panel search box is open: letters, backspace, space, enter and punctuation go to it, not to the editor.
-        panel?.let { p -> if (p.searchOpen && p.onKey(key)) { searchKeySwallowed = key.isChar; return } }
-        searchKeySwallowed = false
         topBar.clearAction()
         when (key.code) {
             KeyCode.SHIFT -> onShift()
@@ -1004,10 +1059,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onKeyText(key: Key, text: String) {
-        panel?.let { p ->
-            if (p.searchOpen && p.onKeyText(key, text)) { searchKeySwallowed = key.isChar; return }
-        }
-        searchKeySwallowed = false
         topBar.clearAction()
         if (key.code == KeyCode.LANG) {
             val kb = WeavePrefs.KEYBOARD_NAMES.entries.firstOrNull { it.value == text }?.key ?: return
@@ -1030,34 +1081,19 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     /**
      * 上滑 / 长按改写刚按下的字符键。字符键按下即输出，改写 = 撤回上一次输出再输出新的那一个。
-     * 搜索框开着时那几个字母根本没进编辑器：它们进了查询，撤回会把前面上屏的正文删掉，所以只把新字符送进查询。
      * Swipe / long-press replaces the char just pressed. Char keys emit on DOWN, so a replace undoes that emission and
-     * types the new one. With a panel search open the letters went to the query, not the document; undoing there would
-     * delete previously committed text, so only the new character goes into the query.
+     * types the new one.
      */
     override fun onKeyReplace(key: Key, text: String) {
-        val swallowed = searchKeySwallowed
-        searchKeySwallowed = false
-        val panelTook = panel?.let { p -> p.searchOpen && p.onKeyReplace(key, text) } == true
-        if (panelTook) return
-        // 按下那一下被搜索框吃掉时没有东西可撤回；面板这次也不收，就照常进编辑器。
-        // Nothing to undo when the press went to the search box; if this panel doesn't take the text, it goes to the editor as usual.
-        if (!swallowed) controller.undoLastInput()
+        controller.undoLastInput()
         onKeyText(key, text)
     }
 
     /**
-     * 系统取消（通知栏、返回手势）时撤回按下即输出的那一下；同样只在它真的进了编辑器时撤。
-     * A system cancel takes back the emission of a char key pressed on DOWN — only when it actually reached the editor.
+     * 系统取消（通知栏、返回手势）时撤回按下即输出的那一下。
+     * A system cancel takes back the emission of a char key pressed on DOWN.
      */
-    override fun onKeyRevert(key: Key) {
-        if (!searchKeySwallowed) controller.undoLastInput()
-        searchKeySwallowed = false
-    }
-
-    /** 按下即输出、但被面板搜索框吃掉的那一下（没有进编辑器，改写与取消时不必撤回）。 A char key emitted on DOWN that the
-     * panel search box swallowed (never reached the editor, so nothing to undo). */
-    private var searchKeySwallowed = false
+    override fun onKeyRevert(key: Key) { controller.undoLastInput() }
 
     // 组合中滑动空格移动拼音里的光标（九键、五笔等不支持时不滑）。 While composing, the space slide moves the caret in the pinyin.
     override fun cursorDragAllowed() = !state.composing || controller.canMoveComposingCaret()
@@ -1421,37 +1457,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         (panels["voice"] as? VoicePanel)?.let { it.view.refreshEngine(); it.view.invalidate() }
     }
 
-    /**
-     * 实体键盘：面板搜索框开着时字母、数字、标点、退格、空格与回车进查询，正文一个字也不动。
-     * 其余键（方向键、快捷键、Esc）照旧走内核与 App。
-     * Physical keys: with a panel search open, letters, digits, punctuation, backspace, space and enter go into the
-     * query and nothing reaches the document. Other keys (arrows, shortcuts, Esc) keep their usual routing.
-     */
-    override fun hardwareToPanel(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        val p = panel ?: return false
-        if (!p.searchOpen) return false
-        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed) return false
-        val key = when (keyCode) {
-            android.view.KeyEvent.KEYCODE_DEL -> Key(KeyCode.DELETE)
-            android.view.KeyEvent.KEYCODE_SPACE -> Key(KeyCode.SPACE)
-            android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> Key(KeyCode.ENTER)
-            else -> {
-                val ch = event.getUnicodeChar(event.metaState)
-                if (ch == 0 || ch and android.view.KeyCharacterMap.COMBINING_ACCENT != 0 ||
-                    Character.isISOControl(ch)) return false
-                Key(ch)
-            }
-        }
-        if (key.code >= 0 && !(key.code in 'a'.code..'z'.code || key.code in 'A'.code..'Z'.code ||
-                key.code in '0'.code..'9'.code || isPunctKey(key.code))) return false
-        val ch = if (key.code >= 0) String(Character.toChars(key.code)) else null
-        return if (ch == null) p.onKey(key) else p.onKeyText(key, ch)
-    }
-
     override fun handleBack(): Boolean {
         if (engineSheet.shown) { engineSheet.hide(); return true }
-        // 搜索框开着：先退出搜索，再按一次才收面板。 With a search box open, back leaves search first.
-        if (panel?.let { it.searchOpen && it.leaveSearch() } == true) return true
         if (panel != null) { closePanel(); return true }
         if (numberMode) { numberMode = false; refreshLayout(); return true }
         return false
@@ -1795,6 +1802,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         refreshNavigationInsets()
         root.requestApplyInsets()
         postNavigationRefresh()
+        scheduleNavigationSettle()
         if (!restarting) {
             numberMode = false
             shift.reset()
@@ -1812,16 +1820,17 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     /**
-     * 窗口显示后再量一次导航栏，切应用的动画结束后（约 350 ms）再补一次：早先量到的可能是过渡中的值。
-     * Re-measure the navigation bar once the window shows, and again after the app-switch animation settles
-     * (about 350 ms): an earlier reading may have been taken mid-transition.
+     * 窗口显示后按 [NAV_SETTLE_MS] 补几次导航栏：早先量到的可能是过渡中的值。
+     * Re-measure the navigation bar at the settle times after the window shows: an earlier reading may have been
+     * taken mid-transition.
      */
     override fun onWindowShown() {
-        root.requestApplyInsets()
+        // 先读手里的，再向系统要一份新的：要来的那份晚些到，会走 onApplyWindowInsets。
+        // Read what we have first, then ask for a fresh copy; the answer arrives later through onApplyWindowInsets.
         refreshNavigationInsets()
+        root.requestApplyInsets()
         postNavigationRefresh()
-        root.removeCallbacks(navigationSettled)
-        root.postDelayed(navigationSettled, 350)
+        scheduleNavigationSettle()
     }
 
     override fun onHidden() {
@@ -1829,6 +1838,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         candidatePopup?.dismiss()
         root.removeCallbacks(navigationLayout)
         root.removeCallbacks(navigationSettled)
+        root.removeCallbacks(navigationConfirm)
         com.weavetext.ime.stickers.StickerSending.deactivate(controller)
         com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(null)
         keyboardView.cancelTouch()
@@ -1938,6 +1948,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         private const val COMPACT_TOP_BAR_DP = 22f
         private const val BOTTOM_BAR_DP = 14f
         private const val CARD_RADIUS_DP = 16f
+        /** 小读数复核的间隔：切应用的动画比这长，下一帧就能看出那份 0 是不是过渡值。 */
+        private const val NAV_CONFIRM_MS = 180L
+        /** 显示后的补测时刻。 Recheck times after the keyboard shows. */
+        private val NAV_SETTLE_MS = longArrayOf(120, 350, 700)
         val T9_ONE_PUNCT = listOf("，", "。", "？", "！", "、", "：", "；", "…", "～", "“", "”", "@", ".", ",", "?", "!")
     }
 }

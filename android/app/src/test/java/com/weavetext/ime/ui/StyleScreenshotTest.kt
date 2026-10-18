@@ -143,31 +143,6 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
         kb = null
     }
 
-    /** 剪贴板搜索：表头放大镜打开搜索行，字母过滤列表。 Clipboard search: the magnifier opens the row, letters filter. */
-    @Test fun clipboardSearch() {
-        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-        val cm = app.getSystemService(android.content.ClipboardManager::class.java)
-        for (t in listOf("https://example.com/a", "订单号 88123", "https://example.com/b")) {
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("t", t)); idle()
-        }
-        val (k, _) = keyboard(false)
-        k.showPanel("clipboard")
-        val panel = k.panelNamed("clipboard") as com.weavetext.ime.ui.keyboard.ClipboardPanel
-        val header = panel.view.getChildAt(0)
-        val bmp = android.graphics.Bitmap.createBitmap(header.width.coerceAtLeast(1), header.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
-        header.draw(android.graphics.Canvas(bmp)); bmp.recycle()
-        val t = android.os.SystemClock.uptimeMillis()
-        val x = header.width - k.metrics.dp(8f) - k.metrics.dp(40f) * 3 - k.metrics.dp(18f)
-        for (a in intArrayOf(android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP)) {
-            val e = android.view.MotionEvent.obtain(t, t, a, x, header.height / 2f, 0)
-            try { header.dispatchTouchEvent(e) } finally { e.recycle() }
-        }
-        idle()
-        for (c in "example") k.onKey(com.weavetext.ime.ui.keyboard.Key(c.code))
-        idle()
-        snap("clipboard_search_light")
-    }
-
     /** 左侧分类布局：向上一划翻到下一页，页码随之变化。 Side-category layout: a swipe up turns one page. */
     @Test fun sideSymbolsPage() {
         val (k, _) = keyboard(false) { clear(); putString(WeavePrefs.STYLE_LAYOUT, "classic") }

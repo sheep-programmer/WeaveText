@@ -106,13 +106,6 @@ class FakeEngine : KeyEngine {
     override fun evaluate(expr: String): String? =
         expr.split('*').takeIf { it.size == 2 }?.let { (a, b) -> (a.toLongOrNull() ?: return null) * (b.toLongOrNull() ?: return null) }?.toString()
 
-    /**
-     * 组合串 → 真内核会给出的候选文字（默认没有）。面板搜索框把拼音读成中文时用得到：搜索框只能收字母，
-     * 打到「weixiao」得先由内核读成「微笑」才能去匹配中文内容。
-     * Composition → the text a real engine would offer (empty by default). The panel search boxes read typed pinyin
-     * through the engine, so Chinese content can be found from letters.
-     */
-    var readings: Map<String, List<String>> = emptyMap()
 
     /** 带邻键的按键：(字母, 邻键, 贴近度)。 Keys fed with a neighbour: (letter, neighbour, closeness). */
     val nearCalls = ArrayList<Triple<Char, Char, Float>>()
@@ -163,7 +156,6 @@ class FakeEngine : KeyEngine {
         return EngineSnapshot(commit, raw.toString(), composing, if (composing) List(60) { cand(it) } else emptyList(), if (composing) 800 else 0, emptyList(), schema, caret = caret)
     }
     override fun candidates(offset: Int, limit: Int): List<Candidate> {
-        readings[raw.toString()]?.let { readings -> return readings.drop(offset).take(limit).map { Candidate(it, "", false) } }
         return when {
             !isComposing() && predictions.isNotEmpty() -> predictions.drop(offset).take(limit).map { Candidate(it, "", false) }
             handing -> (offset until minOf(12, offset + limit)).map { cand(it) }

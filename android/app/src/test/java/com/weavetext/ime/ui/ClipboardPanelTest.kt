@@ -154,7 +154,7 @@ class ClipboardPanelTest {
         WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, false).commit()
         copy("只有当前这一条")
         val panel = openPanel("clipboard")
-        // 面板从上到下是「表头 | 搜索行 | 卡片列表」。 The panel is header | search row | cards.
+        // 面板从上到下是「表头 | 卡片列表」。 The panel is header | cards.
         val grid = panel.view.getChildAt(panel.view.childCount - 1)
         // 动作行是绘制时叠上去的，且命中矩形也在那时写入：先画一遍，才能看出它到底有没有盖在卡片上。
         // The action row is drawn over the card and its hit rects are written then: draw once to see whether it is
@@ -190,97 +190,4 @@ class ClipboardPanelTest {
         assertTrue("新增的是剪贴板内容", after.contains("要点"))
     }
 
-    /** 打开搜索：点表头最左一格的放大镜（图标从右往左，搜索排在最后）。 Open the search from the leftmost icon. */
-    private fun openSearch(panel: ClipboardPanel): View {
-        val header = panel.view.getChildAt(0)
-        draw(header)
-        val icons = panel.headerIconsForTest()
-        tapView(header, header.width - m().dp(8f) - m().dp(40f) * (icons.size - 1) - m().dp(18f), header.height / 2f)
-        assertEquals("放大镜要打开搜索行", icons.last(), com.weavetext.ime.R.drawable.ic_search)
-        return panel.view.getChildAt(1)
-    }
-
-    @Test fun searchingFiltersTheClipboardAndNeverReachesTheEditor() {
-        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-        copy("https://example.com/a")
-        copy("订单号 88123")
-        copy("https://example.com/b")
-        val panel = openPanel("clipboard")
-        assertFalse("搜索行默认收着", panel.searchOpen)
-        openSearch(panel)
-        assertTrue("放大镜打开搜索", panel.searchOpen)
-        // 字母进查询，不上屏；列表按字面过滤。 Letters filter the list and never reach the editor.
-        for (c in "example") kb.onKey(Key(c.code))
-        idle()
-        assertEquals("查询不进编辑器", "", ic.text)
-        assertEquals(2, panel.searchResultsForTest().size)
-        // 删空之后再按一次退格收起搜索行，那一下不会删到编辑器里的文字。
-        // Deleting the query down to nothing and pressing backspace once more closes the row, without deleting text.
-        repeat(8) { kb.onKey(Key(KeyCode.DELETE)) }
-        idle()
-        assertFalse("删空后再退格即收搜索行", panel.searchOpen)
-        assertEquals(3, panel.searchResultsForTest().size)
-        assertEquals("那一下不能删编辑器里的字", "", ic.text)
-        openSearch(panel)
-        for (c in "88123".toCharArray()) kb.onKey(Key(c.code))
-        idle()
-        assertEquals(1, panel.searchResultsForTest().size)
-        // 回车取第一个结果上屏。 Enter inserts the first hit.
-        kb.onKey(Key(KeyCode.ENTER)); idle()
-        assertEquals("订单号 88123", ic.text)
-        repeat(8) { kb.onKey(Key(KeyCode.DELETE)) }
-        idle()
-        assertTrue("删空即退出搜索", panel.searchResultsForTest().size == 3)
-        assertTrue("搜索行收回去", panel.view.getChildAt(1).height == 0)
-    }
-
-    @Test fun pinyinFindsChineseClipsThroughTheEngine() {
-        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-        copy("他微笑着说好")
-        copy("明天见")
-        engine.readings = mapOf("weixiao" to listOf("微笑"))
-        val panel = openPanel("clipboard")
-        openSearch(panel)
-        for (c in "weixiao") kb.onKey(Key(c.code))
-        idle()
-        // 搜索框只能收字母：内核把 weixiao 读成「微笑」之后才匹配得到中文内容。
-        // The box only takes letters, so the engine's reading is what finds the Chinese clip.
-        assertEquals(1, panel.searchResultsForTest().size)
-        assertEquals("他微笑着说好", panel.searchResultsForTest().first().text)
-        assertEquals("查询不进编辑器", "", ic.text)
-    }
-
-    @Test fun spaceAndPunctuationStayOutOfTheEditor() {
-        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-        copy("他说「好」")
-        copy("a,b")
-        val panel = openPanel("clipboard")
-        openSearch(panel)
-        // 查询空着时：空格与标点都归搜索框，正文一个字也不动。
-        // Empty query: space and punctuation belong to the search box, and the document stays untouched.
-        kb.onKey(Key(KeyCode.SPACE)); kb.onKey(Key(KeyCode.SPACE)); kb.onKey(Key(','.code))
-        idle()
-        assertEquals("空格与标点不能落进正文", "", ic.text)
-        // 逗号进了查询：只留下含逗号的那条。 The comma went into the query: only the clip with a comma matches.
-        assertEquals("标点进查询", 1, panel.searchResultsForTest().size)
-        assertEquals("a,b", panel.searchResultsForTest().first().text)
-        // 长按 / 上滑送来的引号同样进查询（走字符输出那条路）。 A quote from long-press goes in too (the text path).
-        kb.onKeyText(Key('w'.code), "「"); idle()
-        assertEquals("引号也进查询", 0, panel.searchResultsForTest().size)
-        assertEquals("", ic.text)
-    }
-
-    @Test fun leavingSearchWithBackKeepsThePanelOpen() {
-        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
-        copy("订单号 88123")
-        val panel = openPanel("clipboard")
-        openSearch(panel)
-        for (c in "88123" .toCharArray()) kb.onKey(Key(c.code))
-        idle()
-        assertTrue(panel.searchResultsForTest().isNotEmpty())
-        assertTrue("返回键先退搜索", kb.handleBack())
-        assertEquals("面板还开着", panel, kb.panel)
-        assertFalse("搜索行收回去", panel.searchOpen)
-        assertEquals("搜索退出后列表回到全部", 1, panel.searchResultsForTest().size)
-    }
 }

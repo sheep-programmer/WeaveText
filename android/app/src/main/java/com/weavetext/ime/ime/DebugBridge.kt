@@ -120,9 +120,6 @@ class DebugBridge(
                 (kb.panelNamed("symbol") as? com.weavetext.ime.ui.keyboard.SymbolPanel)?.selectEmoji()
             }
             t == "close-panel" -> ui?.invoke()?.closePanel()
-            // 展开面板里的搜索行（等同点一下它），冒烟脚本才能点到字母键。
-            // Unfold the panel's search row, as tapping it would, so a script can reach the letter pad.
-            t == "open-search" -> (ui?.invoke()?.panelNamed("symbol") as? com.weavetext.ime.ui.keyboard.SymbolPanel)?.openSearchForTest()
             // 与用户设置里选方案一样：中文状态才切换，密码框等英文框只记下。 Like choosing it in settings: applied only in Chinese mode.
             t.startsWith("schema:") -> controller.setPreferredSchema(t.removePrefix("schema:"))
             t.startsWith("opt:") -> {

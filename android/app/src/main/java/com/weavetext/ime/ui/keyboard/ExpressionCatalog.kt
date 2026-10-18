@@ -19,9 +19,6 @@ class ExpressionCatalog private constructor(json: JSONObject) {
     private val emojiKeys=emoji.map{normalize(it.text)}.toSet()
     private val supportedKeys by lazy{supportedEmoji.map{normalize(it.text)}.toSet()}
     fun displayable(text:String)=normalize(text) !in emojiKeys || (normalize(text) in supportedKeys && Paint().hasGlyph(text))
-    /** 搜索用的行：中文名、英文名、分类与名字的拼音（颜文字没有英文名）。 Rows for name search. */
-    fun searchRows(items: List<Item>): List<ExpressionSearch.Row> =
-        items.map { ExpressionSearch.Row(it.text, it.name, it.english, it.group, it.pinyin) }
     val skinToneBases=json.getJSONArray("skinToneBases").let {a->(0 until a.length()).map{a.getString(it)}.toSet()}
     private val items=(emoji+kaomoji).associateBy{normalize(it.text)}
     fun entry(text: String): Item? = items[normalize(text)]

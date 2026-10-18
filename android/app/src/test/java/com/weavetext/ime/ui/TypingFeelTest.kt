@@ -56,6 +56,10 @@ class TypingFeelTest {
 
     @Before fun setUp() {
         android.provider.Settings.Global.putFloat(app.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
+        // 本类按手势导航的手机写（底部没有三键导航栏）：键盘不会预先留出底边，需要留白的用例自己发边衬。
+        // This class is written for a phone without the three-button bar: nothing is reserved up front, and the cases
+        // which need clearance dispatch it themselves.
+        android.provider.Settings.Secure.putInt(app.contentResolver, "navigation_mode", 2)
         WeavePrefs.of(app).edit().clear().commit()
         // 上一个测试的剪贴板写入可能还在后台排队。 A previous test's clip writes may still be queued.
         com.weavetext.ime.ime.ClipHistory.awaitIo()
@@ -80,6 +84,8 @@ class TypingFeelTest {
     @After fun tearDown() { kb.dispose() }
 
     private fun idle() = ShadowLooper.idleMainLooper()
+    /** 让复核用的延迟任务跑完（复核按间隔算，时间要往前走）。 Let the delayed confirmation run; it is measured in time. */
+    private fun settle() = ShadowLooper.idleMainLooper(250, java.util.concurrent.TimeUnit.MILLISECONDS)
     private fun hold(ms: Long) = ShadowLooper.idleMainLooper(ms, java.util.concurrent.TimeUnit.MILLISECONDS)
 
     // ------------------------------------------------------------ event replay
@@ -157,7 +163,9 @@ class TypingFeelTest {
             .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(0, 0, 90, 0))
             .build()
         kb.view.dispatchApplyWindowInsets(side)
-        idle()
+        // 底部那条归零要隔一会儿复核同一份读数才认（切应用时会先报一次 0）。
+        // Giving the bottom strip up waits for the confirming re-read.
+        settle()
         assertEquals(0, kb.navInset)
         // 键区整体在导航栏左边。 The keys end left of the side bar.
         val loc = IntArray(2)

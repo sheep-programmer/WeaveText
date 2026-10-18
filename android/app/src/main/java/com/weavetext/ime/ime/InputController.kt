@@ -1086,28 +1086,6 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     /** 清空组合（收起键盘等）。 Drop the composition. */
-    /**
-     * 用内核把一段拼音换成候选文字（面板搜索用）：面板搜索框只能收字母，中文内容的剪贴板要按中文搜，就得让内核
-     * 把 weixiao 读成「微笑」。读到的候选只是查询词，先原样上屏？不——这里不上屏、不学习、不留组合状态。
-     * 内核已经在组合中（用户打了一半拼音就去开面板）时返回空：宁可只按字面搜，也不能悄悄清掉用户打了一半的拼音。
-     * Turn a run of pinyin into candidate text for a panel search box (Chinese clipboard text can then be found by
-     * pinyin). Nothing is committed or learned and no composition is left behind. While the engine is already
-     * composing — the user opened a panel mid-word — this returns nothing rather than clearing their pinyin.
-     */
-    fun lookupText(pinyin: String, limit: Int = 6): List<String> {
-        val e = engineRef ?: return emptyList()
-        if (pinyin.isEmpty() || !state.chinese || e.isComposing()) return emptyList()
-        var taken = 0
-        for (c in pinyin.lowercase()) {
-            if (!e.inputChar(c.code)) break
-            taken++
-        }
-        if (taken == 0) return emptyList()
-        val out = e.candidates(0, limit).map { it.text }.filter { it.isNotBlank() }
-        e.clear()
-        return out
-    }
-
     fun reset() {
         discardHand()
         endReconversion()

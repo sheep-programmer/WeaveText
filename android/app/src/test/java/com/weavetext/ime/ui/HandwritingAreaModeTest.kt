@@ -319,6 +319,12 @@ class HandwritingAreaModeTest {
         assertEquals(240, kb.board.paddingBottom)
         setWindowInsets(bars(top = 0, cutout = 0, nav = 0, buttons = 0))
         layout()
+        // 底部留白归零的那一下不当真：切应用、窗口进出场时系统会先报一次 0，复核之后才收掉。
+        // The zero which gives the bottom strip up is not taken on its own: an app switch reports it first, so the
+        // strip goes once the confirming re-read agrees.
+        assertEquals("归零的那一下先不当真", 240, kb.board.paddingBottom)
+        ShadowLooper.idleMainLooper(250, java.util.concurrent.TimeUnit.MILLISECONDS)
+        layout()
         assertEquals(windowHeight, kb.view.height)
         assertEquals(0, kb.board.paddingBottom)
     }
