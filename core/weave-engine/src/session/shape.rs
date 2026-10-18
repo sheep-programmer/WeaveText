@@ -37,11 +37,16 @@ impl Engine {
             }
             // 九键接着按数字：结束筛选、继续打拼音；其他字符（标点）照常交给界面。
             // More keypad digits end the filter and go on with the pinyin; anything else (punctuation) is the UI's.
-            self.shape = None;
+            // 结束筛选但不重算候选：返回 false 表示「不归我处理」，界面会按它手上的候选表提交，
+            // 这里一刷新，界面提交的就是刷新后的另一个字（shi`hs 再按逗号会打出「是」而不是「时」）。
+            // End the filter without rebuilding the candidates: `false` promises the UI still owns its list, and a
+            // refresh here would make it commit a different character than the one shown.
+            self.leave_shape_keeping_candidates();
+            // 九键的数字继续打拼音（交给方案本身，它会自己刷新）；其余字符交给界面。
+            // Keypad digits go on with the pinyin (the schema refreshes on its own); anything else is the UI's.
             if matches!(self.schema, Schema::Keypad(_)) {
                 return None;
             }
-            self.refresh();
             return Some(false);
         }
         // 有拼音候选时才开始（v 模式的计算结果、联想词不筛）。 Only with pinyin candidates (not v mode or predictions).
@@ -295,9 +300,20 @@ mod tests {
         assert_eq!((s.preedit.as_str(), s.caret), ("shi", Some(2)));
         typing(&mut e, "`r");
         assert_eq!(e.snapshot().preedit, "shi`r", "starting the filter puts the caret back at the end");
+        let shown = texts(&e.snapshot());
+        assert!(shown.contains(&"时".to_string()), "the filter still narrows the list: {shown:?}");
+        // 标点交给界面：返回 false 之后，界面手上的候选表必须一字未动，否则它按第 0 项提交会打出另一个字。
+        // Punctuation goes to the UI: after `false` the list must be exactly what the UI was showing, or committing
+        // index 0 there types a different character than the one on screen.
         assert!(!e.input_char(','));
         let s = e.snapshot();
         assert_eq!(s.preedit, "shi");
         assert!(s.composing);
+        assert_eq!(texts(&s), shown, "the candidate list survives the punctuation key");
+        // 提交界面显示的那一项（筛选后的第二项「时」），而不是刷新后的第一项「是」。
+        // Commit the entry the UI shows — 时, second in the filtered list — not the refreshed first entry 是.
+        let pick = texts(&s).iter().position(|t| t == "时").expect("时 is on screen");
+        assert!(e.select(pick));
+        assert_eq!(e.snapshot().commit, "时");
     }
 }

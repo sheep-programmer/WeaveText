@@ -1754,6 +1754,21 @@ impl Engine {
         }
     }
 
+    /// 结束字形筛选但保留现有候选与顺序：界面随后就按这份表提交。
+    /// Leave the shape filter without rebuilding the candidates, so the UI commits the one it shows.
+    pub(super) fn leave_shape_keeping_candidates(&mut self) {
+        if self.shape.take().is_none() {
+            return;
+        }
+        if let Some(code) = self.preedit.rfind(shape::SHAPE_KEY) {
+            self.preedit.truncate(code);
+        }
+        // 光标映射随筛选码一起消失，预编辑变短后不能留越界的映射。
+        // The caret map belonged to the filtered preedit; drop it or it points past the new end.
+        self.caret_map.clear();
+        self.marks.clear();
+    }
+
     fn mark_cloud_candidates(&mut self) {
         let Some(index)=self.pack_ids.iter().position(|id|id==HOTWORDS_PACK) else{return};
         let cloud=&self.packs[index];

@@ -277,10 +277,15 @@ impl Engine {
             return false;
         }
         let Some(c) = self.cands.get(index).cloned() else { return false };
-        let text = match &c.action {
-            Action::Pinyin(p) => p.text.clone(),
-            Action::Table { text } => text.clone(),
-        };
+        // 只有读得出来的拼音词才谈得上「取一个字」：要有读音键。日期、表情、u 模式的英文以及原样上屏的
+        // 输入（键为空）都是整段内容，取一个字会把其余部分悄悄丢掉。
+        // Only pinyin words with a reading can give up one char. Dates, emoji, u-mode English and the verbatim
+        // escape (empty key) are whole pieces of text: taking one char would silently drop the rest.
+        let Action::Pinyin(p) = &c.action else { return self.select(index) };
+        if p.key.is_empty() {
+            return self.select(index);
+        }
+        let text = p.text.clone();
         let pick = if last { text.chars().last() } else { text.chars().next() };
         let Some(ch) = pick.filter(|_| text.chars().count() > 1) else {
             return self.select(index);
@@ -545,5 +550,28 @@ mod tests {
         let i = e.candidates(0, 50).iter().position(|c| c.text == "你").unwrap();
         assert!(e.select_char(i, true));
         assert_eq!(e.snapshot().commit, "你");
+    }
+
+    #[test]
+    fn select_char_leaves_non_word_candidates_alone() {
+        // 日期、符号、u 模式的英文词与直接上屏的原样输入都不是「词」：取一个字会把后半段悄悄丢掉
+        // （日期 2026-10-17 按 ] 只打出 7，hello 只打出 o）。这些候选交给普通选择。
+        // Dates, symbols, u-mode English and the verbatim escape are not words: taking one char would silently drop
+        // the rest (2026-10-17 → 7, hello → o), so they behave like an ordinary pick.
+        let mut e = engine();
+        typing(&mut e, "rq");
+        let dates = e.candidates(0, 50);
+        if let Some(i) = dates.iter().position(|c| c.text.chars().count() > 1 && c.text.chars().any(|c| c.is_ascii_digit())) {
+            let want = dates[i].text.clone();
+            assert!(e.select_char(i, true), "the candidate is still selectable");
+            assert_eq!(e.snapshot().commit, want, "a date commits whole");
+        }
+        let mut e = engine();
+        typing(&mut e, "hello");
+        let i = e.candidates(0, 50).iter().position(|c| c.text == "hello");
+        if let Some(i) = i {
+            assert!(e.select_char(i, true));
+            assert_eq!(e.snapshot().commit, "hello", "the verbatim escape commits whole");
+        }
     }
 }
