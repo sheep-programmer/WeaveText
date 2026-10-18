@@ -413,3 +413,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   - 必须**从 `service.window?.window?.decorView?.rootWindowInsets` 拿**（窗口级、未被消耗）；如果拿得到，取 `WindowInsets.Type.navigationBars()` + `WindowInsets.Type.ime()` 的 max，作为底部垫高。
   - 不能依赖 root.onApplyWindowInsetsListener 收到的 insets——它是 child 视角，可能已被消耗；该回调只用做"重新读窗口级 insets"的触发信号。
   - IME 显示期间 window insets 总会分发一次，但若分发顺序早于 attach，`root.requestApplyInsets()` in `onShown` 兜一帧；保险做法：**注册 attach-state + onShown + onApplyWindowInsets 三处都重新算**，且每次 `applyInsets` 都用 `host.window?.decorView?.rootWindowInsets` 为准。
+  - 后续（用户报「偶尔还是被虚拟按键挡住，要等重新点一下才回来」）：
+    - **第一帧就先留出来**：还没读到任何边衬时按系统资源 `navigation_bar_height` 预留下来（三键导航；`navigation_mode == 2` 手势导航不预留，系统只画手势条）。否则第一帧的键盘高度里没有这条，键先画到虚拟按键下面。
+    - **把某条边收成 0 要复核**：切应用的动画、窗口进出场、系统重算边衬时会先报 0；这一下不能当真，否则键盘底部滑到虚拟按键下面，而且误判以后没有事件把它纠回来（要重新显示键盘才恢复）。做法是记下这份 0，隔 180 ms 再量一次，读数一致才收下，中间来的其它读数（变大的、变小的但不归零的、横屏换到侧边的）一律立刻生效——多留一条空白只是不好看，少留就把键压在系统按键下面。
+    - 复核**按时间算**，不是按次数：那次 0 通常连着几次刷新都在（一次布局可能触发好几遍重读），按「第二份相同读数」认等于没认。
+    - 显示之后在 120 / 350 / 700 ms 再各量一次：切应用的动画走完、窗口真正定位好都不在 `onShown` 那一瞬。`onWindowShown` 里先读手里的那份，再 `requestApplyInsets()` 要新的（新的那份晚些到，走 `onApplyWindowInsets`）。
