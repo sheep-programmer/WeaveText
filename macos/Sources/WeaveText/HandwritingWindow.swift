@@ -33,7 +33,10 @@ final class HandwritingModel: ObservableObject {
                 guard let self,self.generation==token,self.owner === owner,EngineHost.shared.activeController === owner else{return}
                 let ok=result.bool("ok") && engine.features(["op":"handApply","strokes":strokes,"codes":result["codes"] ?? []]).bool("ok")
                 self.candidates=ok ? engine.candidates(offset:0,limit:12) : []
-                self.message=self.candidates.isEmpty ? "没认出来，请继续书写或清空重写" : "点选上屏，或停笔等待自动上屏"
+                // 连写不自动上屏（见 scheduleIdleCommit），提示语不能再许诺停笔上屏。
+                // Continuous writing never auto-commits, so the message must not promise it.
+                self.message=self.candidates.isEmpty ? "没认出来，请继续书写或清空重写"
+                    : (self.multi ? "点选上屏，写完一整句再确认" : "点选上屏，或停笔等待自动上屏")
                 self.scheduleIdleCommit(token)
             }
         }

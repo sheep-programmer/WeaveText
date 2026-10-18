@@ -70,9 +70,11 @@ public enum ExpressionSearch {
 
         /// 名字或拼音以关键词开头的条数。 Names or pinyin starting with the query.
         public func prefixHits(_ query:String)->Int {
-            let q=clean(query.trimmingCharacters(in:.whitespacesAndNewlines))
+            // 先折叠再清洗，和 Android 一致：WEI 与 wei 命中数相同。
+            // Fold before cleaning, as Android does: WEI and wei must hit the same entries.
+            let q=clean(fold(query.trimmingCharacters(in:.whitespacesAndNewlines)))
             if q.isEmpty {return 0}
-            // 名字与拼音已预先折叠，无需再做大小写转换。 Names and pinyin are already folded here.
+            // 名字与拼音已预先折叠。 Names and pinyin are already folded.
             return entries.filter {$0.name.hasPrefix(q) || $0.pinyin.hasPrefix(q) || $0.joined.hasPrefix(q)}.count
         }
 

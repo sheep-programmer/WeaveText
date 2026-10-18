@@ -18,7 +18,11 @@ final class WeaveInputController: IMKInputController {
     /// 展开网格下面给一排笔画键：拼音类方案才有字形表可筛。手写、英文、五笔没有这一行。
     /// The grid's stroke row: only the pinyin-family schemas have a shape table to filter by. Hand, English and Wubi do not.
     private var shapeFilterOffered: Bool {
-        host.chinese && host.engine != nil && ["pinyin", "shuangpin", "t9", "t14"].contains(prefs.schema)
+        // 双拼的方案 id 形如 shuangpin:xiaohe，不能只比 "shuangpin"；t9 / t14 只存在于 Android。
+        // Shuangpin ids look like shuangpin:xiaohe, so comparing "shuangpin" alone never matches; t9 / t14 are Android-only.
+        guard host.chinese, host.engine != nil else { return false }
+        let id = prefs.schema
+        return id == "pinyin" || id.hasPrefix("shuangpin")
     }
     private static let expandedBatch = 60
     private static let expandedLimit = 600
