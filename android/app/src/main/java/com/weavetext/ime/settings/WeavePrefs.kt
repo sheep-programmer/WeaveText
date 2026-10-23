@@ -64,6 +64,15 @@ object WeavePrefs {
     const val AUTOCORRECT = "autocorrect"
     /** 手写停笔判字时间档位 0–2（[HAND_PAUSE_MS]）。 How long a pause ends a handwritten character (0–2). */
     const val HAND_LINE = "hand_line"
+    const val HAND_MODE = "hand_mode"
+    /** 旧连写开关仍可读取。 Preserve the legacy line toggle when no mode has been saved. */
+    fun handMode(p: SharedPreferences): String = p.getString(HAND_MODE, null)
+        ?.takeIf { it in listOf("single", "line", "overlay") }
+        ?: if (p.getBoolean(HAND_LINE, false)) "line" else "single"
+
+    fun setHandMode(p: SharedPreferences, mode: String) {
+        p.edit().putString(HAND_MODE, mode).putBoolean(HAND_LINE, mode != "single").apply()
+    }
     const val HAND_PAUSE = "hand_pause"
     const val HAND_AUTO_COMMIT = "hand_auto_commit"
     const val HAND_GUIDE = "hand_guide"

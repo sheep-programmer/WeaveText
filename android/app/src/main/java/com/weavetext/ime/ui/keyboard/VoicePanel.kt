@@ -168,8 +168,9 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         /** A hidden panel must not keep deleting or handle the release of an old hold. */
         fun clearInteraction() {
             removeCallbacks(repeatDel)
-            removeCallbacks(expandResult)
-            pressed = NONE; pressedRow = -1; delRepeats = 0
+            pressed = NONE; pressedCardId = null; delRepeats = 0
+            resultDrag = false; dragAxis = 0
+            commitDownId = null; commitDownResults = null
             holdActive = false; holdCancel = false; resultsGesture = false
         }
 
@@ -596,36 +597,65 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         private val cancelBtn = RectF()
         private val redoBtn = RectF()
         private val commitBtn = RectF()
-        private var listScroll = 0f
-        private var listDrag = false
-        private var pressedRow = -1
+        private var resultDrag = false
+        private var pressedCardId: String? = null
+        private var commitDownId: String? = null
+        private var commitDownResults: com.weavetext.ime.voice.MultiEngineResults? = null
         private var resultSet: com.weavetext.ime.voice.MultiEngineResults? = null
-        private val rowOffsets = HashMap<String, Float>()
-        private val rowWidths = HashMap<String, Float>()
-        private var dragRow = -1
         private var dragAxis = 0
-        private var downOffset = 0f
+        private var selectedId: String? = null
+        private var userSelected = false
+        private var previousSelectedId: String? = null
+        private var selectionAt = 0L
+        private var cardDragOffset = 0f
+        private var releasedDragOffset = 0f
+        private var previewDirection = 0
+        private val cardBounds = ArrayList<Pair<String, RectF>>()
         private var previewId: String? = null
         private var previewScroll = 0f
         private var previewMaxScroll = 0f
-        private var openedPreview = false
-        private val expandResult = Runnable {
-            val row = session.results?.rows()?.getOrNull(pressedRow) ?: return@Runnable
-            previewId = row.id
-            previewScroll = 0f
-            pressedRow = -1
-            openedPreview = true
-            kb.feedback.haptic(this)
-            invalidate()
-        }
+
+        @androidx.annotation.VisibleForTesting fun resultCardBounds() = cardBounds.map { it.first to RectF(it.second) }
+        @androidx.annotation.VisibleForTesting val selectedResultId get() = selectedId
+        @androidx.annotation.VisibleForTesting val resultPreviewId get() = previewId
 
         private fun choosing() = session.state == VoiceSession.State.CHOOSING && session.results != null
 
-        private fun rowH(): Float {
-            val n = session.results?.rows()?.size?.coerceIn(1, 3) ?: 3
-            return min(kb.metrics.dp(50f), (listArea.height() - (n - 1) * rowGap()) / n).coerceAtLeast(kb.metrics.dp(27f))
+        /** 交互前跟随默认结果；交互后按引擎 ID 保留选择，排序变化不会误上屏。
+         * Follow the default until interaction, then retain the engine ID across ranking changes. */
+        private fun syncResults(): List<com.weavetext.ime.voice.MultiEngineResults.Row> {
+            val res = session.results ?: return emptyList()
+            if (resultSet !== res) {
+                resultSet = res
+                selectedId = null; previousSelectedId = null; userSelected = false
+                previewId = null; previewScroll = 0f
+                cardDragOffset = 0f; releasedDragOffset = 0f
+            }
+            val rows = res.rows().take(3)
+            if (!userSelected || rows.none { it.id == selectedId }) {
+                selectResult(rows.getOrNull(session.defaultRow)?.id ?: rows.firstOrNull()?.id, false)
+            }
+            if (previewId != null && rows.none { it.id == previewId }) {
+                previewId = null; previewScroll = 0f
+            }
+            return rows
         }
-        private fun rowGap() = kb.metrics.dp(6f)
+
+        private fun selectResult(id: String?, fromUser: Boolean = true) {
+            if (fromUser) userSelected = true
+            if (selectedId == id) return
+            previousSelectedId = selectedId
+            selectedId = id
+            selectionAt = if (fromUser && previousSelectedId != null) SystemClock.uptimeMillis() else 0L
+        }
+
+        private fun selectionProgress(): Float {
+            val scale = android.provider.Settings.Global.getFloat(
+                context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+            )
+            return if (scale <= 0f || selectionAt == 0L) 1f else
+                ((SystemClock.uptimeMillis() - selectionAt) / (220f * scale)).coerceIn(0f, 1f)
+        }
 
         private fun resultsGeometry() {
             val m = kb.metrics
@@ -636,82 +666,42 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             cancelBtn.set(m.dp(12f), cy - m.dp(20f), m.dp(12f) + m.dp(88f), cy + m.dp(20f))
             commitBtn.set(w - m.dp(12f) - m.dp(88f), cy - m.dp(20f), w - m.dp(12f), cy + m.dp(20f))
             redoBtn.set(w / 2 - m.dp(24f), cy - m.dp(24f), w / 2 + m.dp(24f), cy + m.dp(24f))
+            cardBounds.clear()
+            val rows = session.results?.rows().orEmpty().take(3)
+            val gap = m.dp(6f)
+            val cardWidth = (listArea.width() - gap * (rows.size - 1).coerceAtLeast(0)) / rows.size.coerceAtLeast(1)
+            for ((i, row) in rows.withIndex()) {
+                val left = listArea.left + i * (cardWidth + gap)
+                cardBounds += row.id to RectF(left, listArea.top, left + cardWidth, listArea.bottom)
+            }
         }
-
-        private fun maxListScroll(n: Int) = max(0f, n * (rowH() + rowGap()) - rowGap() - listArea.height())
 
         private fun drawResults(c: Canvas) {
             val pal = kb.palette
             val m = kb.metrics
-            val res = session.results ?: return
-            if (resultSet !== res) {
-                resultSet = res; rowOffsets.clear(); rowWidths.clear()
-                previewId = null; previewScroll = 0f; listScroll = 0f
-            }
+            val rows = syncResults()
             resultsGeometry()
-            val rows = res.rows()
             val previewIndex = rows.indexOfFirst { it.id == previewId }
-            val def = if (previewIndex >= 0 && rows[previewIndex].selectable) previewIndex else
-                if (previewId == null) session.defaultRow else -1
-            listScroll = listScroll.coerceIn(0f, maxListScroll(rows.size))
+            val progress = selectionProgress()
+            val eased = 1f - (1f - progress) * (1f - progress)
             c.save()
             c.clipRect(listArea)
-            if (previewIndex < 0) for ((i, r) in rows.withIndex()) {
-                val top = listArea.top + i * (rowH() + rowGap()) - listScroll
-                if (top > listArea.bottom || top + rowH() < listArea.top) continue
-                tmp.set(listArea.left, top, listArea.right, top + rowH())
-                fill.color = when { i == pressedRow && r.selectable -> pal.keyPressed; i == def -> pal.accentSoft; else -> pal.card }
-                c.drawRoundRect(tmp, m.dp(10f), m.dp(10f), fill)
-                if (i == def) {
-                    fill.style = Paint.Style.STROKE; fill.strokeWidth = m.dp(1.5f); fill.color = pal.keyAccent
-                    c.drawRoundRect(tmp, m.dp(10f), m.dp(10f), fill)
-                    fill.style = Paint.Style.FILL
-                }
-                val left = tmp.left + m.dp(12f)
-                val right = tmp.right - m.dp(12f)
-                // 第一行：引擎名 + 状态 / line 1: engine name + status
-                val status = when (r.status) {
-                    com.weavetext.ime.voice.MultiEngineResults.Status.LISTENING,
-                    com.weavetext.ime.voice.MultiEngineResults.Status.LOADING -> "识别中…"
-                    com.weavetext.ime.voice.MultiEngineResults.Status.DONE -> r.latencyMs?.let { "%.1f 秒".format(java.util.Locale.ROOT, it / 1000f) } ?: ""
-                    else -> r.error ?: "失败"
-                }
-                val bad = r.status == com.weavetext.ime.voice.MultiEngineResults.Status.ERROR ||
-                    r.status == com.weavetext.ime.voice.MultiEngineResults.Status.TIMEOUT
-                text.textSize = if (rowH() < m.dp(40f)) m.dp(10f) else m.dp(12f); text.typeface = Typeface.DEFAULT
-                text.textAlign = Paint.Align.RIGHT
-                text.color = if (bad) pal.danger else pal.labelHint
-                val line1 = top + min(m.dp(17f), rowH() * 0.38f)
-                c.drawText(status, right, line1, text)
-                val statusW = text.measureText(status) + m.dp(8f)
-                text.textAlign = Paint.Align.LEFT
-                text.typeface = medium
-                text.color = if (i == def) pal.keyAccent else pal.labelSecondary
-                val name = (if (r.id == res.primaryId) "★ " else "") + r.name
-                c.drawText(android.text.TextUtils.ellipsize(name, text, right - left - statusW, android.text.TextUtils.TruncateAt.END).toString(), left, line1, text)
-                // 第二行：识别文字 / line 2: transcript
-                text.typeface = Typeface.DEFAULT; text.textSize = if (rowH() < m.dp(40f)) m.dp(13f) else m.dp(16f)
-                val body = r.text.ifEmpty { if (r.pending) "…" else "" }
-                text.color = if (r.selectable) pal.label else pal.labelSecondary
-                val singleLine = body.replace('\n', ' ')
-                val overflow = (text.measureText(singleLine) - (right - left)).coerceAtLeast(0f)
-                rowWidths[r.id] = overflow
-                val offset = (rowOffsets[r.id] ?: 0f).coerceIn(0f, overflow)
-                rowOffsets[r.id] = offset
-                c.save()
-                c.clipRect(left, top + rowH() * 0.40f, right, top + rowH())
-                c.drawText(singleLine, left - offset, top + min(m.dp(40f), rowH() * 0.82f), text)
-                c.restore()
-                if (overflow > 0f) {
-                    fill.color = pal.divider
-                    c.drawRect(left, top + rowH() - m.dp(3f), right, top + rowH() - m.dp(2f), fill)
-                    val thumb = ((right - left) * (right - left) / text.measureText(singleLine)).coerceAtLeast(m.dp(16f))
-                    val position = (right - left - thumb) * offset / overflow
-                    fill.color = pal.keyAccent
-                    c.drawRect(left + position, top + rowH() - m.dp(3f), left + position + thumb, top + rowH() - m.dp(2f), fill)
+            if (previewIndex >= 0) {
+                val layer = c.saveLayerAlpha(listArea, (255 * (0.72f + 0.28f * eased)).toInt())
+                c.translate(previewDirection * m.dp(18f) * (1f - eased), 0f)
+                drawResultPreview(c, rows[previewIndex], previewIndex, rows.size)
+                c.restoreToCount(layer)
+            } else {
+                for ((i, row) in rows.withIndex()) {
+                    val emphasis = when (row.id) {
+                        selectedId -> eased
+                        previousSelectedId -> 1f - eased
+                        else -> 0f
+                    }
+                    drawResultCard(c, row, cardBounds[i].second, emphasis, eased)
                 }
             }
-            if (previewIndex >= 0) drawResultPreview(c, rows[previewIndex], previewIndex, rows.size)
+            if (progress < 1f) postInvalidateOnAnimation()
             c.restore()
             // 底部操作 / bottom actions
             text.textSize = m.dp(14f); text.typeface = medium; text.textAlign = Paint.Align.CENTER
@@ -719,7 +709,7 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             c.drawRoundRect(cancelBtn, m.dp(20f), m.dp(20f), fill)
             text.color = pal.label
             c.drawText(if (previewId != null) "返回" else "取消", cancelBtn.centerX(), cancelBtn.centerY() - (text.ascent() + text.descent()) / 2, text)
-            val canCommit = def >= 0
+            val canCommit = rows.any { it.id == selectedId && it.selectable }
             fill.color = when { !canCommit -> pal.keyFunc; pressed == R_COMMIT -> pal.keyAccentPressed; else -> pal.keyAccent }
             c.drawRoundRect(commitBtn, m.dp(20f), m.dp(20f), fill)
             text.color = if (canCommit) pal.onAccent else pal.labelDisabled
@@ -730,12 +720,65 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             if (rows.any { it.pending }) postInvalidateDelayed(250)
         }
 
-        private fun rowAt(x: Float, y: Float): Int {
-            if (!listArea.contains(x, y)) return -1
-            val i = ((y - listArea.top + listScroll) / (rowH() + rowGap())).toInt()
-            val within = (y - listArea.top + listScroll) - i * (rowH() + rowGap()) <= rowH()
-            return if (within && i in 0 until (session.results?.rows()?.size ?: 0)) i else -1
+        private fun drawResultCard(c: Canvas, row: com.weavetext.ime.voice.MultiEngineResults.Row, bounds: RectF, emphasis: Float, progress: Float) {
+            val m = kb.metrics
+            val pal = kb.palette
+            c.save()
+            c.clipRect(bounds)
+            val shift = cardDragOffset + releasedDragOffset * (1f - progress)
+            c.translate(shift, m.dp(3f) * (1f - emphasis))
+            val radius = m.dp(12f)
+            val base = if (pressedCardId == row.id && !resultDrag) pal.keyPressed else pal.card
+            fill.shader = android.graphics.LinearGradient(
+                bounds.left, bounds.top, bounds.right, bounds.bottom,
+                androidx.core.graphics.ColorUtils.blendARGB(base, pal.accentSoft, emphasis),
+                base, Shader.TileMode.CLAMP,
+            )
+            c.drawRoundRect(bounds, radius, radius, fill)
+            fill.shader = null
+            if (emphasis > 0f) {
+                fill.style = Paint.Style.STROKE; fill.strokeWidth = m.dp(1.5f)
+                fill.color = pal.keyAccent; fill.alpha = (255 * emphasis).toInt()
+                tmp.set(bounds); tmp.inset(m.dp(1f), m.dp(1f))
+                c.drawRoundRect(tmp, radius, radius, fill)
+                fill.style = Paint.Style.FILL; fill.alpha = 255
+            }
+            val compact = bounds.height() < m.dp(100f)
+            val left = bounds.left + m.dp(10f)
+            val innerWidth = (bounds.width() - m.dp(20f)).coerceAtLeast(1f)
+            text.textAlign = Paint.Align.LEFT; text.textSize = m.dp(12f); text.typeface = medium
+            text.color = androidx.core.graphics.ColorUtils.blendARGB(pal.labelSecondary, pal.keyAccent, emphasis)
+            val name = (if (row.id == session.results?.primaryId) "★ " else "") + row.name
+            c.drawText(android.text.TextUtils.ellipsize(name, text, innerWidth, android.text.TextUtils.TruncateAt.END).toString(), left, bounds.top + m.dp(20f), text)
+            val status = when (row.status) {
+                com.weavetext.ime.voice.MultiEngineResults.Status.LISTENING,
+                com.weavetext.ime.voice.MultiEngineResults.Status.LOADING -> "识别中…"
+                com.weavetext.ime.voice.MultiEngineResults.Status.DONE -> row.latencyMs?.let { "%.1f 秒".format(java.util.Locale.ROOT, it / 1000f) } ?: "已完成"
+                else -> row.error ?: "识别失败"
+            }
+            text.typeface = Typeface.DEFAULT; text.textSize = m.dp(10f)
+            text.color = if (row.status == com.weavetext.ime.voice.MultiEngineResults.Status.ERROR || row.status == com.weavetext.ime.voice.MultiEngineResults.Status.TIMEOUT) pal.danger else pal.labelHint
+            if (!compact) c.drawText(android.text.TextUtils.ellipsize(status, text, innerWidth, android.text.TextUtils.TruncateAt.END).toString(), left, bounds.top + m.dp(36f), text)
+            val bodyTop = bounds.top + m.dp(if (compact) 27f else 46f)
+            val bodyBottom = bounds.bottom - m.dp(if (compact) 3f else 24f)
+            text.textSize = m.dp(if (compact) 13f else 15f); text.color = if (row.selectable) pal.label else pal.labelSecondary
+            val body = row.text.ifEmpty { row.error ?: "正在识别…" }
+            val lineHeight = text.fontSpacing + m.dp(3f)
+            val maxLines = ((bodyBottom - bodyTop) / lineHeight).toInt().coerceAtLeast(1)
+            val layout = StaticLayout.Builder.obtain(body, 0, body.length, text, innerWidth.toInt().coerceAtLeast(1))
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(m.dp(3f), 1f)
+                .setMaxLines(maxLines).setEllipsize(android.text.TextUtils.TruncateAt.END).build()
+            c.save()
+            c.clipRect(left, bodyTop, left + innerWidth, bodyBottom.coerceAtLeast(bodyTop))
+            c.translate(left, bodyTop)
+            layout.draw(c)
+            c.restore()
+            text.textSize = m.dp(10f); text.color = pal.labelHint
+            if (!compact) c.drawText("点按查看全文", left, bounds.bottom - m.dp(10f), text)
+            c.restore()
         }
+
+        private fun cardAt(x: Float, y: Float): String? = cardBounds.firstOrNull { it.second.contains(x, y) }?.first
 
         private fun drawResultPreview(c: Canvas, row: com.weavetext.ime.voice.MultiEngineResults.Row, index: Int, count: Int) {
             val m = kb.metrics
@@ -763,8 +806,10 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             val m = kb.metrics
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    syncResults()
                     resultsGeometry()
-                    downX = e.x; downY = e.y; listDrag = false; dragAxis = 0; openedPreview = false
+                    downX = e.x; downY = e.y; resultDrag = false; dragAxis = 0
+                    cardDragOffset = 0f; releasedDragOffset = 0f
                     pressed = when {
                         languageRects.any { it.contains(e.x, e.y) } -> LANGUAGE_BASE + languageRects.indexOfFirst { it.contains(e.x, e.y) }
                         close.contains(e.x, e.y) -> CLOSE
@@ -775,56 +820,63 @@ class VoicePanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                         redoBtn.contains(e.x, e.y) -> R_REDO
                         else -> NONE
                     }
-                    dragRow = if (pressed == NONE && previewId == null) rowAt(e.x, e.y) else -1
-                    pressedRow = dragRow
-                    downOffset = session.results?.rows()?.getOrNull(dragRow)?.id?.let { rowOffsets[it] } ?: 0f
-                    downScroll = if (previewId != null) previewScroll else listScroll
-                    if (pressed != NONE || pressedRow >= 0) kb.feedback.key(this)
-                    if (pressedRow >= 0) postDelayed(expandResult, 450)
+                    commitDownId = if (pressed == R_COMMIT) selectedId else null
+                    commitDownResults = if (pressed == R_COMMIT) session.results else null
+                    if (pressed == R_COMMIT) userSelected = true
+                    pressedCardId = if (pressed == NONE && previewId == null) cardAt(e.x, e.y) else null
+                    downScroll = previewScroll
+                    if (pressed != NONE || pressedCardId != null) kb.feedback.key(this)
                     invalidate()
                 }
-                MotionEvent.ACTION_MOVE -> if (pressed == NONE && listArea.contains(downX, downY) && !openedPreview) {
+                MotionEvent.ACTION_MOVE -> if (pressed == NONE && listArea.contains(downX, downY)) {
                     val dx = e.x - downX; val dy = e.y - downY
                     if (dragAxis == 0 && max(kotlin.math.abs(dx), kotlin.math.abs(dy)) > m.dp(8f)) {
-                        removeCallbacks(expandResult)
                         dragAxis = if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) 1 else 2
-                        listDrag = true; pressedRow = -1
+                        resultDrag = true
                     }
                     if (dragAxis == 1 && previewId == null) {
-                        session.results?.rows()?.getOrNull(dragRow)?.id?.let { id ->
-                            rowOffsets[id] = (downOffset - dx).coerceIn(0f, rowWidths[id] ?: 0f)
-                        }
-                    } else if (dragAxis == 2) {
-                        if (previewId != null) previewScroll = (downScroll - dy).coerceIn(0f, previewMaxScroll)
-                        else listScroll = (downScroll - dy).coerceIn(0f, maxListScroll(session.results?.rows()?.size ?: 0))
+                        cardDragOffset = (dx * 0.08f).coerceIn(-m.dp(12f), m.dp(12f))
+                    } else if (dragAxis == 2 && previewId != null) {
+                        previewScroll = (downScroll - dy).coerceIn(0f, previewMaxScroll)
                     }
                     invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
-                    removeCallbacks(expandResult)
-                    val p = pressed; val row = pressedRow
-                    pressed = NONE; pressedRow = -1
-                    if (previewId != null && dragAxis == 1 && kotlin.math.abs(e.x - downX) > m.dp(48f)) {
-                        val rows = session.results?.rows().orEmpty()
-                        val index = rows.indexOfFirst { it.id == previewId }
+                    val p = pressed; val cardId = pressedCardId
+                    pressed = NONE; pressedCardId = null
+                    if (dragAxis == 1 && kotlin.math.abs(e.x - downX) > m.dp(48f)) {
+                        val rows = syncResults()
+                        val index = rows.indexOfFirst { it.id == selectedId }
                         val next = (index + if (e.x < downX) 1 else -1).coerceIn(0, (rows.size - 1).coerceAtLeast(0))
-                        previewId = rows.getOrNull(next)?.id; previewScroll = 0f
-                    } else if (!listDrag && !openedPreview) when {
-                        row >= 0 && row == rowAt(e.x, e.y) -> session.choose(row)
+                        selectResult(rows.getOrNull(next)?.id)
+                        if (previewId != null) {
+                            previewId = selectedId; previewScroll = 0f
+                            previewDirection = if (e.x < downX) 1 else -1
+                        }
+                        releasedDragOffset = cardDragOffset
+                        selectionAt = SystemClock.uptimeMillis()
+                        kb.feedback.haptic(this)
+                    } else if (!resultDrag) when {
+                        cardId != null && cardId == cardAt(e.x, e.y) -> {
+                            selectResult(cardId)
+                            previewId = cardId; previewScroll = 0f; previewDirection = 0
+                        }
                         p == R_CANCEL && cancelBtn.contains(e.x, e.y) -> if (previewId != null) { previewId = null; previewScroll = 0f } else session.cancel()
                         p == R_COMMIT && commitBtn.contains(e.x, e.y) -> {
-                            val index = if (previewId == null) session.defaultRow else session.results?.rows()?.indexOfFirst { it.id == previewId } ?: -1
-                            if (index >= 0) session.choose(index)
+                            if (session.results === commitDownResults) commitDownId?.let(session::choose)
                         }
-                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { previewId = null; listScroll = 0f; session.restart() }
+                        p == R_REDO && redoBtn.contains(e.x, e.y) -> { previewId = null; session.restart() }
                         p != NONE && p == hitAt(e.x, e.y) -> onTap(p)
                     }
-                    listDrag = false
+                    cardDragOffset = 0f; resultDrag = false; dragAxis = 0
+                    commitDownId = null; commitDownResults = null
                     invalidate()
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    removeCallbacks(expandResult)
-                    pressed = NONE; pressedRow = -1; listDrag = false; dragAxis = 0; invalidate()
+                    pressed = NONE; pressedCardId = null; resultDrag = false; dragAxis = 0
+                    cardDragOffset = 0f; releasedDragOffset = 0f
+                    commitDownId = null; commitDownResults = null
+                    invalidate()
                 }
             }
             return true

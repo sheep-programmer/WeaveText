@@ -2,11 +2,23 @@
 
 用户明确选择一个字并上屏，代表希望这个输入码优先给出该字。旧版本只累计词频：如果旧字已记录很多次，连续选五次新字仍可能排在其后。以真实词库的 `shi → 嗜` 为例，预先给「是、时」积累较高词频，选五次后「嗜」仍是第三。
 
-新版同时记录长期次数和近期明确选择。对相同读音，确认一次就形成偏好，覆盖整个输入的候选直接排到最前；多次更换选择也能改变偏好。**简拼与云端热词一视同仁**：`sj` 选出「使劲」、或从热词里选出只在云端词库出现的词，下次打 `sj` / 那个读音时它就在首位。偏好要覆盖整个输入才生效，单字的偏好不把更长输入的整句候选挤走：`shi` 选「嗜」不会要求 `shijian` 首选变成两个孤立的单字。全拼、双拼、九键共享汉字读音和学习结果。
+新版同时记录长期次数和近期明确选择。对相同读音，确认一次就形成偏好，多次更换选择也能改变偏好。没有上文时，覆盖整个输入且符合当前读法的近期选择优先；完整拼写或已开启的模糊音有上文时，最终候选保留解码器结合上下文／已学搭配选出的胜者，避免在列表生成时再次无条件置前。简拼、未完整音节的补全及已开启的模糊音仍可使用近期选择补偿；纠错或把完整音节补成长音节的候选不能仅凭近期选过就强行置前。例如选过 `shijian → 时间` 后，`shijia` 仍优先按 `shi jia` 选词，不把 `jia` 擅自补成 `jian`；未打完的 `shij` 仍可补全，完整 `shijian` 仍保留学习结果。**简拼与云端热词也能学习**：`sj` 选出「使劲」后，下次打 `sj` 保留近期优先；从热词里选出的词也进入同一套个人学习，完整拼写有上文时仍按上述规则竞争。偏好要覆盖整个输入才生效，单字的偏好不把更长输入的整句候选挤走：`shi` 选「嗜」不会要求 `shijian` 首选变成两个孤立的单字。全拼、双拼、九键共享汉字读音和学习结果。
+
+Recent choices and long-term counts both affect ranking. Without context, a recent choice covering the input and matching its reading may lead. For full or enabled fuzzy readings with context, candidate construction preserves the decoder's contextual/collocation winner instead of unconditionally prepending a recent choice again. Abbreviations, incomplete-syllable completions and enabled fuzzy readings retain preference compensation. Correction paths and extensions of already complete syllables cannot lead solely because the word was recently selected. After learning `shijian → 时间`, `shijia` still favors `shi jia` rather than extending `jia` to `jian`; unfinished readings can still complete, and the exact `shijian` reading keeps its learned preference.
 
 选择词句时学习组成的词，也记住最终确认的完整词句。手动分段拼出的词可作为整体候选，不必下次继续拆开选。普通自动组句积累使用次数，不冒充用户明确的偏好。
 
-选择完成和撤销时写入本地日志，换输入框或重新加载不清空偏好；无需等输入法正常退出才保存。选错立即退格会恢复此前的词频、最近选择和搭配，避免误选留下新的“常用字”。密码框及禁止个性化学习的输入框不积累这些记录。记录留在本机，词库清空会同时清除英文个人记录。
+选择完成和撤销时写入本地日志，换输入框或重新加载不清空偏好；无需等输入法正常退出才保存。选错立即退格会恢复此前的词频、最近选择和搭配，避免误选留下新的“常用字”。连续提交达到门槛后生成新词的临时证据也按提交前状态恢复：被否定的词对不计数，撤回新词不会丢掉此前有效的一次证据。密码框及禁止个性化学习的输入框不积累这些记录。记录留在本机，词库清空会同时清除英文个人记录。
+
+Immediate backspace restores pre-commit word counts, recent choices, collocations and provisional evidence used to learn consecutive word pairs. Rejected pairs contribute no evidence; undoing a newly promoted phrase restores earlier valid evidence. Learning remains disabled in private fields, and persistent records stay local.
+
+## 上屏后的中文联想
+
+个人搭配按长期次数和后续学习步数衰减后的有效次数排序。例如很久以前常写「下午开会」，近期改写「下午吃饭」，新习惯可以超过衰减后的旧习惯。这里的“时间”是本机学习时钟：每次有效学习推进，不按日历天数计算，也不会因为几天没打开输入法而清空习惯。
+
+有效次数低于个人词库原有淘汰阈值的搭配，不再占据个人联想优先档，无需等到日志压缩。仍有有效证据的旧搭配会保留；同一词即使不再有个人证据，仍可作为词库接续出现，并遵循普通联想的上下文与收尾门控。候选数量、连选深度与隐私开关沿用已有规则。
+
+Chinese personal next-word predictions use counts decayed by subsequent learning steps, so recent habits can overtake older ones. Age follows the local learning clock rather than calendar time. Pairs below the existing dictionary-pruning threshold lose personal priority immediately, without waiting for log compaction. Older pairs with remaining evidence stay available; an expired personal pair may still appear as an ordinary lexicon continuation under the existing context/closing rules. Candidate limits, chain depth and privacy controls are unchanged.
 
 ## 候选注音与动态排序
 

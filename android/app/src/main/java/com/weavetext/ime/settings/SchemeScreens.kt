@@ -129,8 +129,10 @@ fun SchemesScreen() {
         GroupCard {
             ClearHandLearningRow()
             RowDivider(false)
-            SwitchRow("连续连写", "横向写 2–4 个字，字间留空；停笔不上屏，写完点候选确认。键盘右侧也可切换", checked=p.getBoolean(WeavePrefs.HAND_LINE,false),subtitleMaxLines=3) {
-                p.edit().putBoolean(WeavePrefs.HAND_LINE,it).apply()
+            SettingRow("书写方式", "单字、横向连写或同区叠写；叠写按停笔判字，最多四字，写完点候选。键盘右侧也可切换", subtitleMaxLines = 3, onClick = {
+                WeavePrefs.setHandMode(p, when (WeavePrefs.handMode(p)) { "single" -> "line"; "line" -> "overlay"; else -> "single" })
+            }) {
+                ValueChevron(when (WeavePrefs.handMode(p)) { "line" -> "连写"; "overlay" -> "叠写"; else -> "单字" })
             }
             RowDivider(false)
             SwitchRow("停笔自动上屏", "关闭后保留笔迹与候选，点选、空格或回车才上屏，适合慢写与仔细选字", checked = WeavePrefs.handAutoCommit(p), subtitleMaxLines = 3) {

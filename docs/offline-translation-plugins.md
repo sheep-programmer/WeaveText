@@ -4,6 +4,10 @@
 
 ## Android
 
+打开翻译后，原文区位于键盘上方，直接使用当前键盘输入；草稿与应用正文分开。点击“翻译”才调用所选服务或打开网页。离线结果显示在翻译区，确认操作收在“更多”菜单中，可替换选区、插入正文或复制；读取选区、粘贴和清空也在菜单中。编辑原文、切换语言或关闭面板会取消旧请求，切换输入框后拒绝旧结果写回。密码等敏感输入框不提供翻译。
+
+*The translation source sits above the Android keyboard and accepts normal typing into a separate draft. Read a selection, paste or clear it as needed. Tapping Translate explicitly invokes the selected service or opens its web page. Offline results stay in the panel until copied or confirmed for replacement/insertion. Source edits, language changes and closing cancel old requests; changing editors invalidates old writeback targets. Sensitive fields disable translation.*
+
 安装主输入法后，在设置 → 翻译 → 离线翻译插件中选择配套插件 APK，完成 Android 的安装确认。也可以直接安装插件 APK。返回后状态会立即刷新；只有签名匹配、协议兼容且启用的插件才会用于翻译。
 
 点“管理语言包”进入独立插件应用，按语言下载或删除。默认 Wi-Fi，可明确允许移动网络。Google 官方语言包约 30 MB，具体占用由 SDK 管理。主输入法本身不含 `libtranslate_jni.so`、`liblanguage_id_l2c_jni.so`、Google ML Kit 或模型。插件卸载由系统确认，插件应用及其私有语言包随卸载删除；主输入法和个人词库保留。

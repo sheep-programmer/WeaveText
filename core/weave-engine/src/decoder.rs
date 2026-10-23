@@ -120,6 +120,33 @@ pub struct Span {
     pub cut_short: bool,
 }
 
+impl Span {
+    /// 近期偏好适用于简拼和未完成的音节；改写完整音节或纠错仍须按惩罚排序。
+    /// Recent preferences cover abbreviations and unfinished syllables; corrections and extensions of
+    /// complete syllables must still compete with their normal penalties.
+    pub(crate) fn allows_recent_preference(&self, graph: &SyllableGraph) -> bool {
+        self.matches_preference_reading(graph, true)
+    }
+
+    fn matches_preference_reading(&self, graph: &SyllableGraph, incomplete: bool) -> bool {
+        let mut start = self.start;
+        for (&end, &syllable) in self.cuts.iter().zip(&self.key) {
+            let allowed = graph.out[start].iter().any(|edge| {
+                edge.end == end && edge.syls.contains(&syllable)
+                    && match edge.kind {
+                        EdgeKind::Full | EdgeKind::Fuzzy => true,
+                        EdgeKind::Abbrev => incomplete,
+                        EdgeKind::Partial => incomplete && edge.penalty < crate::graph::penalty::EXTEND_END,
+                        _ => false,
+                    }
+            });
+            if !allowed { return false; }
+            start = end;
+        }
+        self.cuts.len() == self.key.len()
+    }
+}
+
 /// 词条来源。 Where a word came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
@@ -1046,15 +1073,17 @@ impl<'a> Decoder<'a> {
         let mut out: Vec<Candidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = Default::default();
 
-        // 学过的完整选择可以排到最前；单个字的偏好不会把更长输入的整句候选挤走。选它时读法是不是原样
-        // 拼出来的（简拼、补全、纠错）都算数——用户既然选过，下次就该在前面；但必须覆盖整个输入。
-        // Complete learned choices may lead the list; a partial single character never displaces a longer
-        // input's sentence. How the reading was reached (abbreviation, completion, correction) does not
-        // matter — a word the user picked belongs in front next time — but it must cover the whole input.
+        // 学过的完整选择可以排到最前；必须覆盖整个输入，且不能靠纠错或改写已完整音节置前。
+        // Complete learned choices may lead the list only when they cover the whole input without
+        // correcting keys or extending an already complete syllable.
+        // 完整拼写及模糊音有上文时保留解码胜者；简拼与未完成尾音节仍需近期补偿。
+        // Preserve contextual decoding for full/fuzzy readings; abbreviations and unfinished tails
+        // still need this preference floor. Explicit pins are handled separately.
         let mut preferred = Vec::new();
         for &si in &lat.by_start[0] {
             let span = &lat.spans[si];
-            if span.end != n || span.raw { continue; }
+            if span.end != n || span.raw || !span.allows_recent_preference(self.graph)
+                || (self.context.is_some_and(|s| !s.is_empty()) && span.matches_preference_reading(self.graph, false)) { continue; }
             if let Some(choice) = self.user.choice(&span.key).filter(|c| self.user.preferred(&span.key, &c.text)) {
                 // 用户在这个读音里学过的短词顶替过它（他们在「她们」之后）：不置顶，交给让位后的打分。
                 // A shorter word the user learned in part of this reading displaces it: no front-loading.
@@ -1258,6 +1287,42 @@ mod debug_tests {
         let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
         assert_eq!(candidates[0].text, "视界");
         assert_eq!(candidates[0].kind, CandKind::Word);
+    }
+
+    #[test]
+    fn contextual_winner_is_not_overridden_by_a_global_recent_choice() {
+        let lex = homophones();
+        let mut user = UserDict::in_memory();
+        let key = syllable::parse_seq("shi jie").unwrap();
+        user.learn(&key, "世界");
+        user.select(&key, "世界");
+        for _ in 0..20 { user.learn_bigram("虚拟", "视界"); }
+        let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: Some("虚拟"), lm: None };
+        let lat = decoder.decode();
+        assert_eq!(lat.best[0].1, "视界");
+        let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
+        assert_eq!(candidates[0].text, "视界");
+        assert!(candidates.iter().any(|c| c.text == "世界"));
+        let isolated = Decoder { context: None, ..decoder };
+        assert_eq!(isolated.candidates(&isolated.decode(), &|_, _| String::new(), 20)[0].text, "世界");
+    }
+
+    #[test]
+    fn unrelated_context_keeps_a_learned_abbreviation_preference() {
+        let mut builder = Builder::new(Kind::Pinyin);
+        for (py, text, cost) in [("shi jian", "时间", 100), ("shi jin", "使劲", 4000)] {
+            builder.insert(&syllable::parse_seq(py).unwrap(), text, cost);
+        }
+        let lex = Lexicon::from_bytes(builder.build()).unwrap();
+        let mut user = UserDict::in_memory();
+        let key = syllable::parse_seq("shi jin").unwrap();
+        user.learn(&key, "使劲"); user.select(&key, "使劲");
+        let graph = build_full_pinyin(&Letters::parse("sj"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
+            graph: &graph, context: Some("任意"), lm: None };
+        assert_eq!(decoder.candidates(&decoder.decode(), &|_, _| String::new(), 20)[0].text, "使劲");
     }
 
     #[test]

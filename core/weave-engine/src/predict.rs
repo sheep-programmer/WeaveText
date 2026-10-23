@@ -152,7 +152,11 @@ pub fn predict(
     // 1. 用户二元组。 User bigrams.
     if let Some(w) = last_word.filter(|w| !w.is_empty()) {
         for (next, st) in user.bigrams_after(w) {
-            let bonus = (2200.0 * (1.0 + st.count as f64).ln()).min(6500.0) as i64;
+            let count = crate::userdict::decayed(st.count, user.tick().saturating_sub(st.last));
+            // 与用户词库压缩采用相同的过期阈值，避免旧记录继续享有个人联想优先级。
+            // Match dictionary pruning so expired records no longer receive personal-prediction priority.
+            if count < 0.25 { continue; }
+            let bonus = (2200.0 * (1.0 + count).ln()).min(6500.0) as i64;
             let base = readings.word_cost(lex, &next).map(|c| (c as f32 * LEX_WEIGHT) as i64).unwrap_or(4000);
             // 第 0 档：用户自己的搭配排在所有词库/模型猜测前面。 Tier 0: the user's own pairs rank before every guess.
             scored.insert(next, (base - bonus, true));
@@ -245,4 +249,62 @@ pub fn predict(
     });
     out.truncate(limit);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use weave_dict::lexicon::{Builder, Kind};
+
+    fn fixture() -> Lexicon {
+        let mut b = Builder::new(Kind::Pinyin);
+        for (py, text) in [("kai hui", "开会"), ("chi fan", "吃饭")] {
+            b.insert(&weave_dict::syllable::parse_seq(py).unwrap(), text, 4000);
+        }
+        Lexicon::from_bytes(b.build()).unwrap()
+    }
+
+    #[test]
+    fn recent_prediction_overtakes_an_older_more_frequent_habit() {
+        let lex = fixture();
+        let mut user = UserDict::in_memory();
+        for _ in 0..8 { user.learn_bigram("下午", "开会"); }
+        for _ in 0..80_000 { user.learn_bigram("其他", "记录"); }
+        for _ in 0..2 { user.learn_bigram("下午", "吃饭"); }
+        let list = predict("下午", Some("下午"), &lex, &Readings::build(&lex), None, None, &user, 8);
+        assert_eq!(list.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["吃饭", "开会"]);
+    }
+
+    #[test]
+    fn old_prediction_with_remaining_evidence_still_appears() {
+        let lex = fixture();
+        let mut user = UserDict::in_memory();
+        user.learn_bigram("下午", "开会");
+        for _ in 0..20_000 { user.learn_bigram("其他", "记录"); }
+        let list = predict("下午", Some("下午"), &lex, &Readings::build(&lex), None, None, &user, 8);
+        assert_eq!(list.iter().map(|p| (p.text.as_str(), p.user)).collect::<Vec<_>>(), [("开会", true)]);
+    }
+
+    #[test]
+    fn expired_personal_prediction_can_still_be_a_lexicon_continuation() {
+        let lex = fixture();
+        let mut builder = weave_dict::follow::FollowBuilder::default();
+        builder.push_phrase("下午开会", 4000, 2, 2);
+        let follow = weave_dict::follow::Follow::from_bytes(builder.build(8)).unwrap();
+        let mut user = UserDict::in_memory();
+        user.learn_bigram("下午", "开会");
+        for _ in 0..60_000 { user.learn_bigram("其他", "记录"); }
+        let list = predict("下午", Some("下午"), &lex, &Readings::build(&lex), Some(&follow), None, &user, 8);
+        assert_eq!(list.iter().map(|p| (p.text.as_str(), p.user)).collect::<Vec<_>>(), [("开会", false)]);
+    }
+
+    #[test]
+    fn expired_prediction_does_not_survive_until_log_compaction() {
+        let lex = fixture();
+        let mut user = UserDict::in_memory();
+        user.learn_bigram("下午", "开会");
+        for _ in 0..60_000 { user.learn_bigram("其他", "记录"); }
+        let list = predict("下午", Some("下午"), &lex, &Readings::build(&lex), None, None, &user, 8);
+        assert!(list.is_empty(), "expired history must not force a personal prediction: {list:?}");
+    }
 }

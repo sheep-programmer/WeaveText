@@ -1011,7 +1011,13 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                     pressedTool = -1
                     host.onToolbar(tools[0])
                 } else if (candidateMode) {
+                    // 快速横滑的末点可能只在 UP 到达，先更新拖动再判断选词。
+                    // A fast slide may deliver its final position only on UP; update the drag before selecting.
+                    val dx = e.x - downX
+                    if (!strip && abs(dx) > m.dp(8f)) { dragging = true; pressedCand = -1 }
                     if (dragging) {
+                        scrollTo(downScroll - dx)
+                        checkMore()
                         velocity?.computeCurrentVelocity(1000)
                         val vx = velocity?.xVelocity ?: 0f
                         scroller.fling(scrollX0.toInt(), 0, -vx.toInt(), 0, 0, maxScroll().toInt(), 0, 0)

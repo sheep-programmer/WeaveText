@@ -36,7 +36,7 @@ class NavigationDeviceTest {
         val windows = shell("dumpsys window windows")
         val part = Regex("Window #[0-9]+ Window\\{[^\\n]*NavigationBar[^\\n]*\\}:([\\s\\S]*?)(?=  Window #|$)")
             .find(windows)?.groupValues?.get(1) ?: return null
-        val match = Regex("mFrame=\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]").find(part) ?: return null
+        val match = Regex("(?:mFrame|frame)=\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]").find(part) ?: return null
         val values = match.groupValues.drop(1).map(String::toInt)
         return Rect(values[0], values[1], values[2], values[3]).takeUnless { it.isEmpty }
     }

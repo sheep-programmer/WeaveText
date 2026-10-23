@@ -286,6 +286,120 @@ class InputPathTest {
         assertEquals("hello, !", ic.text)
     }
 
+    @Test fun englishTextApostropheKeepsTheContractionComposing() {
+        start()
+        controller.toggleChinese()
+        type("don")
+        controller.onText("'")
+        assertEquals("don'", controller.state.preedit)
+        assertTrue(controller.state.composing)
+        assertEquals("", ic.text)
+        type("t")
+        assertEquals("don't", controller.state.preedit)
+        assertEquals("don't", controller.state.candidates.first().text)
+        assertEquals("", ic.text)
+        controller.onSpace()
+        assertEquals("don't ", ic.text)
+        assertFalse(controller.state.composing)
+    }
+
+    @Test fun englishReplacementApostropheCanBeUndoneInsideTheWord() {
+        start()
+        controller.toggleChinese()
+        type("donk")
+        // 上滑替代字符先撤回按下的字母，再输入撇号。 Swipe replacement undoes the key-down letter first.
+        assertTrue(controller.undoLastInput())
+        controller.onText("'")
+        assertEquals("don'", controller.state.preedit)
+        assertEquals("", ic.text)
+        assertTrue(controller.undoLastInput())
+        assertEquals("don", controller.state.preedit)
+        assertEquals("", ic.text)
+        controller.onText("'")
+        type("t")
+        controller.onEnter()
+        assertEquals("don't", ic.text)
+        assertFalse(controller.state.composing)
+    }
+
+    @Test fun englishCharApostropheKeepsTheContractionComposing() {
+        start()
+        controller.toggleChinese()
+        type("don't")
+        assertEquals("don't", controller.state.preedit)
+        assertEquals("", ic.text)
+        controller.onCandidate(0)
+        assertEquals("don't", ic.text)
+    }
+
+    @Test fun englishTextApostropheWithoutAWordCommitsLiterally() {
+        start()
+        controller.toggleChinese()
+        controller.onText("'")
+        assertEquals("'", ic.text)
+        assertFalse(controller.state.composing)
+        type("don")
+        assertEquals("don", controller.state.preedit)
+        assertEquals("'", ic.text)
+    }
+
+    @Test fun apostropheStaysLiteralInFieldsWithoutEnglishSuggestions() {
+        val types = listOf(
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+        )
+        for (fieldType in types) {
+            controller.onFinishInput()
+            ic.editable!!.clear()
+            start(type = fieldType)
+            if (controller.state.chinese) controller.toggleChinese()
+            type("don")
+            assertEquals("don", ic.text)
+            controller.onText("'")
+            assertEquals("don'", ic.text)
+            assertFalse(controller.state.composing)
+            assertTrue(controller.state.candidates.isEmpty())
+            type("t")
+            assertEquals("don't", ic.text)
+            assertFalse(controller.state.composing)
+        }
+    }
+
+    @Test fun disablingEnglishSuggestionsKeepsTheApostropheLiteral() {
+        start()
+        controller.toggleChinese()
+        type("don")
+        controller.onStartInputView(info(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS))
+        controller.onText("'")
+        assertEquals("don'", ic.text)
+        assertFalse(controller.state.composing)
+    }
+
+    @Test fun otherEnglishTextStillCommitsLiterallyAfterTheWord() {
+        for (literal in listOf("t", "T", "'t", "t'", "''", "’", ",")) {
+            controller.onFinishInput()
+            ic.editable!!.clear()
+            start()
+            controller.toggleChinese()
+            type("don")
+            controller.onText(literal)
+            assertEquals("don$literal", ic.text)
+            assertFalse(controller.state.composing)
+        }
+    }
+
+    @Test fun chineseTextApostropheKeepsItsExistingLiteralPath() {
+        start()
+        controller.setSchema("t14")
+        type("AB")
+        controller.onText("'")
+        assertEquals("【AB】'", ic.text)
+        assertFalse(controller.state.composing)
+        assertTrue(controller.state.chinese)
+    }
+
     // ------------------------------------------------------------ physical keyboard
 
     private val keys by lazy { HardwareKeys(controller) }
@@ -306,6 +420,59 @@ class InputPathTest {
         press(KeyEvent.KEYCODE_V); press(KeyEvent.KEYCODE_1); press(KeyEvent.KEYCODE_2)
         assertEquals("v12", engine.raw.toString())
         assertEquals("", ic.text)
+    }
+
+    @Test fun physicalDigitsContinueVExpressionsAfterUnicodeOperatorsAndEquals() {
+        for (expression in listOf("v12．", "v12×", "v12÷", "v12＋", "v12－", "v12−", "v（12）", "v(12)=", "v(12)＝")) {
+            controller.onFinishInput()
+            ic.editable!!.clear()
+            start()
+            type(expression)
+            assertEquals(expression, controller.state.preedit)
+            assertEquals("", ic.text)
+            press(KeyEvent.KEYCODE_3)
+            assertEquals("${expression}3", controller.state.preedit)
+            assertEquals("", ic.text)
+            controller.commitRaw()
+            assertEquals("${expression}3", ic.text)
+        }
+    }
+
+    @Test fun physicalDigitsStillSelectCandidatesForOrdinaryVWords() {
+        start()
+        type("very")
+        press(KeyEvent.KEYCODE_3)
+        assertEquals("very2", ic.text)
+        assertFalse(controller.state.composing)
+    }
+
+    @Test fun pairedParenthesisKeepsVExpressionComposingUntilExplicitCommit() {
+        for ((open, close) in listOf("(" to ")", "（" to "）")) {
+            controller.onFinishInput()
+            ic.editable!!.clear()
+            start()
+            type("v1．2*")
+            controller.onPairedText(open, close)
+            assertEquals("v1．2*$open", controller.state.preedit)
+            assertTrue(controller.state.composing)
+            assertEquals("", ic.text)
+            controller.onText("3")
+            controller.onText(close)
+            controller.onText("=")
+            assertEquals("v1．2*${open}3$close=", controller.state.preedit)
+            assertEquals("", ic.text)
+            controller.commitRaw()
+            assertEquals("v1．2*${open}3$close=", ic.text)
+        }
+    }
+
+    @Test fun pairedParenthesisStillWrapsTheEditorAfterOrdinaryVWords() {
+        start()
+        type("very")
+        controller.onPairedText("(", ")")
+        assertEquals("【very】()", ic.text)
+        assertEquals(7, ic.cursor)
+        assertFalse(controller.state.composing)
     }
 
     @Test fun physicalKeysBeforeTheEngineAreKept() {

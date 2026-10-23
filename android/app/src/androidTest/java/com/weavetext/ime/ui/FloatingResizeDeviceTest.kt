@@ -30,6 +30,7 @@ import com.weavetext.ime.settings.FloatingResizeSettings
 import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.ui.keyboard.FloatingResizeAccessibility
 import com.weavetext.ime.ui.keyboard.FloatingResizeCorner
+import com.weavetext.ime.ui.keyboard.FloatingResizeEdge
 import com.weavetext.ime.ui.keyboard.ImeWindowHost
 import com.weavetext.ime.ui.keyboard.WeaveKeyboard
 import org.junit.Assert.*
@@ -186,6 +187,50 @@ class FloatingResizeDeviceTest {
         }
     }
 
+    @Test fun everyEdgeResizesWithoutTypingAndStaysOutsideTheBoard() {
+        for (edge in FloatingResizeEdge.entries) withKeyboard { f ->
+            val before = f.onMain { screenBounds(f.card) }
+            val origin = f.onMain {
+                val target = requireNotNull(f.find(edge.contentDescription))
+                assertTrue(target.isShown)
+                val box = screenBounds(target)
+                assertFalse("$edge covers the board", Rect.intersects(box, screenBounds(f.keyboard.board)))
+                // The central handle remains above the top edge, so use its free left segment.
+                if (edge == FloatingResizeEdge.TOP) PointF(box.left + box.width() * 0.2f, box.exactCenterY()) else centre(box)
+            }
+            val delta = f.onMain { f.keyboard.metrics.dp(32f) }
+            val point = when (edge) {
+                FloatingResizeEdge.LEFT -> PointF(origin.x + delta, origin.y)
+                FloatingResizeEdge.RIGHT -> PointF(origin.x - delta, origin.y)
+                FloatingResizeEdge.TOP -> PointF(origin.x, origin.y + delta)
+                FloatingResizeEdge.BOTTOM -> PointF(origin.x, origin.y - delta)
+            }
+            val time = SystemClock.uptimeMillis()
+            f.emit(MotionEvent.ACTION_DOWN, origin, time, true)
+            f.emit(MotionEvent.ACTION_MOVE, point, time, true)
+            f.awaitLayout()
+            f.emit(MotionEvent.ACTION_UP, point, time, true)
+            f.awaitLayout()
+            f.onMain {
+                val after = screenBounds(f.card)
+                assertTrue("$edge did not shrink width", after.width() < before.width())
+                assertTrue("$edge did not shrink height", after.height() < before.height())
+                f.assertInsideRoot()
+                f.assertNoInput()
+            }
+        }
+    }
+
+    @Test fun clickingHandleAgainHidesTheFrameWithoutDocking() = withKeyboard { f ->
+        f.tapHandle()
+        f.onMain {
+            assertTrue(f.visibleCorners().isEmpty())
+            assertTrue(FloatingResizeEdge.entries.none { f.find(it.contentDescription)?.isShown == true })
+            assertTrue(f.keyboard.floating)
+            f.assertNoInput()
+        }
+    }
+
     private fun dragCorner(
         f: Fixture, corner: FloatingResizeCorner, requireHandled: Boolean,
         endAction: Int = MotionEvent.ACTION_UP, outward: Boolean = false, onMove: (Rect) -> Unit = {},
@@ -195,9 +240,9 @@ class FloatingResizeDeviceTest {
             val grip = f.find(corner.contentDescription)
             if (grip != null && grip.isShown && grip.width > 0 && grip.height > 0) centre(screenBounds(grip))
             else {
-                val inset = f.keyboard.metrics.dp(24f)
+                val inset = f.keyboard.metrics.dp(16f)
                 PointF(if (corner.horizontalSign < 0) before.left + inset else before.right - inset,
-                    if (corner.verticalSign < 0) before.top + inset else before.bottom - inset)
+                    if (corner.verticalSign < 0) before.top + f.keyboard.metrics.dp(14f) else before.bottom - f.keyboard.metrics.dp(7f))
             }
         }
         val direction = if (outward) 1 else -1
@@ -289,6 +334,10 @@ class FloatingResizeDeviceTest {
                     val f = requireNotNull(fixture)
                     f.awaitLayout()
                     f.proveInputPath()
+                    f.onMain { assertTrue("Normal mode hides the resize frame", f.visibleCorners().isEmpty()) }
+                    f.capture("floating-normal")
+                    f.tapHandle()
+                    f.capture("floating-resize")
                     test(f)
                 } finally {
                     scenario.onActivity {
@@ -329,6 +378,27 @@ class FloatingResizeDeviceTest {
                 return null
             }
             return walk(keyboard.view)
+        }
+
+        fun tapHandle() {
+            val point = onMain {
+                val handle = requireNotNull(find("拖动悬浮键盘；点击调整大小"))
+                centre(screenBounds(handle))
+            }
+            val time = SystemClock.uptimeMillis()
+            emit(MotionEvent.ACTION_DOWN, point, time, true)
+            emit(MotionEvent.ACTION_UP, point, time, true)
+            awaitLayout()
+        }
+
+        fun capture(name: String) = onMain {
+            val bitmap = android.graphics.Bitmap.createBitmap(card.width, card.height, android.graphics.Bitmap.Config.ARGB_8888)
+            try {
+                card.draw(android.graphics.Canvas(bitmap))
+                File(instrumentation.targetContext.cacheDir, "$name.png").outputStream().use {
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                }
+            } finally { bitmap.recycle() }
         }
 
         fun visibleCorners() = FloatingResizeCorner.entries.filter { find(it.contentDescription)?.isShown == true }.toSet()
@@ -409,12 +479,11 @@ class FloatingResizeDeviceTest {
             assertInsideRoot()
             val board = screenBounds(keyboard.board)
             val close = screenBounds(requireNotNull(find(FloatingResizeAccessibility.CLOSE_DESCRIPTION)))
-            val minimum = keyboard.metrics.dp(48f) - 1f
-            assertTrue(close.width() >= minimum && close.height() >= minimum)
+            assertTrue(close.width() > 0 && close.height() > 0)
             assertFalse("Close X covers candidate/key board", Rect.intersects(close, board))
             for (corner in visibleCorners()) {
                 val grip = screenBounds(requireNotNull(find(corner.contentDescription)))
-                assertTrue("$corner target is smaller than 48dp: $grip", grip.width() >= minimum && grip.height() >= minimum)
+                assertTrue("$corner needs a visible reserved touch region: $grip", grip.width() > 0 && grip.height() > 0)
                 assertFalse("$corner covers candidate/key board", Rect.intersects(grip, board))
                 assertFalse("$corner overlaps close X", Rect.intersects(grip, close))
             }

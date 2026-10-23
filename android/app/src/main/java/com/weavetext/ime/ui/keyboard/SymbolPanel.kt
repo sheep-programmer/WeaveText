@@ -28,6 +28,7 @@ import kotlin.math.min
  * and a page indicator in the bottom row.
  */
 class SymbolPanel(kb: WeaveKeyboard) : KbPanel(kb) {
+    override val toolIndex = com.weavetext.ime.style.ToolIds.EMOJI
     private val grid = Grid(kb.ctx)
     private val side = SideList(kb.ctx)
     private val subTabs = SubTabs(kb.ctx)

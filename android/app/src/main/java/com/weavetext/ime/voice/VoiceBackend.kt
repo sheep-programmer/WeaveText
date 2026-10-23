@@ -41,7 +41,8 @@ private class OfflineEngines(private val ctx: Context) : VoiceEngines {
     override fun list(): List<VoicePlugin> = offline() + plugins.list()
     private fun offline(): List<VoicePlugin> = if (!com.weavetext.ime.models.AsrRuntime.ready(models)) emptyList() else selected.available().map { model ->
         VoicePlugin(model.id, model.name, com.weavetext.ime.voice.local.OfflineModelSelection.language(model) + " · " + model.description,
-            "", null, listOf(ConfigField("punctuation", "智能标点", "switch", defaultValue = "true")))
+            "", null, listOf(ConfigField("punctuation", "智能标点", "switch", defaultValue = "true")),
+            quality = benchmarkQuality(model.bench, language))
     }
     override var activeId: String?
         get() = pluginSelection.getString("active", null)?.takeIf { id -> plugins.list().any { it.id == id } } ?: selected.ids().firstOrNull()

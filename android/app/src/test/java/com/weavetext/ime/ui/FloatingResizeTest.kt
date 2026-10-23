@@ -5,6 +5,7 @@ import com.weavetext.ime.ui.keyboard.FloatingGeometry.Box
 import com.weavetext.ime.ui.keyboard.FloatingResizeAccessibility
 import com.weavetext.ime.ui.keyboard.FloatingResizeController
 import com.weavetext.ime.ui.keyboard.FloatingResizeCorner
+import com.weavetext.ime.ui.keyboard.FloatingResizeEdge
 import com.weavetext.ime.ui.keyboard.FloatingResizePolicy
 import org.junit.Assert.*
 import org.junit.Test
@@ -37,6 +38,14 @@ class FloatingResizeTest {
             assertEquals(360, shrink.box.height)
             assertAnchored(corner, start, shrink.box)
         }
+    }
+
+    @Test fun edgesReuseOnlyAnEnabledCornerOnTheirSide() {
+        val onlyBottomRight = FloatingResizePolicy(setOf(FloatingResizeCorner.BOTTOM_RIGHT))
+        assertNull(FloatingResizeEdge.LEFT.corner(onlyBottomRight))
+        assertNull(FloatingResizeEdge.TOP.corner(onlyBottomRight))
+        assertEquals(FloatingResizeCorner.BOTTOM_RIGHT, FloatingResizeEdge.RIGHT.corner(onlyBottomRight))
+        assertEquals(FloatingResizeCorner.BOTTOM_RIGHT, FloatingResizeEdge.BOTTOM.corner(onlyBottomRight))
     }
 
     @Test fun zeroDeltaDoesNotMoveAnyCornerOrChangeItsSize() {

@@ -23,6 +23,8 @@ class MultiEngineResults(
         val error: String? = null,
         /** 停止收音到出结果的时间。 Time from end of recording to result. */
         val latencyMs: Long? = null,
+        /** 可比较的质量分数，0..1，越大越好；未知则为 null。 Comparable quality, higher is better. */
+        val quality: Float? = null,
     ) {
         /** 可以点选上屏。 Can be committed. */
         val selectable get() = text.isNotBlank() && (status == Status.DONE || status == Status.TIMEOUT)
@@ -35,6 +37,7 @@ class MultiEngineResults(
         var status = Status.LISTENING
         var error: String? = null
         var latency: Long? = null
+        var quality: Float? = null
         fun full() = text.toString() + com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(text.lastOrNull(), partial)
     }
 
@@ -54,6 +57,11 @@ class MultiEngineResults(
         if (!a.pending) return
         a.text.append(com.weavetext.ime.voice.local.TwoPassRecognizer.continuation(a.text.lastOrNull(), text))
         a.partial = ""
+    }
+
+    fun score(id: String, quality: Float) {
+        val a = acc[id] ?: return
+        if (a.pending && quality.isFinite() && quality in 0f..1f) a.quality = quality
     }
 
     fun replace(id: String, old: String, new: String) {
@@ -106,14 +114,17 @@ class MultiEngineResults(
     /** 全部引擎都有了结论。 Every engine has settled. */
     val settled get() = acc.values.none { it.pending }
 
-    fun rows(): List<Row> = acc.values.map { Row(it.id, it.name, it.full(), it.status, it.error, it.latency) }
+    fun rows(): List<Row> = acc.values.map { Row(it.id, it.name, it.full(), it.status, it.error, it.latency, it.quality) }
+        .sortedWith(compareByDescending<Row> { it.quality ?: -1f })
 
     /** 说话时显示的主引擎文本。 Primary engine's text while speaking. */
     fun primaryText(): String = acc[primaryId]?.full().orEmpty()
 
-    /** 默认高亮的行：主引擎，否则第一个成功的；都没有为 -1。 Default row: primary, else first success. */
+    /** 优先已评分结果；无分数时回退主引擎。 Prefer scored results, then the primary engine. */
     fun defaultIndex(): Int {
         val rows = rows()
+        val scored = rows.indexOfFirst { it.selectable && it.quality != null }
+        if (scored >= 0) return scored
         val p = rows.indexOfFirst { it.id == primaryId }
         if (p >= 0 && rows[p].selectable) return p
         return rows.indexOfFirst { it.selectable }

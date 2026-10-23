@@ -36,6 +36,17 @@ class FloatingResizePolicy(corners: Set<FloatingResizeCorner> = FloatingResizeCo
     }
 }
 
+/** Edge gestures reuse an enabled corner on that side and ignore motion parallel to the edge. */
+enum class FloatingResizeEdge(val label: String, val horizontal: Boolean, private val candidates: List<FloatingResizeCorner>) {
+    LEFT("左边", true, listOf(FloatingResizeCorner.TOP_LEFT, FloatingResizeCorner.BOTTOM_LEFT)),
+    TOP("上边", false, listOf(FloatingResizeCorner.TOP_LEFT, FloatingResizeCorner.TOP_RIGHT)),
+    RIGHT("右边", true, listOf(FloatingResizeCorner.TOP_RIGHT, FloatingResizeCorner.BOTTOM_RIGHT)),
+    BOTTOM("下边", false, listOf(FloatingResizeCorner.BOTTOM_LEFT, FloatingResizeCorner.BOTTOM_RIGHT));
+
+    val contentDescription get() = "从${label}调整悬浮键盘大小"
+    fun corner(policy: FloatingResizePolicy) = candidates.firstOrNull(policy::allows)
+}
+
 object FloatingResizeAccessibility {
     const val CLOSE_DESCRIPTION = "关闭悬浮键盘，停靠到底部"
 }

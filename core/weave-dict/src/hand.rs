@@ -380,6 +380,16 @@ impl Recognizer {
         all
     }
 
+    /// 个人模板只比较实际笔数相同的样本，避免未完成字借用另一模板的护栏。
+    /// Personal adaptation compares only equal-count templates, so another sample cannot admit partial ink.
+    pub(crate) fn recognize_same_stroke_count(&self, strokes: &[Stroke], top: usize) -> Vec<(char, f32)> {
+        let top = top.min(self.templates.len());
+        if top == 0 { return Vec::new(); }
+        let Some(prepared) = PreparedInk::new(strokes) else { return Vec::new(); };
+        let input = prepared.view();
+        self.scan(self.templates.iter().filter(|t| t.strokes.len() == input.points.len()), input, top, None, None)
+    }
+
     /// Boolean threshold query for ambiguous segmentation. It does not need a top-30 list or the best match:
     /// use the strict ceiling from the first template, and stop at the first match below it.
     pub(crate) fn has_strong_match(&self, strokes: &[Stroke], ceiling: f32) -> bool {
@@ -397,7 +407,7 @@ impl Recognizer {
     }
 
     /// 在一段模板里找最好的 `top` 个。 The best `top` within a slice of templates.
-    fn scan(&self, templates: &[Template], ink: StrokeView<'_>, top: usize, ceiling: Option<f32>, stop: Option<&std::sync::atomic::AtomicBool>) -> Vec<(char, f32)> {
+    fn scan<'a>(&self, templates: impl IntoIterator<Item = &'a Template>, ink: StrokeView<'_>, top: usize, ceiling: Option<f32>, stop: Option<&std::sync::atomic::AtomicBool>) -> Vec<(char, f32)> {
         let (input, input_feats) = (ink.points, ink.feats);
         let n = input.len();
         let mut best: Vec<(char, f32)> = Vec::with_capacity(top + 1);

@@ -130,13 +130,13 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 │                                                 │  App 保持全高，不被压缩
 │             (App 内容 / app content)             │  App keeps full height
 │                                                 │
-│        ╭──────────── ━━━ ─────── × ╮            │  顶条 28dp：中间横条拖动，× = 停靠，两角缩放
+│        ╭──────────── ━━━ ─────── × ╮            │  顶条 28dp：中间横条移动；点击后进入缩放模式
 │        │ ◎  ⌨  🎙  ‹I›  📋  ⌄       │            │  顶栏 / 候选栏照常工作
 │        │ Q W E R T Y U I O P        │            │  卡片宽 75%（横屏 50%，≤ 480dp）
 │        │  A S D F G H J K L         │            │  圆角 16dp，投影 8dp
 │        │ ⇧ Z X C V B N M ⌫          │            │  键高用「紧凑」档，比例协调
 │        │ 符 123 ,  ␣  。 中 ⏎        │            │
-│        ╰────────────────────────────╯            │  底边 14dp：下方两角缩放（关掉下方两角时不留）
+│        ╰────────────────────────────╯            │  底边 14dp：预留缩放控制区，普通状态不画缩放标记
 └─────────────────────────────────────────────────┘
 ```
 
@@ -149,8 +149,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
   *Drag the handle; the card is clamped on screen.*
 - **记忆位置**：位置以「可移动范围内的比例」保存，横竖屏各一份（`float_pos_port` / `float_pos_land`），换屏幕尺寸也不会跑出屏幕；
   默认水平居中、贴近底部。*Position stored as fractions per orientation; default centred at the bottom.*
-- **停靠**：双击横条，或点横条右侧 ×，或再点工具箱「悬浮键盘」，回到常规底部键盘。
-  *Double-tap the handle, tap ×, or toggle again to dock.*
+- **停靠**：点横条右侧 ×，或再点工具箱「悬浮键盘」，回到常规底部键盘；点击顶部中央把手只切换缩放模式，不停靠。
+  *Tap × or toggle floating off to dock. Tapping the centered handle only toggles resize mode.*
 - **卡片内一切照常**：候选栏、展开候选、工具箱、符号、剪贴板、语音面板与引擎弹层都在卡片内；按键气泡、组合串浮层与按住说话语音条跟随卡片。
   悬浮时单手模式不生效（卡片本身已足够小）。*All panels work inside the card; bubbles follow it; one-hand mode is
   ignored while floating.*
@@ -162,14 +162,9 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 
 ### 5.3 缩放 / Resize
 
-- 四个角都能缩放（设置里可关掉任意几个，至少留一个）。上方两角在 28dp 顶条里，下方两角在 14dp 底边里，**不占任何按键的触控区**；
-  启用的角只画一小段贴着圆角的淡弧，没有文字说明，关掉下方两角时底边也不留。触控区 48dp 宽、与所在的条等高；极矮的窗口顶条收成 22dp。
-  拖离卡片放大、拖向卡片缩小，卡片**整体缩放**，按键保持比例：缩放系数取宽、高相对变化的平均值。
-  *All four corners resize (any can be turned off, at least one stays). The top two sit in the 28dp top bar, the bottom
-  two in a 14dp bottom strip, so no key loses touch area; an enabled corner shows only a short faint arc along the
-  rounded corner, with no caption, and the bottom strip goes away when both bottom corners are off. Targets are 48dp
-  wide and as tall as their bar; very short windows shrink the top bar to 22dp. Dragging outward grows the card,
-  inward shrinks it; the whole card scales by the average of the relative width and height change.*
+- 普通悬浮状态只显示顶部中央移动把手；点击把手进入缩放模式后，四角和四条边出现并可拖动，再点把手退出缩放模式。缩放目标**不占任何按键的触控区**；四个角都能缩放（设置里可关掉任意几个，至少留一个）。
+  缩放框沿卡片四周绘制，触摸目标与候选栏和键区分开。拖离卡片放大、拖向卡片缩小，卡片**整体缩放**，按键保持比例；取消拖动恢复初始尺寸与位置，不保存中途状态。
+  *The ordinary floating state shows the centered move handle. Tapping it reveals four resize corners and four edges; tapping again hides them. Resize targets stay outside the candidate and key area. Enabled corners respect the existing settings. Dragging outward grows the card and inward shrinks it while preserving keyboard proportions. Canceling restores the initial size and position without saving intermediate geometry.*
 - 范围 0.7–1.3，并且：宽不小于 220dp、不超过窗口宽的 95%，高不超过窗口高的 65%（横屏窗口矮时高度上限先起作用）。
   *Scale 0.7–1.3, at least 220dp wide, at most 95% of the window width and 65% of its height.*
 - 缩放只改悬浮卡片的行距（可低于常规档的 40dp 下限，最低 32dp），不影响停靠后的键盘高度。
@@ -305,8 +300,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 
 ### 8.3 空格与长按 / Space and long press
 
-- 空格横滑超过 8dp 进入光标模式；**若松手时光标一步都没移动，按一次空格处理**（此前这种轻微横滑会吞掉空格）。
-  *A space-bar slide that never moved the cursor types a space on release.*
+- 空格横滑超过 `max(系统触摸阈值 × 2, 18dp)` 且横向位移大于纵向时进入光标模式；**只有整次手势从未发出光标步进时，才按一次空格处理**。曾经移动后又回到原位，松手或另一根手指落下都不补空格；不足一个步长的短滑仍可正常输入空格。
+  *A space-bar slide enters cursor mode after `max(system touch slop × 2, 18dp)` when horizontal movement dominates. It types a space only if it never emitted a cursor step. Moving out and back does not insert a space on release or when another finger lands; a slide shorter than one cursor step still types a space.*
 - 中文组合中空格不进入光标模式：横滑照常按空格上屏首选，不会出现「空格没反应」。
   *While composing, the space bar does not enter cursor mode, so it never looks dead.*
 - 上滑输出副字符要**明显朝上且够长**：纵向位移 ≥ max(28dp, 0.55 × 键高)，并且 |dy| > 1.5 |dx|（此前是 max(20dp, 0.45 × 键高)、
@@ -318,6 +313,8 @@ This document extends 01 §9, 02 §11–12 and 03 §6–7; where they differ, th
 - 长按浮层对齐上滑字符但**不预选**：不移动就松手，输出的是这个键本身；移到某一项上才选中。
   *The popup preselects nothing: lifting in place keeps the key itself.*
 - 光标滑动的速度按事件时间计算，卡顿时不再忽快忽慢。*Cursor drag speed uses event time.*
+- 候选栏在抬手时也检查最终横向位移：快速滑动即使没有中间 MOVE 事件也不选词；阈值内的轻微点按偏移仍正常提交一次。
+  *The candidate bar checks final horizontal displacement on release too: a fast slide without an intermediate MOVE does not select a word; small tap jitter within the threshold still commits once.*
 
 ### 8.4 渲染合并 / Frame-coalesced rendering
 

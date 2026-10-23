@@ -84,7 +84,11 @@ class ClipboardPanelTest {
     private fun idle() = ShadowLooper.idleMainLooper()
     private fun m() = kb.metrics
     private fun copy(text: String) {
-        app.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("t", text))
+        val manager = app.getSystemService(ClipboardManager::class.java)
+        manager.setPrimaryClip(ClipData.newPlainText("t", text))
+        // 测试替身用开机时间，真实剪贴板用系统日期。 ShadowClipboardManager uses uptime; Android uses wall time.
+        org.robolectric.util.ReflectionHelpers.callInstanceMethod<Void>(manager.primaryClip!!.description, "setTimestamp",
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, System.currentTimeMillis()))
         idle()
     }
 
@@ -167,6 +171,101 @@ class ClipboardPanelTest {
         // so pinning and deleting it have nothing to act on.
         tapView(grid, r.left + m().dp(8f) + w / 2f, r.centerY().toFloat())
         assertEquals("点卡片应该上屏", "只有当前这一条", ic.text)
+    }
+
+    private fun nextField() {
+        kb.onHidden()
+        ic = FakeInputConnection(kb.view)
+        controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }, false)
+        kb.onShown()
+        idle()
+    }
+
+    @Test fun aRecentCopyIsOfferedInTheNextFieldWithoutRecordingHistory() {
+        copy("换页后粘贴")
+        nextField()
+        assertEquals("换页后粘贴", kb.topBar.clipChip)
+        assertEquals("", ic.text)
+        kb.onClipChip()
+        assertEquals("换页后粘贴", ic.text)
+        assertEquals(null, kb.topBar.clipChip)
+        assertEquals(0, kb.clipboard.history.size)
+    }
+
+    @Test fun restoringTheSuggestionDoesNotRecordDeletedHistoryAgain() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
+        copy("仅当前剪贴板")
+        assertEquals(1, kb.clipboard.history.size)
+        kb.clipboard.clearHistory()
+        nextField()
+        assertEquals("仅当前剪贴板", kb.topBar.clipChip)
+        assertEquals(0, kb.clipboard.history.size)
+    }
+
+    @Test fun restoringTheSuggestionPreservesTheHistoryEntry() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.CLIPBOARD_RECORD, true).commit()
+        copy("保留原复制时间")
+        val before = kb.clipboard.history.list(System.currentTimeMillis()).single()
+        ShadowLooper.idleMainLooper(1, java.util.concurrent.TimeUnit.SECONDS)
+        nextField()
+        assertEquals("保留原复制时间", kb.topBar.clipChip)
+        val after = kb.clipboard.history.list(System.currentTimeMillis()).single()
+        assertEquals(before.id, after.id)
+        assertEquals(before.time, after.time)
+    }
+
+    @Test fun restoringACodeSuggestionPastesOnlyTheCode() {
+        copy("验证码 482913，请勿泄露")
+        nextField()
+        assertEquals("验证码 482913", kb.topBar.clipChip)
+        kb.onClipChip()
+        assertEquals("482913", ic.text)
+    }
+
+    @Test fun copyingTheSameTextAgainRenewsTheSuggestion() {
+        copy("再次复制")
+        ShadowLooper.idleMainLooper(10, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(null, kb.topBar.clipChip)
+        copy("再次复制")
+        assertEquals("再次复制", kb.topBar.clipChip)
+    }
+
+    @Test fun restartingTheSameFieldDoesNotOfferAPastedCopyAgain() {
+        copy("只粘贴一次")
+        kb.onClipChip()
+        controller.onStartInput(EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }, true)
+        kb.onShown(restarting = true)
+        idle()
+        assertEquals(null, kb.topBar.clipChip)
+        assertEquals("只粘贴一次", ic.text)
+    }
+
+    @Test fun aRestoredSuggestionStillDisappearsAfterItsDisplayTimeout() {
+        copy("短暂提示")
+        nextField()
+        assertEquals("短暂提示", kb.topBar.clipChip)
+        ShadowLooper.idleMainLooper(10, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(null, kb.topBar.clipChip)
+    }
+
+    @Test fun aRecentCopyIsNotRestoredIntoAPasswordField() {
+        copy("普通文字")
+        kb.onHidden()
+        controller.onStartInput(EditorInfo().apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }, false)
+        kb.onShown()
+        idle()
+        assertEquals(null, kb.topBar.clipChip)
+    }
+
+    @Test fun anOldCopyIsNotOfferedInTheNextField() {
+        copy("已经过期")
+        val clip = app.getSystemService(ClipboardManager::class.java).primaryClip!!
+        org.robolectric.util.ReflectionHelpers.callInstanceMethod<Void>(clip.description, "setTimestamp",
+            org.robolectric.util.ReflectionHelpers.ClassParameter.from(Long::class.javaPrimitiveType, System.currentTimeMillis() - 31_000))
+        nextField()
+        assertEquals(null, kb.topBar.clipChip)
     }
 
     @Test fun thePhraseHeaderPlusAddsTheClipboardText() {

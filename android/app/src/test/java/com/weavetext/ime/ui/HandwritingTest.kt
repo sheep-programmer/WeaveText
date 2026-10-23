@@ -178,6 +178,48 @@ class HandwritingTest {
         assertTrue(pad.strokes.isEmpty())
     }
 
+    @Test fun overlayModeKeepsSameAreaCharactersSeparateUntilExplicitConfirmation() {
+        tap(KeyCode.HAND_MODE)
+        tap(KeyCode.HAND_MODE)
+        idle()
+        assertEquals("叠写", key(KeyCode.HAND_MODE).label)
+        val first = stroke(0.2f, 0.5f, 0.8f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        assertEquals("叠写停顿只分字，不自动上屏", "", ic.text)
+        val second = stroke(0.5f, 0.2f, 0.5f, 0.8f)
+        assertEquals(2, pad.strokes.size)
+        assertStroke(first, pad.strokes[0])
+        assertStroke(second, pad.strokes[1])
+        assertStroke(first, engine.hand[0])
+        assertStroke(second, engine.hand[1])
+        assertTrue("识别须接收明确的两字笔画分界", engine.handGroupEnds.contentEquals(intArrayOf(1, 2)))
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        assertEquals("", ic.text)
+        kb.onCandidate(0)
+        assertEquals("2笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+        tap(KeyCode.HAND_MODE)
+        assertEquals("单字", key(KeyCode.HAND_MODE).label)
+    }
+
+    @Test fun overlayRedoKeepsTheCharacterBoundaryAndRejectsConfirmationDuringInk() {
+        tap(KeyCode.HAND_MODE); tap(KeyCode.HAND_MODE)
+        stroke(0.2f, 0.5f, 0.8f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        stroke(0.5f, 0.2f, 0.5f, 0.8f)
+        tap(KeyCode.DELETE)
+        assertTrue(engine.handGroupEnds.contentEquals(intArrayOf(1)))
+        val provider = kv.accessibilityNodeProvider!!
+        val modeId = kv.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+        assertTrue(provider.performAction(modeId, android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
+        assertTrue(engine.handGroupEnds.contentEquals(intArrayOf(1, 2)))
+        stroke(0.3f, 0.2f, 0.3f, 0.7f, lift = false)
+        kb.onCandidate(0)
+        assertEquals("", ic.text)
+        release(0)
+        assertTrue(engine.handGroupEnds.contentEquals(intArrayOf(1, 3)))
+    }
+
     @Test fun switchingOffAutoCommitCancelsAnAlreadyScheduledPause() {
         stroke(0.1f, 0.5f, 0.9f, 0.5f)
         hold(200)
@@ -186,6 +228,59 @@ class HandwritingTest {
         assertEquals("", ic.text)
         assertEquals(1, pad.strokes.size)
         assertTrue(engine.isComposing())
+    }
+
+    @Test fun undoRestartsTheFullAutoCommitPause() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        hold(600)
+        tap(KeyCode.DELETE)
+        hold(201)
+        assertEquals("an old timer must not commit ink just after undo", "", ic.text)
+        assertEquals(1, pad.strokes.size)
+        assertTrue(pad.canRedo)
+        hold(499)
+        assertEquals("", ic.text)
+        hold(200)
+        assertEquals("1笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+    }
+
+    @Test fun longPressRedoRestartsTheFullAutoCommitPause() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        val second = stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        hold(600)
+        tap(KeyCode.DELETE)
+        val mode = key(KeyCode.HAND_MODE)
+        pressAt(9, mode.rect.centerX(), mode.rect.centerY())
+        hold(450)
+        release(9)
+        assertEquals("redo must be reachable before auto-commit", "", ic.text)
+        assertEquals(2, pad.strokes.size)
+        assertStroke(second, pad.strokes.last())
+        hold(700)
+        assertEquals("redo starts a new full pause", "", ic.text)
+        hold(200)
+        assertEquals("2笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+    }
+
+    @Test fun redoAfterUndoingAllInkRestoresAutoCommit() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(600)
+        tap(KeyCode.DELETE)
+        hold(1000)
+        assertEquals("", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+        assertTrue(pad.canRedo)
+        val provider = kv.accessibilityNodeProvider!!
+        val modeId = kv.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+        assertTrue(provider.performAction(modeId, android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
+        hold(700)
+        assertEquals("", ic.text)
+        hold(200)
+        assertEquals("1笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
     }
 
     @Test fun longPressModeRedoesAnUndoneStrokeWithoutChangingMode() {
@@ -203,6 +298,44 @@ class HandwritingTest {
         assertStroke(second, pad.strokes.last())
         assertEquals(2, engine.hand.size)
         assertFalse(WeavePrefs.of(app).getBoolean(WeavePrefs.HAND_LINE, false))
+    }
+
+    @Test fun accessibilityCanRedoAnUndoneStrokeWithoutChangingMode() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        val second = stroke(0.5f, 0.1f, 0.5f, 0.9f)
+        tap(KeyCode.DELETE)
+        val provider = kv.accessibilityNodeProvider!!
+        val modeId = kv.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+        val node = provider.createAccessibilityNodeInfo(modeId)!!
+        val action = node.actionList.firstOrNull {
+            it.id == android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK
+        }
+        assertNotNull("undone ink needs an accessible redo action", action)
+        assertEquals("重做上一笔", action!!.label.toString())
+        assertTrue(provider.performAction(modeId, action.id, null))
+        idle()
+        assertEquals(2, pad.strokes.size)
+        assertStroke(second, pad.strokes.last())
+        assertEquals(2, engine.hand.size)
+        assertFalse(WeavePrefs.of(app).getBoolean(WeavePrefs.HAND_LINE, false))
+        assertFalse(provider.performAction(modeId, action.id, null))
+        assertFalse(provider.createAccessibilityNodeInfo(modeId)!!.isLongClickable)
+    }
+
+    @Test fun accessibilityRedoIsUnavailableWhileAStrokeIsDown() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        tap(KeyCode.DELETE)
+        val r = pad.rect
+        pressAt(9, r.centerX(), r.centerY())
+        val modeId = kv.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+        val provider = kv.accessibilityNodeProvider!!
+        assertFalse(provider.createAccessibilityNodeInfo(modeId)!!.isLongClickable)
+        assertFalse(provider.performAction(modeId, android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
+        assertTrue(pad.drawing)
+        assertEquals(0, pad.strokes.size)
+        release(9)
     }
 
     @Test fun noRecognitionResultKeepsTheInkForCorrection() {
@@ -496,6 +629,71 @@ class HandwritingTest {
         assertEquals(1, engine.handCalls.size)
         assertStroke(floatArrayOf(20f, 20f, 80f, 20f, 140f, 20f), engine.handCalls[0][0])
         assertEquals("", ic.text)
+    }
+
+    @Test fun aCandidateCannotSplitACharacterWhileTheNextStrokeIsStillDown() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        idle()
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(20)
+        assertEquals("1笔0", kb.topBar.candidateAt(0))
+        stroke(0.5f, 0.1f, 0.5f, 0.9f, lift = false)
+        kb.onCandidate(0)
+        assertEquals("", ic.text)
+        assertFalse("explicit confirmation also waits for the live stroke", kb.onHandCommit())
+        release(0)
+        assertEquals(2, engine.hand.size)
+        assertEquals(2, pad.strokes.size)
+        hold(20)
+        kb.onCandidate(0)
+        assertEquals("2笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+    }
+
+    @Test fun cancellingAStrokeRestartsThePauseForRetainedInk() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS - 100)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f, lift = false)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        send(MotionEvent.ACTION_CANCEL, 0)
+        down.clear()
+        assertEquals("", ic.text)
+        assertEquals(1, pad.strokes.size)
+        hold(HandPad.COMMIT_PAUSE_MS - 100)
+        assertEquals("a cancellation gives the user a fresh pause", "", ic.text)
+        hold(200)
+        assertEquals("1笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+        assertEquals("cancelled ink is never recognized", 1, engine.handCalls.size)
+    }
+
+    @Test fun resumingAfterCancellationKeepsTheCharacterWithinTheFreshPause() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS - 100)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f, lift = false)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        send(MotionEvent.ACTION_CANCEL, 0)
+        down.clear()
+        hold(100)
+        stroke(0.2f, 0.2f, 0.8f, 0.8f)
+        assertEquals("resumed ink still belongs to the retained character", "", ic.text)
+        assertEquals(2, pad.strokes.size)
+        assertEquals(2, engine.hand.size)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        assertEquals("2笔0", ic.text)
+    }
+
+    @Test fun reapplyingTheIdleSettingPreservesTheFreshPauseAfterCancellation() {
+        stroke(0.1f, 0.5f, 0.9f, 0.5f)
+        stroke(0.5f, 0.1f, 0.5f, 0.9f, lift = false)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        send(MotionEvent.ACTION_CANCEL, 0)
+        down.clear()
+        kv.handIdleMs = kv.handIdleMs
+        idle()
+        assertEquals("settings refresh must not commit retained ink immediately", "", ic.text)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        assertEquals("1笔0", ic.text)
     }
 
     @Test fun cancelledStrokeIsDropped() {

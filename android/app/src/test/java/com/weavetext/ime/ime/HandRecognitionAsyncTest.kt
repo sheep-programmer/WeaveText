@@ -19,6 +19,178 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class HandRecognitionAsyncTest {
+    @Test fun groupedJobsCopyInkAndBoundariesBeforeTheWorkerStarts() {
+        val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        worker.submit { assertTrue(release.await(3, TimeUnit.SECONDS)) }
+        val fake = FakeEngine()
+        var recognizedEnds: IntArray? = null
+        var appliedEnds: IntArray? = null
+        var recognizedInk: List<FloatArray>? = null
+        val engine = object : KeyEngine by fake {
+            override fun handRecognize(strokes: List<FloatArray>, groupEnds: IntArray): IntArray {
+                recognizedEnds = groupEnds.copyOf()
+                recognizedInk = strokes.map { it.copyOf() }
+                return intArrayOf('字'.code)
+            }
+            override fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean {
+                appliedEnds = groupEnds.copyOf()
+                assertArrayEquals(intArrayOf('字'.code), cands)
+                return fake.handInput(strokes)
+            }
+        }
+        val controller = InputController { null }
+        val posted = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        controller.attachEngine(engine)
+        controller.setPreferredSchema("hand")
+        controller.handWorker = worker
+        controller.postMain = { posted += it }
+        try {
+            val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+            val strokes = mutableListOf(stroke, stroke)
+            val ends = intArrayOf(1, 2)
+            controller.onHandStrokes(strokes, ends)
+            ends[0] = 2
+            stroke[0] = 99f
+            strokes.clear()
+            release.countDown()
+            worker.submit {}.get(2, TimeUnit.SECONDS)
+            while (true) (posted.poll() ?: break).run()
+            assertArrayEquals(intArrayOf(1, 2), recognizedEnds)
+            assertArrayEquals(intArrayOf(1, 2), appliedEnds)
+            assertEquals(2, recognizedInk!!.size)
+            assertEquals(0f, recognizedInk!![0][0], 0f)
+            assertFalse(controller.state.handRecognizing)
+        } finally { release.countDown(); worker.shutdownNow() }
+    }
+
+    @Test fun replacementDiscardsLateGroupedResultAndUsesReplacementBoundaries() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        val fake = FakeEngine()
+        val applied = mutableListOf<List<Int>>()
+        val recognized = mutableListOf<List<Int>>()
+        val engine = object : KeyEngine by fake {
+            override fun handRecognize(strokes: List<FloatArray>, groupEnds: IntArray): IntArray {
+                synchronized(recognized) { recognized += groupEnds.toList() }
+                if (groupEnds.size == 1) {
+                    started.countDown()
+                    assertTrue(release.await(3, TimeUnit.SECONDS))
+                }
+                return intArrayOf('字'.code)
+            }
+            override fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean {
+                applied += groupEnds.toList()
+                return fake.handInput(strokes)
+            }
+        }
+        val controller = InputController { null }
+        val posted = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        controller.attachEngine(engine)
+        controller.setPreferredSchema("hand")
+        controller.handWorker = worker
+        controller.postMain = { posted += it }
+        try {
+            val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+            val strokes = listOf(stroke, stroke, stroke)
+            controller.onHandStrokes(strokes, intArrayOf(3))
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            controller.onHandStrokes(strokes, intArrayOf(1, 3))
+            val replacementEnds = intArrayOf(2, 3)
+            controller.replaceHandInk(strokes, replacementEnds)
+            replacementEnds[0] = 1
+            release.countDown()
+            worker.submit {}.get(2, TimeUnit.SECONDS)
+            while (true) (posted.poll() ?: break).run()
+            assertEquals(listOf(listOf(3), listOf(2, 3)), recognized)
+            assertEquals(listOf(listOf(2, 3)), applied)
+            assertFalse(controller.state.handRecognizing)
+        } finally { release.countDown(); worker.shutdownNow() }
+    }
+
+    @Test fun unsupportedOrFailedGroupedRecognitionFallsBackWithTheSameCopiedBoundaries() {
+        for (fails in listOf(false, true)) {
+            val worker = Executors.newSingleThreadExecutor()
+            val fake = FakeEngine()
+            var recognizedEnds: List<Int>? = null
+            var fallbackEnds: List<Int>? = null
+            val engine = object : KeyEngine by fake {
+                override fun handRecognize(strokes: List<FloatArray>, groupEnds: IntArray): IntArray? {
+                    recognizedEnds = groupEnds.toList()
+                    if (fails) error("recognition failed")
+                    return null
+                }
+                override fun handInput(strokes: List<FloatArray>, groupEnds: IntArray): Boolean {
+                    fallbackEnds = groupEnds.toList()
+                    return fake.handInput(strokes)
+                }
+                override fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean =
+                    error("a failed recognition must use grouped handInput")
+            }
+            val controller = InputController { null }
+            val posted = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+            controller.attachEngine(engine)
+            controller.setPreferredSchema("hand")
+            controller.handWorker = worker
+            controller.postMain = { posted += it }
+            try {
+                val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+                val ends = intArrayOf(1, 2)
+                controller.onHandStrokes(listOf(stroke, stroke), ends)
+                ends[0] = 2
+                worker.submit {}.get(2, TimeUnit.SECONDS)
+                while (true) (posted.poll() ?: break).run()
+                assertEquals(listOf(1, 2), recognizedEnds)
+                assertEquals(recognizedEnds, fallbackEnds)
+                assertEquals(2, fake.hand.size)
+            } finally { worker.shutdownNow() }
+        }
+    }
+
+    @Test fun synchronousInkAndLineModeChangesForwardBoundariesAndEmptyEndsUseLegacyInput() {
+        val fake = FakeEngine()
+        val grouped = mutableListOf<List<Int>>()
+        var legacyCalls = 0
+        val engine = object : KeyEngine by fake {
+            override fun handInput(strokes: List<FloatArray>): Boolean {
+                legacyCalls++
+                return fake.handInput(strokes)
+            }
+            override fun handInput(strokes: List<FloatArray>, groupEnds: IntArray): Boolean {
+                grouped += groupEnds.toList()
+                return fake.handInput(strokes)
+            }
+        }
+        val controller = InputController { null }
+        controller.attachEngine(engine)
+        controller.setPreferredSchema("hand")
+        val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+        val strokes = listOf(stroke, stroke)
+        controller.onHandStrokes(strokes, intArrayOf(1, 2))
+        controller.setHandLineMode(true, strokes, intArrayOf(2))
+        controller.onHandStrokes(strokes)
+        assertEquals(listOf(listOf(1, 2), listOf(2)), grouped)
+        assertEquals(1, legacyCalls)
+    }
+
+    @Test fun fakeCopiesGroupedBoundariesAndClearsThemWithLegacyInputOrClear() {
+        val fake = FakeEngine()
+        fake.setSchema("hand")
+        val stroke = floatArrayOf(0f, 0f, 1f, 1f)
+        val ends = intArrayOf(1, 2)
+        fake.handInput(listOf(stroke, stroke), ends)
+        ends[0] = 2
+        assertArrayEquals(intArrayOf(1, 2), fake.handGroupEnds)
+        fake.handInput(listOf(stroke))
+        assertTrue(fake.handGroupEnds.isEmpty())
+        fake.handApply(listOf(stroke, stroke), intArrayOf(1, 2), intArrayOf('字'.code))
+        assertArrayEquals(intArrayOf(1, 2), fake.handGroupEnds)
+        fake.clear()
+        assertTrue(fake.handGroupEnds.isEmpty())
+        assertTrue(fake.hand.isEmpty())
+    }
+
     @Test fun detachingDiscardsQueuedCommitsAndCurrentRecognitionWithoutWaiting() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)

@@ -1,5 +1,6 @@
 package com.weavetext.ime.ui
 
+import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -34,13 +35,18 @@ class HandwritingExperienceDeviceTest {
         val root = File(app.cacheDir, name).apply { mkdirs() }
         val prefNames = mutableSetOf<String>()
         val owner = object : ContextWrapper(app) {
+            // 偏好通过 applicationContext 解析，重跑也须隔离。 Preferences resolve through applicationContext; isolate reruns.
+            override fun getApplicationContext(): Context = this
             override fun getFilesDir() = File(root, "files").apply { mkdirs() }
             override fun getCacheDir() = File(root, "cache").apply { mkdirs() }
             override fun getSharedPreferences(key: String, mode: Int) = app.getSharedPreferences("$name-$key", mode).also { prefNames += "$name-$key" }
         }
         val prefs = WeavePrefs.of(owner)
-        prefs.edit().putString(WeavePrefs.KEYBOARDS, "hand,pinyin,english")
-            .putString(WeavePrefs.ACTIVE_KEYBOARD, "hand").putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        assertTrue(prefs.edit().putString(WeavePrefs.KEYBOARDS, "hand,pinyin,english")
+            .putString(WeavePrefs.ACTIVE_KEYBOARD, "hand").putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false)
+            .putBoolean(WeavePrefs.HAND_LINE, false).commit())
+        assertSame("Fixture preferences must stay in the isolated namespace", prefs,
+            app.getSharedPreferences("$name-${WeavePrefs.FILE}", Context.MODE_PRIVATE))
         val engine = NativeEngine.createFromSpec(DataInstaller.sourceSpec(owner), File(root, "user").path, DataInstaller.cacheKb(owner))!!
         val worker = Executors.newSingleThreadExecutor()
         lateinit var kb: WeaveKeyboard
@@ -49,12 +55,17 @@ class HandwritingExperienceDeviceTest {
             ActivityScenario.launch(SmokeActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
                     val context = object : ContextWrapper(activity) {
+                        override fun getApplicationContext(): Context = owner
                         override fun getFilesDir() = owner.filesDir
                         override fun getCacheDir() = owner.cacheDir
                         override fun getSharedPreferences(key: String, mode: Int) = owner.getSharedPreferences(key, mode)
                     }
+                    activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
                     val editor = activity.findViewById<android.widget.EditText>(android.R.id.edit)
-                    editor.showSoftInputOnFocus = false; editor.setText("")
+                    editor.showSoftInputOnFocus = false
+                    activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        .hideSoftInputFromWindow(editor.windowToken, 0)
+                    editor.setText("")
                     val info = EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT }
                     controller = InputController { editor.onCreateInputConnection(info) }
                     controller.onStartInput(info, false); controller.attachEngine(engine)
@@ -64,6 +75,7 @@ class HandwritingExperienceDeviceTest {
                         override fun hideKeyboard() {}
                         override val window get() = activity.window
                     })
+                    assertSame("Keyboard must use the fixture's isolated preferences", prefs, kb.prefs)
                     activity.addContentView(kb.view, FrameLayout.LayoutParams(-1, -2).apply { gravity = android.view.Gravity.BOTTOM })
                     kb.onShown(); kb.flushRender()
                     val width = activity.resources.displayMetrics.widthPixels
@@ -116,13 +128,33 @@ class HandwritingExperienceDeviceTest {
                 tap(KeyCode.DELETE); awaitRecognition()
                 scenario.onActivity {
                     assertEquals(1, kb.keyboardView.hand!!.strokes.size)
-                    assertTrue(kb.keyboardView.redoStroke())
-                    controller.replaceHandInk(kb.keyboardView.hand!!.strokes)
+                    val keyboard = kb.keyboardView
+                    val modeId = keyboard.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+                    val provider = keyboard.accessibilityNodeProvider!!
+                    val redo = provider.createAccessibilityNodeInfo(modeId)!!.actionList.firstOrNull {
+                        it.id == android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK
+                    }
+                    assertNotNull("重做需要可用的无障碍动作 / Redo needs an accessible action", redo)
+                    assertEquals("重做上一笔", redo!!.label.toString())
+                    assertTrue(provider.performAction(modeId, redo.id, null))
+                    assertFalse(provider.performAction(modeId, redo.id, null))
                 }
                 awaitRecognition()
                 scenario.onActivity { kb.keyboardView.hand!!.strokes.forEachIndexed { i, s -> assertArrayEquals(original[i], s, 0f) } }
-                tap(KeyCode.HAND_MODE); tap(KeyCode.HAND_CLEAR)
-                scenario.onActivity { assertTrue(prefs.getBoolean(WeavePrefs.HAND_LINE, false)) }
+                scenario.onActivity {
+                    assertFalse("Redo must leave single-character mode selected", prefs.getBoolean(WeavePrefs.HAND_LINE, false))
+                    assertFalse(kb.keyboardView.handLineMode)
+                }
+                tap(KeyCode.HAND_MODE)
+                scenario.onActivity {
+                    val keyboard = kb.keyboardView
+                    val mode = keyboard.keyOf(KeyCode.HAND_MODE)!!
+                    assertTrue("Mode tap must enable line writing: key=${mode.rect}, pad=${keyboard.hand!!.rect}, " +
+                        "label=${mode.label}, viewLine=${keyboard.handLineMode}, strokes=${keyboard.hand!!.strokes.size}",
+                        prefs.getBoolean(WeavePrefs.HAND_LINE, false))
+                    assertTrue("Line-writing mode must reach the view", keyboard.handLineMode)
+                }
+                tap(KeyCode.HAND_CLEAR)
                 var left = 0f; var right = 0f
                 scenario.onActivity { val r = kb.keyboardView.hand!!.rect; left = r.left + half * 1.2f; right = r.right - half * 1.2f }
                 // 连写要能真正攒住多个字：写字之间长时间停顿也不能把上一个字上屏、清空画布，
@@ -147,6 +179,92 @@ class HandwritingExperienceDeviceTest {
                     bitmap.recycle()
                     controller.onCandidate(index)
                     assertEquals("十十", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                }
+                // 同一区域按停顿叠写：真实包内识别，不用横向留白。 Same-region overlay uses temporal boundaries, not spatial gaps.
+                tap(KeyCode.HAND_MODE)
+                scenario.onActivity { activity ->
+                    assertEquals("叠写", kb.keyboardView.keyOf(KeyCode.HAND_MODE)!!.label)
+                    activity.findViewById<android.widget.EditText>(android.R.id.edit).setText("")
+                }
+                stroke(cx - half, cy, cx + half, cy); stroke(cx, cy - half, cx, cy + half)
+                awaitRecognition()
+                Thread.sleep(WeavePrefs.handPauseMs(prefs) + 100)
+                stroke(cx - half, cy, cx + half, cy); stroke(cx, cy - half, cx, cy + half)
+                awaitRecognition()
+                scenario.onActivity { activity ->
+                    val pad = kb.keyboardView.hand!!
+                    assertArrayEquals(intArrayOf(2, 4), pad.groupEnds)
+                    assertArrayEquals(pad.strokes[0], pad.strokes[2], 0f)
+                    assertArrayEquals(pad.strokes[1], pad.strokes[3], 0f)
+                    assertEquals("", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                    assertTrue(controller.state.candidates.map { it.text }.toString(), controller.state.candidates.any { it.text == "十十" })
+                }
+                tap(KeyCode.DELETE); awaitRecognition()
+                scenario.onActivity {
+                    assertArrayEquals(intArrayOf(2, 3), kb.keyboardView.hand!!.groupEnds)
+                    val keyboard = kb.keyboardView
+                    val modeId = keyboard.keys.indexOfFirst { it.code == KeyCode.HAND_MODE }
+                    assertTrue(keyboard.accessibilityNodeProvider!!.performAction(modeId, android.view.accessibility.AccessibilityNodeInfo.ACTION_LONG_CLICK, null))
+                }
+                awaitRecognition()
+                instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                    File(app.cacheDir, "handwriting-overlay-device.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+                scenario.onActivity { activity ->
+                    assertArrayEquals(intArrayOf(2, 4), kb.keyboardView.hand!!.groupEnds)
+                    val index = controller.state.candidates.indexOfFirst { it.text == "十十" }
+                    assertTrue(controller.state.candidates.map { it.text }.toString(), index >= 0)
+                    kb.onCandidate(index)
+                    assertEquals("十十", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                    assertTrue(kb.keyboardView.hand!!.strokes.isEmpty())
+                }
+                tap(KeyCode.HAND_MODE)
+                scenario.onActivity { activity ->
+                    activity.findViewById<android.widget.EditText>(android.R.id.edit).setText("")
+                    prefs.edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, true)
+                        .putInt(WeavePrefs.HAND_PAUSE, 2).commit()
+                    assertFalse(kb.keyboardView.handLineMode)
+                }
+                stroke(cx - half, cy, cx + half, cy); stroke(cx, cy - half, cx, cy + half)
+                Thread.sleep(900)
+                tap(KeyCode.DELETE)
+                Thread.sleep(350)
+                scenario.onActivity { activity ->
+                    assertEquals("旧定时器不能在退笔后提前上屏", "", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                    assertEquals(1, kb.keyboardView.hand!!.strokes.size)
+                    assertTrue(kb.keyboardView.hand!!.canRedo)
+                    val key = kb.keyboardView.keyOf(KeyCode.HAND_MODE)!!
+                    val time = SystemClock.uptimeMillis()
+                    val event = MotionEvent.obtain(time, time, MotionEvent.ACTION_DOWN, key.rect.centerX(), key.rect.centerY(), 0)
+                    try { kb.keyboardView.dispatchTouchEvent(event) } finally { event.recycle() }
+                }
+                Thread.sleep(500)
+                scenario.onActivity { activity ->
+                    val key = kb.keyboardView.keyOf(KeyCode.HAND_MODE)!!
+                    val time = SystemClock.uptimeMillis()
+                    val event = MotionEvent.obtain(time - 500, time, MotionEvent.ACTION_UP, key.rect.centerX(), key.rect.centerY(), 0)
+                    try { kb.keyboardView.dispatchTouchEvent(event) } finally { event.recycle() }
+                    assertEquals("", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                    assertEquals(2, kb.keyboardView.hand!!.strokes.size)
+                }
+                awaitRecognition()
+                instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                    File(app.cacheDir, "handwriting-redo-pause-device.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+                val until = SystemClock.uptimeMillis() + 5000
+                var committed = false
+                while (!committed && SystemClock.uptimeMillis() < until) {
+                    scenario.onActivity { activity ->
+                        committed = activity.findViewById<android.widget.EditText>(android.R.id.edit).text.isNotEmpty()
+                    }
+                    if (!committed) Thread.sleep(20)
+                }
+                scenario.onActivity { activity ->
+                    assertTrue("重做后应在新的停笔等待结束时上屏", committed)
+                    assertEquals("十", activity.findViewById<android.widget.EditText>(android.R.id.edit).text.toString())
+                    assertTrue(kb.keyboardView.hand!!.strokes.isEmpty())
                     controller.onFinishInput(); kb.dispose()
                 }
             }

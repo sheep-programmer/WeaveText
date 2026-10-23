@@ -17,11 +17,11 @@ import com.weavetext.ime.voice.VoiceRecognizer
  * 一次语音输入会话的状态机（02 §12.1）：Idle → Connecting → Listening → Finalizing → Idle，出错 → Error。
  * 单引擎：识别中间结果作为 composing 文本上屏，最终结果 commit。
  * 多引擎（06 §6）：说话时只在面板里显示主引擎的文字、不上屏；停止后进入 Choosing，
- * 显示每个引擎一行的结果列表，点哪行上屏哪行；结果相同也保留各行供确认。
+ * 每个引擎独立展示结果，查看后明确确认上屏；结果相同也保留供选择。
  * 语音面板与浮动语音条共用同一个会话。
  * Voice session state machine shared by the voice panel and the floating strip. Single engine:
  * interim text is composing, finals commit. Multi-engine: the primary engine's text shows in the
- * panel only; after stopping, Choosing lists one row per engine and the tapped row is committed;
+ * panel only; after stopping, Choosing keeps each engine's result for explicit confirmation;
  * matching results still require a choice.
  */
 class VoiceSession(
@@ -196,7 +196,9 @@ class VoiceSession(
             fun live() = (my == token && (active || state == State.CHOOSING)).also { if (it) lastActivity = clock() }
             override fun onEngines(engines: List<VoicePlugin>) {
                 if (!live() || engines.size < 2) return
-                results = MultiEngineResults(engines.take(3).map { it.id to it.name }, engines.first().id, timeoutMs)
+                results = MultiEngineResults(engines.take(3).map { it.id to it.name }, engines.first().id, timeoutMs).also { res ->
+                    engines.take(3).forEach { engine -> engine.quality?.let { res.score(engine.id, it) } }
+                }
             }
             override fun onEnginePartial(id: String, text: String) {
                 val res = results ?: return
@@ -211,6 +213,11 @@ class VoiceSession(
                 val res = results ?: return
                 if (!live()) return
                 res.final(id, text)
+                multiChanged()
+            }
+            override fun onEngineQuality(id: String, quality: Float) {
+                if (!live()) return
+                results?.score(id, quality)
                 multiChanged()
             }
             override fun onEngineReplace(id: String, old: String, new: String) {
@@ -400,7 +407,13 @@ class VoiceSession(
         changed()
     }
 
-    /** 点选结果列表的一行上屏。 Commit one row of the result list. */
+    /** 按稳定的引擎 ID 确认；排序变化不会改选另一段文字。 Confirm by stable engine ID. */
+    fun choose(id: String) {
+        val row = results?.rows()?.firstOrNull { it.id == id && it.selectable } ?: return
+        commitText(row.text)
+    }
+
+    /** 确认当前快照中的索引；界面应保存引擎 ID。 Confirm a current snapshot index. */
     fun choose(index: Int) {
         val row = results?.rows()?.getOrNull(index) ?: return
         if (!row.selectable) return

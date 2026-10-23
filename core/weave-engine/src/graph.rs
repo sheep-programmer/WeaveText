@@ -149,9 +149,11 @@ impl SyllableGraph {
     }
 
     pub fn push(&mut self, e: Edge) {
-        // 同一 (start,end,syls) 只保留惩罚最小的。 Keep the cheapest duplicate.
+        // 模糊音与触摸纠错保留各自来源，近期偏好需区分两者；其余重复边只留最低惩罚。
+        // Preserve fuzzy/touch provenance for preference eligibility; otherwise keep the cheapest duplicate.
         let list = &mut self.out[e.start];
-        if let Some(old) = list.iter_mut().find(|o| o.end == e.end && o.syls == e.syls) {
+        if let Some(old) = list.iter_mut().find(|o| o.end == e.end && o.syls == e.syls
+            && !matches!((o.kind, e.kind), (EdgeKind::Fuzzy, EdgeKind::Touch) | (EdgeKind::Touch, EdgeKind::Fuzzy))) {
             if e.penalty < old.penalty {
                 *old = e;
             }

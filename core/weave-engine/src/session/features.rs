@@ -12,6 +12,7 @@ impl Engine {
                 use std::hash::{Hash, Hasher};
                 let mut hash = std::collections::hash_map::DefaultHasher::new();
                 self.hand_strokes.len().hash(&mut hash);
+                if let Some(ends) = &self.hand_group_ends { ends.hash(&mut hash); }
                 for stroke in &self.hand_strokes {
                     for (x, y) in weave_dict::hand::resample(stroke) {
                         ((x * 4.0).round() as i32, (y * 4.0).round() as i32).hash(&mut hash);
@@ -50,7 +51,7 @@ impl Engine {
         }
         self.personal.get(&self.policy_key(c))
     }
-    pub(super) fn apply_personal_policies(&mut self) {
+    pub(super) fn apply_personal_policies(&mut self, pinyin: Option<(&SyllableGraph, &Lattice)>) {
         if !self.user_pinyin.learning {
             return;
         }
@@ -62,11 +63,22 @@ impl Engine {
             .enumerate()
             .map(|(i, c)| {
                 let mode = self.policy_mode(&c);
+                // 置顶也须保留完整音节和纠错惩罚；复用本次解码的读法资格，不另存状态。
+                // Pins share reading eligibility with recent choices, using this decode's spans.
+                let pin_allowed = mode != "pin" || match (&c.action, pinyin) {
+                    (Action::Pinyin(p), Some((g, lat))) if !p.text.chars().any(|c| c.is_ascii_alphabetic()) => {
+                        lat.by_start[0].iter().any(|&si| {
+                            let span = &lat.spans[si];
+                            !span.raw && span.end == p.end && span.key == p.key && span.allows_recent_preference(g)
+                        })
+                    }
+                    _ => true,
+                };
                 let partial = matches!(&c.action,Action::Pinyin(p) if p.end<total);
                 let raw = self.schema == Schema::English && i == 0;
                 let score = if raw {
                     -1
-                } else if mode == "pin" {
+                } else if mode == "pin" && pin_allowed {
                     0
                 } else if mode == "down" {
                     2
@@ -170,12 +182,14 @@ impl Engine {
                         }
                         if self.schema == Schema::Hand {
                             if let Action::Table { text } = &c.action {
-                                if text.chars().count() == 1 {
-                                    if let Some(m) = self.hand_models() {
+                                if let Some(m) = self.hand_models() {
+                                    if let Some(ends) = &self.hand_group_ends {
+                                        m.correct_explicit_groups(text, &self.hand_strokes, ends);
+                                    } else if text.chars().count() == 1 {
                                         m.correct(text.chars().next().unwrap(), &self.hand_strokes);
                                     }
-                                    self.save_hand_samples();
                                 }
+                                self.save_hand_samples();
                             }
                         }
                     }
@@ -401,6 +415,8 @@ impl Engine {
                     }
                     self.hand_words.clear();
                     self.hand_strokes.clear();
+                    self.hand_group_ends = None;
+                    self.hand_cands = (Vec::new(), 0);
                     self.refresh();
                 }
                 json!({"ok":true})
@@ -525,5 +541,7 @@ fn expand(template: &str, offset: i32) -> String {
     let date = options.first().map(|(text, _)| text.as_str()).unwrap_or("");
     let times = crate::special::date_candidates("sj", now, offset);
     let time = times.first().map(|(text, _)| text.as_str()).unwrap_or("");
-    template.replace("{date}", date).replace("{time}", time)
+    let weekdays = crate::special::date_candidates("xq", now, offset);
+    let weekday = weekdays.first().map(|(text, _)| text.as_str()).unwrap_or("");
+    template.replace("{date}", date).replace("{time}", time).replace("{weekday}", weekday)
 }

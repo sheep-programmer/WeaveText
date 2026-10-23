@@ -311,6 +311,52 @@ class MultiVoiceSessionTest {
         assertEquals("可确认", edit.text.toString())
     }
 
+    @Test fun explicitQualityChoosesTheBestResultAndRejectsLateScores() {
+        session.start()
+        val old = rec.multi
+        old.onEngineFinal(local.id, "主引擎")
+        old.onEngineFinal(a.id, "高质量结果")
+        old.onEngineQuality(local.id, 0.4f)
+        old.onEngineQuality(a.id, 0.9f)
+        session.stop()
+        for (id in listOf(local.id, a.id, b.id)) old.onEngineEnd(id)
+        val rows = session.results!!.rows()
+        assertEquals(a.id, rows[session.defaultRow].id)
+        old.onEngineQuality(local.id, 1f)
+        assertEquals(rows, session.results!!.rows())
+        session.choose(session.defaultRow)
+        assertEquals("高质量结果", edit.text.toString())
+    }
+
+    @Test fun engineBenchmarkQualityOrdersResultsWithoutChangingPrimaryCaption() {
+        engines.plugins = listOf(local.copy(quality = 0.4f), a.copy(quality = 0.9f), b)
+        session.start()
+        val m = rec.multi
+        m.onEnginePartial(local.id, "实时字幕")
+        assertEquals("实时字幕", session.partial)
+        m.onEngineFinal(local.id, "主引擎")
+        m.onEngineFinal(a.id, "评测优先结果")
+        session.stop()
+        for (id in listOf(local.id, a.id, b.id)) m.onEngineEnd(id)
+        session.choose(session.defaultRow)
+        assertEquals("评测优先结果", edit.text.toString())
+    }
+
+    @Test fun choosingAnEngineIdSurvivesAPendingResultMovingAhead() {
+        session.start()
+        val m = rec.multi
+        m.onEngineFinal(local.id, "主引擎")
+        m.onEngineFinal(a.id, "用户选择")
+        session.stop()
+        m.onEngineEnd(local.id); m.onEngineEnd(a.id)
+        val chosenId = session.results!!.rows()[1].id
+        m.onEngineQuality(b.id, 0.99f)
+        m.onEngineFinal(b.id, "后来完成")
+        m.onEngineEnd(b.id)
+        session.choose(chosenId)
+        assertEquals("用户选择", edit.text.toString())
+    }
+
     @Test fun singleEngineUnchanged() {
         engines.extraIds = emptySet()
         session.start()

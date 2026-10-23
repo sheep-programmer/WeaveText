@@ -41,7 +41,13 @@ Lite 正式包的三模型长录音回归：两段自然中英夹杂录音，中
 
 新增 Whisper base/small 官方 int8 导出与大小、SHA-256；按 [OpenAI MIT 许可](https://github.com/openai/whisper/blob/main/LICENSE)登记。实际英文样本：基础模型把 chieftain 分成 chief then，增强模型得到正确的 tribal chieftain 与 50 pieces of gold。中文样本增强模型为“開放時間早上9點至下午5點”；自然混说里仍将 on time / in time 粘连并有中文错字。基础模型在该混说样本漏掉了英文，保留失败记录，混说仍推荐双语实时模型。不能将多语种能力当成所有混说都准确。
 
-候选使用原始完整文本，行内横向滚动、长按展开换行全文；展开时左右换模型、上下浏览，滑动不会上屏，明确选择正在查看的模型。语言改变和模型选择取消未选结果，避免设置操作替用户提交首选。
+候选使用原始完整文本。2026-10-20 的结果界面调整为最多三张卡片并排预览：左右滑动切换当前结果，点击卡片查看换行全文；全文页支持上下浏览和左右换结果，由底部「上屏」确认当前结果。语言改变和模型选择取消未选结果。
+
+Results retain the complete transcript. The 2026-10-20 interface presents up to three cards side by side: swipe to select, tap to read the complete text, scroll vertically in the expanded view, and confirm the current result with the bottom commit button. Changing the language or model selection discards unconfirmed results.
+
+默认顺序优先采用明确的相对质量分数；缺失时回退主引擎。中文档位的本地模型使用目录里同组干净／噪声合成语音 CER 的均值作相对比较；这不是当前录音的置信度，也不能泛化为英文或混说的准确率，后两种档位不套用该分数。未评测的模型和旧插件保持质量未知，不显示虚构的准确率百分比。每个结果独立保留，用户开始选择后按引擎 ID 固定选择，后台排序不能替换正在查看的内容。
+
+Default ordering prefers explicit relative quality scores and falls back to the primary engine when scores are absent. In Chinese mode, local models use the catalog's mean clean/noisy synthetic-speech CER for comparison. This is not confidence in the current recording and is not applied to English or mixed mode. Unbenchmarked models and older plugins keep unknown quality without invented accuracy percentages. Results remain independent; after interaction, selection is anchored to the engine ID so reordering cannot change the text being viewed.
 
 正式 Android 12/API31 arm64 模拟器验证：三模型混说保留 ON TIME、IN TIME 与中文，候选行滑动、长按展开、左右切换到第三模型并提交全文、完整删除通过。切换到另一输入法并发送 UI_HIDDEN=20，再切回录音，模型加载计数保持 3，没有重新加载。该轮初载记录约 0.7–1.2 秒；环境内存 3 GB、4 核，不能与旧轮次不同负载的延迟作直接因果比较。正式包英文录音仍把 chieftain 识别为 chief then，整句上屏和删除通过，词级失败保留。
 

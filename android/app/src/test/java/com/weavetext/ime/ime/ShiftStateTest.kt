@@ -40,6 +40,14 @@ class ShiftStateTest {
         assertEquals(ShiftState.ONCE, s.value)
     }
 
+    @Test fun aSecondShiftAfterAConsumedLetterStartsAnotherOnceState() {
+        val s = ShiftState()
+        s.tap(1000)
+        assertTrue(s.consume())
+        s.tap(1200)
+        assertEquals("a letter between taps must prevent locking", ShiftState.ONCE, s.value)
+    }
+
     @Test fun aLongPressLocksAndATapUnlocks() {
         val s = ShiftState()
         assertTrue(s.lock())

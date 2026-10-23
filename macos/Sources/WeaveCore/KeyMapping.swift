@@ -345,6 +345,9 @@ public enum KeyMapper {
         // 其余快捷键一律放行。 Other shortcuts always go to the app.
         if key.command || key.control || key.option { return .pass }
         if !ctx.chinese && !ctx.englishCompletion { return .pass }
+        // v 模式的数字与运算符先送内核，不触发候选快捷键。 V-mode arithmetic reaches the engine before candidate shortcuts.
+        if ctx.chinese, ctx.composing, ctx.vMode, !isFunctionKey(key.keyCode),
+           let c = key.character, Calc.vAccepts(c) { return .letter(c) }
         // 用户自定义的候选键优先于默认键，只在组合中生效。 Custom candidate keys beat the defaults, while composing only.
         if ctx.composing, let custom = ctx.bindings.action(for: key) { return custom }
         if !ctx.chinese { return englishAction(key, ctx) }
@@ -399,7 +402,6 @@ public enum KeyMapper {
         }
         guard let c = key.character else { return .swallow }
         if c.isASCII, c.isLetter { return .letter(c) }
-        if ctx.vMode, Calc.vAccepts(c) { return .letter(c) }
         if let d = c.wholeNumberValue, c.isASCII {
             return d >= 1 && d <= ctx.pageSize ? .select(d - 1) : .swallow
         }

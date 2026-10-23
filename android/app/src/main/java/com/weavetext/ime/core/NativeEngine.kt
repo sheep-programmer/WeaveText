@@ -45,14 +45,18 @@ interface KeyEngine {
      * Handwriting (schema "hand"): all strokes of the current char, each x0,y0,x1,y1…; y points down.
      */
     fun handInput(strokes: List<FloatArray>): Boolean = false
+    /** 各字最后一笔之后的下标（递增）；空数组保留旧分组行为。 Exclusive stroke ends per character; empty keeps legacy grouping. */
+    fun handInput(strokes: List<FloatArray>, groupEnds: IntArray): Boolean = handInput(strokes)
     /**
      * 只识别、不改引擎状态，可在任何线程上调用；返回候选字的码位，不支持时为 null（调用方改用 [handInput]）。
      * Recognise only, without touching the engine state; safe on any thread. Returns candidate code points, or
      * null when unsupported (the caller then uses [handInput]).
      */
     fun handRecognize(strokes: List<FloatArray>): IntArray? = null
+    fun handRecognize(strokes: List<FloatArray>, groupEnds: IntArray): IntArray? = handRecognize(strokes)
     /** 交回 [handRecognize] 的结果（主线程）。 Hand back a [handRecognize] result, on the main thread. */
     fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean = handInput(strokes)
+    fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean = handApply(strokes, cands)
     /** 本地时区相对 UTC 的分钟数（rq/sj 日期时间候选）。 Local UTC offset in minutes, for date/time candidates. */
     fun setUtcOffset(minutes: Int) {}
     /** 计算算式（如 128*4），不是算式时返回 null。 Evaluate an expression like 128*4; null if it isn't one. */
@@ -107,10 +111,20 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         return nativeHandInput(handle, xy, lens)
     }
 
+    override fun handInput(strokes: List<FloatArray>, groupEnds: IntArray): Boolean {
+        if (groupEnds.isEmpty()) return handInput(strokes)
+        val (xy, lens) = pack(strokes)
+        return nativeHandInputGrouped(handle, xy, lens, groupEnds)
+    }
+
     /** 手写模型的独立引用（首次用时向引擎要一次）；0 = 没有模型。 Models reference, fetched once; 0 = none. */
     @Volatile private var handModels = -1L
 
-    override fun handRecognize(strokes: List<FloatArray>): IntArray? {
+    override fun handRecognize(strokes: List<FloatArray>): IntArray? = recognizeHand(strokes, intArrayOf())
+
+    override fun handRecognize(strokes: List<FloatArray>, groupEnds: IntArray): IntArray? = recognizeHand(strokes, groupEnds)
+
+    private fun recognizeHand(strokes: List<FloatArray>, groupEnds: IntArray): IntArray? {
         var m = handModels
         if (m == -1L) {
             // 首次在主线程之外取也安全：引擎调用自带锁。 Safe off the main thread: engine calls take the lock.
@@ -119,12 +133,19 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         }
         if (m == 0L) return null
         val (xy, lens) = pack(strokes)
-        return nativeHandRecognize(m, xy, lens)
+        return if (groupEnds.isEmpty()) nativeHandRecognize(m, xy, lens)
+        else nativeHandRecognizeGrouped(m, xy, lens, groupEnds)
     }
 
     override fun handApply(strokes: List<FloatArray>, cands: IntArray): Boolean {
         val (xy, lens) = pack(strokes)
         return nativeHandApply(handle, xy, lens, cands)
+    }
+
+    override fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean {
+        if (groupEnds.isEmpty()) return handApply(strokes, cands)
+        val (xy, lens) = pack(strokes)
+        return nativeHandApplyGrouped(handle, xy, lens, groupEnds, cands)
     }
 
     /** 笔画打包为一个 x,y 数组与每笔点数。 Strokes packed into one x,y array plus per-stroke counts. */
@@ -230,9 +251,12 @@ class NativeEngine private constructor(private var handle: Long) : KeyEngine, Au
         @JvmStatic private external fun nativeDeleteSyllable(h: Long, forward: Boolean): Boolean
         @JvmStatic private external fun nativeCommitFirst(h: Long): Boolean
         @JvmStatic private external fun nativeHandInput(h: Long, xy: FloatArray, lens: IntArray): Boolean
+        @JvmStatic private external fun nativeHandInputGrouped(h: Long, xy: FloatArray, lens: IntArray, ends: IntArray): Boolean
         @JvmStatic private external fun nativeHandModels(h: Long): Long
         @JvmStatic private external fun nativeHandRecognize(m: Long, xy: FloatArray, lens: IntArray): IntArray?
+        @JvmStatic private external fun nativeHandRecognizeGrouped(m: Long, xy: FloatArray, lens: IntArray, ends: IntArray): IntArray?
         @JvmStatic private external fun nativeHandApply(h: Long, xy: FloatArray, lens: IntArray, cands: IntArray): Boolean
+        @JvmStatic private external fun nativeHandApplyGrouped(h: Long, xy: FloatArray, lens: IntArray, ends: IntArray, cands: IntArray): Boolean
         @JvmStatic private external fun nativeCommitRaw(h: Long): Boolean
         @JvmStatic private external fun nativeClear(h: Long): Boolean
         @JvmStatic private external fun nativeFlush(h: Long): Boolean

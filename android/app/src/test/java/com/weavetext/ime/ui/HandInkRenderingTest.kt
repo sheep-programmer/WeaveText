@@ -182,6 +182,40 @@ class HandInkRenderingTest {
         assertTrue(pad.ink.isEmpty)
     }
 
+    @Test fun anExtendedStrokeStaysRecognizableAndKeepsItsBeginningAndLatestMotion() {
+        val pad = HandPad { 10000L }
+        pad.begin(20f, 30f, 0L)
+        // Dense back-and-forth motion stays inside a realistic pad, beyond the native per-stroke limit.
+        for (i in 1..9000) pad.add(20f + (i % 100) * 3f, 30f + (i / 100) % 50 * 3f, i.toLong())
+        val geometry = pad.end(10000L)!!
+        assertTrue("Native recognition rejects an entire input if a stroke exceeds 4096 points", geometry.size / 2 <= 4096)
+        assertEquals(20f, geometry[0], 0f)
+        assertEquals(30f, geometry[1], 0f)
+        assertEquals(20f, geometry[geometry.size - 2], 0f)
+        assertEquals(150f, geometry.last(), 0f)
+        assertTrue("Compaction must retain the spatial extent of the stroke", geometry.filterIndexed { i, _ -> i % 2 == 0 }.max() >= 300f)
+        val rendered = pixels(pad)
+        assertTrue(pad.undo())
+        assertTrue(pad.strokes.isEmpty())
+        assertTrue(pad.redo())
+        assertSame(geometry, pad.strokes.single())
+        assertArrayEquals(rendered, pixels(pad))
+        pad.begin(40f, 40f)
+        pad.add(80f, 80f)
+        pad.cancel()
+        assertSame(geometry, pad.strokes.single())
+        assertArrayEquals(rendered, pixels(pad))
+    }
+
+    @Test fun aStrokeAtTheNativePointLimitRetainsEveryOriginalSample() {
+        val pad = HandPad()
+        pad.begin(0f, 0f, 0L)
+        for (i in 1..4095) pad.add(i * 3f, 0f, i.toLong())
+        val geometry = pad.end()!!
+        assertEquals(8192, geometry.size)
+        for (i in 0..4095) assertEquals(i * 3f, geometry[i * 2], 0f)
+    }
+
     @Test fun longStrokeBufferGrowthAndTinyMovesDoNotChangeAcceptedGeometry() {
         val pad = HandPad { 3000L }
         pad.begin(20f, 30f, 0L, Float.NaN)

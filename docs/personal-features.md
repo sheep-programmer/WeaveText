@@ -16,7 +16,11 @@
 
 沿用 Noise 加密配对连接，接收文件保存到互联状态目录中的 `personal-inbox`，不会放进公共下载目录或剪贴板。最多 8 MB；正在组合时拒绝合并，避免移动手指下的候选。固定候选与近期选择每个读音只保留一个记录，通过逻辑版本与设备标识确定冲突结果；删除留空记录，防止旧设备把已删内容带回来。词频取绝对记录，不把每次导入当成新使用次数。这是主动发送／合并，不是后台自动上传或完整设置同步。
 
-在“词库 → 快捷短语与模板”设置 1–24 个字母的输入码，例如 `dz`。输入这个码，从候选插入常用地址；模板里的 `{date}` 和 `{time}` 按本地时区自动替换。点已有短语可编辑，清空内容后保存即删除。
+在“词库 → 快捷短语与模板”设置 1–24 个字母的输入码，例如 `dz`。输入这个码，从候选插入常用地址；模板里的 `{date}`、`{time}` 和 `{weekday}` 按本地时区自动替换。点已有短语可编辑，清空内容后保存即删除。
+
+日期时间词、u 查字、v 数字与算式的用法见[快捷输入](quick-input.md)。
+
+See [Quick input](quick-input.md) for date/time words, u character lookup, v numbers and expressions. Shortcut templates expand `{date}`, `{time}` and `{weekday}` in the local time zone.
 
 ## 手写
 

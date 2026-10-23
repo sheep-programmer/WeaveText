@@ -328,6 +328,10 @@ impl HandModels {
     /// A smaller gap is accepted only between two character-sized shapes; narrow radicals stay together.
     /// Touching ink or a stroke bridging two characters has no reliable whitespace boundary.
     pub fn line_groups(strokes:&[Stroke])->Vec<Vec<Stroke>> {
+        Self::line_groups_with_width(strokes, 0.55)
+    }
+
+    fn line_groups_with_width(strokes: &[Stroke], min_width: f32) -> Vec<Vec<Stroke>> {
         if strokes.len() > 4 * 64 { return Vec::new(); }
         // Validate and collect all four bounds in one pass, rather than rescanning long trajectories for
         // validity, left/right, and top/bottom separately. Keep the same finite-coordinate and size limits.
@@ -344,8 +348,8 @@ impl HandModels {
         }
         bounds.sort_by(|a,b|a.0.total_cmp(&b.0));
         let height=(bottom-top).max(0.01);
-        // First collect ink components using a conservative small whitespace threshold. Work is O(points +
-        // strokes log strokes); no alternative segmentations or extra recognizer calls are generated.
+        // Collect ink components using a conservative small whitespace threshold. Geometry work is
+        // O(points + strokes log strokes); input_groups bounds the optional template-backed alternative.
         let mut components:Vec<(f32,f32,Vec<usize>)>=Vec::new();
         for (left,right,i) in bounds {
             if components.last().is_none_or(|g| left-g.1>height*0.08) {
@@ -370,7 +374,7 @@ impl HandModels {
                     right_edge=next.1;
                 }
                 (gap>height*0.23 && !radicals) ||
-                    (gap>height*0.08 && left_width>=height*0.55 && right_edge-component.0>=height*0.55)
+                    (gap>height*0.08 && left_width>=height*min_width && right_edge-component.0>=height*min_width)
             });
             if split {groups.push(component.clone());}
             else {let g=groups.last_mut().unwrap();g.1=g.1.max(component.1);g.2.extend(&component.2);}
@@ -384,7 +388,34 @@ impl HandModels {
     /// Check only suspicious boundaries: close gaps, narrow/short pieces, few-stroke pieces, or a compact pair.
     /// Clear full-sized groups skip the whole-character query. Threshold queries/cache never run a whole CNN.
     fn input_groups(&self, strokes: &[Stroke]) -> Vec<Vec<Stroke>> {
-        let groups = Self::line_groups(strokes);
+        let mut groups = Self::line_groups(strokes);
+        if groups.len() < 4 {
+            // One bounded alternative admits full-height narrow characters such as 卜. Require
+            // a strong template for every piece; detached radicals without evidence stay together.
+            // No CNN or engine-context query is needed here; scored group candidates still pass
+            // through the existing engine context/lexicon ranker after the boundary is selected.
+            let alternative = Self::line_groups_with_width(strokes, 0.35);
+            if alternative.len() > groups.len() && alternative.len() <= 4 {
+                // Lookahead can move an existing boundary as well as add one. Only accept a
+                // refinement: every alternative group must belong wholly to one original group.
+                // Use actual stroke membership, not regrouping isolated originals (whose context differs).
+                let owners: Option<Vec<usize>> = alternative.iter().map(|part|
+                    groups.iter().position(|whole| part.iter().all(|stroke| whole.contains(stroke)))
+                ).collect();
+                if let (Some(templates), Some(owners)) = (self.templates.as_ref(), owners) {
+                    let strong = |ink: &[Stroke]| self.cached(ink).1.unwrap_or_else(|| {
+                        let found = templates.has_strong_match(ink, 0.08);
+                        self.cache_result(ink, None, Some(found));
+                        found
+                    });
+                    if alternative.iter().all(|ink| strong(ink)) &&
+                        groups.iter().enumerate().filter(|(i, _)| owners.iter().filter(|owner| *owner == i).count() > 1)
+                            .all(|(_, ink)| self.corrected_char(ink).is_none() && !strong(ink)) {
+                        groups = alternative;
+                    }
+                }
+            }
+        }
         if groups.len() < 2 || strokes.len() > 64 { return groups; }
         if self.corrected_char(strokes).is_some() { return vec![strokes.to_vec()]; }
         if !Self::suspicious_groups(&groups) { return groups; }
@@ -469,10 +500,8 @@ impl HandModels {
     fn corrected_char(&self, strokes: &[Stroke]) -> Option<char> {
         if !self.personal_enabled.load(std::sync::atomic::Ordering::Acquire) { return None; }
         let learned = self.corrections.lock().unwrap_or_else(|e| e.into_inner());
-        let found = learned.recognizer.as_ref()?.recognize(strokes, 8);
+        let found = learned.recognizer.as_ref()?.recognize_same_stroke_count(strokes, 8);
         let first = found.first()?;
-        // A partial character must not be promoted from a learned complete character.
-        if !learned.examples.iter().any(|(ch, ink)| *ch == first.0 && ink.len() == strokes.iter().filter(|s|!s.is_empty()).count()) { return None; }
         let next = found.iter().find(|(ch,_)| *ch != first.0).map_or(1.0, |x| x.1);
         (first.1 < 0.16 && next - first.1 > 0.05).then_some(first.0)
     }
@@ -535,6 +564,53 @@ impl HandModels {
             }
         }
         vec![self.recognize_scored(strokes, top)]
+    }
+
+    /// 按时间顺序的字组，结束位置为不包含该笔的索引。 Validate chronological, exclusive stroke ends.
+    pub fn valid_explicit_groups(strokes: &[Stroke], ends: &[usize]) -> bool {
+        if ends.is_empty() || ends.len() > 4 || ends.last().copied() != Some(strokes.len()) ||
+            !crate::hand::valid_ink(strokes, 256) || strokes.iter().any(Vec::is_empty) {
+            return false;
+        }
+        let mut start = 0;
+        for &end in ends {
+            if end <= start || end - start > 64 { return false; }
+            start = end;
+        }
+        true
+    }
+
+    /// 显式字组绕过空间切分，每组最多五个带分候选。 Explicit groups bypass spatial splitting, up to five scores per char.
+    pub fn recognize_explicit_groups(&self, strokes: &[Stroke], ends: &[usize], top: usize) -> Vec<Vec<(char, f32)>> {
+        if top == 0 || !Self::valid_explicit_groups(strokes, ends) { return Vec::new(); }
+        let mut start = 0;
+        ends.iter().map(|&end| {
+            let scores = self.recognize_scored(&strokes[start..end], top.min(LINE_PER_GROUP));
+            start = end;
+            scores
+        }).collect()
+    }
+
+    /// 显式字组的纠正共用一次撤销，学习时仍保留每个字的笔画范围。
+    /// Learn corrections from the declared spans, with one undo for the entire choice.
+    pub fn correct_explicit_groups(&self, text: &str, strokes: &[Stroke], ends: &[usize]) -> bool {
+        if !Self::valid_explicit_groups(strokes, ends) || !self.personal_enabled.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        let chars: Vec<_> = text.chars().collect();
+        if chars.len() != ends.len() { return false; }
+        let before = self.samples();
+        let (mut start, mut changed) = (0, false);
+        for (ch, &end) in chars.into_iter().zip(ends) {
+            let ink = &strokes[start..end];
+            if self.recognize(ink, 1).first().copied() != Some(ch) {
+                self.correct(ch, ink);
+                changed = true;
+            }
+            start = end;
+        }
+        if changed { self.corrections.lock().unwrap_or_else(|e| e.into_inner()).undo = Some(before); }
+        changed
     }
 
     /// [`HandModels::recognize_groups`] 编成传输格式（见 [`encode_wire`]）。 Encoded for transport.
@@ -774,6 +850,70 @@ fn pool2(x: &[f32], ch: usize, side: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn explicit_groups_recognize_overlapping_characters_in_pen_order() {
+        let cross = vec![vec![(0.0, 50.0), (100.0, 50.0)], vec![(50.0, 0.0), (50.0, 100.0)]];
+        let mut builder = crate::hand::Builder::default();
+        builder.push('十', 255, &cross);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        models.set_line_mode(true);
+        let ink = [cross.clone(), cross].concat();
+        let groups = models.recognize_explicit_groups(&ink, &[2, 4], 5);
+        assert_eq!(groups.len(), 2, "two chronological characters occupy the same region");
+        assert_eq!(groups.iter().map(|g| g[0].0).collect::<String>(), "十十");
+    }
+
+    #[test]
+    fn explicit_groups_override_cross_ambiguity_and_radical_geometry() {
+        let h = vec![(0.0, 50.0), (100.0, 50.0)];
+        let v = vec![(50.0, 0.0), (50.0, 100.0)];
+        // Detached parts with enough whitespace to be split spatially still form one explicit char.
+        let radicals = vec![vec![(0.0, 0.0), (0.0, 100.0)], vec![(200.0, 0.0), (200.0, 100.0)]];
+        let cross = vec![h.clone(), v.clone()];
+        let mut b = crate::hand::Builder::default();
+        b.push('一', 255, &[h]); b.push('丨', 255, &[v]);
+        b.push('十', 255, &cross); b.push('从', 255, &radicals);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&b.build()).unwrap()), None);
+        for line in [false, true] {
+            models.set_line_mode(line);
+            assert_eq!(models.recognize_explicit_groups(&cross, &[2], 5)[0][0].0, '十');
+            let groups = models.recognize_explicit_groups(&cross, &[1, 2], 5);
+            assert_eq!(groups.iter().map(|g| g[0].0).collect::<String>(), "一丨");
+            assert_eq!(models.recognize_explicit_groups(&radicals, &[2], 5)[0][0].0, '从');
+        }
+    }
+
+    #[test]
+    fn explicit_groups_reject_malformed_boundaries_and_ink_without_fallback() {
+        let models = HandModels::new(None, None);
+        let ink = vec![vec![(0.0, 0.0), (1.0, 1.0)]; 2];
+        for ends in [vec![], vec![0, 2], vec![2, 2], vec![2, 1], vec![1], vec![3], vec![1, 2, 3, 4, 5]] {
+            assert!(!HandModels::valid_explicit_groups(&ink, &ends), "{ends:?}");
+            assert!(models.recognize_explicit_groups(&ink, &ends, 5).is_empty());
+        }
+        for bad in [vec![vec![]], vec![vec![(f32::NAN, 0.0)]], vec![vec![(0.0, f32::INFINITY)]],
+            vec![vec![(100_001.0, 0.0)]], vec![vec![(0.0, 0.0); 4097]], vec![vec![(0.0, 0.0)]; 65]] {
+            assert!(!HandModels::valid_explicit_groups(&bad, &[bad.len()]));
+        }
+        let max = vec![vec![(0.0, 0.0)]; 256];
+        assert!(HandModels::valid_explicit_groups(&max, &[64, 128, 192, 256]));
+        assert!(!HandModels::valid_explicit_groups(&max, &[65, 128, 192, 256]));
+        assert!(!HandModels::valid_explicit_groups(&vec![vec![(0.0, 0.0)]; 257], &[64, 128, 192, 257]));
+        assert!(models.recognize_explicit_groups(&ink, &[2], 0).is_empty());
+    }
+
+    #[test]
+    fn explicit_groups_single_character_retains_five_scored_choices() {
+        let ink = vec![vec![(0.0, 0.0), (100.0, 0.0)]];
+        let mut b = crate::hand::Builder::default();
+        for ch in ['一', '二', '三', '四', '五', '六'] { b.push(ch, 255, &ink); }
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&b.build()).unwrap()), None);
+        let groups = models.recognize_explicit_groups(&ink, &[1], 20);
+        assert_eq!(groups[0].len(), 5);
+        assert!(groups[0].iter().all(|(_, score)| score.is_finite()));
+        assert_eq!(decode_wire(&encode_wire(&groups)).unwrap()[0].len(), 5);
+    }
+
+    #[test]
     fn cached_scores_do_not_cache_corrections_or_alias_changed_points_or_models() {
         let cross = vec![vec![(0.0,50.0),(100.0,50.0)],vec![(50.0,0.0),(50.0,100.0)]];
         let mut builder = crate::hand::Builder::default();
@@ -824,6 +964,114 @@ mod tests {
         assert_eq!(HandModels::line_groups(&five), vec![five.clone()]);
     }
 
+    // Simplified synthetic shapes with the measured 100-high / 48-wide narrow character.
+    // These fixtures exercise boundaries, not accuracy on real writers or external datasets.
+    fn narrow_line_shapes() -> Vec<(char, Vec<Stroke>)> {
+        vec![
+            ('匪', vec![
+                vec![(11.0, 5.0), (77.0, 0.0)],
+                vec![(33.0, 19.0), (38.0, 57.0), (35.0, 85.0)],
+                vec![(14.0, 35.0), (33.0, 34.0)],
+                vec![(16.0, 50.0), (34.0, 49.0)],
+                vec![(11.0, 68.0), (33.0, 61.0)],
+                vec![(51.0, 12.0), (57.0, 18.0), (56.0, 87.0)],
+                vec![(60.0, 30.0), (79.0, 28.0)],
+                vec![(60.0, 46.0), (78.0, 46.0)],
+                vec![(60.0, 67.0), (84.0, 66.0)],
+                vec![(0.0, 3.0), (6.0, 18.0), (1.0, 100.0), (92.0, 97.0)],
+            ]),
+            ('卜', vec![vec![(0.0, 0.0), (7.0, 7.0), (5.0, 100.0)], vec![(16.0, 34.0), (48.0, 51.0)]]),
+            ('叒', vec![
+                vec![(25.0, 4.0), (60.0, 0.0), (53.0, 19.0), (13.0, 45.0)],
+                vec![(31.0, 11.0), (61.0, 32.0), (91.0, 36.0)],
+                vec![(8.0, 53.0), (34.0, 50.0), (30.0, 67.0), (0.0, 90.0)],
+                vec![(10.0, 58.0), (39.0, 88.0)],
+                vec![(45.0, 49.0), (76.0, 45.0), (65.0, 73.0), (41.0, 92.0)],
+                vec![(43.0, 55.0), (78.0, 89.0), (100.0, 93.0)],
+            ]),
+        ]
+    }
+
+    #[test]
+    fn close_gap_narrow_characters_keep_separate_candidates_and_pen_order() {
+        let shapes = narrow_line_shapes();
+        let mut builder = crate::hand::Builder::default();
+        for (ch, ink) in &shapes { builder.push(*ch, 255, ink); }
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        models.set_line_mode(true);
+        for (a, b, offset, text) in [(0, 1, 102.0, "匪卜"), (1, 2, 58.0, "卜叒")] {
+            let right: Vec<Stroke> = shapes[b].1.iter().map(|s| s.iter().map(|&(x, y)| (x + offset, y)).collect()).collect();
+            let ink: Vec<Stroke> = shapes[a].1.iter().chain(&right).cloned().collect();
+            assert_eq!(models.input_groups(&ink), vec![shapes[a].1.clone(), right], "{text}: boundaries and original pen order");
+            let result = models.recognize_groups(&ink, 12);
+            assert_eq!(result.len(), 2, "{text}");
+            assert_eq!(result.iter().map(|g| g[0].0).collect::<String>(), text);
+            for (got, ink) in result.iter().zip(models.input_groups(&ink)) {
+                assert_eq!(*got, models.recognize_scored(&ink, LINE_PER_GROUP));
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_character_alternatives_do_not_split_a_complete_wide_glyph() {
+        let shapes = narrow_line_shapes();
+        let left = shapes[1].1.clone();
+        let right: Vec<Stroke> = left.iter().map(|s| s.iter().map(|&(x, y)| (x + 58.0, y)).collect()).collect();
+        let whole: Vec<Stroke> = left.iter().chain(&right).cloned().collect();
+        let mut builder = crate::hand::Builder::default();
+        builder.push('卜', 255, &left);
+        builder.push('从', 255, &whole);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        models.set_line_mode(true);
+        assert_eq!(models.input_groups(&whole), vec![whole.clone()]);
+        assert_eq!(models.recognize_groups(&whole, 5)[0][0].0, '从');
+        // With no recognizer evidence, adjacent narrow radicals must still remain together.
+        let empty = HandModels::new(None, None);
+        assert_eq!(empty.input_groups(&whole), vec![whole]);
+    }
+
+    #[test]
+    fn narrow_alternative_cannot_move_a_protected_existing_boundary() {
+        let strokes: Vec<Stroke> = [(0.0, 35.0), (45.0, 65.0), (75.0, 95.0), (105.0, 140.0)]
+            .into_iter().map(|(left, right)| vec![(left, 0.0), (right, 100.0)]).collect();
+        let expected = vec![strokes[..2].to_vec(), strokes[2..].to_vec()];
+        assert_eq!(HandModels::line_groups(&strokes), expected);
+        assert_eq!(HandModels::line_groups_with_width(&strokes, 0.35),
+            vec![strokes[..1].to_vec(), strokes[1..3].to_vec(), strokes[3..].to_vec()]);
+        for personal in [false, true] {
+            let mut builder = crate::hand::Builder::default();
+            for (ch, ink) in [('甲', strokes[..2].to_vec()), ('乙', strokes[2..].to_vec()),
+                ('丙', strokes[..1].to_vec()), ('丁', strokes[1..3].to_vec()), ('戊', strokes[3..].to_vec())] {
+                builder.push(ch, 255, &ink);
+            }
+            let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+            models.set_line_mode(true);
+            if personal { models.correct('己', &strokes[..2]); }
+            assert_eq!(models.input_groups(&strokes), expected, "personal={personal}");
+            let result = models.recognize_groups(&strokes, 5);
+            assert_eq!(result.len(), 2);
+            if personal { assert_eq!(result[0][0].0, '己'); }
+        }
+    }
+
+    #[test]
+    fn production_narrow_alternative_accepts_four_groups_and_falls_back_for_five() {
+        let shapes = narrow_line_shapes();
+        let mut builder = crate::hand::Builder::default();
+        for (ch, ink) in &shapes { builder.push(*ch, 255, ink); }
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        models.set_line_mode(true);
+        let mut four = Vec::new();
+        for (i, offset) in [(0, 0.0), (1, 102.0), (2, 160.0), (0, 270.0)] {
+            four.extend(shapes[i].1.iter().map(|s| s.iter().map(|&(x, y)| (x + offset, y)).collect::<Stroke>()));
+        }
+        assert_eq!(models.recognize_groups(&four, 5).len(), 4);
+        let five: Vec<Stroke> = (0..5).flat_map(|i| shapes[0].1.iter().map(move |s|
+            s.iter().map(|&(x, y)| (x + i as f32 * 125.0, y)).collect::<Stroke>())).collect();
+        assert_eq!(models.input_groups(&five), vec![five.clone()]);
+        assert_eq!(models.recognize_groups(&five, 5).len(), 1);
+    }
+
     #[test]
     fn a_complete_wide_character_is_not_split_into_its_radicals() {
         let ink = vec![vec![(0.0, 0.0), (60.0, 100.0)], vec![(72.0, 0.0), (132.0, 100.0)]];
@@ -872,6 +1120,28 @@ mod tests {
         let radical: Vec<Stroke> = narrow.iter().map(|s| s.iter().map(|&(x, y)| (x + 62.0, y)).collect()).collect();
         let one: Vec<Stroke> = narrow.iter().chain(&radical).cloned().collect();
         assert_eq!(HandModels::line_groups(&one), vec![one]);
+    }
+
+    #[test]
+    fn personal_correction_cannot_borrow_another_samples_stroke_count() {
+        let cross = vec![vec![(0., 50.), (100., 50.)], vec![(50., 0.), (50., 100.)]];
+        let mut query = cross.clone();
+        query.push(vec![(50., 100.)]);
+        let rails = vec![vec![(0., 0.), (0., 100.)], vec![(50., 0.), (50., 100.)], vec![(100., 0.), (100., 100.)]];
+        let mut builder = crate::hand::Builder::default();
+        builder.push('十', 255, &query);
+        let models = HandModels::new(Some(crate::hand::Recognizer::from_bytes(&builder.build()).unwrap()), None);
+        assert_eq!(models.recognize(&query, 5)[0], '十');
+        models.correct('土', &cross);
+        assert_eq!(models.recognize(&cross, 5)[0], '土');
+        assert_eq!(models.recognize(&query, 5)[0], '十');
+        models.correct('土', &rails);
+        assert_eq!(models.recognize(&rails, 5)[0], '土');
+        assert_eq!(models.recognize(&query, 5)[0], '十');
+        let shifted: Vec<Stroke> = cross.iter().map(|s| s.iter().map(|&(x, y)| (x * 1.05 + 17., y * 0.97 + 9.)).collect()).collect();
+        assert_eq!(models.recognize(&shifted, 5)[0], '土');
+        models.undo_correction();
+        assert_eq!(models.recognize(&query, 5)[0], '十');
     }
 
     #[test]

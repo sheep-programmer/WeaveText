@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -114,6 +115,11 @@ class Navigator(start: List<Route>) {
 val LocalDeps = staticCompositionLocalOf<SettingsDeps> { error("SettingsDeps not provided") }
 val LocalNav = staticCompositionLocalOf<Navigator> { error("Navigator not provided") }
 
+/** 设备测试置 true 让路由切换瞬时完成：模拟器帧时钟偶发停顿时，淡出动画会迟迟不结束、
+ *  新旧两屏同时留在无障碍树里。仅测试使用。 Test-only instant route transitions: on emulators
+ *  whose frame clock stalls, the fade never settles and both screens stay in the a11y tree. */
+@Volatile var settingsTestInstantTransitions = false
+
 /** 设置 App 根。 Settings app root. */
 @Composable
 fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
@@ -125,7 +131,10 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
     WeaveSettingsTheme(dark) {
         CompositionLocalProvider(LocalDeps provides deps, LocalNav provides nav) {
             BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
-            AnimatedContent(nav.current, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "route") { r ->
+            AnimatedContent(nav.current, transitionSpec = {
+                if (settingsTestInstantTransitions) fadeIn(animationSpec = snap()) togetherWith fadeOut(animationSpec = snap())
+                else fadeIn() togetherWith fadeOut()
+            }, label = "route") { r ->
                 val feature = when (r) {
                     Route.Voice, is Route.VoiceDetail, Route.PluginRepositories, Route.Models, Route.VoiceUpgrade -> "voice"
                     Route.Translation -> "translate"
@@ -207,14 +216,27 @@ class SettingsActivity : ComponentActivity() {
         override fun onReceive(c: Context, i: Intent) { statusVersion++ }
     }
 
+    companion object {
+        /** 设备测试注入点：替换依赖与起始路由，避免测试里二次 setContent 产生两套组合。
+         *  Test-only hook to swap deps/start routes without a second setContent. */
+        @Volatile var testHook: ((SettingsActivity) -> Pair<SettingsDeps, Navigator>)? = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        val hook = testHook
+        if (hook != null) {
+            val (d, n) = hook(this)
+            deps = d
+            nav = n
+        } else {
         deps = SettingsDeps(this)
         val st = deps.status()
         val done = WeavePrefs.of(this).getBoolean(WeavePrefs.ONBOARDING_DONE, false)
         val start = if (!done && !(st.enabled && st.isDefault)) listOf<Route>(Route.Onboarding) else listOf(Route.Home)
         nav = Navigator(start + (linkIntent(intent) ?: Route.fromPath(intent?.data?.path, runtimeReady())))
+        }
         registerReceiver(imeChanged, IntentFilter(Intent.ACTION_INPUT_METHOD_CHANGED))
         setContent { SettingsApp(deps, nav, statusVersion) }
     }

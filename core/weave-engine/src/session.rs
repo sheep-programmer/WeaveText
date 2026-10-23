@@ -453,6 +453,8 @@ pub struct Engine {
     hand_words: Vec<String>,
     /// 当前这个字已写的笔画。 Strokes of the character being written.
     hand_strokes: Vec<weave_dict::hand::Stroke>,
+    /// 显式的按时间排列字组结束位置；None 沿用空间切分。 Chronological exclusive ends; None uses legacy grouping.
+    hand_group_ends: Option<Vec<usize>>,
     /// 本次刷新最多生成的候选数。 Candidate budget for the current refresh.
     cand_cap: usize,
     /// 候选列表是否因预算截断（翻页时补齐）。 Whether the list was cut by the budget.
@@ -487,6 +489,7 @@ struct Learned {
     words: Vec<(Vec<SyllableId>, String, Option<crate::userdict::UserEntry>)>,
     bigrams: Vec<(String, String, Option<crate::userdict::BigramStat>)>,
     choices: Vec<(Vec<SyllableId>, Option<crate::userdict::RecentChoice>)>,
+    provisional: Vec<(String, Option<u8>)>,
     at: std::time::Instant,
     hand_correction: bool,
 }
@@ -575,6 +578,7 @@ impl Engine {
             hand_cands: (Vec::new(), 0),
             hand_words: Vec::new(),
             hand_strokes: Vec::new(),
+            hand_group_ends: None,
             cand_cap: CAND_FIRST,
             cands_more: false,
             gram: paths.gram_model.as_ref().and_then(|p| Gram::open_source(p).ok()),
@@ -733,6 +737,9 @@ impl Engine {
                 i += 1;
             }
         }
+        if self.schema.is_pinyin_family() && self.is_composing() && self.shape.is_none() {
+            self.insert_dates();
+        }
         if self.options.traditional {
             for idx in 0..self.cands.len() {
                 let t = self.out(&self.cands[idx].view.text.clone());
@@ -848,6 +855,7 @@ impl Engine {
 
     /// 换了输入框：清空上下文。 New editor: forget context.
     pub fn reset_context(&mut self) {
+        if self.hand_group_ends.is_some() { self.clear(); }
         self.last_word = None;
         self.recent.clear();
         self.predict_depth = 0;
@@ -882,6 +890,10 @@ impl Engine {
             user.restore_bigram(&p, &n, previous);
         }
         for (key, previous) in l.choices.into_iter().rev() { user.restore_choice(&key, previous); }
+        for (phrase, previous) in l.provisional.into_iter().rev() {
+            if let Some(count) = previous { self.provisional.insert(phrase, count); }
+            else { self.provisional.remove(&phrase); }
+        }
         user.flush();
         for (key,text,old) in l.extra_english.into_iter().rev(){self.user_english.restore_entry(&key,&text,old);}
         self.user_english.flush();
@@ -1072,7 +1084,13 @@ impl Engine {
         // 手写：退掉最后一笔并重新识别。 Handwriting: drop the last stroke and recognise again.
         if self.schema == Schema::Hand {
             self.hand_strokes.pop();
-            self.refresh();
+            if let Some(ends) = &mut self.hand_group_ends {
+                let count = self.hand_strokes.len();
+                ends.retain(|&end| end <= count);
+                if ends.last().copied().unwrap_or(0) < count { ends.push(count); }
+                if ends.is_empty() { self.hand_group_ends = None; }
+            }
+            if self.hand_strokes.is_empty() { self.clear(); } else { self.refresh(); }
             return true;
         }
         if self.shape_backspace() || self.backspace_edit() {
@@ -1124,7 +1142,7 @@ impl Engine {
             // 选了联想词：上屏、记住这对搭配，再接着联想。 A prediction: commit it, learn the pair, predict again.
             let Action::Table { text } = c.action else { return false };
             if self.schema == Schema::English { self.commit_english(&text, intentional); return true; }
-            let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
+            let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), provisional: Vec::new(), at: std::time::Instant::now() };
             if let Some(prev) = self.last_word.clone() {
                 let old = self.user_pinyin.bigram(&prev, &text);
                 self.user_pinyin.learn_bigram(&prev, &text);
@@ -1147,7 +1165,9 @@ impl Engine {
                 let mut hand_corrected=false;
                 if self.schema==Schema::Hand && index>0 && self.user_pinyin.learning {
                     if let Some(models)=self.hand_models() {
-                        if text.chars().count()==1 {models.correct(text.chars().next().unwrap(),&self.hand_strokes);hand_corrected=true;}
+                        if let Some(ends) = &self.hand_group_ends {
+                            hand_corrected = models.correct_explicit_groups(&text, &self.hand_strokes, ends);
+                        } else if text.chars().count()==1 {models.correct(text.chars().next().unwrap(),&self.hand_strokes);hand_corrected=true;}
                         else {hand_corrected=models.correct_line(&text,&self.hand_strokes);}
                     }
                     if hand_corrected {self.save_hand_samples();}
@@ -1159,7 +1179,7 @@ impl Engine {
                 self.commit.push_str(&out);
                 self.finish_composition();
                 if hand_corrected {
-                    self.last_learned = Some(Learned { english: false, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
+                    self.last_learned = Some(Learned { english: false, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), provisional: Vec::new(), at: std::time::Instant::now(), hand_correction: true });
                 }
                 if self.schema == Schema::Hand {
                     self.last_word = Some(text.clone());
@@ -1353,6 +1373,7 @@ impl Engine {
     pub fn clear(&mut self) {
         self.predicting = false;
         self.hand_strokes.clear();
+        self.hand_group_ends = None;
         self.hand_cands = (Vec::new(), 0);
         self.hand_words.clear();
         self.raw.clear();
@@ -1584,7 +1605,7 @@ impl Engine {
             words.extend(s.words.iter().cloned());
         }
         let mut prev = self.last_word.clone();
-        let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now() };
+        let mut learned = Learned { english: false, extra_english:Vec::new(), hand_correction: false, words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), provisional: Vec::new(), at: std::time::Instant::now() };
         for (k, w) in &words {
             if k.is_empty() && w.chars().all(|c|c.is_ascii_alphabetic() || c=='\'') {
                 let text=w.to_ascii_lowercase();
@@ -1627,6 +1648,7 @@ impl Engine {
                 let n = pt.chars().count() + text.chars().count();
                 if at.elapsed() <= CHAIN_WINDOW && (2..=6).contains(&n) && pk.len() + key.len() <= 6 {
                     let phrase = format!("{pt}{text}");
+                    learned.provisional.push((phrase.clone(), self.provisional.get(&phrase).copied()));
                     let seen = self.provisional.entry(phrase.clone()).or_insert(0);
                     *seen += 1;
                     if *seen >= 2 {
@@ -1636,7 +1658,8 @@ impl Engine {
                         learned.words.push((pkey, phrase.clone(), old));
                         self.provisional.remove(&phrase);
                     } else if self.provisional.len() > 500 {
-                        self.provisional.clear();
+                        learned.provisional.extend(self.provisional.drain()
+                            .filter(|(text, _)| text != &phrase).map(|(text, count)| (text, Some(count))));
                     }
                 }
             }
@@ -1736,17 +1759,17 @@ impl Engine {
         if self.shape_filtering() {
             self.cand_cap = crate::decoder::MAX_CANDIDATES;
         }
-        match self.schema {
+        let pinyin = match self.schema {
             s if s.is_pinyin_family() => self.refresh_pinyin(selected),
-            Schema::Wubi86 => self.refresh_wubi(),
-            Schema::English => self.refresh_english(),
-            Schema::Hand => self.refresh_hand(),
-            _ => {}
-        }
+            Schema::Wubi86 => { self.refresh_wubi(); None }
+            Schema::English => { self.refresh_english(); None }
+            Schema::Hand => { self.refresh_hand(); None }
+            _ => None,
+        };
         self.cand_cap = cap;
         self.filter_by_shape();
         self.decorate();
-        self.apply_personal_policies();
+        self.apply_personal_policies(pinyin.as_ref().map(|(g, lat)| (g, lat)));
         self.mark_cloud_candidates();
         if let Some(code) = &self.shape {
             self.preedit.push(shape::SHAPE_KEY);
@@ -1795,6 +1818,19 @@ impl Engine {
         self.hand_apply(strokes, cands)
     }
 
+    /// 显式的按时间顺序字组输入；无效范围会清空当前手写候选。
+    /// Input chronological groups; invalid spans clear the current handwriting result.
+    pub fn hand_input_grouped(&mut self, strokes: Vec<weave_dict::hand::Stroke>, ends: Vec<usize>) -> bool {
+        if self.schema != Schema::Hand { return false; }
+        if !weave_dict::handnet::HandModels::valid_explicit_groups(&strokes, &ends) {
+            self.clear();
+            return false;
+        }
+        let groups = self.hand_models().map(|m| m.recognize_explicit_groups(&strokes, &ends, weave_dict::handnet::LINE_PER_GROUP)).unwrap_or_default();
+        let cands = self.rank_hand(groups);
+        self.hand_apply_result(strokes, Some(ends), cands)
+    }
+
     /// 手写识别用的模型（首次调用时载入）。拿到后可在引擎锁外、别的线程上识别，再用 [`Engine::hand_apply`] 交回结果。
     /// The handwriting models, loaded on first use. They can recognise outside the engine lock on another thread;
     /// hand the result back with [`Engine::hand_apply`].
@@ -1817,6 +1853,10 @@ impl Engine {
     /// 交回在别处识别好的结果：这些笔画及其候选字。返回是否有候选。
     /// Hand back a result recognised elsewhere: the strokes and their candidate chars. Returns whether any.
     pub fn hand_apply(&mut self, strokes: Vec<weave_dict::hand::Stroke>, cands: Vec<char>) -> bool {
+        self.hand_apply_result(strokes, None, cands)
+    }
+
+    fn hand_apply_result(&mut self, strokes: Vec<weave_dict::hand::Stroke>, ends: Option<Vec<usize>>, cands: Vec<char>) -> bool {
         if self.schema != Schema::Hand {
             return false;
         }
@@ -1825,6 +1865,7 @@ impl Engine {
         self.hand_cands = (cands, strokes.len());
         self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
         self.hand_strokes = strokes;
+        self.hand_group_ends = ends;
         self.refresh();
         !self.cands.is_empty()
     }
@@ -1835,13 +1876,16 @@ impl Engine {
         }
         // 笔画变了（退一笔）而结果还是旧的：当场重新识别。 Strokes changed (undo) since the result: recognise again.
         if self.hand_cands.1 != self.hand_strokes.len() {
-            let groups = self.hand_models().map(|m| m.recognize_groups(&self.hand_strokes, HAND_CANDIDATES)).unwrap_or_default();
+            let groups = self.hand_models().map(|m| match &self.hand_group_ends {
+                Some(ends) => m.recognize_explicit_groups(&self.hand_strokes, ends, weave_dict::handnet::LINE_PER_GROUP),
+                None => m.recognize_groups(&self.hand_strokes, HAND_CANDIDATES),
+            }).unwrap_or_default();
             let cands = self.rank_hand(groups);
             self.hand_cands = (cands, self.hand_strokes.len());
         }
         self.hand_words=if self.hand_cands.0.contains(&'\0') {self.hand_cands.0.split(|c|*c=='\0').filter(|w|!w.is_empty()).map(|w|w.iter().collect()).collect()}else{Vec::new()};
         if !self.hand_words.is_empty(){
-            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{ pinyin: String::new(), cloud: false,text:text.clone(),comment:"连写".into(),user:false},action:Action::Table{text:text.clone()}});}
+            for text in &self.hand_words {self.cands.push(Cand{view:CandidateView{ pinyin: String::new(), cloud: false,text:text.clone(),comment:if self.hand_group_ends.is_some() {"叠写"} else {"连写"}.into(),user:false},action:Action::Table{text:text.clone()}});}
             return;
         }
         for &c in &self.hand_cands.0 {
@@ -1929,33 +1973,45 @@ impl Engine {
         }
     }
 
-    /// 输入恰为 rq / sj / xq 时，把日期时间插在首选之后。 Date/time after the first candidate for rq / sj / xq.
+    /// 完整日期时间词与快捷码之后给出当前值，不替换普通首选或句中的词。
+    /// Offer current values after a complete date/time word or shortcut, preserving the ordinary first choice.
     fn insert_dates(&mut self) {
-        if !self.selected.is_empty() || !matches!(self.rest_raw(), "rq" | "sj" | "xq") {
-            return;
-        }
+        if !self.selected.is_empty() { return; }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        let mut dates = if matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_)) {
+            crate::special::date_candidates(self.rest_raw(), now, self.options.utc_offset_min)
+        } else { Vec::new() };
+        // 按实际整词匹配，让双拼与九键也能用；不能拿句子开头的单词触发。
+        // Match a whole decoded word for double pinyin/keypad too, never a sentence's leading partial word.
+        if dates.is_empty() {
+            if let Some(Cand { view, action: Action::Pinyin(c) }) = self.cands.first() {
+                let remaining = match self.schema {
+                    Schema::Keypad(_) => self.t9_units.len().saturating_sub(self.consumed),
+                    _ => self.rest_raw().len(),
+                };
+                if self.units_for(c.end) == remaining {
+                    dates = crate::special::date_candidates(&view.text, now, self.options.utc_offset_min);
+                }
+            }
+        }
         let at = self.cands.len().min(1);
-        for (k, (text, comment)) in crate::special::date_candidates(self.rest_raw(), now, self.options.utc_offset_min)
-            .into_iter()
-            .enumerate()
-        {
+        for (k, (text, comment)) in dates.into_iter().enumerate() {
             let c = Cand { view: CandidateView { pinyin: String::new(), cloud: false, text: text.clone(), comment, user: false }, action: Action::Table { text } };
             self.cands.insert(at + k, c);
         }
     }
 
-    fn refresh_pinyin(&mut self, selected: String) {
+    fn refresh_pinyin(&mut self, selected: String) -> Option<(SyllableGraph, Lattice)> {
         if self.refresh_v_mode() || self.refresh_u_mode() {
-            return;
+            return None;
         }
         let (g1, keys1) = self.build_graph();
         if g1.len == 0 {
             self.preedit = selected;
-            return;
+            return None;
         }
         let context = if self.selected.is_empty() {
             self.last_word.as_deref()
@@ -2086,7 +2142,11 @@ impl Engine {
                         syllable::id_of(typed).is_some() && full != typed && full.starts_with(typed)
                     })
                 });
-                let learned = cands.first().is_some_and(|c| self.user_pinyin.preferred(&c.key, &c.text));
+                let learned = cands.first().is_some_and(|c| self.user_pinyin.preferred(&c.key, &c.text)
+                    && lat.by_start[0].iter().any(|&si| {
+                        let span = &lat.spans[si];
+                        span.end == c.end && span.key == c.key && span.allows_recent_preference(&g)
+                    }));
                 let closing = literal.best.last().is_some_and(|(si, text)| {
                     let span = &literal.spans[*si];
                     span.key.len() == 1 && matches!(text.as_str(), "吧" | "吗" | "呢" | "啊" | "呀" | "嘛")
@@ -2109,7 +2169,8 @@ impl Engine {
             .take_while(|(k,_)|k.starts_with("pin:pinyin:")).any(|(_,r)|!r.value.is_empty()) {
             for &si in &lat.by_start[0] {
                 let span=&lat.spans[si];
-                if span.raw || span.key.is_empty() || (span.cut_short && span.end<g.len) {continue;}
+                if span.raw || span.key.is_empty() || (span.cut_short && span.end<g.len)
+                    || !span.allows_recent_preference(&g) {continue;}
                 let text=self.personal.get(&format!("pin:pinyin:{}",spell_key(&span.key)));
                 if text.is_empty() || cands.iter().any(|c|c.text==text) {continue;}
                 let user=self.user_pinyin.get(&span.key,text);
@@ -2141,9 +2202,6 @@ impl Engine {
             self.mix_english(&lat, &keys, g.spells_fully());
             self.offer_literal_latin();
         }
-        if self.schema.is_pinyin_family() && !matches!(self.schema, Schema::Keypad(_)) {
-            self.insert_dates();
-        }
         if matches!(self.schema, Schema::Keypad(_)) {
             let inp = T9Input::from_units(&self.t9_units[self.consumed..], self.grouping());
             let mut opts = t9::pinyin_options(&inp);
@@ -2162,6 +2220,7 @@ impl Engine {
             }
             self.t9_options = opts;
         }
+        Some((g, lat))
     }
 
     /// 中英混输：键入的字母恰好是常用英文词时，把英文词插进候选。
@@ -2481,7 +2540,7 @@ impl Engine {
     fn commit_english(&mut self, text: &str, intentional: bool) {
         let word = text.to_ascii_lowercase();
         let valid = !word.is_empty() && word.len() <= 64 && word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'');
-        let mut learned = Learned { english: true, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), at: std::time::Instant::now(), hand_correction: false };
+        let mut learned = Learned { english: true, extra_english:Vec::new(), words: Vec::new(), bigrams: Vec::new(), choices: Vec::new(), provisional: Vec::new(), at: std::time::Instant::now(), hand_correction: false };
         if valid && self.user_english.learning {
             let full = table::code_key(&word.replace('\'', "")).unwrap_or_default();
             let typed = table::code_key(&self.raw.to_ascii_lowercase().replace('\'', "")).unwrap_or_default();
@@ -2886,6 +2945,45 @@ mod wubi_tests {
     }
 
     #[test]
+    fn provisional_phrase_undo_discards_rejected_evidence() {
+        let mut e = pinyin_engine();
+        e.options.prediction = false;
+        let phrase = |e: &Engine| e.user_words("", 0, 50).iter().any(|w| w.text == "日期时间");
+        for round in 0..3 {
+            e.reset_context();
+            typing(&mut e, "riqi");
+            assert!(e.select(0));
+            typing(&mut e, "shijian");
+            assert!(e.select(0));
+            assert_eq!(e.snapshot().commit, "时间");
+            if round == 0 {
+                assert!(!e.backspace());
+            }
+            assert_eq!(phrase(&e), round == 2, "round {round}");
+        }
+    }
+
+    #[test]
+    fn provisional_phrase_undo_restores_prior_valid_evidence() {
+        let mut e = pinyin_engine();
+        e.options.prediction = false;
+        let phrase = |e: &Engine| e.user_words("", 0, 50).iter().any(|w| w.text == "日期时间");
+        for round in 0..3 {
+            e.reset_context();
+            typing(&mut e, "riqi");
+            assert!(e.select(0));
+            typing(&mut e, "shijian");
+            assert!(e.select(0));
+            assert_eq!(e.snapshot().commit, "时间");
+            assert_eq!(phrase(&e), round != 0, "round {round}");
+            if round == 1 {
+                assert!(!e.backspace());
+                assert!(!phrase(&e));
+            }
+        }
+    }
+
+    #[test]
     fn v_mode_numbers_and_arithmetic() {
         let mut e = pinyin_engine();
         typing(&mut e, "v1234");
@@ -3065,7 +3163,7 @@ mod typo_tests {
     }
 
     #[test]
-    fn deliberate_learned_completion_can_lead_but_unfinished_input_still_completes() {
+    fn learned_completion_preserves_complete_syllables_and_unfinished_input_still_completes() {
         let mut b = Builder::new(Kind::Pinyin);
         let key = |s: &str| weave_dict::syllable::parse_seq(s).unwrap();
         for (py, text, cost) in [("xiu", "修", 9000), ("ba", "吧", 6000), ("xiu ban", "休班", 10)] {
@@ -3081,7 +3179,8 @@ mod typo_tests {
             assert!(e.select(index));
             assert_eq!(e.snapshot().commit, "休班");
         }
-        assert_eq!(typing(&mut e, "xiuba").candidates[0].text, "休班");
+        assert_eq!(typing(&mut e, "xiuba").candidates[0].text, "修吧");
+        assert_eq!(typing(&mut e, "xiub").candidates[0].text, "休班");
     }
 
     #[test]
@@ -3333,6 +3432,103 @@ mod hand_tests {
 
     fn line(x0: f32, y0: f32, x1: f32, y1: f32) -> weave_dict::hand::Stroke {
         vec![(x0, y0), ((x0 + x1) / 2.0, (y0 + y1) / 2.0), (x1, y1)]
+    }
+
+    fn grouped_engine() -> Engine {
+        let h = line(0.0, 50.0, 100.0, 50.0);
+        let v = line(50.0, 0.0, 50.0, 100.0);
+        let mut b = weave_dict::hand::Builder::default();
+        b.push('一', 255, &[h.clone()]);
+        b.push('丨', 255, &[v.clone()]);
+        b.push('十', 255, &[h, v]);
+        let mut e = Engine::new(&Paths::default());
+        e.set_schema(Schema::Hand);
+        e.hand = Some(std::sync::Arc::new(weave_dict::handnet::HandModels::new(
+            Some(weave_dict::hand::Recognizer::from_bytes(&b.build()).unwrap()), None)));
+        e
+    }
+
+    #[test]
+    fn explicit_grouped_input_backspace_preserves_chronological_endpoints() {
+        let mut e = grouped_engine();
+        let cross = vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)];
+        assert!(e.hand_input_grouped([cross.clone(), cross].concat(), vec![2, 4]));
+        assert_eq!(e.snapshot().candidates[0].text, "十十");
+        assert_eq!(e.snapshot().candidates[0].comment, "叠写");
+        for (text, ends) in [("十一", vec![2, 3]), ("十", vec![2]), ("一", vec![1])] {
+            assert!(e.backspace());
+            assert_eq!(e.snapshot().candidates[0].text, text);
+            assert_eq!(e.hand_group_ends, Some(ends));
+        }
+        assert!(e.backspace());
+        assert!(e.snapshot().candidates.is_empty());
+        assert!(!e.is_composing());
+        assert!(e.hand_group_ends.is_none());
+    }
+
+    #[test]
+    fn explicit_grouped_wire_is_strict_and_clears_stale_candidates() {
+        use weave_dict::handnet::encode_wire;
+        let mut e = grouped_engine();
+        let ink = vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)];
+        let wire = encode_wire(&[vec![('一', 0.0)], vec![('丨', 0.0)]]);
+        for ends in [vec![], vec![0, 2], vec![1], vec![2, 1], vec![1, 1, 2], vec![3]] {
+            assert!(e.hand_input_grouped(ink.clone(), vec![2]));
+            assert!(!e.hand_input_grouped(ink.clone(), ends.clone()));
+            assert!(e.snapshot().candidates.is_empty());
+            assert!(!e.is_composing());
+            assert!(e.hand_apply_grouped_wire(ink.clone(), vec![1, 2], &wire));
+            assert!(!e.hand_apply_grouped_wire(ink.clone(), ends, &wire));
+            assert!(e.snapshot().candidates.is_empty());
+        }
+        for bad in [vec!['十' as u32], encode_wire(&[vec![('十', 0.0)]]),
+            encode_wire(&[vec![], vec![('丨', 0.0)]]), vec![weave_dict::handnet::WIRE_MAGIC, 2, 1]] {
+            assert!(e.hand_apply_grouped_wire(ink.clone(), vec![1, 2], &wire));
+            assert!(!e.hand_apply_grouped_wire(ink.clone(), vec![1, 2], &bad));
+            assert!(e.snapshot().candidates.is_empty());
+            assert!(!e.backspace());
+        }
+    }
+
+    #[test]
+    fn explicit_grouped_correction_learns_each_span_and_undoes_together() {
+        use weave_dict::handnet::encode_wire;
+        let mut e = grouped_engine(); e.set_learning(true);
+        let ink = vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)];
+        let wire = encode_wire(&[vec![('一', 0.0), ('二', -1.0)], vec![('丨', 0.0), ('乙', -2.0)]]);
+        assert!(e.hand_apply_grouped_wire(ink.clone(), vec![1, 2], &wire));
+        let idx = e.snapshot().candidates.iter().position(|c| c.text == "二乙").unwrap();
+        assert!(e.select(idx));
+        assert_eq!(e.snapshot().commit, "二乙");
+        let models = e.hand_models().unwrap();
+        assert_eq!(models.samples().iter().map(|(ch, ink)| (*ch, ink.len())).collect::<Vec<_>>(), vec![('二', 1), ('乙', 1)]);
+        assert!(e.hand_group_ends.is_none());
+        assert!(!e.backspace());
+        assert!(models.samples().is_empty(), "both corrections undo as one choice");
+        assert!(e.hand_input_grouped(ink, vec![1, 2]));
+        assert_eq!(e.snapshot().candidates[0].text, "一丨");
+    }
+
+    #[test]
+    fn explicit_grouped_boundaries_clear_on_legacy_and_session_lifecycle() {
+        let mut e = grouped_engine();
+        let ink = vec![line(0.0, 50.0, 100.0, 50.0), line(50.0, 0.0, 50.0, 100.0)];
+        assert!(e.hand_input_grouped(ink.clone(), vec![1, 2]));
+        assert!(e.hand_input(ink.clone()));
+        assert!(e.hand_group_ends.is_none());
+        assert_eq!(e.snapshot().candidates[0].text, "十");
+        assert!(e.hand_input_grouped(ink.clone(), vec![1, 2]));
+        e.clear(); assert!(e.hand_group_ends.is_none());
+        assert!(e.hand_input_grouped(ink.clone(), vec![1, 2]));
+        e.reset_context(); assert!(e.hand_group_ends.is_none());
+        assert!(!e.is_composing());
+        assert!(e.hand_input_grouped(ink.clone(), vec![1, 2]));
+        e.set_schema(Schema::Pinyin); assert!(e.hand_group_ends.is_none());
+        e.set_schema(Schema::Hand);
+        assert!(e.hand_input_grouped(ink, vec![1, 2]));
+        e.features(&serde_json::json!({"op":"setHandLine","on":true}));
+        assert!(e.hand_group_ends.is_none());
+        assert!(!e.is_composing());
     }
 
     #[test]

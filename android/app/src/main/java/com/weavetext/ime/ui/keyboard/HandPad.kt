@@ -10,8 +10,8 @@ import kotlin.math.hypot
 import kotlin.math.min
 
 /**
- * Recognition keeps the original accepted x/y samples. Speed, pressure, smoothing and pointed
- * tails belong only to rendering. Changing appearance redraws finished and active strokes.
+ * Recognition keeps accepted x/y samples, thinning only overlong strokes to the native point limit.
+ * Speed, pressure, smoothing and pointed tails belong only to rendering. Appearance changes redraw ink.
  * Move events reuse primitive buffers and Paths; buffers grow geometrically only when full.
  * Like the original pad, this object is confined to the view's UI thread.
  */
@@ -23,6 +23,29 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     private val redoGeom = ArrayList<FloatArray>()
     private val redoSamples = ArrayList<FloatArray>()
     val strokes: List<FloatArray> get() = done
+    private val groups = ArrayList<Int>()
+    private val redoGroups = ArrayList<Int>()
+    private var currentGroup = 0
+    var overlayMode = false
+        set(value) {
+            if (field == value) return
+            field = value
+            // 模式改变时保留笔迹，将已有墨迹作为一个字。 A mode change preserves ink as one character.
+            groups.indices.forEach { groups[it] = 0 }
+            redoGroups.indices.forEach { redoGroups[it] = 0 }
+            currentGroup = 0
+        }
+    var characterPauseMs = COMMIT_PAUSE_MS
+    val groupEnds: IntArray get() {
+        if (!overlayMode || done.isEmpty()) return intArrayOf()
+        val ends = ArrayList<Int>()
+        for (i in 1 until groups.size) if (groups[i] != groups[i - 1]) ends += i
+        ends += done.size
+        return ends.toIntArray()
+    }
+    val characterCount: Int get() = groupEnds.size
+    var overlayLimitReached = false
+        private set
     /** A live stroke must finish or cancel before an undone stroke can be restored. */
     val canRedo: Boolean get() = !drawing && redoGeom.isNotEmpty()
     private var cur = FloatArray(512)
@@ -119,6 +142,11 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
 
     /** Pass MotionEvent pressure ONLY for stylus samples. */
     fun begin(x: Float, y: Float, t: Long, pressure: Float = 1f) {
+        currentGroup = groups.lastOrNull() ?: 0
+        if (overlayMode && done.isNotEmpty() && sinceLastStroke(t) >= characterPauseMs) currentGroup++
+        overlayLimitReached = overlayMode && (currentGroup >= 4 ||
+            groups.count { it == currentGroup } >= 64)
+        if (overlayLimitReached || done.size >= MAX_STROKES) return
         drawing = true
         curN = 0
         vel = 0f
@@ -160,6 +188,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         // kept nor drawn; drawing it only to have it vanish on the next redraw (undo, theme change) is worse.
         if (done.size < MAX_STROKES) {
             done += geom
+            groups += if (overlayMode) currentGroup else 0
             doneSamples += displaySamples
             fill(finishedInk, geom, displaySamples, curN, ended = true)
         }
@@ -169,10 +198,15 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         return geom
     }
 
-    fun cancel() {
+    fun cancel() = cancel(clock())
+
+    /** 取消后保留的笔迹从事件时刻重新算停笔。 Retained ink starts a fresh pause at cancellation. */
+    fun cancel(t: Long) {
         if (!drawing) return
         drawing = false
         curN = 0
+        // 叠写新字首笔取消后，重试仍沿用原来的分字停顿。 Keep an overlay boundary when retrying a canceled new character.
+        if (done.isNotEmpty() && (!overlayMode || currentGroup == groups.lastOrNull())) lastStrokeEnd = t
         rebuild()
     }
 
@@ -182,7 +216,11 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         if (redoGeom.size == MAX_REDO_STROKES) {
             redoGeom.removeAt(0)
             redoSamples.removeAt(0)
+            redoGroups.removeAt(0)
         }
+        redoGroups.add(groups.removeAt(groups.lastIndex))
+        overlayLimitReached = false
+        lastStrokeEnd = clock()
         redoGeom.add(done.removeAt(done.lastIndex))
         redoSamples.add(doneSamples.removeAt(doneSamples.lastIndex))
         refreshInk()
@@ -193,6 +231,9 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     fun redo(): Boolean {
         if (!canRedo) return false
         done.add(redoGeom.removeAt(redoGeom.lastIndex))
+        groups.add(redoGroups.removeAt(redoGroups.lastIndex))
+        lastStrokeEnd = clock()
+        overlayLimitReached = false
         doneSamples.add(redoSamples.removeAt(redoSamples.lastIndex))
         refreshInk()
         return true
@@ -201,6 +242,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     private fun clearRedo() {
         redoGeom.clear()
         redoSamples.clear()
+        redoGroups.clear()
     }
 
     /** A live stroke survives clear as the next character's first stroke. */
@@ -215,6 +257,9 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
             fadeStart = clock()
         }
         done.clear()
+        groups.clear()
+        currentGroup = 0
+        overlayLimitReached = false
         doneSamples.clear()
         finishedInk.rewind()
         rebuild()
@@ -229,6 +274,9 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
 
     fun reset() {
         done.clear()
+        groups.clear()
+        currentGroup = 0
+        overlayLimitReached = false
         doneSamples.clear()
         clearRedo()
         drawing = false
@@ -246,6 +294,14 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     }
 
     private fun push(x: Float, y: Float, pressure: Float) {
+        if (curN == MAX_POINTS) {
+            // Only overlong strokes are thinned. Keep both ends, sample order and matching display
+            // metadata; new motion must keep arriving rather than freezing the stroke at the limit.
+            var kept = 1
+            for (i in 2 until curN step 2) copyPoint(i, kept++)
+            copyPoint(curN - 1, kept++)
+            curN = kept
+        }
         if ((curN + 1) * 2 > cur.size) {
             cur = cur.copyOf(cur.size * 2)
             samples = samples.copyOf(samples.size * 2)
@@ -256,6 +312,12 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         samples[curN * SAMPLE_SIZE + 1] = if (pressure.isFinite()) pressure.coerceIn(0.1f, 2f) else 1f
         samples[curN * SAMPLE_SIZE + 2] = distance
         curN++
+    }
+
+    private fun copyPoint(from: Int, to: Int) {
+        cur[to * 2] = cur[from * 2]
+        cur[to * 2 + 1] = cur[from * 2 + 1]
+        for (i in 0 until SAMPLE_SIZE) samples[to * SAMPLE_SIZE + i] = samples[from * SAMPLE_SIZE + i]
     }
 
     /** Rebuild display only; recognition arrays retain both their contents and identity. */
@@ -372,6 +434,8 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     companion object {
         private const val SAMPLE_SIZE = 3
         private const val MAX_REDO_STROKES = 128
+        /** Native recognition rejects strokes longer than this many points. */
+        private const val MAX_POINTS = 4096
         /** 一行最多留这么多笔（与内核一次识别的上限一致）。 Longest ink a line keeps; the engine's own per-call ceiling. */
         const val MAX_STROKES = 256
         const val COMMIT_PAUSE_MS = 800L

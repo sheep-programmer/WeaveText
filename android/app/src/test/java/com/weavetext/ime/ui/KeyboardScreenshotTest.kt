@@ -408,7 +408,8 @@ class KeyboardScreenshotTest : KeyboardSnapshotSupport() {
         val (k, _) = keyboard(true)
         k.showPanel("voice")
         val r = multiResults()
-        r.tick(8_000)
+        r.tick(com.weavetext.ime.voice.MultiEngineResults.DEFAULT_TIMEOUT_MS)
+        assertEquals(com.weavetext.ime.voice.MultiEngineResults.Status.TIMEOUT, r.rows().last().status)
         (k.panel as VoicePanel).session.previewResults(r)
         snap("voice_multi_results_timeout_dark")
     }

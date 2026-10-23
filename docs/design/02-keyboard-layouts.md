@@ -188,11 +188,13 @@
 |---|---|---|---|
 | 关 Off | `ic_shift`（描边） | F | 默认；输入 1 个字母后从 Once 回到 Off |
 | 单次 Once | `ic_shift_filled`（实心） | F | 单击；或句首自动大写（`TYPE_TEXT_FLAG_CAP_SENTENCES`） |
-| 锁定 Lock | `ic_shift_lock`（实心 + 下划线） | `kb.accentSoft`，图标 `kb.keyAccent` | 300ms 内双击；再次单击回到 Off |
+| 锁定 Lock | `ic_shift_lock`（实心 + 下划线） | `kb.accentSoft`，图标 `kb.keyAccent` | 400ms 内连续双击或长按；再次单击回到 Off / Two consecutive taps within 400ms or a long press; tap to unlock |
 
 - 行 4：`符 | 123 | , | 空格 | . | 中/英 | ⏎`，`,` 长按 `, ; : '`，`.` 长按 `. ? ! … @ /`。
 - 双击空格 → `. `（句号 + 空格），仅英文模式。*Double-space → ". " in English only.*
 - 英文模式的候选栏显示单词补全/纠错（本地词表），首项为原样输入。
+- 字母结束 Shift 双击窗口；`Shift → A → Shift` 重新进入单次大写。上滑换成数字或取消触摸，成功撤回字母后恢复它消耗的单次大写；标点不消耗单次态。中英切换清理旧大写状态。*A letter ends the double-tap window. Successfully reverting it for a digit swipe or touch cancellation restores its one-shot Shift; punctuation does not consume it. Language switches clear the previous Shift state.*
+- 移动正文光标会重算句首自动大写，手动开启的单次大写与锁定保留；同位置的系统回报不重新打开用户刚关闭的大写。英文词中的撇号（上滑或长按）继续当前组合，`don → ' → t` 可连成 `don't`。*Editor cursor moves recheck automatic capitals while preserving manually enabled one-shot capitals and caps lock. Unchanged selection echoes do not re-enable capitals the user turned off. An apostrophe entered through a swipe or long press continues an English word.*
 
 ---
 
@@ -200,6 +202,9 @@
 
 键位与 §3 完全相同；**可选**显示韵母提示（设置 → 输入方案 → 双拼 →「显示按键提示」，默认开）。
 *Same grid as §3; optional final hints.*
+
+组合中 Shift 仍可临时输入一个大写字母，再回到双拼小写输入，不进入大写锁定；全拼组合中该键仍插入隔音符 `'`。
+*During double-pinyin composition, Shift can enter one uppercase letter and then returns to lowercase without locking. In full-pinyin composition it still inserts the separator `'`.*
 
 **提示样式 / Hint style**：副标签从「上方居中」改为**右下角**（x = 右内边距 4dp，基线 = 底部 5dp），`type.keyHintCjk` 9.5dp，`kb.labelHint`；上滑数字提示仍在上方居中，但改为 9dp。提示开启时主标签缩为 **20dp**，垂直中心上移到 `keyH × 0.47`，给右下提示让位。两个韵母用 `/` 分隔，超过 5 个字符时只显示第一个。
 *Final hints bottom-right 9.5dp; numeric hint top-centre 9dp; with hints on, the letter shrinks to 20dp and centres at keyH × 0.47.*
@@ -526,6 +531,16 @@ arrangement differs.
 
 ---
 
+### 12.5 多结果卡片 / Multiple result cards
+
+同时识别的结果最多三个，每个结果一张等宽卡片并排展示，显示引擎名、识别状态和多行原文摘要。左右滑动切换当前结果，约 220 ms 的高亮渐变与小幅位移跟随切换；系统关闭动画时立即落定。初始选中态直接可见。点击卡片打开完整文字，上下滚动浏览、左右切换结果；底部「返回」回卡片，「上屏」明确确认当前结果，「麦克风」重录。识别中或失败的卡片可以查看，但不可上屏。
+
+Up to three results appear in equal-width cards with the engine name, status and multiline transcript excerpt. Horizontal swipes change the selection with about 220 ms of emphasis and translation; disabling system animations makes changes immediate. The initial selection is visible immediately. Tapping opens the full transcript, with vertical scrolling and horizontal result switching. Bottom actions return to cards, confirm the current result, or record again. Pending and failed cards can be inspected but cannot be committed.
+
+默认选择使用同组评测的相对质量分数，缺失时回退主引擎；不显示虚构的本次识别准确率。用户开始选择后以引擎 ID 保持当前结果，排序刷新不改选另一段文字。按下「上屏」时固定该结果，松手前其他引擎完成也不能替换它；新会话使旧确认动作失效。短面板优先保留正文空间，压缩状态说明与提示。
+
+Default selection uses relative quality on a shared benchmark, falling back to the primary engine when unavailable. It does not display invented confidence. After interaction the engine ID anchors selection across reordering. Pressing commit captures that result; another engine completing before release cannot replace it, and a new session invalidates the old confirmation. Short panels compact metadata to preserve transcript space.
+
 ## 13. 九键拼音 / T9 Pinyin
 
 列权重 `1.1 | 1.3 | 1.3 | 1.3 | 1.1`（合计 6.1），圆角 `radius.keyLarge`。
@@ -587,9 +602,9 @@ arrangement differs.
 
 ### 13.2 手写 / Handwriting
 
-单字手写，内核方案 `hand`，在「输入方案」里与 26 键、九键、14 键并列启用；布局沿用九键的列权重。
+手写支持单字、横向连写与按停顿分字的同区叠写，内核方案 `hand`，在「输入方案」里与 26 键、九键、14 键并列启用；布局沿用九键的列权重。
 书写区占九键左列与数字键的位置（前三行、前四列），右列为删除、重写与回车，底行与九键一致，空格两侧加中文逗号、句号。
-*Single-character handwriting, engine schema `hand`, enabled next to QWERTY / T9 / 14-key in Input schemes. It reuses
+*Single-character, spaced-line and pause-delimited overlay handwriting, engine schema `hand`, enabled next to QWERTY / T9 / 14-key in Input schemes. It reuses
 the T9 column weights: the pad covers the side column and digit keys (three rows × four columns), the right column
 holds Delete, Rewrite and Enter, and the bottom row matches T9 with a Chinese comma and full stop beside the space bar.*
 
@@ -616,6 +631,10 @@ holds Delete, Rewrite and Enter, and the bottom row matches T9 with a Chinese co
 | 底行 | 九键底行的键（去掉删除/回车/重输/0），空格两侧插入「，」「。」（权重 0.8，空格 1.8），长按列出同类标点；中/英、123、符号与其他方案相同 |
 | 多指 | 书写中其它手指一律忽略（手掌、误触）；触摸被取消时丢弃正在写的一笔 |
 | 其它 | 悬浮键盘、单手模式按键区尺寸重新排布；手写不分体（与九键相同） |
+
+**叠写 / Overlay writing**：现有模式键按「单字 → 连写 → 叠写」循环。叠写在同一区域逐字覆盖书写；两字之间须停顿到设置中的判字时长（550／800／1200ms），下一次落笔开始新字，不自动上屏。每次最多四字、每字最多 64 笔，写完点候选、空格或回车确认；到上限保留已有笔迹并提示确认或退笔。原始坐标保持不变，按笔画结束索引明确分组，识别、退笔／重做和纠错学习共用分界。取消新字首笔后立即重试保留原字界。切换方式保留笔迹，将已有笔迹作为一个字重新识别；叠写不负责自动猜测无停顿字界，也不支持开始下一字后返回补前字笔画。
+
+The existing mode key cycles through Single, Line and Overlay. Overlay reuses the same area for successive characters, with the configured 550/800/1200ms pause between characters. The next pen-down starts another character without committing text. Up to four characters and 64 strokes per character are retained until explicit candidate/Space/Enter confirmation. Limits retain existing ink and prompt confirmation or undo. Raw coordinates stay unchanged; exclusive stroke-end indices drive recognition, undo/redo and correction learning. Retrying a canceled first stroke preserves its character boundary. Switching modes retains ink as one character for re-recognition. This mode does not infer boundaries without pauses or support returning to add strokes to an earlier character.
 
 ![手写（浅色）/ Handwriting light](../../android/app/src/test/snapshots/keyboard_hand_idle_light.png)
 ![手写书写中（浅色）/ Writing, light](../../android/app/src/test/snapshots/keyboard_hand_writing_light.png)

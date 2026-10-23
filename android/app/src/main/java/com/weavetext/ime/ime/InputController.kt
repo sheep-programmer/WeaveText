@@ -66,6 +66,13 @@ data class ImeState(
 class InputController(private val icProvider: () -> InputConnection?) {
     private var inputEpoch = 0L
     private var translationRevision = 0L
+    private data class ClearRecovery(
+        val target: TranslationTarget, val version: Int, val text: String,
+        val originalStart: Int, val originalEnd: Int, val expiresAt: Long,
+    )
+    private var clearRecovery: ClearRecovery? = null
+
+    fun discardClearRecovery() { clearRecovery = null }
 
     /** A translation belongs to the editor and selection where its source was read. */
     class TranslationTarget internal constructor(
@@ -79,22 +86,77 @@ class InputController(private val icProvider: () -> InputConnection?) {
         internal val after: String,
     )
 
-    fun captureTranslationTarget(): TranslationTarget? {
+    private var translationDraft: InputConnection? = null
+    private var translationHostStart = -1
+    private var translationHostEnd = -1
+    private fun activeConnection(): InputConnection? = translationDraft ?: icProvider()
+
+    /** Route normal typing to a local, unfocused draft while retaining the host writeback target. */
+    fun beginTranslationDraft(connection: InputConnection): TranslationTarget? {
         if (isSensitiveField) return null
-        // Drop unconfirmed typing and pending handwriting before binding the target.
+        endTranslationDraft()
+        val target = captureTranslationTarget(preserveComposition = true) ?: return null
+        translationHostStart = target.start
+        translationHostEnd = target.end
+        translationDraft = connection
+        if (target.selectedText.isNotEmpty()) connection.commitText(target.selectedText, 1)
+        discardClearRecovery()
+        voiceField = field(editorInfo); voiceEpoch = -1L
+        engineRef?.setLearning(false)
+        engineRef?.breakChain()
+        engineRef?.setContext(null)
+        val size = connection.getTextBeforeCursor(Int.MAX_VALUE, 0)?.length ?: 0
+        editor.reset(size, size)
+        return target
+    }
+
+    val translationDraftActive: Boolean get() = translationDraft != null
+    fun translationDraftActive(connection: InputConnection): Boolean = translationDraft === connection
+
+    /** Consume every otherwise unhandled hardware key while editing the local draft. */
+    fun routeTranslationDraftKey(event: KeyEvent): Boolean {
+        val draft = translationDraft ?: return false
+        draft.sendKeyEvent(event)
+        editor.invalidate()
+        return true
+    }
+
+    fun endTranslationDraft(connection: InputConnection? = null) {
+        if (translationDraft == null || connection != null && translationDraft !== connection) return
         discardHand()
         endReconversion()
         engineRef?.clear()
         pendingKeys.clear()
+        voiceField = field(editorInfo); voiceEpoch = -1L
+        inputEpoch++
+        translationDraft = null
+        editor.invalidate()
+        engineRef?.setLearning(!state.privateField)
+        engineRef?.breakChain()
+        engineRef?.setContext(null)
         refresh()
+    }
+
+    fun captureTranslationTarget(preserveComposition: Boolean = false): TranslationTarget? {
+        if (isSensitiveField) return null
+        if (!preserveComposition) {
+            // Legacy callers explicitly discard unconfirmed input before binding.
+            discardHand()
+            endReconversion()
+            engineRef?.clear()
+            pendingKeys.clear()
+            refresh()
+        }
         val connection = icProvider() ?: return null
         return readTranslationTarget(connection)
     }
 
-    private fun readTranslationTarget(connection: InputConnection): TranslationTarget? = runCatching {
+    private fun readTranslationTarget(connection: InputConnection, requireExtraction: Boolean = false): TranslationTarget? = runCatching {
         val extracted = connection.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 128 }, 0)
-        val start = extracted?.let { it.startOffset + it.selectionStart } ?: editor.selStart
-        val end = extracted?.let { it.startOffset + it.selectionEnd } ?: editor.selEnd
+        if (requireExtraction && extracted == null) return null
+        val hostDuringDraft = translationDraft != null && connection !== translationDraft
+        val start = extracted?.let { it.startOffset + it.selectionStart } ?: if (hostDuringDraft) translationHostStart else editor.selStart
+        val end = extracted?.let { it.startOffset + it.selectionEnd } ?: if (hostDuringDraft) translationHostEnd else editor.selEnd
         if (start < 0 || end < 0) return null
         val selected = connection.getSelectedText(0)?.toString().orEmpty()
         if (selected.length > com.weavetext.ime.translate.TranslationRequest.MAX_TEXT_CHARS ||
@@ -142,7 +204,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun feature(command: org.json.JSONObject): org.json.JSONObject = runCatching { org.json.JSONObject(engine?.features(command.toString()) ?: "{}") }.getOrDefault(org.json.JSONObject())
     fun reselect(): Boolean {
         if (isSensitiveField || state.composing) return false
-        val text=icProvider()?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() } ?: return false
+        val text=activeConnection()?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() } ?: return false
         reconversionSchema=if(state.chinese) chineseSchema else "english"
         if (!feature(org.json.JSONObject().put("op","reconvert").put("text",text)).optBoolean("ok")) return false
         reconversion=Triple(text,editor.selStart,editor.selEnd)
@@ -167,7 +229,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
     fun onContent(uri: android.net.Uri, mime: String, name: String): Boolean {
         val editor = editorInfo ?: return false
-        if (isSensitiveField) return false
+        if (isSensitiveField || translationDraft != null) return false
         val supported = androidx.core.view.inputmethod.EditorInfoCompat.getContentMimeTypes(editor)
         if (!supported.any { android.content.ClipDescription.compareMimeTypes(mime, it) }) return false
         commitRawIfComposing()
@@ -199,7 +261,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private var handGeneration = 0L
     private val handCommits = LinkedHashSet<HandJob>()
     private var applyingHandResult = false
-    private class HandJob(val engine: KeyEngine, val strokes: List<FloatArray>, val result: java.util.concurrent.Future<IntArray?>, val generation: Long)
+    private class HandJob(val engine: KeyEngine, val strokes: List<FloatArray>, val groupEnds: IntArray, val result: java.util.concurrent.Future<IntArray?>, val generation: Long)
 
     private fun discardHand() {
         handGeneration++
@@ -273,7 +335,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         engine = e
         engineFailed = false
         syncClock(e)
-        e.setLearning(!state.privateField)
+        e.setLearning(!state.privateField && translationDraft == null)
         // 首选方案缺词库时退回全拼，只公布内核接受的方案。 Fall back to pinyin when the schema's lexicon is missing.
         if (!e.setSchema(chineseSchema) && chineseSchema != "pinyin" && e.setSchema("pinyin")) chineseSchema = "pinyin"
         if (!state.chinese) e.setSchema("english")
@@ -301,6 +363,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
     // ---------------------------------------------------------------- lifecycle
 
     fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        endTranslationDraft()
+        discardClearRecovery()
         inputEpoch++
         translationRevision++
         if (!restarting) discardHand()
@@ -351,7 +415,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val password = cls == InputType.TYPE_CLASS_TEXT && variation in PASSWORD_VARIATIONS ||
             cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
         val noLearn = password || (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
-        engine?.setLearning(!noLearn)
+        engine?.setLearning(!noLearn && translationDraft == null)
         val urlOrEmail = cls == InputType.TYPE_CLASS_TEXT && variation in LATIN_VARIATIONS
         latinField = urlOrEmail
         webField = cls == InputType.TYPE_CLASS_TEXT && variation in WEB_VARIATIONS
@@ -381,6 +445,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 编辑器回报的选区变化。 Selection update from the editor. */
     fun onSelectionUpdate(selStart: Int, selEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
+        if (translationDraft != null) {
+            if (selStart != translationHostStart || selEnd != translationHostEnd) translationRevision++
+            translationHostStart = selStart; translationHostEnd = selEnd
+            return
+        }
         if (selStart != editor.selStart || selEnd != editor.selEnd) translationRevision++
         // 光标被挪到别处（点了别的位置、粘贴…）：联想词对应的上文已经不对了，收起并断开连续造词。
         // The cursor moved elsewhere (a tap, a paste…): the predictions no longer fit, dismiss them and break the chain.
@@ -400,6 +469,8 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun onFinishInput() {
+        endTranslationDraft()
+        discardClearRecovery()
         translationRevision++
         discardHand()
         endReconversion()
@@ -438,6 +509,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val text = if (state.chinese && codePoint < 0x10000) chinesePunct(codePoint.toChar()) ?: raw else raw
         commit(text)
         markUndo(text)
+        if (text == "=" || text == "＝") offerCalc()
     }
 
     /**
@@ -447,7 +519,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private fun chinesePunct(c: Char): String? {
         val full = fullWidthPunct(c) ?: return null
         if (c == '.' || c == ',' || c == ':') {
-            val before = editor.textBefore(1) ?: icProvider()?.getTextBeforeCursor(1, 0)?.toString()
+            val before = editor.textBefore(1) ?: activeConnection()?.getTextBeforeCursor(1, 0)?.toString()
             if (before != null && before.length == 1 && before[0] in '0'..'9') return null
         }
         return full
@@ -458,6 +530,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if(reconversion!=null){engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh()}
         if (keep(PendingKey(PendingKey.TEXT, text = text))) return
         val e = engine
+        // 英文词中的单个撇号继续组合；其它文本仍按字面上屏。
+        // A single apostrophe inside an English word keeps composing; other text stays literal.
+        if (text == "'" && !state.chinese && englishSuggest && e?.isComposing() == true && e.inputChar('\''.code)) {
+            stamp++
+            refresh()
+            markUndo(null)
+            return
+        }
         if (text.length == 1 && text[0] in 'A'..'Z' && state.chinese &&
             (state.schema == "pinyin" || state.schema.startsWith("shuangpin")) &&
             e?.isComposing() == true && e.inputChar(text[0].code)) {
@@ -592,7 +672,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     var onCalc: ((List<String>) -> Unit)? = null
 
     private fun offerCalc() {
-        if (!calcEnabled) return
+        if (!calcEnabled || isSensitiveField) return
         val e = engine ?: return
         val cb = onCalc ?: return
         val before = editor.textBefore(64) ?: ic()?.getTextBeforeCursor(64, 0)?.toString() ?: return
@@ -743,7 +823,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun onCandidate(index: Int) {
         if (state.handRecognizing) return
         reconversion?.let { old ->
-            if (icProvider()?.getSelectedText(0)?.toString()!=old.first || (old.second>=0 && editor.selectionKnown && (editor.selStart!=old.second || editor.selEnd!=old.third))) {
+            if (activeConnection()?.getSelectedText(0)?.toString()!=old.first || (old.second>=0 && editor.selectionKnown && (editor.selStart!=old.second || editor.selEnd!=old.third))) {
                 engine?.clear();engine?.setSchema(reconversionSchema);reconversion=null;refresh();return
             }
         }
@@ -869,14 +949,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * 手写：一笔写完后交给内核这个字的全部笔画，候选随快照更新。没有内核时不改动状态。
      * Handwriting: after each stroke the engine gets all strokes of the char; candidates follow via the snapshot.
      */
-    fun onHandStrokes(strokes: List<FloatArray>) {
+    fun onHandStrokes(strokes: List<FloatArray>, groupEnds: IntArray = intArrayOf()) {
         // 新笔画会取代旧任务，不在这里等待上一轮识别；选词、退格等操作仍通过 engine 等待最新任务。
         // New ink supersedes the old job without waiting for it; selections/backspace still settle the latest job.
         val e = engineRef ?: return
         lastSpaceAt = 0L
         val worker = handWorker
         if (worker == null) {
-            e.handInput(strokes)
+            if (groupEnds.isEmpty()) e.handInput(strokes) else e.handInput(strokes, groupEnds)
             stamp++
             refresh()
             return
@@ -885,8 +965,11 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // Recognise in the background so the main thread only draws ink and the next stroke never stutters. A
         // result is dropped if newer strokes arrived meanwhile.
         val copy = strokes.map { it.copyOf() }
+        val ends = groupEnds.copyOf()
         handJob?.result?.cancel(false)
-        val job = HandJob(e, copy, worker.submit(java.util.concurrent.Callable { e.handRecognize(copy) }), handGeneration)
+        val job = HandJob(e, copy, ends, worker.submit(java.util.concurrent.Callable {
+            if (ends.isEmpty()) e.handRecognize(copy) else e.handRecognize(copy, ends)
+        }), handGeneration)
         handJob = job
         update { it.copy(handRecognizing = true, composing = true, candidates = emptyList(), totalCandidates = 0, preedit = "") }
         // 单线程执行器：这一步排在识别之后。 Single-thread executor: this runs after the recognition.
@@ -908,7 +991,12 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val wasApplying = applyingHandResult
         applyingHandResult = true
         try {
-            if (cps == null) job.engine.handInput(job.strokes) else job.engine.handApply(job.strokes, cps)
+            if (job.groupEnds.isEmpty()) {
+                if (cps == null) job.engine.handInput(job.strokes) else job.engine.handApply(job.strokes, cps)
+            } else {
+                if (cps == null) job.engine.handInput(job.strokes, job.groupEnds)
+                else job.engine.handApply(job.strokes, job.groupEnds, cps)
+            }
             if (commit) job.engine.select(0)
             stamp++
             refresh()
@@ -916,19 +1004,19 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     /** Re-evaluate current ink after a mode switch without waiting for an obsolete recognition. */
-    fun setHandLineMode(on: Boolean, strokes: List<FloatArray> = emptyList()) {
+    fun setHandLineMode(on: Boolean, strokes: List<FloatArray> = emptyList(), groupEnds: IntArray = intArrayOf()) {
         handJob?.result?.cancel(false)
         handJob = null
         engineRef?.features(org.json.JSONObject().put("op", "setHandLine").put("on", on).toString())
-        if (strokes.isNotEmpty()) onHandStrokes(strokes) else refresh()
+        if (strokes.isNotEmpty()) onHandStrokes(strokes, groupEnds) else refresh()
     }
 
     /** Undo/redo replaces geometry without settling the canceled network pass. */
-    fun replaceHandInk(strokes: List<FloatArray>) {
+    fun replaceHandInk(strokes: List<FloatArray>, groupEnds: IntArray = intArrayOf()) {
         handJob?.result?.cancel(false)
         handJob = null
         engineRef?.clear()
-        if (strokes.isNotEmpty()) onHandStrokes(strokes) else refresh()
+        if (strokes.isNotEmpty()) onHandStrokes(strokes, groupEnds) else refresh()
     }
 
     /**
@@ -1110,7 +1198,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
     }
 
     fun hasSelection(): Boolean =
-        if (editor.selectionKnown) !editor.selectionEmpty else !icProvider()?.getSelectedText(0).isNullOrEmpty()
+        if (editor.selectionKnown) !editor.selectionEmpty else !activeConnection()?.getSelectedText(0).isNullOrEmpty()
 
     /** 复制/剪切/粘贴/全选。 Copy / cut / paste / select all. */
     fun contextMenuAction(id: Int) {
@@ -1130,6 +1218,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Delete everything before the cursor (capped); returns the removed text for undo.
      */
     fun clearBeforeCursor(limit: Int = 2000): String? {
+        discardClearRecovery()
         val e = engine
         if (e != null && e.isComposing() || pendingKeys.isNotEmpty()) {
             e?.clear()
@@ -1137,18 +1226,31 @@ class InputController(private val icProvider: () -> InputConnection?) {
             refresh()
             return null
         }
-        val ic = ic() ?: return null
-        val sel = ic.getSelectedText(0)
-        if (!sel.isNullOrEmpty()) {
-            ic.commitText("", 1)
-            return sel.toString()
-        }
-        var before = ic.getTextBeforeCursor(limit, 0)?.toString().orEmpty()
-        // 读到的一段从代理对中间开始：那半个字留着，不拆开。 The read starts inside a surrogate pair: keep that char whole.
-        if (before.length >= limit && before.isNotEmpty() && Character.isLowSurrogate(before[0])) before = before.substring(1)
-        if (before.isEmpty()) return null
-        ic.deleteSurroundingText(before.length, 0)
-        return before
+        val connection = ic() ?: return null
+        return runCatching {
+            val original = readTranslationTarget(connection, requireExtraction = true)
+            val selected = connection.getSelectedText(0)?.toString().orEmpty()
+            val boundedLimit = limit.coerceIn(0, 2000)
+            val preceding = connection.getTextBeforeCursor(boundedLimit + 64, 0)?.toString()
+            var removed = if (selected.isNotEmpty()) selected else preceding?.takeLast(boundedLimit).orEmpty()
+            // 读到的一段从代理对中间开始：那半个字留着，不拆开。 Keep a split surrogate pair whole.
+            if (selected.isEmpty() && removed.length >= boundedLimit && removed.isNotEmpty() && Character.isLowSurrogate(removed[0])) removed = removed.substring(1)
+            if (removed.isEmpty()) return null
+            val ok = if (selected.isNotEmpty()) connection.commitText("", 1)
+                else connection.deleteSurroundingText(removed.length, 0)
+            if (!ok || original == null || isSensitiveField || removed.length > boundedLimit) return null
+            val position = minOf(original.start, original.end) - if (selected.isEmpty()) removed.length else 0
+            val expectedBefore = if (selected.isEmpty()) preceding?.dropLast(removed.length)?.takeLast(64)
+                ?: return null else original.before
+            val after = readTranslationTarget(connection, requireExtraction = true) ?: return null
+            if (position < 0 || after.start != position || after.end != position ||
+                after.selectedText.isNotEmpty() || after.after != original.after ||
+                after.before != expectedBefore) return null
+            editor.reset(position, position)
+            clearRecovery = ClearRecovery(after, editor.version, removed, original.start, original.end,
+                android.os.SystemClock.uptimeMillis() + 3000)
+            removed
+        }.getOrNull()
     }
 
     /**
@@ -1157,7 +1259,34 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * candidates, no committing a pending composition first).
      */
     fun restoreCleared(text: String) {
-        ic()?.commitText(text, 1)
+        val recovery = clearRecovery ?: return
+        discardClearRecovery()
+        val target = recovery.target
+        if (text !== recovery.text || target.epoch != inputEpoch || editor.version != recovery.version ||
+            android.os.SystemClock.uptimeMillis() >= recovery.expiresAt || isSensitiveField ||
+            state.composing || handJob != null || handCommits.isNotEmpty() || icProvider() !== target.connection) return
+        val now = readTranslationTarget(target.connection, requireExtraction = true) ?: return
+        if (now.start != target.start || now.end != target.end || now.selectedText.isNotEmpty() ||
+            now.before != target.before || now.after != target.after) return
+        runCatching {
+            val connection = target.connection
+            connection.beginBatchEdit()
+            try {
+                if (!connection.commitText(text, 1)) return
+                stamp++
+                editor.invalidate()
+                engineRef?.breakChain()
+                engineRef?.setContext(null)
+                if (recovery.originalStart != recovery.originalEnd) {
+                    val restored = readTranslationTarget(connection)
+                    if (restored?.start == target.start + text.length && restored.end == restored.start &&
+                        connection.getTextBeforeCursor(text.length, 0)?.toString() == text &&
+                        restored.after == target.after) {
+                        connection.setSelection(recovery.originalStart, recovery.originalEnd)
+                    }
+                }
+            } finally { connection.endBatchEdit() }
+        }
     }
 
     /** 按词删除（长按删除加速后）。 Delete one word/run before the cursor. */
@@ -1189,7 +1318,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (req and InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS != 0) return true
         editor.capsMode(req)?.let { return it != 0 }
         if (capsVersion == editor.version) return capsCached
-        val ic = icProvider() ?: return false
+        val ic = activeConnection() ?: return false
         // 读一次光标前文字，之后的按键都在本地算。 One read fills the mirror for the following keys.
         if (editor.selectionEmpty) {
             ic.getTextBeforeCursor(EditorCache.FILL, 0)?.let { editor.fill(it, EditorCache.FILL) }
@@ -1220,7 +1349,19 @@ class InputController(private val icProvider: () -> InputConnection?) {
      * Paired symbols with the cursor placed inside (one batch edit, no arrow keys).
      */
     fun onPairedText(open: String, close: String) {
-        engine?.commitFirst()
+        val e = engine
+        // v 算式的括号只输入左半边；右半边由用户补上，组合不中断。
+        // A v expression takes only the opening parenthesis; the user supplies its closer without ending composition.
+        if ((open == "(" && close == ")" || open == "（" && close == "）") &&
+            state.chinese && state.schema == "pinyin" && state.composing && state.preedit.startsWith("v") &&
+            state.preedit.drop(1).all { it.isDigit() || it in ".．+-*/()%^×÷＋－−（）=＝" } &&
+            e?.inputChar(open[0].code) == true) {
+            stamp++
+            refresh()
+            markUndo(null)
+            return
+        }
+        e?.commitFirst()
         refresh()
         val ic = ic() ?: return
         ic.beginBatchEdit()
@@ -1471,7 +1612,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         if (!applyingHandResult && (handJob != null || handCommits.isNotEmpty())) settleHand()
         stamp++
         if (!modeled) editor.invalidate()
-        return icProvider()
+        return activeConnection()
     }
 
     private fun drainCommit(): EngineSnapshot? {
@@ -1520,7 +1661,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         private val PAIRS = mapOf('“' to '”', '‘' to '’', '（' to '）', '《' to '》', '【' to '】', '「' to '」', '『' to '』', '〈' to '〉')
         private val CLOSERS = PAIRS.values.toSet()
         /** 算式里可出现的非数字字符。 Non-digit characters allowed in an expression. */
-        private const val CALC_CHARS = ".+-*/×÷%^()（）"
+        private const val CALC_CHARS = ".．+-*/×÷＋－−%^()（）"
         private const val DOUBLE_SPACE_MS = 450L
         /** 内核就绪前最多记下的键数。 Most keys kept before the engine is ready. */
         private const val MAX_PENDING = 64

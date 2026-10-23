@@ -5,6 +5,8 @@ import com.weavetext.ime.core.PreeditMark
 import com.weavetext.ime.voice.NativePluginHost
 import com.weavetext.ime.voice.NativeSpeechCallback
 import org.json.JSONArray
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -53,6 +55,56 @@ class JniTest {
                     other.setSchema("english"); other.type("weavecode")
                     assertTrue(other.candidates(0, 100).any { it.text == "weavecodexword" })
                 }
+            }
+        } finally { user.deleteRecursively() }
+    }
+
+    @Test fun immediateBackspaceRollsBackProvisionalPhraseEvidenceThroughJni() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            assertTrue(e.setOption("candidates.prediction", false))
+            repeat(3) { round ->
+                e.clear(); e.setContext(null)
+                for ((keys, text) in listOf("riqi" to "日期", "shijian" to "时间")) {
+                    e.type(keys)
+                    val index = e.candidates(0, 200).indexOfFirst { it.text == text }
+                    assertTrue("missing $text", index >= 0)
+                    assertTrue(e.select(index))
+                    assertEquals(text, e.snapshot().commit)
+                }
+                if (round == 0) assertFalse(e.backspace())
+                assertEquals("round $round", round == 2, e.userWords().any { it.text == "日期时间" })
+            }
+        }
+    }
+
+    @Test fun recentChoiceDoesNotOverrideADifferentCompletePinyinThroughJni() {
+        val user = Files.createTempDirectory("weave-reading-jni").toFile()
+        try {
+            NativeEngine.create(data, user.path)!!.use { e ->
+                assertTrue(e.setSchema("pinyin"))
+                assertTrue(e.setOption("candidates.prediction", false))
+                e.type("shijian")
+                val index = e.candidates(0, 200).indexOfFirst { it.text == "时间" }
+                assertTrue("missing 时间", index >= 0)
+                assertTrue(e.select(index))
+                assertEquals("时间", e.snapshot().commit)
+                e.clear(); e.setContext(null); e.type("shijia")
+                val snapshot = e.snapshot()
+                assertNotEquals("shi jian must not override a complete shi jia reading", "时间", snapshot.candidates.first().text)
+                assertTrue(e.select(0))
+                assertNotEquals("时间", e.snapshot().commit)
+                e.clear(); e.setContext(null); e.type("shijian")
+                assertEquals("时间", e.snapshot().candidates.first().text)
+                e.features("""{"op":"policy","index":0,"text":"时间","mode":"pin"}""")
+                for (keys in listOf("shijian", "sj", "shij")) {
+                    e.clear(); e.setContext(null); e.type(keys)
+                    assertEquals(keys, "时间", e.snapshot().candidates.first().text)
+                }
+                e.clear(); e.setContext(null); e.type("shijia")
+                assertNotEquals("a pin must not override complete shi jia", "时间", e.snapshot().candidates.first().text)
+                assertTrue(e.select(0))
+                assertNotEquals("时间", e.snapshot().commit)
             }
         } finally { user.deleteRecursively() }
     }
@@ -147,6 +199,49 @@ class JniTest {
         }
     }
 
+    @Test fun personalHandwritingCorrectionsKeepStrokeCountsSeparateThroughJni() {
+        engine().use { e ->
+            assertTrue(e.setSchema("hand"))
+            val cross = listOf(floatArrayOf(0f, 50f, 100f, 50f), floatArrayOf(50f, 0f, 50f, 100f))
+            val query = cross + listOf(floatArrayOf(50f, 100f))
+            val rails = listOf(floatArrayOf(0f, 0f, 0f, 100f), floatArrayOf(50f, 0f, 50f, 100f), floatArrayOf(100f, 0f, 100f, 100f))
+            assertTrue(e.handInput(query))
+            val baseline = e.snapshot().candidates.first().text
+            assertNotEquals("土", baseline)
+            assertTrue(e.handApply(cross, intArrayOf('十'.code, '土'.code)))
+            assertTrue(e.select(e.snapshot().candidates.indexOfFirst { it.text == "土" })); assertEquals("土", e.snapshot().commit)
+            assertTrue(e.handInput(cross)); assertEquals("土", e.snapshot().candidates.first().text)
+            assertTrue(e.handApply(rails, intArrayOf('川'.code, '土'.code)))
+            assertTrue(e.select(e.snapshot().candidates.indexOfFirst { it.text == "土" })); assertEquals("土", e.snapshot().commit)
+            assertTrue(e.handInput(rails)); assertEquals("土", e.snapshot().candidates.first().text)
+            e.setContext(null)
+            assertTrue(e.handInput(query)); assertEquals(baseline, e.snapshot().candidates.first().text)
+        }
+    }
+
+    @Test fun overlayRecognitionPreservesExplicitBoundariesAcrossJni() {
+        engine().use { e ->
+            assertTrue(e.setSchema("hand"))
+            val cross = listOf(floatArrayOf(10f, 50f, 90f, 50f), floatArrayOf(50f, 10f, 50f, 90f))
+            val ink = cross + cross
+            val ends = intArrayOf(2, 4)
+            val wire = checkNotNull(e.handRecognize(ink, ends))
+            assertEquals(0x57485631, wire[0])
+            assertEquals(2, wire[1])
+            assertTrue(e.handApply(ink, ends, wire))
+            assertTrue(e.snapshot().candidates.map { it.text }.toString(), e.snapshot().candidates.any { it.text == "十十" })
+            assertTrue(e.handInput(ink, ends))
+            assertTrue(e.snapshot().candidates.any { it.text == "十十" })
+            assertFalse(e.handInput(ink, intArrayOf(1, 3)))
+            assertFalse(e.isComposing())
+            assertTrue(e.handInput(ink, ends))
+            assertFalse(e.handApply(ink, ends, intArrayOf('十'.code)))
+            assertTrue(e.snapshot().candidates.isEmpty())
+            assertFalse(e.handInput(listOf(floatArrayOf(Float.NaN, 1f)), intArrayOf(1)))
+            assertNull(e.handRecognize(ink, intArrayOf(3, 2)))
+        }
+    }
+
     /** 联想：写了一串字（「我们今天」）后给出常接的词；只有一个词时不联想；选一个接着联想。 Predictions after a run of text. */
     @Test
     fun predictionsAfterCommit() {
@@ -193,6 +288,34 @@ class JniTest {
             e.setUtcOffset(8 * 60)
             e.type("rq")
             assertTrue(e.snapshot().candidates.drop(1).first().text.contains("年"))
+        }
+    }
+
+    /** 常用词提供当前值，数字与符号完整穿过 JNI。 Current values and calculator symbols cross JNI. */
+    @Test fun fullDateWordsAndUnicodeCalculatorThroughJni() {
+        engine().use { e ->
+            assertTrue(e.setSchema("pinyin"))
+            assertTrue(e.setOption("candidates.prediction", false))
+            e.setUtcOffset(0)
+            for ((code, word, comment) in listOf(Triple("shijian", "时间", "时间"),
+                Triple("riqi", "日期", "日期"), Triple("xingqi", "星期", "星期"),
+                Triple("mingtian", "明天", "日期"))) {
+                e.clear(); e.setContext(null); e.type(code)
+                val s = e.snapshot()
+                assertEquals(word, s.candidates.first().text)
+                assertEquals(comment, s.candidates[1].comment)
+                val value = s.candidates[1].text
+                assertTrue(e.select(1))
+                assertEquals(value, e.snapshot().commit)
+            }
+            e.clear(); e.type("v（128＋32）×4=")
+            assertEquals("640", e.snapshot().candidates.first().text)
+            assertTrue(e.select(0))
+            assertEquals("640", e.snapshot().commit)
+            e.clear(); e.type("v-1234.50")
+            val c = e.snapshot().candidates.map { it.text }
+            assertTrue(c.toString(), "负一千二百三十四点五零" in c)
+            assertTrue(c.toString(), "-1,234.50" in c)
         }
     }
 

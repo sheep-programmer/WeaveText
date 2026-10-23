@@ -23,6 +23,8 @@ class FakeEngine : KeyEngine {
     /** 每次 handInput 收到的笔画（复制）。 Copies of every handInput call. */
     val handCalls = mutableListOf<List<FloatArray>>()
     val hand = ArrayList<FloatArray>()
+    var handGroupEnds = intArrayOf()
+        private set
     private val handing get() = schema == "hand" && hand.isNotEmpty()
     /** 打开后像真内核一样在上屏后给出联想词（P1、P2、P3）。 When on, offers predictions after a commit like the real engine. */
     var predicts = false
@@ -77,21 +79,34 @@ class FakeEngine : KeyEngine {
         raw.clear(); caret = null
         return true
     }
-    private fun composes(c: Char) = c in 'a'..'z' || (schema == "english" && c in 'A'..'Z') ||
-        // 与真内核一样：v 之后的数字进入 v 模式。 Like the real engine: digits after "v" stay in the v mode.
-        (schema == "pinyin" && c.isDigit() && raw.startsWith("v") && raw.drop(1).all { it.isDigit() }) ||
+    private fun composes(c: Char) = c in 'a'..'z' ||
+        // 英文词中接受撇号，空组合不接受。 English accepts apostrophes only inside a word, like the real engine.
+        (schema == "english" && (c in 'A'..'Z' || c == '\'' && raw.isNotEmpty())) ||
+        (schema.startsWith("shuangpin") && c in 'A'..'Z') ||
+        // 与真内核一样：v 算式的数字和运算符继续组合，普通 v 开头的词不接收数字。
+        // Like the real engine: v expressions accept digits/operators, but ordinary v-prefixed words don't.
+        (schema == "pinyin" && (c.isDigit() || c in ".．+-*/()%^×÷＋－−（）=＝") &&
+            raw.startsWith("v") && raw.drop(1).all { it.isDigit() || it in ".．+-*/()%^×÷＋－−（）=＝" }) ||
         (schema == "t14" && (c in 'A'..'N' || c == '\'' || c == '1'))
     /** 英文方案与真实内核一样把原样输入放在首位。 English puts the typed word first, like the real engine. */
     private fun cand(i: Int) = if (handing) Candidate("${hand.size}笔$i", "", false) else Candidate(if (i == 0) (if (schema == "english") "$raw" else "【$raw】") else "$raw$i", "", false)
 
-    override fun setSchema(key: String): Boolean { schema = key; raw.clear(); hand.clear(); return true }
+    override fun setSchema(key: String): Boolean { schema = key; raw.clear(); hand.clear(); handGroupEnds = intArrayOf(); return true }
     override fun handInput(strokes: List<FloatArray>): Boolean {
         if (schema != "hand") return false
+        handGroupEnds = intArrayOf()
         handCalls += strokes.map { it.copyOf() }
         hand.clear()
         hand.addAll(strokes.map { it.copyOf() })
         return true
     }
+    override fun handInput(strokes: List<FloatArray>, groupEnds: IntArray): Boolean {
+        if (!handInput(strokes)) return false
+        handGroupEnds = groupEnds.copyOf()
+        return true
+    }
+    override fun handApply(strokes: List<FloatArray>, groupEnds: IntArray, cands: IntArray): Boolean =
+        handInput(strokes, groupEnds)
     override fun setOption(key: String, value: Boolean) = true
     override fun inputChar(codePoint: Int): Boolean {
         val c = codePoint.toChar()
@@ -132,14 +147,15 @@ class FakeEngine : KeyEngine {
         raw.clear()
         caret = null
         hand.clear()
+        handGroupEnds = intArrayOf()
         predict()
         return true
     }
     override fun selectPinyin(index: Int) = false
     override fun forget(index: Int) = false
     override fun commitFirst() { if (raw.isNotEmpty() || handing) select(0); predictions = emptyList() }
-    override fun commitRaw() { pending.append(raw); raw.clear(); caret = null; hand.clear(); predictions = emptyList() }
-    override fun clear() { raw.clear(); caret = null; hand.clear(); predictions = emptyList() }
+    override fun commitRaw() { pending.append(raw); raw.clear(); caret = null; hand.clear(); handGroupEnds = intArrayOf(); predictions = emptyList() }
+    override fun clear() { raw.clear(); caret = null; hand.clear(); handGroupEnds = intArrayOf(); predictions = emptyList() }
     override fun flush() {}
     override fun isComposing() = raw.isNotEmpty() || handing
     override fun setLearning(on: Boolean) { learningValue = on }

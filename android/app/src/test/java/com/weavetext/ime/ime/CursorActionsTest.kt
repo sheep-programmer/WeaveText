@@ -21,6 +21,10 @@ class CursorActionsTest {
     /** 记录按键并维护可编辑文本的输入连接。 Records key events over a real Editable. */
     private class FakeConnection(view: View, private val extract: Boolean) : BaseInputConnection(view, true) {
         val keys = ArrayList<KeyEvent>()
+        var deletionAccepted = true
+        var deletionNoOp = false
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean =
+            if (!deletionAccepted) false else if (deletionNoOp) true else super.deleteSurroundingText(beforeLength, afterLength)
         override fun sendKeyEvent(event: KeyEvent): Boolean { keys += event; return true }
         override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
             if (!extract) return null
@@ -114,8 +118,106 @@ class CursorActionsTest {
         val removed = c.clearBeforeCursor()
         assertEquals("hello", removed)
         assertEquals(" world", ic.editable.toString())
-        c.onText(removed!!)
+        c.restoreCleared(removed!!)
         assertEquals("hello world", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryRejectsAMovedCaret() {
+        ic.setSelection(5, 5)
+        val removed = c.clearBeforeCursor()!!
+        ic.setSelection(3, 3)
+        c.onSelectionUpdate(3, 3, -1, -1)
+        c.restoreCleared(removed)
+        assertEquals(" world", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryRejectsHostChangesAtTheSameCaret() {
+        ic.setSelection(5, 5)
+        val removed = c.clearBeforeCursor()!!
+        ic.editable!!.replace(0, 6, " other")
+        ic.setSelection(0, 0)
+        c.restoreCleared(removed)
+        assertEquals(" other", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryIsOneUseAndAcceptsItsOwnSelectionEcho() {
+        ic.setSelection(5, 5)
+        val removed = c.clearBeforeCursor()!!
+        c.onSelectionUpdate(0, 0, -1, -1)
+        c.restoreCleared(removed)
+        c.restoreCleared(removed)
+        assertEquals("hello world", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryExpiresOnSameFieldRestart() {
+        ic.setSelection(5, 5)
+        val removed = c.clearBeforeCursor()!!
+        c.onStartInput(android.view.inputmethod.EditorInfo().apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            initialSelStart = 0; initialSelEnd = 0
+        }, true)
+        c.restoreCleared(removed)
+        assertEquals(" world", ic.editable.toString())
+    }
+
+    @Test fun clearingASelectionRestoresItsOriginalEndpoints() {
+        ic.setSelection(8, 2)
+        val removed = c.clearBeforeCursor()!!
+        assertEquals("llo wo", removed)
+        assertEquals("herld", ic.editable.toString())
+        c.restoreCleared(removed)
+        assertEquals("hello world", ic.editable.toString())
+        assertEquals(8, ic.selStart)
+        assertEquals(2, ic.selEnd)
+    }
+
+    @Test fun aLargerRequestedClearLimitStillKeepsASurrogatePairWhole() {
+        ic.editable!!.clear()
+        ic.commitText("😀" + "a".repeat(1999), 1)
+        c.clearBeforeCursor(limit = 3000)
+        assertEquals("😀", ic.editable.toString())
+    }
+
+    @Test fun unreadableSelectionDoesNotOfferUnverifiableRecovery() {
+        setup(extract = false)
+        c.onSelectionUpdate(11, 11, -1, -1)
+        assertNull(c.clearBeforeCursor())
+        assertEquals("", ic.editable.toString())
+        c.restoreCleared("hello world")
+        assertEquals("", ic.editable.toString())
+    }
+
+    @Test fun rejectedOrNoOpDeletionDoesNotOfferRecovery() {
+        ic.deletionAccepted = false
+        assertNull(c.clearBeforeCursor())
+        assertEquals("hello world", ic.editable.toString())
+        ic.deletionAccepted = true; ic.deletionNoOp = true
+        assertNull(c.clearBeforeCursor())
+        assertEquals("hello world", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryDoesNotFollowAReplacedConnection() {
+        val removed = c.clearBeforeCursor()!!
+        ic = FakeConnection(View(ApplicationProvider.getApplicationContext()), true)
+        ic.commitText("new editor", 1)
+        c.restoreCleared(removed)
+        assertEquals("new editor", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryRejectsMovementAwayAndBack() {
+        ic.setSelection(5, 5)
+        val removed = c.clearBeforeCursor()!!
+        ic.setSelection(2, 2); c.onSelectionUpdate(2, 2, -1, -1)
+        ic.setSelection(0, 0); c.onSelectionUpdate(0, 0, -1, -1)
+        c.restoreCleared(removed)
+        assertEquals(" world", ic.editable.toString())
+    }
+
+    @Test fun clearRecoveryExpiresAfterTheChipTimeout() {
+        val removed = c.clearBeforeCursor()!!
+        org.robolectric.shadows.ShadowLooper.idleMainLooper(3, java.util.concurrent.TimeUnit.SECONDS)
+        c.restoreCleared(removed)
+        assertEquals("", ic.editable.toString())
     }
 
     @Test fun clearBeforeCursorOnEmptyReturnsNull() {

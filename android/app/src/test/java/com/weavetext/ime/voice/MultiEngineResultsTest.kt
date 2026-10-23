@@ -93,6 +93,68 @@ class MultiEngineResultsTest {
         assertEquals("一样的结果", r.unanimous())
     }
 
+    @Test fun explicitQualityPutsTheHighestScoringResultFirst() {
+        val r = res()
+        r.final("local", "本地结果")
+        r.final("a", "更准确的结果")
+        r.final("b", "较差的结果")
+        r.score("local", 0.42f)
+        r.score("a", 0.97f)
+        r.score("b", 0.61f)
+        r.stop(0)
+        r.rows().forEach { r.end(it.id, 1) }
+
+        assertEquals(listOf("a", "b", "local"), r.rows().map { it.id })
+        assertEquals(0, r.defaultIndex())
+        assertEquals(0.97f, r.rows().first().quality)
+    }
+
+    @Test fun missingQualityKeepsPrimaryAsTheStableFallback() {
+        val r = res()
+        r.final("local", "主引擎结果")
+        r.final("a", "插件结果")
+        r.stop(0)
+        r.end("local", 1); r.end("a", 1)
+
+        assertEquals(listOf("local", "a", "b"), r.rows().map { it.id })
+        assertEquals(0, r.defaultIndex())
+    }
+
+    @Test fun invalidQualityIsIgnored() {
+        val r = res()
+        r.final("local", "主引擎结果")
+        r.final("a", "插件结果")
+        r.score("local", Float.NaN)
+        r.score("a", 2f)
+        r.stop(0)
+        r.end("local", 1); r.end("a", 1)
+
+        assertTrue(r.rows().all { it.quality == null })
+        assertEquals(0, r.defaultIndex())
+    }
+
+    @Test fun aFailedHighScoreCannotBecomeTheDefault() {
+        val r = res()
+        r.score("a", 0.99f)
+        r.final("a", "失败前的文字")
+        r.final("local", "可用的主引擎")
+        r.stop(0)
+        r.error("a", "中断", 1)
+        r.end("local", 1)
+        assertEquals("local", r.rows()[r.defaultIndex()].id)
+    }
+
+    @Test fun lateQualityCannotReorderSettledResults() {
+        val r = res()
+        r.final("local", "主引擎")
+        r.final("a", "其它结果")
+        r.stop(0)
+        r.end("local", 1); r.end("a", 1)
+        val before = r.rows()
+        r.score("a", 0.99f)
+        assertEquals(before, r.rows())
+    }
+
     @Test fun defaultWhenNothingSucceeded() {
         val r = res()
         r.stop(0)

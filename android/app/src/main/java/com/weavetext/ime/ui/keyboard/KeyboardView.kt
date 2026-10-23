@@ -95,6 +95,14 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
      * describes how recently a stroke was drawn, not whether to commit.
      */
     var handPauseMs = HandPad.COMMIT_PAUSE_MS
+        set(value) { field = value; handPad.characterPauseMs = value }
+    var handOverlayMode = false
+        set(value) {
+            if (field == value) return
+            field = value
+            handPad.overlayMode = value
+            invalidate(); a11y.invalidate()
+        }
     /**
      * 抬笔后空闲多久自动上屏首选（毫秒）；0 = 不自动上屏。
      * Idle time after the pen lifts before the top candidate commits by itself; 0 = never.
@@ -102,11 +110,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     var handIdleMs = HandPad.COMMIT_PAUSE_MS
         set(value) {
             field = value.coerceAtLeast(0L)
-            removeCallbacks(handIdle)
-            val pad = hand
-            if (field > 0 && pad != null && !pad.drawing && pad.strokes.isNotEmpty()) {
-                postDelayed(handIdle, (field - pad.sinceLastStroke()).coerceAtLeast(0L))
-            }
+            scheduleHandIdle()
         }
     var handLineMode = false
         set(value) { if (field != value) { field = value; invalidate(); a11y.invalidate() } }
@@ -128,6 +132,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         // Continuous writing is confirmed by picking a candidate, and so is auto-commit off: a half-written line would
         // otherwise commit.
         if (handLineMode || !handAutoCommitOn) return
+        val remaining = handIdleMs - pad.sinceLastStroke()
+        if (remaining > 0L) {
+            removeCallbacks(handIdle)
+            postDelayed(handIdle, remaining)
+            return
+        }
         if (host?.onHandCommit() != true) return
         pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
         invalidate()
@@ -173,7 +183,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         /** 字符已在按下时输出。 The char was emitted on DOWN. */
         var emitted = false
         var cursorAnchor = 0f
-        var cursorSteps = 0
+        var cursorMoved = false
         var lastMoveT = 0L
         var lastMoveX = 0f
         var repeatCount = 0
@@ -290,8 +300,21 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     }
 
     /** 手写区退一笔。 Drop the pad's last stroke. */
-    fun undoStroke(): Boolean = (hand?.undo() == true).also { if (it) invalidate() }
-    fun redoStroke(): Boolean = (hand?.redo() == true).also { if (it) invalidateInk(); invalidate() }
+    fun undoStroke(): Boolean = (hand?.undo() == true).also {
+        if (it) { scheduleHandIdle(); invalidate() }
+    }
+    fun redoStroke(): Boolean = (hand?.redo() == true).also {
+        if (it) { scheduleHandIdle(); invalidateInk() }
+        invalidate()
+    }
+
+    private fun scheduleHandIdle() {
+        removeCallbacks(handIdle)
+        val pad = hand ?: return
+        if (handIdleMs > 0L && !handLineMode && handAutoCommitOn && !pad.drawing && pad.strokes.isNotEmpty()) {
+            postDelayed(handIdle, (handIdleMs - pad.sinceLastStroke()).coerceAtLeast(0L))
+        }
+    }
 
     fun keyOf(code: Int): Key? = keys.firstOrNull { it.code == code }
 
@@ -326,7 +349,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         KeyCode.T9_RESET -> if (k.label == "@") "艾特" else k.label
         KeyCode.T9_ONE -> if (k.medium) k.label else "1，标点"
         KeyCode.HAND_CLEAR -> "重写"
-        KeyCode.HAND_MODE -> "手写模式，当前${if (handLineMode) "多字连写" else "单字"}，点按切换${if (hand?.canRedo == true) "，长按重做上一笔" else ""}"
+        KeyCode.HAND_MODE -> "手写模式，当前${if (handOverlayMode) "叠写" else if (handLineMode) "多字连写" else "单字"}，点按切换${if (hand?.canRedo == true) "，长按重做上一笔" else ""}"
         else -> when {
             k.sub != null -> "${k.sub}，${k.label}"
             layoutKind == Layouts.T14 && k.code in 'A'.code..'N'.code -> k.label.lowercase().toList().joinToString("，")
@@ -362,7 +385,11 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
 
         override fun a11yLabel(id: Int): CharSequence? {
-            if (id == PAD_ID) return if (handLineMode) "手写区，横向写几个字，字间留空，写完点候选上屏" else "手写区，用手指书写一个字"
+            if (id == PAD_ID) return when {
+                handOverlayMode -> "手写区，同一区域叠写，字间停顿${handPauseMs}毫秒，最多四字，当前${hand?.characterCount ?: 0}字，写完点候选上屏"
+                handLineMode -> "手写区，横向写几个字，字间留空，写完点候选上屏"
+                else -> "手写区，用手指书写一个字"
+            }
             if (id >= SIDE_BASE) return side?.items?.getOrNull(id - SIDE_BASE)?.let { VirtualA11y.speak(it) }
             return keys.getOrNull(id)?.let { describe(it) }
         }
@@ -397,6 +424,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             val k = keys.getOrNull(id) ?: return null
             return when {
                 k.code == KeyCode.SYMBOL -> "表情"
+                k.code == KeyCode.HAND_MODE && hand?.canRedo == true && hand?.drawing != true && !k.disabled -> "重做上一笔"
                 k.isChar && k.up != null && k.sub == null -> "输入${VirtualA11y.speak(k.up!!)}"
                 else -> null
             }
@@ -407,6 +435,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             val up = k.up
             when {
                 k.code == KeyCode.SYMBOL -> host?.onLongPressFunc(k)
+                k.code == KeyCode.HAND_MODE && hand?.canRedo == true && hand?.drawing != true && !k.disabled -> host?.onLongPressFunc(k)
                 k.isChar && up != null -> host?.onKeyText(k, up)
                 else -> return false
             }
@@ -680,12 +709,18 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             c.drawLine(pad.rect.left + inset, cy, pad.rect.right - inset, cy, guidePaint)
             c.drawLine(cx, pad.rect.top + inset, cx, pad.rect.bottom - inset, guidePaint)
         }
-        if (!pad.hasInk) {
-            text.textSize = m.label(13f)
+        if (!pad.hasInk || handOverlayMode) {
+            text.textSize = m.label(if (handOverlayMode) 11f else 13f)
             text.typeface = Typeface.DEFAULT
             text.color = p.labelHint
             text.textAlign = Paint.Align.LEFT
-            c.drawText(if (handLineMode) "连写 · 写完一行点候选" else "单字 · 在此书写", pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
+            val instruction = when {
+                handOverlayMode && pad.overlayLimitReached -> "已到上限 · 请确认或退笔"
+                handOverlayMode -> "叠写 ${pad.characterCount}/4 · 字间停顿${handPauseMs}毫秒"
+                handLineMode -> "连写 · 写完一行点候选"
+                else -> "单字 · 在此书写"
+            }
+            c.drawText(instruction, pad.rect.left + m.dp(12f), pad.rect.top + m.dp(10f) - text.ascent(), text)
             text.textAlign = Paint.Align.CENTER
         }
         if (handRecognizing || handRecognitionFailed) {
@@ -806,8 +841,16 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val p = active
         val k = p?.key
         val revert = n == 1 && p != null && k != null && p.emitted && (p.mode == M_TAP || p.mode == M_SWIPE || p.mode == M_ALT)
+        val cancelledInk = inkOwner != null
         for (q in ptrs) if (q.id >= 0) finishPointer(q, commit = false)
         if (revert && k != null) host?.onKeyRevert(k)
+        val pad = hand
+        // 系统取消只丢当前一笔，保留的字重新等一次停笔；面板切换的内部复位不排队。
+        // System cancellation drops only the live stroke and restarts the retained ink's pause.
+        if (cancelledInk && pad != null && !pad.drawing && pad.strokes.isNotEmpty() && handIdleMs > 0 && !handLineMode && handAutoCommitOn) {
+            removeCallbacks(handIdle)
+            postDelayed(handIdle, handIdleMs)
+        }
     }
 
     /**
@@ -878,7 +921,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         p.mode = M_TAP
         p.emitted = false
         p.repeatCount = 0
-        p.cursorSteps = 0
+        p.cursorMoved = false
         host?.feedback?.key(
             this,
             when (k.code) {
@@ -973,7 +1016,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 }
                 M_ALT -> { ov?.hideAlternatives(); o.mode = M_DONE }
                 M_INFO -> { ov?.hideInfo(); o.mode = M_DONE }
-                M_CURSOR -> if (o.cursorSteps == 0 && k != null) { o.mode = M_DONE; host?.onKey(k) }
+                M_CURSOR -> if (!o.cursorMoved && k != null) { o.mode = M_DONE; host?.onKey(k) }
             }
         }
     }
@@ -1003,12 +1046,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                     removeCallbacks(p.longPress)
                     p.mode = M_CURSOR
                     p.cursorAnchor = p.downX + if (dx > 0) spaceSlop else -spaceSlop
-                    p.cursorSteps = 0
+                    p.cursorMoved = false
                     p.lastMoveT = t; p.lastMoveX = x
                     val initialSteps = ((x - p.cursorAnchor) / m.dp(12f)).toInt()
                     if (initialSteps != 0) {
                         p.cursorAnchor += initialSteps * m.dp(12f)
-                        p.cursorSteps = initialSteps
+                        p.cursorMoved = true
                         host?.feedback?.tick(this)
                         host?.onCursorSteps(initialSteps)
                     }
@@ -1058,7 +1101,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 while (x - p.cursorAnchor >= step) { p.cursorAnchor += step; n++ }
                 while (p.cursorAnchor - x >= step) { p.cursorAnchor -= step; n-- }
                 if (n != 0) {
-                    p.cursorSteps += n
+                    p.cursorMoved = true
                     host?.feedback?.tick(this)
                     host?.onCursorSteps(n)
                 }
@@ -1160,7 +1203,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                         // 连写与关闭自动上屏都不排队：落笔后不会有超时上屏。 Continuous writing and auto-commit off
                         // queue nothing: no timed commit follows a stroke.
                         if (handIdleMs > 0 && !handLineMode && handAutoCommitOn) postDelayed(handIdle, handIdleMs)
-                    } else pad.cancel()
+                    } else pad.cancel(evTime)
                 }
             }
             M_SIDE -> {
@@ -1184,7 +1227,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 if (commit) host?.onDeleteClear()
             }
             // 横滑没真正移动过光标：按一次空格处理。 A slide that never moved the cursor is a plain space.
-            M_CURSOR -> if (commit && k != null && p.cursorSteps == 0) host?.onKey(k)
+            M_CURSOR -> if (commit && k != null && !p.cursorMoved) host?.onKey(k)
             M_VOICE -> host?.onVoiceHoldEnd(!commit)
         }
         invalidate()

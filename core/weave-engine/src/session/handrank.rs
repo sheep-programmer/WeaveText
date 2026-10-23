@@ -84,6 +84,20 @@ impl Engine {
         readings.word_cost(lex, word).is_some()
     }
 
+    /// 显式字组只接受组数匹配的带分传输格式，绝不回退到旧的单字格式。
+    /// Explicit groups require matching scored wire groups, with no legacy fallback.
+    pub fn hand_apply_grouped_wire(&mut self, strokes: Vec<weave_dict::hand::Stroke>, ends: Vec<usize>, wire: &[u32]) -> bool {
+        if self.schema != Schema::Hand { return false; }
+        let groups = weave_dict::handnet::decode_wire(wire);
+        if !weave_dict::handnet::HandModels::valid_explicit_groups(&strokes, &ends) ||
+            !groups.as_ref().is_some_and(|g| g.len() == ends.len() && g.iter().all(|c| !c.is_empty() && c.len() <= COMBINE && c.iter().all(|(ch, _)| *ch != '\0'))) {
+            self.clear();
+            return false;
+        }
+        let cands = self.rank_hand(groups.unwrap());
+        self.hand_apply_result(strokes, Some(ends), cands)
+    }
+
     /// 交回别处识别好的结果（传输格式见 [`weave_dict::handnet::encode_wire`]）；旧格式（只有字码位）照旧处理。
     /// Hand back a recognition done elsewhere (wire format: see `encode_wire`); the old format (code points only) still works.
     pub fn hand_apply_wire(&mut self, strokes: Vec<weave_dict::hand::Stroke>, wire: &[u32]) -> bool {

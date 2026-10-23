@@ -11,6 +11,8 @@ class ShiftState(private val doubleTapMs: Long = 400) {
     private var lastTap = Long.MIN_VALUE / 2
     /** 当前的单次态是自动大写给的（不是用户按的）。 The current ONCE came from auto-capitalisation, not the user. */
     private var auto = false
+    /** 最近一次按下字母消耗的单次态；撤回同一按键时恢复。 The ONCE consumed by the last letter, for reverting that key. */
+    private var consumedAuto: Boolean? = null
 
     val upper get() = value != OFF
 
@@ -28,14 +30,29 @@ class ShiftState(private val doubleTapMs: Long = 400) {
         }
         lastTap = if (next == LOCK) Long.MIN_VALUE / 2 else now
         auto = false
+        consumedAuto = null
         return set(next)
     }
 
     /** 长按 Shift：直接锁定大写。 Long press on Shift: lock capitals. */
-    fun lock(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; return set(LOCK) }
+    fun lock(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; consumedAuto = null; return set(LOCK) }
 
-    /** 输出一个字母后调用；单次态回到关。 Call after a letter; ONCE falls back to OFF. */
-    fun consume(): Boolean { auto = false; return if (value == ONCE) set(OFF) else false }
+    /** 输出一个字母后调用；单次态回到关，也结束双击窗口。 A letter consumes ONCE and ends the double-tap window. */
+    fun consume(): Boolean {
+        lastTap = Long.MIN_VALUE / 2
+        consumedAuto = if (value == ONCE) auto else null
+        auto = false
+        return if (value == ONCE) set(OFF) else false
+    }
+
+    /** 同一字符已成功撤回：恢复它消耗的单次大写，不恢复双击窗口。 Restore a reverted letter's ONCE, without rearming double tap. */
+    fun restoreConsumed(): Boolean {
+        val wasAuto = consumedAuto ?: return false
+        consumedAuto = null
+        if (value != OFF) return false
+        auto = wasAuto
+        return set(ONCE)
+    }
 
     /**
      * 句首自动大写：需要时从关进入单次态；自动给的单次态在不再需要时（如退格删掉了句号后的空格）收回。
@@ -48,7 +65,7 @@ class ShiftState(private val doubleTapMs: Long = 400) {
         else -> false
     }
 
-    fun reset(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; return set(OFF) }
+    fun reset(): Boolean { lastTap = Long.MIN_VALUE / 2; auto = false; consumedAuto = null; return set(OFF) }
 
     private fun set(v: Int): Boolean {
         if (v == value) return false

@@ -38,8 +38,9 @@ Optional: point `HANDNET_EVAL` at real ink in the `handeval` format to report ac
 
 网络首选概率低于 0.6 时，再看横向和纵向各拉宽 15% 的两个视图，原笔迹占 75%、两个变体各占 12.5%，
 然后与模板结果融合。高置信度笔迹只推理一次；模型大小与文件格式不变。
-在本地外部笔迹评测文件的前 2000 条上，首选 66.0% → 67.0%，前五 83.5% → 84.1%。
-这不是所有用户或设备的准确率保证。额外推理有 CPU 代价，Android 将它放在后台，并跳过被新笔画取代的旧任务。
+历史本地外部文件前 2000 条的诊断记录为首选 66.0% → 67.0%、前五 83.5% → 84.1%；来源、许可与写者划分尚未核实，不能作为独立真人准确率结论。额外推理有 CPU 代价，Android 将它放在后台，并跳过被新笔画取代的旧任务。
+
+A historical diagnostic on the first 2000 records of a local external file reported top-one 66.0% → 67.0% and top-five 83.5% → 84.1%. Its provenance, license and writer splits remain unverified, so these figures do not establish independent real-writer accuracy. Extra inference costs CPU; Android runs it in the background and skips obsolete work.
 
 `handeval NET SAMPLES LIMIT TEMPLATES --plain` 可比较原单视图；`handvariants NET TEMPLATES SAMPLES LIMIT [SKIP]`
 可在另一段评测数据上检查融合权重。评测笔迹不随仓库或应用发布。
@@ -47,6 +48,10 @@ Optional: point `HANDNET_EVAL` at real ink in the `handeval` format to report ac
 
 ## 候选纠正后的字形适应
 
-beta.10 增加当前进程内的纠正模板：只有选择非首选的手写候选时记录该字形，最多 96 个、每字最多 4 个。下一次笔数相同、几何距离足够近且与其他字有明显差距时调整首选；不将未写完的笔画套成已学习的整字。隐私模式禁用记录和使用，立即退格撤销该次纠正。记录不写入磁盘或上传。
+选择非首选的手写候选且学习开启时记录个人纠正模板，最多 96 个、每字最多 4 个；记录保存在本地个人数据中并在加载时恢复，不上传。匹配前只保留与当前实际非空笔数相同的个人模板，再检查几何距离与最近异字间隔，避免同字另一个样本替跨笔数匹配通过护栏。基础识别仍保留原有连笔、断笔和笔顺容差。隐私模式禁用个人模板的记录和使用，立即退格撤销该次纠正。
 
-独立外部笔迹前 600 条原基线首选 59.7%、前五 75.2%；另一段 600 条比例增强基线首选 61.83%、前五 78.50%。额外倾斜/旋转变体没有提高首选，未进入产品。个体适应测试验证纠正后的相似、平移和缩放笔迹；不能把重复笔迹的适应等同于独立样本的整体准确率提升。
+Selecting a non-first handwriting candidate while learning is enabled records a personal correction, limited to 96 examples and four per character. Examples persist in local personal data and reload without uploading. Matching first filters personal templates by actual nonempty stroke count, then checks geometric distance and the nearest competing character. An unrelated sample of the same character cannot authorize a cross-count match. Base recognition retains joined/split-stroke and stroke-order tolerance. Private mode disables personal recording and use; immediate backspace undoes the correction.
+
+历史外部文件试验记录过 600 条原基线首选 59.7%、前五 75.2%，另一段 600 条比例增强首选 61.83%、前五 78.50%；这些文件的来源、许可与写者划分尚未核实，数字仅保留为历史诊断，不作为独立真人准确率结论。额外倾斜／旋转变体当时未提高首选，未进入产品。当前行为回归验证笔数隔离、纠正后的相似／平移／缩放、撤销与隐私；重复笔迹的适应不等于未来独立样本的准确率提升。
+
+Historical external-file experiments reported top-one/top-five rates of 59.7%/75.2% on 600 baseline records and 61.83%/78.50% on another 600 with aspect variants. Provenance, licensing and writer splits remain unverified; these figures are historical diagnostics, not independent real-writer accuracy evidence. Extra shear/rotation variants did not improve that experiment and were not adopted. Current behavior regressions cover stroke-count isolation, similar/translated/scaled corrections, undo and privacy. Replayed adaptation does not establish accuracy gains on future independent samples.

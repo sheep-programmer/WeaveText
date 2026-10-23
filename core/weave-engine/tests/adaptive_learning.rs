@@ -64,6 +64,194 @@ fn choose(e: &mut Engine, code: &str, text: &str) {
 }
 
 #[test]
+fn recent_reading_does_not_replace_a_complete_syllable() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [("shi jia", "试驾", 14000), ("shi jian", "时间", 10000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    assert_eq!(type_keys(&mut e, "shijia")[0], "试驾");
+    choose(&mut e, "shijian", "时间");
+    assert_eq!(type_keys(&mut e, "shijia")[0], "试驾", "jia is complete, so a recent jian choice must not replace it");
+    for code in ["sj", "shij", "shijian"] {
+        assert_eq!(type_keys(&mut e, code)[0], "时间", "the remembered reading remains useful for {code}");
+    }
+    assert_eq!(e.user_words("时间", 0, 10)[0].pinyin, "shi jian");
+}
+
+#[test]
+fn manual_pin_does_not_replace_a_complete_syllable_after_reload() {
+    let dir = directory("pin-complete-syllable");
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [
+        ("shi jia", "试驾", 14000),
+        ("shi jian", "时间", 10000),
+        ("shi jian", "实践", 9000),
+    ] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let lex = dir.join("pinyin.wvl");
+    std::fs::write(&lex, b.build()).unwrap();
+    let paths = Paths { pinyin_lexicon: Some(Source::file(lex)), user_dir: Some(dir.join("user")), ..Default::default() };
+    let mut e = Engine::new(&paths);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    let before = type_keys(&mut e, "shijia");
+    assert_eq!(before[0], "试驾");
+    assert!(before.iter().any(|c| c == "时间"), "exercise a completion already in the list");
+    let candidates = type_keys(&mut e, "shijian");
+    assert_eq!(candidates[0], "实践");
+    let i = candidates.iter().position(|c| c == "时间").unwrap();
+    assert_eq!(e.features(&serde_json::json!({"op":"policy","index":i,"text":"时间","mode":"pin"}))["ok"], true);
+    for code in ["shijian", "sj", "shij"] {
+        assert_eq!(type_keys(&mut e, code)[0], "时间", "pin must still lead for {code}");
+    }
+    let candidates = type_keys(&mut e, "shijia");
+    assert!(candidates.iter().any(|c| c == "时间"), "keep the penalized completion available");
+    assert_eq!(candidates[0], "试驾", "pin must not extend complete jia to jian");
+    drop(e);
+    let mut e = Engine::new(&paths);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    for (code, expected) in [("shijia", "试驾"), ("shijian", "时间"), ("sj", "时间"), ("shij", "时间")] {
+        assert_eq!(type_keys(&mut e, code)[0], expected, "reloaded pin for {code}");
+    }
+    drop(e);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn manual_pin_does_not_backfill_a_complete_syllable_extension() {
+    let dir = directory("pin-extension-backfill");
+    let mut b = Builder::new(Kind::Pinyin);
+    let complete = syllable::parse_seq("shi jia").unwrap();
+    for i in 0..160u32 {
+        let text = format!("试{}", char::from_u32(0x4e00 + i).unwrap());
+        b.insert(&complete, &text, (1000 + i) as u16);
+    }
+    b.insert(&syllable::parse_seq("shi jian").unwrap(), "时间", 20000);
+    let lex = dir.join("pinyin.wvl");
+    std::fs::write(&lex, b.build()).unwrap();
+    let paths = Paths { pinyin_lexicon: Some(Source::file(lex)), user_dir: Some(dir.join("user")), ..Default::default() };
+    let mut e = Engine::new(&paths);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    e.clear();
+    for c in "shijia".chars() { e.input_char(c); }
+    assert!(!e.candidates(0, 120).iter().any(|c| c.text == "时间"), "completion must start beyond the initial list");
+    let candidates = type_keys(&mut e, "shijian");
+    let i = candidates.iter().position(|c| c == "时间").unwrap();
+    assert_eq!(e.features(&serde_json::json!({"op":"policy","index":i,"text":"时间","mode":"pin"}))["ok"], true);
+    // 首屏含 120 个解码候选和原样字母，置顶回填会再占一位。
+    // The initial list has 120 decoded candidates plus literal keys; pin backfill adds another slot.
+    e.clear();
+    for c in "shijia".chars() { e.input_char(c); }
+    assert!(!e.candidates(0, 122).iter().any(|c| c.text == "时间"), "an ineligible pin must not be appended to the initial candidates");
+    assert!(e.candidates(0, 800).iter().any(|c| c.text == "时间"), "normal paging still offers the completion");
+    drop(e);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn manual_pin_does_not_override_a_clean_word_through_touch() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [("zhi jian", "之间", 10000), ("shi jian", "时间", 10000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    type_keys(&mut e, "shijian");
+    assert_eq!(e.features(&serde_json::json!({"op":"policy","index":0,"text":"时间","mode":"pin"}))["ok"], true);
+    e.clear();
+    e.set_context(None);
+    e.input_key('z', Some('s'), 1.0);
+    for c in "hijian".chars() { e.input_char(c); }
+    let candidates = e.candidates(0, 20);
+    assert!(candidates.iter().any(|c| c.text == "时间"));
+    assert_eq!(candidates[0].text, "之间", "pin must retain the touch correction penalty");
+}
+
+#[test]
+fn manual_pin_does_not_override_a_clean_word_through_correction() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [("lu en", "路恩", 10000), ("lun", "论", 10000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    let before = type_keys(&mut e, "luen");
+    assert_eq!(before[0], "路恩");
+    assert!(before.iter().any(|c| c == "论"), "fixture must offer the uen → un correction");
+    type_keys(&mut e, "lun");
+    assert_eq!(e.features(&serde_json::json!({"op":"policy","index":0,"text":"论","mode":"pin"}))["ok"], true);
+    assert_eq!(type_keys(&mut e, "lun")[0], "论");
+    let candidates = type_keys(&mut e, "luen");
+    assert!(candidates.iter().any(|c| c == "论"));
+    assert_eq!(candidates[0], "路恩", "pin must retain the spelling correction penalty");
+}
+
+#[test]
+fn recent_touch_reading_does_not_override_a_complete_word() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, word, cost) in [("zhi jian", "之间", 10000), ("shi jian", "时间", 10000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), word, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    choose(&mut e, "shijian", "时间");
+    e.clear();
+    e.set_context(None);
+    e.input_key('z', Some('s'), 1.0);
+    for c in "hijian".chars() { e.input_char(c); }
+    let candidates = e.candidates(0, 20);
+    assert_eq!(candidates[0].text, "之间", "the touch alternative must retain its correction penalty");
+    assert!(candidates.iter().any(|c| c.text == "时间"));
+}
+
+#[test]
+fn recent_fuzzy_choice_preserves_the_clean_contextual_winner() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, text, cost) in [("ni", "你", 10000), ("li", "李", 14000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), text, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    e.options.fuzzy.n_l = true;
+    choose(&mut e, "li", "李");
+    choose(&mut e, "ni", "你");
+    assert_eq!(type_keys(&mut e, "ni")[0], "你");
+    e.clear();
+    e.set_context(Some("任意".into()));
+    for c in "ni".chars() { e.input_char(c); }
+    assert_eq!(e.candidates(0, 20)[0].text, "你");
+}
+
+#[test]
+fn recent_fuzzy_choice_survives_a_cheaper_touch_interpretation() {
+    let mut b = Builder::new(Kind::Pinyin);
+    for (py, text, cost) in [("ni", "你", 10000), ("li", "李", 14000)] {
+        b.insert(&syllable::parse_seq(py).unwrap(), text, cost);
+    }
+    let mut e = Engine::with_lexicons(Some(weave_dict::lexicon::Lexicon::from_bytes(b.build()).unwrap()), None, None);
+    e.options.emoji = false;
+    e.options.prediction = false;
+    e.options.fuzzy.n_l = true;
+    choose(&mut e, "li", "李");
+    assert_eq!(type_keys(&mut e, "ni")[0], "李");
+    e.clear();
+    e.set_context(None);
+    e.input_key('n', Some('l'), 1.0);
+    e.input_char('i');
+    assert_eq!(e.candidates(0, 20)[0].text, "李");
+}
+
+#[test]
 fn five_real_commits_beat_old_counts_and_survive_an_independent_reader() {
     for (name, schema, code) in [
         ("full", Schema::Pinyin, "shi"),

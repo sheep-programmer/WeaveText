@@ -85,10 +85,10 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
         cm?.primaryClip?.takeIf { it.itemCount > 0 && !isSensitive(it) }?.getItemAt(0)?.let { if (it.uri == null) it.text?.toString() else null }
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
-    /** 键盘显示时补查一次（进程未存活期间的复制）。 Re-check on show. */
-    fun onShown() = onClip(fresh = false)
+    /** 新输入框恢复最近剪贴建议，历史和同步仍按复制事件去重。 Restore a recent suggestion in a new field without repeating history or sync. */
+    fun onShown(offerCurrent: Boolean = true) = onClip(fresh = false, offerCurrent = offerCurrent)
 
-    private fun onClip(fresh: Boolean) {
+    private fun onClip(fresh: Boolean, offerCurrent: Boolean = false) {
         val clip = runCatching { cm?.primaryClip }.getOrNull() ?: return
         if (clip.itemCount == 0 || isSensitive(clip) || kb.controller.isSensitiveField) return
         val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
@@ -107,16 +107,18 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
             notifyChanged(); return
         }
         val text = clip.getItemAt(0).text?.toString()
-        if (text.isNullOrBlank() || text == lastSeen) return
-        lastSeen = text
+        if (text.isNullOrBlank()) return
+        val changed = text != lastSeen
         val now = System.currentTimeMillis()
         val recent = fresh || now - clip.description.timestamp < 30_000
+        if (recent && (fresh || changed || offerCurrent)) kb.onNewClip(text)
+        if (!changed) return
+        lastSeen = text
         if (recording && unrecorded(clip, fresh)) {
             history.add(text, now)
             notifyChanged()
         }
         if (recent) {
-            kb.onNewClip(text)
             // 织文互联：新复制的文字同步给已连接的电脑（关闭或未连接时什么都不做）。
             // WeaveLink: a fresh copy goes to the connected computer (no-op when off or disconnected).
             com.weavetext.ime.link.LinkManager.get(ctx).onLocalClip(text)

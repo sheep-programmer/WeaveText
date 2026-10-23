@@ -37,6 +37,9 @@ data class VoicePlugin(
     val networkHosts: List<String> = emptyList(),
     /** 插件要求不受限的网络访问（应向用户明确提示）。 Plugin asks for unrestricted network access. */
     val unrestrictedNetwork: Boolean = false,
+    /** 同一评测集上的相对质量，0..1；未知为 null，并非当前录音的置信度。
+     * Relative quality on a shared benchmark, not confidence for the current recording. */
+    val quality: Float? = null,
 ) {
     override fun equals(other: Any?) = other is VoicePlugin && other.id == id && other.version == version
     override fun hashCode() = id.hashCode() * 31 + version.hashCode()
@@ -81,6 +84,9 @@ interface MultiVoiceListener : VoiceListener {
     fun onEngines(engines: List<VoicePlugin>) {}
     fun onEnginePartial(id: String, text: String) {}
     fun onEngineFinal(id: String, text: String) {}
+    /** 与 VoicePlugin.quality 同组基准评测的相对质量更新，0..1；不得传入单次录音置信度。
+     * Shared-benchmark quality update; never use per-recording confidence on this scale. */
+    fun onEngineQuality(id: String, quality: Float) {}
     fun onEngineReplace(id: String, old: String, new: String) {}
     fun onEngineError(id: String, message: String) {}
     fun onEngineEnd(id: String) {}
@@ -92,7 +98,7 @@ interface VoiceEngines {
         get() = VoiceLanguage.MIXED
         set(@Suppress("UNUSED_PARAMETER") value) {}
     fun list(): List<VoicePlugin>
-    /** 主引擎 id：实时显示它的中间结果，结果列表默认选中它。 Primary engine. */
+    /** 主引擎 id：实时字幕与无质量分数时的默认结果。 Primary caption and unscored fallback. */
     var activeId: String?
     fun active(): VoicePlugin? = list().firstOrNull { it.id == activeId } ?: list().firstOrNull()
 

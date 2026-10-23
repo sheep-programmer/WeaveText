@@ -37,7 +37,7 @@ data class TranslationRequest(
     val text: String,
 ) {
     fun validationError(): TranslationError? = when {
-        text.isBlank() -> TranslationError(TranslationFailure.INVALID_REQUEST, "请先选择文字或手动粘贴待翻译内容")
+        text.isBlank() -> TranslationError(TranslationFailure.INVALID_REQUEST, "请输入待翻译内容")
         text.length > MAX_TEXT_CHARS -> TranslationError(TranslationFailure.INVALID_REQUEST, "文字太长，请分段翻译")
         sourceLanguage.isBlank() -> TranslationError(TranslationFailure.INVALID_REQUEST, "请选择源语言")
         targetLanguage.isBlank() -> TranslationError(TranslationFailure.INVALID_REQUEST, "请选择目标语言")

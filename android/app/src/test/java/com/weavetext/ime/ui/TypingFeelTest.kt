@@ -152,6 +152,150 @@ class TypingFeelTest {
         assertTrue(engine.isComposing())
     }
 
+    private fun englishField(text: String = "", caps: Boolean = true) {
+        if (text.isNotEmpty()) ic.commitText(text, 1)
+        controller.onStartInput(EditorInfo().apply {
+            inputType = InputType.TYPE_CLASS_TEXT or if (caps) InputType.TYPE_TEXT_FLAG_CAP_SENTENCES else 0
+            initialSelStart = text.length; initialSelEnd = text.length
+        }, false)
+        controller.toggleChinese()
+        kb.onShown(); idle()
+    }
+
+    private fun tapShift() { press(9, key(KeyCode.SHIFT)); release(9) }
+
+    private fun select(start: Int, end: Int = start) {
+        ic.setSelection(start, end)
+        controller.onSelectionUpdate(start, end, -1, -1)
+        kb.onSelectionChanged(start, end)
+        kb.flushRender()
+    }
+
+    @Test fun tappingShiftAfterAQuicklyTypedCapitalDoesNotLockEnglishCaps() {
+        englishField(caps = false)
+        tapShift(); tap('a'); tapShift(); tap('b'); tap('c')
+        kb.onKey(key(KeyCode.SPACE))
+        assertEquals("ABc ", ic.text)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift, key(KeyCode.SHIFT).icon)
+    }
+
+    @Test fun toolbarSwitchToChineseClearsAutomaticEnglishCaps() {
+        kb.prefs.edit().putString(WeavePrefs.KEYBOARDS, "pinyin").commit()
+        englishField()
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift_filled, key(KeyCode.SHIFT).icon)
+        kb.onToolbar(1)
+        tap('n')
+        assertTrue(controller.state.chinese)
+        assertEquals("n", controller.state.preedit)
+        assertEquals("", ic.text)
+    }
+
+    @Test fun emojiToolbarHighlightFollowsOpeningClosingAndPanelSwitches() {
+        kb.prefs.edit().putString(WeavePrefs.TOOLBAR_ITEMS, "emoji,clipboard,hide").commit()
+        idle()
+        fun clickTool(id: Int) {
+            val node = kb.topBar.accessibilityNodeProvider!!.createAccessibilityNodeInfo(id)!!
+            val bounds = android.graphics.Rect().also(node::getBoundsInScreen)
+            val origin = IntArray(2).also(kb.topBar::getLocationOnScreen)
+            val x = bounds.exactCenterX() - origin[0]
+            val y = bounds.exactCenterY() - origin[1]
+            val start = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(start, start, action, x, y, 0)
+                try { assertTrue(kb.topBar.dispatchTouchEvent(event)) } finally { event.recycle() }
+            }
+            idle()
+        }
+        fun emojiState() = kb.topBar.accessibilityNodeProvider!!
+            .createAccessibilityNodeInfo(com.weavetext.ime.style.ToolIds.EMOJI)!!.stateDescription
+
+        clickTool(com.weavetext.ime.style.ToolIds.EMOJI)
+        assertTrue(kb.panel is com.weavetext.ime.ui.keyboard.SymbolPanel)
+        assertEquals("已打开", emojiState())
+        assertEquals(com.weavetext.ime.style.ToolIds.EMOJI, kb.topBar.activeTool)
+        clickTool(com.weavetext.ime.style.ToolIds.EMOJI)
+        assertEquals(null, kb.panel)
+        assertEquals(null, emojiState())
+        clickTool(com.weavetext.ime.style.ToolIds.EMOJI)
+        clickTool(com.weavetext.ime.style.ToolIds.CLIPBOARD)
+        assertEquals(com.weavetext.ime.style.ToolIds.CLIPBOARD, kb.topBar.activeTool)
+        assertEquals(null, emojiState())
+        clickTool(com.weavetext.ime.style.ToolIds.EMOJI)
+        assertEquals("已打开", emojiState())
+    }
+
+    @Test fun hardwareSwitchToChineseClearsAutomaticEnglishCaps() {
+        englishField()
+        val hardware = com.weavetext.ime.ime.HardwareKeys(controller)
+        val code = android.view.KeyEvent.KEYCODE_SPACE
+        assertTrue(hardware.onKeyDown(code, android.view.KeyEvent(0, 0, android.view.KeyEvent.ACTION_DOWN,
+            code, 0, android.view.KeyEvent.META_CTRL_ON)))
+        tap('n')
+        assertEquals("n", controller.state.preedit)
+        assertEquals("", ic.text)
+    }
+
+    @Test fun automaticCapsFollowTheCursorFromTheMiddleToTheStartAndBack() {
+        englishField("hello")
+        select(0)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift_filled, key(KeyCode.SHIFT).icon)
+        select(3)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift, key(KeyCode.SHIFT).icon)
+        tap('x'); kb.onKey(key(KeyCode.SPACE))
+        assertEquals("helx lo", ic.text)
+    }
+
+    @Test fun cursorUpdatesKeepManualCapsAndDoNotUndoAnExplicitLowercaseChoice() {
+        englishField()
+        tapShift()
+        select(0)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift, key(KeyCode.SHIFT).icon)
+        tap('a'); kb.onKey(key(KeyCode.SPACE))
+        assertEquals("a ", ic.text)
+        select(1)
+        tapShift()
+        select(2)
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift_filled, key(KeyCode.SHIFT).icon)
+    }
+
+    @Test fun aSwipeToADigitRestoresTheOneShotCapitalForTheNextLetter() {
+        englishField(caps = false)
+        tapShift()
+        press(9, key('q'))
+        release(9, dy = -dp(55f))
+        tap('a'); kb.onKey(key(KeyCode.SPACE))
+        assertEquals("1A ", ic.text)
+    }
+
+    @Test fun cancellingACapitalDoesNotSpendTheOneShotShift() {
+        englishField(caps = false)
+        tapShift()
+        press(9, key('q')); cancelAll()
+        tap('a'); kb.onKey(key(KeyCode.SPACE))
+        assertEquals("A ", ic.text)
+    }
+
+    @Test fun punctuationAlternativesDoNotSpendTheOneShotShift() {
+        englishField(caps = false)
+        tapShift()
+        kb.onKeyText(key(','), ";")
+        tap('a'); kb.onKey(key(KeyCode.SPACE))
+        assertEquals(";A ", ic.text)
+    }
+
+    @Test fun shuangpinShiftCanSendACapitalInsideTheComposition() {
+        kb.prefs.edit().putString(WeavePrefs.KEYBOARDS, "shuangpin,english")
+            .putString(WeavePrefs.ACTIVE_KEYBOARD, "shuangpin").commit()
+        idle()
+        tap('n'); tap('i')
+        tapShift()
+        assertEquals(com.weavetext.ime.R.drawable.ic_shift_filled, key(KeyCode.SHIFT).icon)
+        assertEquals("A", key('a').label)
+        tap('a')
+        assertEquals("niA", controller.state.preedit)
+        assertEquals("", ic.text)
+    }
+
     @Test fun keepsClearOfTheNavigationBar() {
         val insets = android.view.WindowInsets.Builder()
             .setInsets(android.view.WindowInsets.Type.navigationBars(), android.graphics.Insets.of(0, 0, 0, 126))
@@ -188,7 +332,7 @@ class TypingFeelTest {
         assertTrue("right edge must stay clear", card.translationX + card.width <= kb.view.width - 126)
     }
 
-    @Test fun floatingChromeIsThinAndDropsTheBottomStripWithoutBottomCorners() {
+    @Test fun floatingChromeKeepsThinReservedGuttersWhenCornerPolicyChanges() {
         kb.toggleFloating()
         idle()
         val card = kb.board.parent as android.view.View
@@ -196,7 +340,8 @@ class TypingFeelTest {
         com.weavetext.ime.settings.FloatingResizeSettings.write(WeavePrefs.of(app),
             setOf(com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_LEFT, com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_RIGHT))
         idle()
-        assertEquals(kb.metrics.dp(28f), (card.height - kb.board.height).toFloat(), 2f)
+        // The new frame reserves the bottom gutter even when bottom corners are disabled.
+        assertEquals(kb.metrics.dp(28f + 14f), (card.height - kb.board.height).toFloat(), 2f)
     }
 
     @Test fun floatingKeyboardFitsAConstrainedWindowWithoutShrinkingForever() {
@@ -366,6 +511,43 @@ class TypingFeelTest {
         assertEquals("z", engine.raw.toString())
     }
 
+    @Test fun deleteRepeatRestoresAutoCapsAfterClearingTheComposition() {
+        englishField()
+        tap('a')
+        assertEquals("A", engine.raw.toString())
+        press(0, key(KeyCode.DELETE))
+        hold(410)
+        release(0)
+        assertEquals("", engine.raw.toString())
+        tap('b')
+        kb.onKey(key(KeyCode.SPACE))
+        assertEquals("B ", ic.text)
+    }
+
+    @Test fun deleteRepeatKeepsLowercaseInsideAComposition() {
+        englishField()
+        tap('a'); tap('b')
+        press(0, key(KeyCode.DELETE))
+        hold(410)
+        release(0)
+        assertEquals("A", engine.raw.toString())
+        tap('c')
+        kb.onKey(key(KeyCode.SPACE))
+        assertEquals("Ac ", ic.text)
+    }
+
+    @Test fun deleteRepeatPreservesManuallyLockedCaps() {
+        englishField(caps = false)
+        tapShift(); tapShift()
+        tap('a')
+        press(0, key(KeyCode.DELETE))
+        hold(410)
+        release(0)
+        tap('b'); tap('c')
+        kb.onKey(key(KeyCode.SPACE))
+        assertEquals("BC ", ic.text)
+    }
+
     @Test fun deleteRepeatSurvivesThumbDrift() {
         ic.commitText("abcdefghijklmnopqrstuvwxyz", 1)
         press(0, key(KeyCode.DELETE))
@@ -390,6 +572,74 @@ class TypingFeelTest {
         hold(200)
         bar.dispatchTouchEvent(MotionEvent.obtain(t0, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0))
         assertEquals("【ni】", ic.text)
+    }
+
+    @Test fun candidateTapWithSmallReleaseJitterStillCommits() {
+        tap('n'); tap('i'); hold(20)
+        val bar = kb.topBar
+        val y = bar.height - dp(8f)
+        val start = SystemClock.uptimeMillis()
+        MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN, dp(60f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        hold(100)
+        MotionEvent.obtain(start, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, dp(63f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        assertEquals("【ni】", ic.text)
+        assertEquals("", engine.raw.toString())
+    }
+
+    @Test fun candidateSlideToTheRightWithoutAMoveEventDoesNotCommit() {
+        tap('n'); tap('i'); hold(20)
+        val bar = kb.topBar
+        val y = bar.height - dp(8f)
+        val start = SystemClock.uptimeMillis()
+        MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN, dp(60f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        hold(100)
+        MotionEvent.obtain(start, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, dp(140f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        assertEquals("a slide must leave the editor unchanged", "", ic.text)
+        assertEquals("ni", engine.raw.toString())
+    }
+
+    @Test fun candidateSlideToTheLeftWithoutAMoveEventDoesNotCommit() {
+        tap('n'); tap('i'); hold(20)
+        val bar = kb.topBar
+        val y = bar.height - dp(8f)
+        val start = SystemClock.uptimeMillis()
+        MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN, dp(140f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        hold(100)
+        MotionEvent.obtain(start, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, dp(60f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        assertEquals("a slide must leave the editor unchanged", "", ic.text)
+        assertEquals("ni", engine.raw.toString())
+    }
+
+    @Test fun candidateSlideWhoseMoveStayedWithinSlopDoesNotCommitOnUp() {
+        tap('n'); tap('i'); hold(20)
+        val bar = kb.topBar
+        val y = bar.height - dp(8f)
+        val start = SystemClock.uptimeMillis()
+        MotionEvent.obtain(start, start, MotionEvent.ACTION_DOWN, dp(60f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        hold(50)
+        MotionEvent.obtain(start, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, dp(64f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        hold(50)
+        MotionEvent.obtain(start, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, dp(140f), y, 0).let {
+            bar.dispatchTouchEvent(it); it.recycle()
+        }
+        assertEquals("", ic.text)
+        assertEquals("ni", engine.raw.toString())
     }
 
     @Test fun longPressOnAnOrdinaryCandidateOpensActionsWithoutCommitting() {
@@ -444,10 +694,55 @@ class TypingFeelTest {
     @Test fun shortSpaceSlideStillTypesASpace() {
         ic.commitText("a", 1)
         press(0, key(KeyCode.SPACE))
-        move(0, dp(10f), 0f) // 超过 8dp 进入光标模式，但不到一格。 Past slop, less than one step.
+        move(0, dp(22f), 0f) // 超过 18dp 进入光标模式，但不到一格。 Past the 18dp slop, less than one step.
         release(0)
         assertEquals("a ", ic.text)
         assertEquals(0, ic.cursorMoves)
+    }
+
+    @Test fun outAndBackSpaceCursorGestureDoesNotInsertASpaceOnRelease() {
+        ic.commitText("hello", 1)
+        press(0, key(KeyCode.SPACE))
+        move(0, -dp(42f), 0f)
+        assertEquals(-2, ic.cursorMoves)
+        assertEquals(3, android.text.Selection.getSelectionEnd(ic.editable))
+        hold(100)
+        move(0, dp(24f), 0f)
+        assertEquals(0, ic.cursorMoves)
+        assertEquals(5, android.text.Selection.getSelectionEnd(ic.editable))
+        release(0)
+        assertEquals("cursor motion must not turn into a space when its steps cancel", "hello", ic.text)
+        press(0, key(KeyCode.SPACE)); release(0)
+        assertEquals("the next tap must still insert a space", "hello ", ic.text)
+    }
+
+    @Test fun outAndBackSpaceCursorGestureDoesNotInsertASpaceWhenAnotherFingerLands() {
+        ic.commitText("hello", 1)
+        press(0, key(KeyCode.SPACE))
+        move(0, -dp(42f), 0f)
+        assertEquals(-2, ic.cursorMoves)
+        hold(100)
+        move(0, dp(24f), 0f)
+        assertEquals(0, ic.cursorMoves)
+        assertEquals(5, android.text.Selection.getSelectionEnd(ic.editable))
+        press(1, key('b'))
+        assertEquals("settling a completed cursor excursion must not insert a space", "hello", ic.text)
+        assertEquals("b", engine.raw.toString())
+        release(1); release(0)
+        assertEquals("hello", ic.text)
+        assertEquals("b", engine.raw.toString())
+    }
+
+    @Test fun aShortSpaceSlideStillTypesASpaceBeforeTheNextFinger() {
+        ic.commitText("hello", 1)
+        press(0, key(KeyCode.SPACE))
+        move(0, dp(22f), 0f)
+        assertEquals(0, ic.cursorMoves)
+        press(1, key('b'))
+        assertEquals("hello ", ic.text)
+        assertEquals("b", engine.raw.toString())
+        release(1); release(0)
+        assertEquals("hello ", ic.text)
     }
 
     @Test fun spaceSlideWhileComposingCommitsTheCandidate() {

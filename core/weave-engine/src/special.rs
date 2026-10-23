@@ -3,8 +3,22 @@
 //!
 //! - `v` 开头的数字或算式（v1234、v12.5*4）：结果、大写金额、中文小写、千分位。
 //!   `v` followed by a number or an expression: result, uppercase amount, Chinese numerals, thousands separators.
-//! - 拼音 `rq` / `sj` / `xq`：今天的日期、现在的时间、星期几（插在首选之后）。
-//!   Pinyin `rq` / `sj` / `xq`: today's date, the time, the weekday (inserted after the first candidate).
+//! - 日期／时间／星期与相对日期拼音、`rq` / `sj` / `xq`：本地当前值（插在普通首选之后）。
+//!   Date/time/weekday and relative-date pinyin, or `rq` / `sj` / `xq`: local values after the ordinary first candidate.
+
+fn normalize_number_char(c: char) -> char {
+    match c {
+        '×' => '*',
+        '÷' => '/',
+        '（' => '(',
+        '）' => ')',
+        '－' | '−' => '-',
+        '＋' => '+',
+        '．' => '.',
+        '＝' => '=',
+        c => c,
+    }
+}
 
 /// 计算四则运算（+ − × ÷ % ^ 与括号，支持 × ÷ 符号），出错或结果非有限数时返回 None。
 /// Evaluate + − × ÷ % ^ with parentheses (× ÷ accepted); None on errors or non-finite results.
@@ -12,15 +26,8 @@ pub fn eval(expr: &str) -> Option<f64> {
     let s: Vec<char> = expr
         .chars()
         .filter(|c| !c.is_whitespace())
-        .map(|c| match c {
-            '×' | 'x' | 'X' => '*',
-            '÷' => '/',
-            '（' => '(',
-            '）' => ')',
-            '－' | '−' => '-',
-            '＋' => '+',
-            c => c,
-        })
+        .map(normalize_number_char)
+        .map(|c| if matches!(c, 'x' | 'X') { '*' } else { c })
         .collect();
     if s.is_empty() || s.len() > 200 {
         return None;
@@ -130,9 +137,10 @@ pub fn format_number(v: f64) -> String {
 
 /// 是否是一个算式（至少一个运算符，只含数字、运算符与括号）。 Whether `s` is an expression with at least one operator.
 pub fn is_expression(s: &str) -> bool {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).map(normalize_number_char).collect();
     let body = s.trim_start_matches(['-', '+']);
-    body.chars().any(|c| "+-*/×÷%^".contains(c))
-        && s.chars().all(|c| c.is_ascii_digit() || " .+-*/×÷%^()（）".contains(c))
+    body.chars().any(|c| "+-*/%^".contains(c))
+        && s.chars().all(|c| c.is_ascii_digit() || ".+-*/%^()".contains(c))
         && s.chars().any(|c| c.is_ascii_digit())
 }
 
@@ -199,7 +207,9 @@ pub fn chinese_number(n: u64) -> String {
 /// 大写金额（壹仟贰佰叁拾肆元伍角陆分 / 元整）；最多两位小数、不超过万亿。
 /// Uppercase financial amount; at most two decimals, below 10^16.
 pub fn money_upper(s: &str) -> Option<String> {
-    let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+    let (negative, magnitude) = s.strip_prefix('-').map(|r| (true, r))
+        .unwrap_or((false, s.strip_prefix('+').unwrap_or(s)));
+    let (int, frac) = magnitude.split_once('.').unwrap_or((magnitude, ""));
     if int.is_empty() || !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) || frac.len() > 2 || int.len() > 16 {
         return None;
     }
@@ -207,6 +217,9 @@ pub fn money_upper(s: &str) -> Option<String> {
     let jiao = frac.as_bytes().first().map(|b| b - b'0').unwrap_or(0);
     let fen = frac.as_bytes().get(1).map(|b| b - b'0').unwrap_or(0);
     let mut out = String::new();
+    if negative && (n > 0 || jiao > 0 || fen > 0) {
+        out.push('负');
+    }
     if n > 0 {
         out.push_str(&integer(n, &DIGITS_UPPER, ["仟", "佰", "拾", ""], ["", "万", "亿", "万亿"]));
         out.push('元');
@@ -250,14 +263,19 @@ pub fn thousands(s: &str) -> String {
 
 /// `v` 之后的内容能否继续输入这个字符。 Whether `c` may extend the text after `v`.
 pub fn v_accepts(c: char) -> bool {
-    c.is_ascii_digit() || ".+-*/()%^".contains(c)
+    let c = normalize_number_char(c);
+    c.is_ascii_digit() || ".+-*/()%^=".contains(c)
 }
 
 /// `v` 模式的候选：(文字, 注释)。 Candidates of the `v` mode: (text, comment).
 pub fn v_candidates(body: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
+    let body = body.strip_suffix(['=', '＝']).unwrap_or(body);
+    if body.contains(['=', '＝']) {
+        return out;
+    }
     if is_expression(body) {
-        if let Some(v) = eval(body.trim_end_matches('=')) {
+        if let Some(v) = eval(body) {
             let r = format_number(v);
             out.push((r.clone(), "计算结果".into()));
             out.push((format!("{body}={r}"), "算式".into()));
@@ -267,19 +285,33 @@ pub fn v_candidates(body: &str) -> Vec<(String, String)> {
         }
         return out;
     }
-    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit() || b == b'.') || body.matches('.').count() > 1 {
+    let normalized: String = body.chars().map(normalize_number_char).collect();
+    let magnitude = normalized.strip_prefix(['-', '+']).unwrap_or(&normalized);
+    let (int, frac) = magnitude.split_once('.').map(|(a, b)| (a, Some(b))).unwrap_or((magnitude, None));
+    if magnitude.is_empty() || !magnitude.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        || magnitude.matches('.').count() > 1 || !magnitude.bytes().any(|b| b.is_ascii_digit()) {
         return out;
     }
     out.push((body.to_string(), String::new()));
-    if let Some(m) = money_upper(body) {
+    if let Some(m) = money_upper(&normalized) {
         out.push((m, "大写金额".into()));
     }
-    let int = body.split('.').next().unwrap_or("");
-    if !body.contains('.') && int.len() <= 16 {
-        if let Ok(n) = int.parse::<u64>() {
-            out.push((chinese_number(n), "中文数字".into()));
+    if int.len() <= 16 {
+        if let Ok(n) = if int.is_empty() { Ok(0) } else { int.parse::<u64>() } {
+            let mut reading = chinese_number(n);
+            if let Some(f) = frac {
+                if !f.is_empty() {
+                    reading.push('点');
+                    reading.extend(f.bytes().map(|b| DIGITS_LOWER[(b - b'0') as usize]));
+                }
+            }
+            if normalized.starts_with('-') && magnitude.bytes().any(|b| matches!(b, b'1'..=b'9')) {
+                reading.insert(0, '负');
+            }
+            out.push((reading, "中文数字".into()));
             if int.len() > 3 {
-                out.push((thousands(int), "千分位".into()));
+                let number = normalized.strip_prefix('+').unwrap_or(&normalized);
+                out.push((thousands(number), "千分位".into()));
             }
         }
     }
@@ -302,28 +334,35 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 
 const WEEKDAYS: [&str; 7] = ["星期四", "星期五", "星期六", "星期日", "星期一", "星期二", "星期三"];
 
-/// 拼音缩写对应的日期时间候选；`now` 为 Unix 秒，`offset_min` 为本地时区相对 UTC 的分钟数。
-/// Date/time candidates for a pinyin abbreviation; `now` in Unix seconds, `offset_min` the local UTC offset.
+/// 拼音及常用词对应的日期时间候选；`now` 为 Unix 秒，`offset_min` 为本地时区相对 UTC 的分钟数。
+/// Date/time candidates for pinyin and common words; Unix seconds and the local UTC offset in minutes.
 pub fn date_candidates(key: &str, now: i64, offset_min: i32) -> Vec<(String, String)> {
     let local = now + offset_min as i64 * 60;
-    let days = local.div_euclid(86_400);
+    let shift = match key {
+        "mingtian" | "明天" => 1,
+        "zuotian" | "昨天" => -1,
+        _ => 0,
+    };
+    let days = local.div_euclid(86_400) + shift;
     let secs = local.rem_euclid(86_400);
     let (y, m, d) = civil(days);
-    let (h, mi) = (secs / 3600, secs / 60 % 60);
+    let (h, mi, sec) = (secs / 3600, secs / 60 % 60, secs % 60);
     let wd = WEEKDAYS[days.rem_euclid(7) as usize];
     let c = |t: String, c: &str| (t, c.to_string());
     match key {
-        "rq" => vec![
+        "rq" | "riqi" | "日期" | "jintian" | "今天" | "mingtian" | "明天" | "zuotian" | "昨天" => vec![
             c(format!("{y}年{m}月{d}日"), "日期"),
             c(format!("{y}-{m:02}-{d:02}"), "日期"),
             c(format!("{y}年{m}月{d}日 {wd}"), "日期"),
+            c(format!("{y}/{m:02}/{d:02}"), "日期"),
         ],
-        "sj" => vec![
+        "sj" | "shijian" | "时间" | "xianzai" | "现在" => vec![
             c(format!("{h:02}:{mi:02}"), "时间"),
             c(format!("{y}-{m:02}-{d:02} {h:02}:{mi:02}"), "时间"),
             c(format!("{h}点{mi:02}分"), "时间"),
+            c(format!("{h:02}:{mi:02}:{sec:02}"), "时间"),
         ],
-        "xq" => vec![c(wd.to_string(), "星期")],
+        "xq" | "xingqi" | "zhouji" | "星期" | "周几" => vec![c(wd.to_string(), "星期")],
         _ => Vec::new(),
     }
 }

@@ -451,6 +451,78 @@ pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandApply(
     jbool(with_engine(h, false, |e| e.hand_apply_wire(strokes, &wire)))
 }
 
+/// 叠写的笔画与明确分界必须完整读取，禁止截断后当成另一个字。
+/// Overlay ink and explicit boundaries must be complete; never recognize a truncated prefix.
+fn read_grouped_strokes(env: &JNIEnv, xy: &jni::objects::JFloatArray, lens: &jni::objects::JIntArray,
+    ends: &jni::objects::JIntArray) -> Option<(Vec<weave_dict::hand::Stroke>, Vec<usize>)> {
+    let count = env.get_array_length(lens).ok()?;
+    let group_count = env.get_array_length(ends).ok()?;
+    let points = env.get_array_length(xy).ok()?;
+    if !(1..=256).contains(&count) || !(1..=4).contains(&group_count) || points < 2 || points > 256 * 4096 * 2 { return None; }
+    let mut lengths = vec![0; count as usize];
+    let mut boundaries = vec![0; group_count as usize];
+    env.get_int_array_region(lens, 0, &mut lengths).ok()?;
+    env.get_int_array_region(ends, 0, &mut boundaries).ok()?;
+    if lengths.iter().any(|&n| !(1..=4096).contains(&n)) || lengths.iter().sum::<i32>() * 2 != points { return None; }
+    let mut previous = 0;
+    for &end in &boundaries {
+        if end <= previous || end > count || end - previous > 64 { return None; }
+        previous = end;
+    }
+    if previous != count { return None; }
+    let strokes = read_strokes(env, xy, lens)?;
+    let boundaries: Vec<usize> = boundaries.into_iter().map(|n| n as usize).collect();
+    if !weave_dict::handnet::HandModels::valid_explicit_groups(&strokes, &boundaries) { return None; }
+    Some((strokes, boundaries))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandInputGrouped(
+    env: JNIEnv, _c: JClass, h: jlong, xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray, ends: jni::objects::JIntArray,
+) -> jboolean {
+    let Some((strokes, ends)) = read_grouped_strokes(&env, &xy, &lens, &ends) else {
+        return jbool(with_engine(h, false, |e| e.hand_input_grouped(Vec::new(), Vec::new())));
+    };
+    jbool(with_engine(h, false, |e| e.hand_input_grouped(strokes, ends)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandRecognizeGrouped(
+    env: JNIEnv, _c: JClass, m: jlong, xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray, ends: jni::objects::JIntArray,
+) -> jni::sys::jintArray {
+    if m == 0 { return std::ptr::null_mut(); }
+    let Some((strokes, ends)) = read_grouped_strokes(&env, &xy, &lens, &ends) else { return std::ptr::null_mut() };
+    // SAFETY: nativeHandModels 返回的引用在进程内有效。 The reference lives for the process.
+    let models = unsafe { &*(m as *const std::sync::Arc<weave_dict::handnet::HandModels>) };
+    let Ok(wire) = catch_unwind(AssertUnwindSafe(|| weave_dict::handnet::encode_wire(
+        &models.recognize_explicit_groups(&strokes, &ends, weave_dict::handnet::LINE_PER_GROUP)))) else { return std::ptr::null_mut() };
+    let wire: Vec<jint> = wire.into_iter().map(|n| n as jint).collect();
+    let Ok(array) = env.new_int_array(wire.len() as i32) else { return std::ptr::null_mut() };
+    if env.set_int_array_region(&array, 0, &wire).is_err() { return std::ptr::null_mut(); }
+    array.into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_weavetext_ime_core_NativeEngine_nativeHandApplyGrouped(
+    env: JNIEnv, _c: JClass, h: jlong, xy: jni::objects::JFloatArray,
+    lens: jni::objects::JIntArray, ends: jni::objects::JIntArray, cps: jni::objects::JIntArray,
+) -> jboolean {
+    let grouped = read_grouped_strokes(&env, &xy, &lens, &ends);
+    let wire = (|| {
+        let n = env.get_array_length(&cps).ok()?;
+        if !(2..=46).contains(&n) { return None; }
+        let mut raw = vec![0; n as usize];
+        env.get_int_array_region(&cps, 0, &mut raw).ok()?;
+        Some(raw.into_iter().map(|n| n as u32).collect::<Vec<_>>())
+    })();
+    match (grouped, wire) {
+        (Some((strokes, ends)), Some(wire)) => jbool(with_engine(h, false, |e| e.hand_apply_grouped_wire(strokes, ends, &wire))),
+        _ => jbool(with_engine(h, false, |e| e.hand_input_grouped(Vec::new(), Vec::new()))),
+    }
+}
+
 bool_op!(
     Java_com_weavetext_ime_core_NativeEngine_nativeCommitFirst,
     |e| {

@@ -41,6 +41,290 @@
 
 ## 本轮验证
 
+**2026-10-22 表情工具栏选中态 / Emoji toolbar selection**
+
+表情面板原先没有声明对应的工具编号，打开后顶栏仍为未选中状态。补齐面板与表情工具的关联，复用已有高亮绘制；关闭面板清除高亮，切到剪贴板则高亮剪贴板。公开触摸回归先观察到面板已打开、按钮状态却为 null（预期“已打开”），修复后打字交互专项 **61 项通过、0 失败／错误／跳过**。设备测试包首轮编译发现新增节点断言缺少可空处理，已修正，未改动生产行为。
+
+The emoji panel previously omitted its toolbar tool id, so opening it left the toolbar unselected. Declaring the association reuses existing highlight rendering; closing clears it and switching to the clipboard highlights that tool. A touch regression first observed an open panel with a null button state instead of “已打开”; the corrected typing interaction group passed **61 tests with zero failures/errors/skips**. The first device-test build found missing nullable-node handling in the new assertions; this was corrected without changing production behavior.
+
+修复后 Android 全量 **1061 项通过、0 失败／错误／跳过**；调试与设备测试 APK 构建成功。最终包的生产 View 设备用例 **1 项通过（13.729 秒）**，通过实际触摸验证表情打开高亮、再次点击关闭清除高亮，以及切到剪贴板后高亮转移。已查看实际截图：顶栏笑脸按钮有圆角高亮背景，底部“表情”分类也保持选中。截图放在临时目录，未修改 tracked 截图；未提交或发布。
+
+The corrected full Android suite passed **1061 tests with zero failures/errors/skips**, and both debug/device-test APKs built successfully. Final-package production-View acceptance passed **one case in 13.729 seconds**, using actual touches to check the emoji highlight, toggle-off clearing and transfer to the clipboard. The inspected device screenshot shows a rounded highlight behind the toolbar smiley and the selected bottom emoji category. Captures remain temporary, with no tracked screenshot changes, commit or release.
+
+**2026-10-22 退笔等待与长按退格 / Undo pauses and repeated backspace**
+
+单字停笔自动上屏现在以最近一次退笔或重做重新计时：成功修改笔迹后取消旧任务，保留笔迹时安排剩余等待，全部退空时停止计时；定时回调在提交前再次核对停笔时长。连写、叠写与关闭自动上屏仍由用户确认。三个公开行为回归先观察到旧任务提前上屏／退空后重做不再上屏，再验证修复；计时断言在截止前后保留余量，避免渲染任务推进测试时钟导致毫秒边界误报。
+
+Single-character auto-commit now starts a fresh pause after undo or redo: successful ink edits cancel the old task, retained ink schedules the remaining wait, and undoing all strokes stops the timer. The callback rechecks elapsed idle time before committing. Continuous/overlay writing and disabled auto-commit still require explicit confirmation. Three behavioral regressions first demonstrated early commits or missing commits after restoring emptied ink, then verified the fix; assertions allow margin around the deadline because render work also advances the test clock.
+
+英文长按退格现在与短按一样刷新派生状态。句首的 `A` 尚未上屏时连删清空组合，下一次输入恢复为 `B`；组合仍含 `A` 时续写保持小写，手动大写锁定也保留。已先观察 `B ` 预期得到 `b ` 的失败，再补齐连删后的状态刷新。
+
+Repeated English backspace now refreshes derived state like an ordinary tap. Deleting an uncommitted sentence-initial `A` restores capitalization for the next `B`; a composition still containing `A` keeps subsequent letters lowercase, and manual Caps Lock remains active. The regression first produced `b ` instead of the expected `B ` before the missing post-delete refresh was added.
+
+手动置顶也服从同一读音资格检查：输入完整 `shijia` 时，置顶于 `shijian` 的“时间”不能靠置顶越过“试驾”；`shijian`、`sj`、`shij` 的正常置顶继续有效。已有候选的排序与首屏外的置顶回填都检查本次解码跨度，不重复解码；补全、纠错和邻键候选仍可按正常分数竞争。四项新增 Rust 回归覆盖完整音节、回填、邻键、纠错与策略重载，并分别验证两处门槛确实能捕获错误。
+
+Manual pins now obey the same reading eligibility: a 时间 pin learned for `shijian` cannot leap ahead of 试驾 for the complete `shijia` reading, while valid `shijian`, `sj` and `shij` pins remain effective. Both existing-candidate sorting and pin backfill inspect this decode's spans without decoding again. Completion, spelling-correction and touch-neighbor candidates continue competing by ordinary scores. Four added Rust regressions cover complete syllables, backfill, touch, correction and policy reload, with independent checks that both eligibility gates catch their respective defect.
+
+手写首次修复后的三个计时断言在截止前 1 毫秒处误报：渲染也推进测试时钟；改为截止前 100 毫秒／截止后 100 毫秒检查，保留旧任务触发点的失败断言。专项 **55 项通过**；英文连删新增回归先出现 **1 项失败**（`b `），修复后 Android 全量 **1060 项通过、0 失败／错误／跳过**。两项生产 View 模拟器验收 **15.206 秒通过**，使用真实包内识别器：慢档 1200 毫秒停笔、退笔后跨过旧截止点仍留一笔、真实长按恢复两笔并最终上屏“十”，以及真实英文连删后上屏 `B `。已查看手写重做与英文输入截图；前者笔迹完整，后者初次截图仍捕获到上一帧气泡，后续取图需等待渲染稳定。首次宿主 GPU 模拟器进程异常退出后，专用验收设备改用软件渲染。
+
+The first implementation's three timing assertions fired one millisecond before the deadline because rendering also advances the test clock. They now check 100 ms before/after it while retaining the old-timer failure assertion. The handwriting group passed **55 tests**. Repeated-backspace coverage first had **one failure** (`b `); the corrected Android suite passed **1060 tests with zero failures/errors/skips**. Two production-View emulator cases passed in **15.206 seconds**, using the packaged recognizer: a 1200 ms pause, undo retaining one stroke beyond the old deadline, a real long press restoring both strokes before committing 十, and English repeated backspace followed by `B `. Both screenshots were inspected; handwriting remained complete, while the first English capture still showed the preceding frame's bubble, requiring a settled follow-up capture. The dedicated emulator switched to software rendering after the host-GPU process exited unexpectedly.
+
+最终统一计时入口后的 Android 全量再次 **1060 项通过、0 失败／错误／跳过**；Lint **0 errors、202 warnings、2 hints**，保留既有提示。测试截图重录输出改到临时目录，并恢复了本轮基线测试生成的 191 张 tracked 截图（会话初始状态中这些文件均无改动），避免将渲染环境差异混入补丁。
+
+After unifying timer scheduling, the final Android suite again passed **1060 tests with zero failures/errors/skips**. Lint reported **zero errors, 202 warnings and two hints**, retaining existing diagnostics. Snapshot recordings now go to a temporary directory; 191 tracked screenshots generated by this round's baseline run were restored because none were modified at session start, keeping renderer differences out of the patch.
+
+最终 Rust release 工作区 **268 项通过、0 失败、3 忽略**，保留 `examples/predict.rs:46` 的既有 `rest` 未使用变量警告。完整桌面 JNI 套件 **30 项通过、0 失败／错误、15 项条件跳过**：10 项 `NativeAsrTest`、3 项 `ModelsTest`，以及 `JniTest.domainPackLoadsAndUnloads`、`JniTest.externalPluginOptional`；跳过项不计入通过。JNI 首轮有 1 项断言失败：夹具先显式提交“试驾”，按现有规则清除了旧置顶，再检查 `sj` 仍置顶“时间”，与状态变更不符。将有效置顶检查移到显式提交之前后复验通过，未为此改动生产逻辑。
+
+The final release Rust workspace passed **268 tests, with zero failures and three ignored**, retaining the existing unused `rest` warning at `examples/predict.rs:46`. The complete desktop JNI suite passed **30 tests, with zero failures/errors and 15 conditional skips**: ten in `NativeAsrTest`, three in `ModelsTest`, and the two named `JniTest` cases above. Skips are not passes. The first JNI run had one assertion failure: explicitly committing 试驾 cleared the earlier pin under existing rules, so the later `sj` assertion incorrectly expected 时间 to remain pinned. Moving valid-pin checks before that explicit commit passed on replay; no production behavior changed for this fixture correction.
+
+最终调试包在专用 Android 14 模拟器上串行运行 **4 项设备验收，全部通过（39.874 秒）**：置顶读音边界、快捷输入、手写和打字手势。手写真实长按重做后保留两笔，随后等待上屏“十”；英文长按删空组合后上屏 `B `。最终三张截图已实际查看：英文为稳定的 `B` 正文，手写“十”笔迹完整，拼音 `shi'jia` 首选“试驾”；键盘底行与三键导航无重叠。截图是生产 View 在真实 Activity 窗口中的画面，尚未在实体手机验收，也不作为真人手写准确率或输入速度证据。
+
+The final debug APK passed **all four serial device cases in 39.874 seconds** on the dedicated Android 14 emulator: pinned-reading boundaries, quick input, handwriting and typing gestures. A real handwriting long press restored both strokes before 十 was committed after the pause; clearing English composition by repeated backspace then committed `B `. All three final screenshots were inspected: settled English text `B`, complete 十 ink, and 试驾 first for `shi'jia`, with no overlap between the keyboard's bottom row and three-button navigation. These are production Views in a real Activity window; physical-phone acceptance and human handwriting/typing performance remain unmeasured.
+
+本轮最终调试 APK SHA-256：`00a64d7b7bf2426d0c7259dbfd75ef97dd82a282f77e6bd584c0a71b67e92e7a`。验收结束后再次核对，实际安装的 base.apk 与本地产物逐字节一致，包内 arm64-v8a／x86_64 的 `libweave.so` 均与当前 strip 产物一致。工作区无 tracked 截图改动；未提交、打标签、推送或发布。
+
+The final debug APK's SHA-256 is recorded above. A post-acceptance check confirmed that the installed base.apk matches the local artifact byte for byte and both packaged `libweave.so` architectures match current stripped outputs. No tracked screenshots are modified. No commit, tag, push or release was made.
+
+后续审查尚未落地：快速语音横滑只有 DOWN／UP 时的终点判定、长全文滚动时的排版复用、超过 64 笔的连写切换叠写时的分组合法性，以及新旧模式偏好同时通知引发的重复识别。这些结论来自源码审查，尚未新增失败回归或设备复现，不计入本轮已完成修复。
+
+Pending source-review follow-ups are release-coordinate handling for voice swipes with only DOWN/UP, layout reuse during long transcript scrolling, valid grouping when switching a line exceeding 64 strokes to overlay, and duplicate recognition from legacy/new preference notifications. These have no new failing regression or device reproduction yet and are excluded from this round's completed fixes.
+
+**2026-10-22 日期时间、u/v 与计算 / Date/time, u/v and calculation**
+
+补齐完整拼音日期／时间／星期、今天／明天／昨天／现在候选，普通词保持首选，动态值随后；双拼／九键按首选完整解码词提供相同入口。句中片段、分段选词后的剩余码不触发。模板新增 `{weekday}`。v 模式支持常见 Unicode 运算符及单个结尾等号，负数／小数提供中文读法、金额与千分位；Android 字符等号和文本等号均可请求正文算式结果，敏感框抑制，v 中括号保持组合。Mac 对齐 v 字符与候选按键优先级，检查整个 v 后缀；正文算式仍用半角等号，默认英文原样直通策略不变。u 拆字／笔画查字沿用现有实现。用法与数值精度边界见[快捷输入](quick-input.md)。
+
+Full pinyin now offers local date/time/weekday and relative-day values after the ordinary first word. Double pinyin/keypad trigger from a complete first decoded word; sentence fragments and partially selected input do not expand. Templates add `{weekday}`. V composition accepts common Unicode arithmetic and one terminal equals sign, plus signed/decimal readings, financial amounts and grouping. Android character/text equals paths both offer editor-side results, suppress sensitive fields and preserve v parentheses. Mac aligns v characters and key priority, validating the entire suffix; editor formulas still use ASCII equals and default literal English policy remains. Existing u shape/stroke lookup is retained. See [Quick input](quick-input.md) for usage and numeric limits.
+
+公开行为测试已观察日期完整词／模板、数字转换与宿主路由的预期失败后修复。真实词库的首轮 JNI **18 通过、1 失败、2 跳过**，设备组合 **2 通过、1 失败（107.106 秒）**：默认表情装饰在“时间”后插入钟表，挤开当前时间，违背紧随普通词的排序要求。已将日期值插入移到表情装饰之后、繁体转换之前；不通过关闭默认表情或放宽第二候选断言规避问题。修复后完整 Rust release 工作区 **263 通过、0 失败、3 忽略**，JNI **19 通过、0 失败、2 原配置跳过**。Rust 既有示例未使用变量警告保留。
+
+Observed red/green behavior covers full date words/templates, numbers and host routing. The first real-dictionary JNI run had **18 passes, one failure and two skips**; production-View device acceptance had **two passes and one failure in 107.106 seconds**. Default emoji decoration placed a clock immediately after 时间, displacing the current time. Date values now insert after emoji decoration and before traditional conversion; default emoji remains enabled and the second-candidate assertion is retained. The corrected full release Rust workspace passed **263 tests, zero failed, three ignored**; JNI passed **19, zero failed, two existing conditional skips**. The existing unused-variable example warning remains.
+
+Android 最终宿主源码 JVM **1054 项通过、0 failures／errors／skipped**；Lint **0 errors、202 warnings、2 hints**。arm64-v8a／x86_64 原生库已从排序修复后的源码重建；JVM 检查不替代最终 APK 的设备验收。
+
+The final Android host sources passed **1054 JVM tests with zero failures/errors/skips**; lint reported **zero errors, 202 warnings and two hints**. Both native architectures were rebuilt after the ordering correction; JVM results do not substitute for final-APK device acceptance.
+
+Mac 从最终源码重新构建 arm64／x86_64 通用 C ABI 静态库并强制重新链接，完整 Swift 两套测试分别 **60／231 项通过**，另 **2 项跳过、0 失败**；跳过项为 `systemBonjourResolvesBothNativeListeners`、`builtPacksMatchTheCatalog`。编译与链接共 33 次警告，另有两条 sandbox extension 运行消息，测试正常结束；未安装或切换系统输入法，未声称完成 Mac 跨应用人工验收。
+
+Mac rebuilt the final universal arm64/x86_64 C ABI archive and forced fresh Swift linking. The two complete test runs passed **60 and 231 tests**, with **two skips and zero failures**; skipped cases are named above. There were 33 compiler/linker warning emissions and two sandbox-extension runtime messages; tests completed successfully. No system IME was installed/switched, and no Mac cross-application manual acceptance is claimed.
+
+排序修复后的设备组合再次为 **2 通过、1 失败（74.376 秒）**：快捷用例已通过时间与日期候选断言，但 `UiAutomation.takeScreenshot()` 返回 null 导致测试中断。已从行为用例移出截图，改用独立 `adb screencap`，不修改生产逻辑或放宽输入断言。最终调试 APK SHA-256 为 `1c7a1d6fd03f1cb219b1cb6387ff9b5dadf094f1b4f904db3023ab7ddbd4adf1`；实际安装 base.apk 与本地产物逐字节一致，包内两种原生库均与当前 strip 产物一致。
+
+The post-ordering device replay again recorded **two passes and one failure in 74.376 seconds**: date/time candidate assertions passed, then a null `UiAutomation.takeScreenshot()` aborted the quick-input test. Capture moved out of behavioral acceptance to separate `adb screencap`; no production behavior or input assertion was relaxed. The final debug APK SHA-256 is recorded above; the installed base.apk matches the local artifact byte for byte, and both packaged native libraries match current stripped outputs.
+
+最终 APK 的串行生产 View 组合验收 **3 项通过（54.820 秒）**：快捷输入、拼音读音边界、打字手势。快捷用例在真实 Activity 的生产键盘上触摸输入并点选时间／日期，验证 `uhs` 空格为“十”、Unicode v 算式为 `640`，正文 `128*4=` 的本地候选可点选追加 `512`。日期时间值与设备本地时钟核对。尚未在实体手机验收。
+
+Final-APK serial production-View acceptance passed **all three cases in 54.820 seconds**: quick input, pinyin-reading boundaries and typing gestures. The quick-input case touches the production keyboard and time/date candidates in an Activity, checks `uhs` + SPACE → 十 and Unicode v arithmetic → `640`, then taps the local editor-side result to produce `128*4=512`. Date/time values are checked against the device clock. Physical-phone acceptance remains outstanding.
+
+正式 IME 的首个脚本尝试未找到候选无障碍节点而中断；独立 `adb screencap` 实际显示“时间”后紧随当前时间。该系统的 UI 导出只含编辑器节点，因此后续日期时间与 v 选词改用调试桥接的正式控制器选择接口，正文计算用屏幕坐标触摸。生产 View 用例的候选仍通过真实触摸验收，不把 UI 导出失败算作产品输入失败。
+
+The first actual-IME script attempt stopped because no IME candidate accessibility nodes appeared in the exported hierarchy; separate screencap showed the current time immediately after 时间. On this system the dump includes the editor only. Subsequent service checks use the debug bridge's production-controller selection for date/time and v, and a screen-coordinate touch for editor arithmetic. Production-View candidate acceptance still uses real touches; UI export failure is not treated as a product-input failure.
+
+正式服务串行定向检查最终 **5／5 通过**：`shijian` 选当前时间 `02:21`，`riqi` 选 `2026年10月22日`（模拟器本地时间），`uhs` 空格选“十”，`v（128＋32）×4＝` 选 `640`，正文 `128*4=` 后真实触摸结果得到 `128*4=512`。已查看时间／日期／计算候选和最终上屏截图；单层键盘、候选和导航栏可见。未提交、打标签、推送或发布。
+
+Final serial targeted actual-service acceptance passed **5/5**: current time/date selection using the emulator's local clock, `uhs` + SPACE → 十, Unicode v expression → `640`, and a real result touch producing `128*4=512`. Time/date/calculation candidate screenshots and final committed text were inspected, showing one keyboard, visible candidates and navigation. No commit, tag, push or release.
+
+**2026-10-22 拼音读音与近期选词边界 / Pinyin readings and recent-choice boundaries**
+
+隔离用户数据下复现：先打 `shijian` 选一次“时间”，再打 `shijia`，原先“时间”会跳过 `shi jia` 的正常候选成为首选。邻键接口也能复现：近期选过“时间”后输入 `zhijian`，首键携带邻键 `s`，纠错读法会绕过惩罚抢到“之间”之前。原因是近期置前只检查整串覆盖，session 的原拼写保护又对已学词无条件让步；并非已确认的个人词库错误读音污染，“时间”导出仍为 `shi jian`。
+
+With isolated user data, selecting 时间 for `shijian` once made it lead the next `shijia` input, ahead of literal `shi jia` candidates. A touch-neighbor reproduction also let the remembered 时间 bypass the penalty for interpreting initial `z` as `s` in `zhijian`. Recent front-loading checked only complete input coverage, and literal-reading protection exempted learned words unconditionally. Incorrect stored readings were not confirmed: 时间 still exports as `shi jian`.
+
+近期强制置前与原拼写保护共用读法检查：完整音节、已开启模糊音、简拼及未完成音节补全保留偏好；纠错和把已完整音节补长的路径按正常惩罚竞争。未关闭正常纠错、未清理用户词库、未新增设置。公开 Rust 两项回归先红后绿，另覆盖 `sj`／`shij`／`shijian` 学习保留与实际导出读音；JNI 独立回归也先观察到 `shijia` 首选错误，再验证首选与确认上屏不再为“时间”。
+
+Recent front-loading and literal protection now share a reading check. Full syllables, enabled fuzzy readings, abbreviations and unfinished-syllable completion retain learned preferences; corrections and extensions of already complete syllables compete with normal penalties. Ordinary correction remains enabled, user data is preserved, and no setting was added. Two public Rust regressions failed before the fix and passed afterward, with checks for preserved `sj`/`shij`/`shijian` learning and exported readings. An independent JNI regression also demonstrated the original failure before checking both candidate ranking and confirmed text.
+
+独立复核补充两项模糊音边界回归，均观察到修复前失败：`n_l` 开启、先选“李”再选“你”后，加入无关上文不能让旧模糊选择“李”越过解码首选“你”；同样开启 `n_l`、学过“李”后，输入 `ni` 是否携带 `n→l` 邻键信息不应丢掉模糊音的近期偏好。候选构造对带上下文的完整／模糊读法统一保留解码顺序，图边去重保留模糊音与触摸纠错的不同来源，简拼及未完成尾音节补偿继续保留。修复后 `adaptive_learning` **21 项通过**。
+
+Independent review added two fuzzy-reading regressions, both observed failing before the follow-up: with `n_l` enabled, selecting 李 then 你 must not let an older fuzzy 李 displace the decoder's 你 merely because unrelated context is present; a learned fuzzy 李 must retain the same preference whether `ni` arrives with or without `n→l` touch-neighbor metadata. Candidate construction now preserves contextual decoding for both full and fuzzy readings. Graph deduplication retains distinct fuzzy/touch provenance; abbreviation and unfinished-tail compensation remain. All **21 adaptive_learning tests passed** after the follow-up.
+
+模糊音边界修正后的最终优化构建 Rust 工作区 **248 项通过、0 失败、3 项忽略**；Android JVM **1046 项通过、0 failures／errors／skipped**；JNI `JniTest` **18 项通过、2 项按原配置跳过、0 失败**。Lint **0 errors、202 warnings、2 hints**，既有 Rust 示例警告保留。arm64-v8a／x86_64 原生库及调试／设备测试 APK 构建成功，复用已生成词库；包内两种原生库与当前 strip 产物逐字节一致。此前构建／验证因会话或执行时限中断的尝试不计为通过，结果以完成日志及测试报告为准。
+
+After the fuzzy-boundary follow-up, the final optimized Rust workspace passed **248 tests, zero failed, three ignored**; Android JVM passed **1046 tests with zero failures/errors/skips**; JNI `JniTest` passed **18 tests, with two existing conditional skips and zero failures**. Lint reports **zero errors, 202 warnings and two hints**; the existing Rust example warning remains. Both Android native architectures and debug/device-test APKs built successfully using existing generated dictionaries. Packaged native libraries match current stripped outputs byte for byte. Attempts interrupted by session termination or execution limits are not counted as passing; completed logs and reports establish these results.
+
+专用 Android 14 模拟器上的首轮读音边界／打字手势／学习撤销／手写生产 View 组合验收 **4 项通过（19.785 秒）**。模糊音边界修正后的最终 APK 组合运行实际为 **3 项通过、1 项失败（73.539 秒）**：读音、手势与手写通过，学习撤销用例第三轮未生成“日期时间”；同一最终包单独重跑学习用例 **1 项通过（20.741 秒）**；随后确保没有其他 UI 自动化操作设备，按原四项顺序串行组合复验 **4 项通过（76.582 秒）**。学习造词要求相邻提交间隔不超过 `2500ms`，立即退格撤销窗口为 `1500ms`；该设备用例逐键调度并刷新渲染，却未记录这些间隔，因此此前失败是否越过时间窗口尚不能确认。保留首次失败，后续通过不证明其原因已修复。读音用例通过键中心触摸输入 `shijian`、真实触摸选择“时间”，重新开始输入框但保留学习后打 `shijia`，验证首选和空格上屏均不是“时间”；再打完整 `shijian` 仍首选“时间”。该验收使用真实 Activity 窗口中的生产引擎、控制器、键盘与 EditText，不代表实体手机手感或跨应用输入矩阵。
+
+The initial four-case production-View acceptance run passed on the dedicated Android 14 emulator in **19.785 seconds**, covering reading boundaries, typing gestures, learning rollback and handwriting. With the final APK after the fuzzy-boundary follow-up, the combined run recorded **three passes and one failure in 73.539 seconds**: reading, gestures and handwriting passed, while learning rollback did not promote 日期时间 in round three. An isolated rerun with that same final APK passed **one test in 20.741 seconds**. A subsequent serial combined replay, with no other UI automation operating the device, passed **all four tests in 76.582 seconds** in the same order. Phrase promotion requires adjacent commits within `2500ms`, and immediate-backspace rollback uses `1500ms`; this test schedules and renders each key separately without recording those intervals, so a timing-window violation in the earlier failure remains unconfirmed. The initial failure is retained; later passes do not establish that its cause was fixed. The reading case types `shijian` through key-center touches and taps 时间, resets the editor context while retaining learning, then verifies that neither the first `shijia` candidate nor SPACE-committed text is 时间. Exact `shijian` still ranks 时间 first. This uses production components in a real Activity window, without a physical-device feel or cross-application input-matrix claim.
+
+最终 APK 的正式 IME 服务串行定向复验通过：先 `shijian` 选“时间”，重开输入框后 `shijia` 空格提交“试驾”，再输入完整 `shijian` 空格仍提交“时间”。已检查最终正式服务截图：`shi'jia` 首选“试驾”，“时间”位于普通补全位置，单层键盘和系统导航正常。此前一次自动化在读取编辑器 UI 时出现 `null root node`，未取得输入结果；待 instrumentation 结束后串行执行的本次复验成功。整套正式服务冒烟实际为 **30 项通过、1 项失败、崩溃日志 0**；失败项“语音清掉旧联想”读到空文本，期望“我们今天明天见”。在主动确认新编辑器就绪后，同一按键序列独立连续复验 **3／3 通过**；尚未确定首次空文本的原因，不把复验结果改写为整套全绿。此前被会话中断的冒烟不计完成。
+
+Serial targeted actual-IME acceptance passed with the final APK: learn 时间 from `shijian`, reopen the editor, confirm `shijia` with SPACE to get 试驾, then confirm exact `shijian` to get 时间. The inspected final service screenshot shows `shi'jia` with 试驾 first and 时间 as an ordinary completion, one keyboard and normal navigation. An earlier automation attempt failed to read the editor UI with `null root node` and did not obtain an input result; this successful replay ran serially after instrumentation finished. The full service smoke run recorded **30 passes, one failure and zero crash-log matches**. The voice-clears-old-predictions case read empty text instead of 我们今天明天见. After explicitly confirming that each new editor was ready, the same sequence passed **three consecutive isolated rechecks**. The initial empty-text cause remains undetermined; these rechecks do not turn the full smoke run into an all-green result. Earlier session-interrupted smoke attempts are not counted as completed.
+
+最终本地调试 APK SHA-256：`68918c479b5f68f7eb963e4c7f601fc3d6a9bb7bf6f407520b9d2846b3eb9922`；模糊音边界修正后重新核对，模拟器实际安装的 base.apk 与本地产物逐字节一致，包内 arm64-v8a／x86_64 原生库均与当前 strip 产物一致。未提交或发布。
+
+Local debug APK SHA-256 is recorded above; the emulator's installed base.apk matches the local artifact byte for byte. No commit or release.
+
+**2026-10-21–22 打字手势与联想衰减 / Typing gestures and prediction decay**
+
+中文上屏后联想改用个人搭配随本机学习步数衰减后的有效次数，复用词库淘汰阈值 `0.25`。近期习惯可以超过衰减后的旧习惯，过期记录不再凭个人来源绕过普通联想门控；仍有有效证据的旧搭配继续保留，同一词也可按普通词库接续出现。逻辑时钟按学习推进，不是日历天数。未新增设置、词库来源或持久化格式。
+
+Chinese next-word predictions now score personal pairs by counts decayed over local learning steps, using the existing dictionary-pruning threshold `0.25`. Recent habits can overtake older decayed ones; expired records no longer bypass ordinary prediction gates through personal priority. Older pairs with remaining evidence persist, and the same text may still appear as a normal lexicon continuation. Age follows the learning clock, not calendar days. No settings, dictionary sources or persistence formats were added.
+
+两项推荐行为已观察到修复前失败：旧“下午→开会”压住近期“下午→吃饭”，以及过期搭配在日志压缩前继续作为个人强联想。修复后均通过；另两项回归确认有效旧搭配保留、过期个人搭配可退回词库接续。完整优化构建 Rust 套件 **244 项通过、0 失败、3 项忽略**；既有 `examples/predict.rs` 未使用变量警告仍在。实际生成词库存在，联想门控与学习整合测试使用这些资源运行。
+
+Both recommendation regressions failed before the fix: old 下午→开会 outranked recent 下午→吃饭, and expired history remained a personal prediction before log compaction. Both passed after the fix; two additional cases verify retention of valid older pairs and fallback to lexicon continuation. The complete optimized Rust workspace passed **244 tests, zero failed, three ignored**. The existing unused-variable warning in `examples/predict.rs` remains. Generated dictionary assets are present and used by prediction-policy and learning integration tests.
+
+空格光标手势以“本次是否曾发出光标步进”记录状态，替代左右抵消的净步数；往返移动后的松手和另一根手指落下均不补空格，从未产生步进的短滑仍保留空格。候选栏在 UP 也复核最终横向位移并更新滚动，不再依赖 MOVE 必须先到达。新增五项 JVM 回归均观察到修复前编辑器内容错误，修复后 `TypingFeelTest` **57 项通过**，包含短滑与轻点偏移保护。
+
+Space-bar cursor gestures now record whether any cursor step was emitted instead of net movement. Returning to the starting position does not insert a space on release or when another finger lands; a short slide with no cursor step still does. The candidate bar checks final horizontal displacement and scroll position on UP even without a preceding MOVE. Five new JVM regressions each demonstrated incorrect editor text before the fixes; afterward all **57 TypingFeelTest cases passed**, including short slides and tap jitter.
+
+Android 全量 JVM **1046 项通过、0 failures／errors／skipped**；JNI `JniTest` 显式重新执行 **17 项通过、2 项按原配置跳过、0 失败**；Lint **0 errors、202 warnings、2 hints**。arm64-v8a／x86_64 原生库均重新编译，调试／设备测试 APK 构建成功，构建复用既有生成词库。首次直接在仓库根目录调用原生交叉编译未找到 Cargo.toml，切到 core 工作目录后两种 ABI 成功；失败尝试不计为通过。界面编译仍显示已有的恒真条件与弃用无障碍公告警告。
+
+All **1046 Android JVM tests passed, with zero failures/errors/skips**. An explicit rerun of JNI `JniTest` passed **17 cases, with two existing conditional skips and zero failures**. Lint reported **zero errors, 202 warnings and two hints**. Both Android native architectures were rebuilt and debug/device-test APKs built successfully, reusing generated dictionaries. The initial cross-compilation invocation from the repository root could not locate Cargo.toml; running from the core workspace succeeded for both ABIs. That failed attempt is not counted as passing. Existing always-true-condition and deprecated accessibility-announcement compiler warnings remain.
+
+专用 Android 14 模拟器安装最新包后，打字手势／学习／手写设备测试 **3 项通过（28.982 秒）**。新手势验收使用真实窗口、生产 NativeEngine／InputController／键盘和原生 EditText：光标 `5→3→5` 往返后文字仍为 `hello`；普通空格可输入；候选 DOWN→UP 横滑保留 `ni` 组合串，3dp 偏移的轻点随后提交首选。全屏截图已检查，最终为 `hello 你`、单层键盘及三键导航。测试文件／缓存／偏好隔离并在 finally 释放，截图留在调试应用缓存；此为 Activity 窗口生产 View 验收，不声称实体手机手感或真人输入速度已测量。
+
+After installing the latest package on the dedicated Android 14 emulator, gesture/learning/handwriting device acceptance passed **three tests (28.982 seconds)**. The gesture case uses a real window, production native engine/controller/keyboard and a native EditText: cursor movement `5→3→5` preserves `hello`, a normal space works, a candidate DOWN→UP slide preserves the `ni` composition, and a subsequent 3dp-jitter tap commits the first candidate. The inspected full-screen image shows `hello 你`, one keyboard and three-button navigation. Fixture storage/preferences are isolated and resources released in finally; the image remains in debug app cache. This is Activity-window production-View acceptance, without a physical-device feel or human typing-speed claim.
+
+安装包与本地 APK 的 SHA-256 一致：`32f826b9d72663dd6f11c111ea9d7609baf297268bcde517b63b2a7a7a114984`；包内两种 ABI 的原生库均与本次 strip 产物逐字节一致。
+
+The installed package and local APK have the same SHA-256 recorded above; both packaged ABI libraries match the current stripped build outputs byte for byte.
+
+正式 IME 服务窗口冒烟 **31 项通过、0 失败、崩溃日志 0**。最后在稳定窗口重新输入“你好”并检查全屏截图，只有一层正式键盘，位于系统三键导航之上。设备脚本验证功能与手势结果，不将脚本耗时当作真人手感或语音识别准确率。
+
+The actual IME service passed **31 smoke checks, zero failures and zero crash-log matches**. A final settled-window 你好 input and inspected full-screen image show one service keyboard above system three-button navigation. Scripted checks validate behavior and gesture results; their timings do not establish human typing feel or speech-recognition accuracy.
+
+复核后的设备夹具补齐持久应用上下文的互联单例初始化，短按与候选横滑在同一次主线程调用回放 DOWN／UP，清理目录前等待剪贴板后台 I/O 排空。仅重建设备测试包，三项组合复验再次 **3 项通过（16.286 秒）**，最终手势截图重新检查。生产算法与调试 APK 未变；条件性单例和写入清理路径按源码核实，未额外注入媒体剪贴板或调度超时故障。
+
+Fixture review follow-up initializes the link singleton with the durable app context, replays short DOWN/UP gestures in one main-thread call, and drains clipboard I/O before deleting temporary storage. Rebuilding only the device-test APK and repeating the three scenarios again passed **three tests (16.286 seconds)**; the final gesture screenshot was inspected again. Production algorithms and debug APK are unchanged. Conditional singleton and cleanup paths were checked in source, without additional media-clipboard or scheduling-timeout fault injection.
+
+**2026-10-21 学习撤销与上下文排序 / Learning rollback and contextual ranking**
+
+连续提交造词的临时证据加入提交前像：立即退格既撤销本次证据，也恢复达到门槛前的有效次数；容量清理所移除的其他临时项同样保留在撤销记录中。完整拼写有前文时，候选列表沿用解码器综合近期选择与搭配评分的胜者，不再二次强插近期词。简拼、补全与纠错仍保留既有近期补偿，尚未统一为上下文竞争评分。没有新增设置、持久格式或外部运行依赖。
+
+Provisional phrase learning now records pre-commit state: immediate backspace removes rejected evidence and restores valid evidence from before promotion. Other provisional entries removed by capacity clearing are retained in the rollback record too. For clean full readings with context, candidates preserve the decoder's recency/collocation winner instead of prepending recent choices again. Abbreviation, completion and correction retain existing preference compensation; their contextual scoring is not yet unified. No settings, persistence formats or external runtime dependencies were added.
+
+个人手写纠正只在实际非空笔数相同的个人模板中匹配，避免同字的另一个样本替跨笔数命中通过护栏；基础识别仍保留既有连笔、断笔及笔顺容错。同笔数的缩放／平移适应与隐私限制不变。研究与固定上游证据留在忽略的参考目录，实现独立编写。本轮没有训练模型，也没有已核实来源许可的独立真人准确率结论。
+
+Personal handwriting corrections compare only templates with the same actual nonempty stroke count, preventing an unrelated sample of the same character from admitting a cross-count match. Base recognition retains existing joined/split-stroke and stroke-order tolerance; equal-count scale/translation adaptation and privacy restrictions remain. Research and immutable upstream evidence stay in ignored reference directories; implementation is original. No model was trained and no independent real-writer accuracy claim is made from data of unverified provenance/license.
+
+新增五项 Rust 行为回归均观察到修复前失败：两项临时造词撤销、一项个人模板笔数隔离、一项上下文胜者、一项无关前文下的简拼习惯。最后一项发现并约束了过宽的首版上下文修复。最终优化构建全套 **240 项通过、0 失败、3 项忽略**；Android JVM **1039 项通过、0 failures／errors／skipped**；设备／JNI 测试编译通过；Lint **0 errors、202 warnings、2 hints**。Rust 示例仍有原有 `unused variable: rest` 警告。构建复用已生成词库，不声称重新生成数据。
+
+Five new Rust behavior regressions failed before their fixes: two provisional rollback cases, personal-template stroke-count isolation, contextual winner preservation, and learned abbreviations with unrelated context. The last case caught and narrowed the initial overly broad context filter. The final optimized workspace passed **240 tests, zero failed, three ignored**. Android JVM passed **1039 tests with zero failures/errors/skips**; device/JNI tests compiled; Lint reported **zero errors, 202 warnings and two hints**. A pre-existing Rust example warning for `unused variable: rest` remains. Builds reuse generated dictionaries rather than claiming newly generated data.
+
+JNI 新增的学习撤销与个人笔数隔离已通过，整个 `JniTest` **17 项通过、2 项按原配置跳过、0 失败**。首次个人纠正测试固定选择索引 1，误选了生产候选在“十”后附加的表情；改为按文字定位“土”后通过，未修改生产排序来迎合测试。
+
+The new JNI rollback and personal stroke-count isolation cases passed; the complete `JniTest` run passed **17 tests, with two existing conditional skips and zero failures**. The first correction fixture incorrectly selected fixed index 1, which was an emoji inserted after 十. Selecting 土 by its visible text fixed the fixture without changing production ordering.
+
+最新 arm64-v8a／x86_64 原生库及调试／设备测试 APK 构建通过，安装至专用 Android 14 模拟器后，学习与手写设备测试 **2 项通过（8.686 秒）**。真实窗口中的生产键盘通过触摸事件输入、选词与退格，验证被否定的一次词对不促成造词、保留两次才学成；普通退格仍只删除最后一个字。手写复验覆盖包内识别、连写、同区叠写、跨字退笔／无障碍重做与确认上屏。两张全屏截图均已检查：学习最终文字为“日期时间”；叠写只有一层键盘，确认前编辑器为空、显示“叠写 2/4”和“十十”候选。此为 Activity 窗口生产 View 验收，不等同于跨应用正式 IME 叠写矩阵。
+
+Both arm64-v8a/x86_64 native cores and debug/device-test APKs built successfully. Installed on the dedicated Android 14 emulator, learning and handwriting acceptance passed **two tests (8.686 seconds)**. Production keyboard Views in a real window receive touch events, selections and backspace: a rejected pair contributes no phrase evidence, two retained pairs promote it, and ordinary backspace still removes only the final character. Handwriting covers packaged recognition, line/overlay modes, cross-character undo/accessibility redo and confirmed insertion. Both full-screen images were inspected: 日期时间 in the learning editor; one overlay keyboard, an empty editor before confirmation, “叠写 2/4” and 十十 candidates. This Activity-window acceptance is not a cross-application overlay matrix in the actual IME service.
+
+正式 IME 服务窗口冒烟 **31 项通过、0 失败、崩溃日志 0**，覆盖全拼、双拼、九键、五笔、组合编辑、辅助码、拆字和模拟语音文本后的删除。安装包与本地调试 APK 的 SHA-256 均为 `1383ebc5f191fc81015cc5bec7d60548328f1566a39b77da5c226760b27e43cc`。额外启动后的首张截图落在 Activity 切换动画中，不作为验收；窗口稳定后重新输入“你好”，全屏图已检查，单层正式键盘位于三键导航之上。脚本测量不等于真人输入速度，模拟语音文字也不衡量识别准确率。
+
+The actual IME service passed **31 smoke checks, zero failed, zero crash-log matches**, covering input schemes, composition editing, shape/structure lookup and deletion after simulated speech text. The installed APK matches the local debug APK's SHA-256 recorded above. An additional initial screenshot caught the Activity transition and was excluded; after the window settled, a new 你好 input and full-screen image confirmed one service keyboard above three-button navigation. Script timings do not measure human typing speed, and simulated speech text does not measure recognition accuracy.
+
+复核收尾：补齐新学习设备测试的文件／缓存目录隔离，在临时上下文出现前将云词进程单例绑定持久应用上下文，并将键盘资源释放移至 Activity 存活期间的 UI 线程 `finally`。仅重建设备测试包后，学习／手写两项组合复验再次 **2 项通过（8.223 秒）**；生产算法与 APK 未变。失败路径资源释放经控制流复核，未故意注入设备断言失败。
+
+Review follow-up: the new learning fixture now isolates direct file/cache access, initializes the process-wide cloud-word singleton with the durable application context before temporary contexts, and disposes keyboard resources in a UI-thread `finally` while the Activity remains alive. Rebuilding only the device-test APK and rerunning both cases again passed **two tests (8.223 seconds)**; production algorithms and APK were unchanged. Failure-path disposal was reviewed through control flow, without an injected failing device assertion.
+
+**2026-10-20 按停顿分字的同区叠写 / Pause-delimited same-region overlay**
+
+模式键循环「单字 → 连写 → 叠写」。叠写保留相同区域覆盖的原始笔迹，按既有判字时长在下一次落笔时建立字界；最多四字、每字 64 笔，只在明确确认时上屏。原生通过明确笔画结束索引逐字识别并复用上文／词库排序，同一分界用于异步结果、回退、退笔／重做及个人纠正，不用平移笔迹模拟留白。字内超过判字时长的停顿会拆字；尚不支持无停顿自动分界、跨字连笔或返回补前字。本轮没有训练模型或开展独立真人准确率评测。
+
+The mode key cycles through Single, Line and Overlay. Overlay retains original ink at the same coordinates and establishes character boundaries on the next pen-down after the existing character-pause duration. Up to four characters and 64 strokes per character wait for explicit confirmation. Native recognition consumes explicit stroke-end indices, reuses context/lexicon ranking, and preserves the same spans for worker results, fallback, undo/redo and personal correction. Ink is not translated to simulate whitespace. Pausing beyond the threshold inside a character splits it. Uninterrupted boundary inference, cross-character strokes and adding strokes to earlier characters remain unsupported. No model training or independent real-writer accuracy evaluation was performed.
+
+Android 全量 **1039 项通过**，0 failures／errors／skipped；JVM 新增 13 项覆盖模式、分组、取消、上限与异步边界快照。Rust 优化构建全套 **235 项通过、0 失败、3 项忽略**；JNI **15 项通过、2 项按原配置跳过**，包括正式包内模型的明确字组往返与非法分界拒绝。Lint **0 errors、202 warnings、2 hints**。首次调试版 Rust 全套在性能测试处达到任务时限而停止；组合构建也曾在词库重建处超时，后复用已生成词库继续。新增 JNI 测试曾因缺少断言导入编译失败，补齐后通过。这些中断及失败不计作通过。
+
+All **1039 Android tests passed**, with zero failures/errors/skips; 13 JVM regressions cover modes, grouping, cancellation, limits and immutable asynchronous boundaries. The optimized Rust workspace passed **235 tests**, with zero failures and three ignored. JNI passed **15 tests**, with two existing conditional skips, including explicit-group round trips through shipped models and invalid-boundary rejection. Lint reported **0 errors, 202 warnings and 2 hints**. The initial debug Rust suite reached its task time limit during performance tests, and one combined build timed out rebuilding dictionaries. Subsequent builds reused the generated dictionaries. Missing assertion imports initially prevented the new JNI test from compiling; it passed after correction. Interrupted or failed runs are not counted as passing.
+
+Android 14 模拟器首轮手写设备测试 **1 项通过**，覆盖同坐标「十十」候选、确认前不写入编辑器、跨字退笔／无障碍重做及确认上屏。首张全屏截图发现测试键盘与系统输入法并存，因此不作为干净界面验收；测试随后隔离窗口，最终复验结果见后续记录。设备脚本笔迹是手绘几何回放，不是真人识别准确率，也未完成实体手机或完整人工 TalkBack 验收。
+
+The first Android 14 device test passed **one test**, covering same-coordinate 十十, no editor commit before confirmation, cross-character undo/accessibility redo and confirmed insertion. Its full-screen image exposed both the fixture keyboard and system IME, so it is not accepted as clean UI evidence. The fixture window was subsequently isolated; final acceptance is recorded below. Scripted geometric strokes do not measure real-writer accuracy. Physical-device and complete manual TalkBack acceptance remain outstanding.
+
+最终包复验：修正叠写候选仍标“连写”的问题，并让测试窗口隔离系统输入法后，最新安装包设备测试再次 **1 项通过（9.982 秒）**。全屏截图已检查，只有一层键盘，显示“叠写 2/4 · 字间停顿800毫秒”与“十十”候选。生产手写 View 在测试 Activity 窗口运行，笔画由 MotionEvent 回放；确认前原生 EditText 为空，退笔／无障碍重做保留 `[2,4]` 字界，明确确认后上屏“十十”。最终源码 Rust 全套再次通过 **235 项、3 项忽略**；两种 ABI APK、Lint 与 JNI 检查完成。此验收不是正式 IME 服务窗口的跨应用叠写矩阵。
+
+Final-package acceptance: after correcting overlay candidates mislabeled as line writing and isolating the fixture window from the system IME, the installed package again passed **one device test (9.982 seconds)**. The full-screen image was inspected: one keyboard, the overlay count/pause hint and 十十 candidates are visible. The production handwriting View runs in a test Activity, driven by MotionEvent replay. The real EditText stays empty before confirmation; undo/accessibility redo retain `[2,4]` boundaries; explicit confirmation inserts 十十. The final Rust workspace again passed **235 tests, with three ignored**; both ABI packages, Lint and JNI checks completed. This is not a cross-application overlay matrix in the actual IME service window.
+
+**2026-10-20 恢复操作与无障碍等价动作 / Recovery and accessible action parity**
+
+清空恢复绑定原输入会话、连接、编辑器版本、删除后的空选区及有限前后文，3 秒内只能执行一次。光标移动、选区变化、应用改写、输入框重启、隐藏或到期后不再写入旧文本。删除返回失败或无法复核时不提供撤销；原选区在确认原文插回后恢复，包括反向选区。恢复文本最多 2000 个 UTF-16 单元，清空边界保留完整代理对。无法提供新鲜选区的受限编辑器仍可清空，但不提供无法验证的恢复；局部前后文比较不等于整篇文档版本或跨进程原子事务。
+
+Clear recovery binds the original input session, connection, editor version, resulting empty selection and bounded surrounding text. It is single-use within three seconds and rejects cursor/selection conflicts, host rewrites, restarts, hidden input or expiry. Failed or unverifiable deletion offers no recovery. Verified reinsertion restores original selection endpoints, including reversed selections. Recovery retains at most 2000 UTF-16 units and preserves surrogate pairs at the clear boundary. Restricted editors without fresh selection data can still clear text but cannot offer unverifiable recovery. Local context validation is neither full-document revision tracking nor an atomic cross-process transaction.
+
+手写模式键在可重做且没有当前落笔时，提供具名无障碍长按动作“重做上一笔”；复用原来的笔画和识别更新流程，不切换单字／连写模式。过期动作不能重复恢复或打断当前笔画。参考源码只用于交互思路，独立实现，没有新增设置或工具栏。
+
+The handwriting mode key exposes a named “Redo last stroke” accessibility long-click only when redo is available and no stroke is active. It reuses the existing geometry/recognition path without changing writing mode. Stale actions cannot repeat recovery or interrupt live ink. Source comparisons informed independently written interaction improvements without adding settings or toolbar rows.
+
+本轮新增 **13 项 JVM 回归**；无障碍重做、五项恢复冲突及大上限代理对边界均先复现失败再修复。Android 全量 **1026 项**通过，0 failures／errors／skipped；Lint **0 errors、203 warnings、2 hints**，调试与设备测试 APK 构建通过。专用 Android 14 模拟器中，原生编辑器恢复与手写识别／无障碍重做 **2 项通过**，手写单独重跑 **1 项通过**；设备 View 的连写截图已检查。设备测试修复了 applicationContext 绕过偏好隔离的问题，避免上轮连写状态污染下轮；此前模式切换失败保留为历史记录。无障碍动作经平台节点调用验证，未运行完整 TalkBack 人工流程，也未做实体手机验收。
+
+This round adds **13 JVM regressions**. Accessible redo, five recovery conflicts and the oversized-limit surrogate case failed before their fixes. All **1026 Android tests** passed with zero failures/errors/skips. Lint reported **0 errors, 203 warnings and 2 hints**; debug and device-test APKs built. A dedicated Android 14 emulator passed **two device tests** for real-editor recovery and packaged handwriting recognition/accessibility redo; a separate handwriting rerun also passed. Its on-device View image was inspected. Preference isolation now includes applicationContext so one run's line mode cannot contaminate the next. Earlier mode-switch failures remain historical evidence. Platform accessibility-node invocation was tested; a complete manual TalkBack flow and physical-device acceptance remain outstanding.
+
+导航补验：健康启动的专用模拟器上 `NavigationDeviceTest` **1 项通过**，覆盖三键／手势、横屏／竖屏、各两次显示共八组。此记录补齐此前被系统弹窗阻挡的矩阵；不删除旧失败，也不代表实体手机兼容矩阵完成。
+
+Navigation follow-up: **one device test passed** all eight combinations of three-button/gesture navigation, portrait/landscape and two show cycles. This completes the previously blocked emulator matrix while retaining earlier failures; physical-device compatibility remains unverified.
+
+最终包复验：安装上述全量构建产出的最新调试 APK 后，组合运行手写识别／无障碍重做、原生编辑器清空恢复、导航矩阵，**3 项全部通过**（38.902 秒）。导航覆盖上述八组；此结果确认最终源码对应安装包的这三项设备行为，不扩大为真人识别准确率或实体手机兼容性结论。
+
+Final-package acceptance: after installing the latest debug APK from the full build above, the combined run passed **all three device tests** for packaged handwriting recognition/accessibility redo, real-editor clear recovery and the eight-case navigation matrix (**38.902 seconds**). This verifies those behaviors in the installed final build; it establishes neither real-writer recognition accuracy nor physical-device compatibility.
+
+**2026-10-20 跨页面剪贴建议 / Clipboard suggestions across pages**
+
+复制或剪切后切到新输入框，键盘重新显示 30 秒内的当前剪贴板文字，点击才粘贴；建议显示 10 秒后收起。再次复制相同文字也会重新提示，同一输入框重启不会重新弹出已粘贴的建议。恢复显示不重复记录历史、不恢复已删除的历史，也不重复同步；关闭历史记录仍可使用。保留验证码只粘贴代码、密码／无痕框及敏感剪贴内容的过滤。
+
+After copying or cutting, opening a new editor restores the current clipboard suggestion if copied within 30 seconds. Tapping pastes; the suggestion hides after 10 seconds. Copying identical text renews the suggestion, while restarting the same editor does not re-offer an already pasted item. Restoring the suggestion neither records history again, resurrects deleted history nor repeats synchronization. It also works with recording disabled and retains code-only OTP paste and private/sensitive-content filtering.
+
+新增九项 JVM 回归，其中六项在保留旧去重分支时复现失败；校正测试剪贴板时间戳，使其与 Android 的系统日期语义一致。剪贴板专项 **31 项**、Android 全量 **1013 项**通过，0 failures／errors／skipped。`lintDebug` **0 errors、203 warnings、2 hints**，调试 APK 与设备测试 APK 构建通过。首次设备测试编译因误用编辑器菜单接口失败，改用 `EditText.onTextContextMenuItem` 后构建通过。
+
+Nine JVM regressions were added; six fail with the previous duplicate guard retained. The test clipboard timestamps were corrected to Android wall-clock semantics. All **31 focused clipboard tests** and **1013 Android tests** passed with zero failures/errors/skips. Lint reported **0 errors, 203 warnings and 2 hints**. The debug and device-test APKs built after correcting the device fixture's editor-menu API to `EditText.onTextContextMenuItem`.
+
+专用 Android 14 模拟器（1080 × 2400、420dpi）运行 `ClipboardSuggestionDeviceTest` **1 项通过**，覆盖复制和剪切两条路径：真实编辑器执行系统菜单动作，移除源页面并等待输入法隐藏，再聚焦新页面输入框；通过系统触摸注入点击正式输入法窗口里的建议，核对包含首尾空格、换行、表情的完整文字，剪切后源框为空。全屏 `clipboard-suggestion-device.png` 已检查。测试期间关闭历史记录，并在结束后恢复相关偏好与系统设置。此项为同一测试 Activity 内的跨页面验收，未覆盖不同应用或实体手机。
+
+On a dedicated Android 14 emulator (1080 × 2400, 420dpi), **one device test passed**, covering both copy and cut. Real editor context-menu actions populate the clipboard; the source page is removed and the IME hides before the new page's field is focused. Screen-injected touch taps the suggestion in the actual IME service window. Exact text, including surrounding spaces, newlines and emoji, is verified, as is the empty cut source. The full-screen `clipboard-suggestion-device.png` was inspected. Recording is disabled during the test and relevant preferences/system settings are restored afterward. This acceptance navigates pages within one test Activity; cross-application and physical-device checks remain outstanding.
+
+**2026-10-20 Android 模拟器界面验收 / Android emulator UI acceptance**
+
+新增 `VoiceResultsDeviceTest`：正式面板在 Android Activity 窗口内显示三组自写文字样本，系统触摸注入完成质量排序后的左右切换、点击全文、明确确认对应文字上屏、返回与取消。完整设备测试独立运行 **1 项通过**，实际屏幕的卡片和全文 PNG 已检查；不是离屏 Canvas 截图。使用模拟识别结果，不录音、不联网，不代表语音准确率。手写设备测试首轮 **1 项通过**，使用包内原生识别器识别「十」、撤销／重做、连续保留「十十」并确认上屏；其截图来自设备上的实际 View。基础输入设备冒烟 **31 项通过、崩溃记录 0**。
+
+`VoiceResultsDeviceTest` mounts the production panel in an Android Activity window. Screen-injected touch selects quality-ranked local fixture transcripts, opens full text, confirms the matching text in the real editor, returns and cancels. Its standalone device run passed **one test**, with full-screen card and preview PNGs inspected. Fixture transcripts do not measure recording or recognition accuracy. The first handwriting device run passed **one test**, using the packaged native recognizer for 十, undo/redo, retained 十十 and confirmation; that image captures the on-device View. All **31 basic input device smoke checks** passed with zero crash records.
+
+首次手机模拟器冷启动出现系统无响应弹窗和 Android 系统进程故障；混合重跑的语音手势被系统弹窗拦截、手写模式切换及导航检查失败，不计为通过。独立重跑语音完成后通过。设备验收补齐全屏截图回退，并修正导航测试对 Android `frame=`／旧 `mFrame=` 的解析；暗色超时快照也改为按真实超时常量推进时间并断言状态。参考应用的源码差距已另行整理；尚未落地的建议不算产品功能。
+
+Cold phone-emulator startup produced System UI dialogs and an Android system-process failure. A combined rerun failed voice input delivery, handwriting mode switching and navigation checks; those runs are not counted as passing. The later standalone voice rerun passed. Device tooling now includes a full-screen capture fallback and recognizes both Android window frame formats. The dark timeout snapshot uses the actual timeout constant and asserts its state. Source-research recommendations remain separate from implemented behavior.
+
+导航独立重跑仍失败：能读到导航栏 `Rect(0, 2274–1080, 2400)`，但系统无响应弹窗遮挡应用，无法取得输入法按键节点。真实竖屏截图可见底行在三键导航上方，但两种导航模式与横竖屏的完整自动矩阵尚未通过。混合重跑的手写测试在模式切换断言处失败；仅首轮成功可作为已完成证据，不宣称重复稳定性。
+
+The standalone navigation rerun still failed: the navigation rectangle was readable, but a System UI non-response dialog blocked the app and no IME key node was available. A real portrait capture shows the bottom row above three-button navigation; the complete mode/rotation matrix remains unverified. The combined handwriting rerun failed at its mode-switch assertion. Only its successful first run is counted; repeated stability is not claimed.
+
+源码对照后的优先项：补齐语音卡片与手写重做的无障碍操作；清空撤销绑定原输入位置与上下文；展开候选保留浏览位置；语音全文保留错误／超时状态；统一关闭动画时的语音反馈。上述均为后续工作，未在本轮实现或测量收益。只借鉴交互思路，不复制外部实现。
+
+Source comparison prioritizes accessible voice cards and handwriting redo, position/context-bound clear recovery, candidate browsing continuity, visible error/timeout status in full transcripts, and consistent reduced motion. These remain follow-up work, with no implementation or measured benefit claimed here. Interaction ideas inform independently written code.
+
+**2026-10-20 手写触屏边界 / Handwriting touch boundaries**
+
+超长单笔达到原生每笔 4096 点上限后疏化历史采样，保留首尾、采样顺序及对应的显示元数据，并继续接收后续运动；上限以内的原始点列不变。已完成笔画的撤销／重做保留数组身份与重绘结果，取消新笔不改已有笔迹。当前笔画尚未抬起时，候选与手写确认不能提前提交上一轮识别的半个字。系统取消当前笔画后，为保留的已完成笔迹恢复完整停笔等待；计时器、下一次落笔及设置刷新共用取消事件的时间基准，取消后立即续写不会提前提交。连写和关闭自动上屏仍不安排自动确认，内部面板复位不安排新计时。
+
+Overlong strokes thin historical samples only at the native 4096-point ceiling, retaining both ends, order and matching display metadata while accepting further motion. Geometry within the limit remains unchanged. Undo/redo preserve completed geometry identity and rendering, and canceling new ink preserves finished strokes. Candidate and handwriting confirmation wait for the live stroke to finish. System touch cancellation restarts the retained ink's full pause. The timer, next pen-down and settings refresh share the cancellation event timestamp, so immediately resumed ink is not committed prematurely. Continuous writing and manual confirmation do not schedule automatic commits, and internal panel resets do not start a timer.
+
+本轮新增六项回归，长笔画及四项触屏／时间状态判据均先复现失败再修复；恰好 4096 点的笔画逐点保留。手写专项 **56 项**、Android 全量 **1004 项**通过（0 failures、0 errors、0 skipped）。`lintDebug` 为 **0 errors、203 warnings、2 hints**，调试 APK 构建通过；两种 ABI 的打包原生库均与当前 stripped 构建产物一致。未做本轮手写设备验收，没有改模型或开展真人准确率评测。
+
+Six regressions were added: the overlong-stroke case and four touch/timing cases failed before their fixes, while the exact 4096-point boundary retains every sample. All **56 focused handwriting tests** and **1004 Android tests** passed with zero failures/errors/skips. Lint reported **0 errors, 203 warnings and 2 hints**, and the debug APK built. Packaged native libraries for both ABIs match the current stripped build outputs. No device handwriting acceptance was performed this round; no model changed and no real-writer accuracy was measured.
+
+**2026-10-20 三结果语音卡片 / Three voice result cards**
+
+最多三张等宽卡片并排显示，左右滑动切换选中结果并渐变高亮，点按只查看完整文字，底部明确确认才上屏。全文支持上下滚动和左右换结果，短面板压缩状态行以保留正文。质量排序仅使用同组评测的相对分数；未知时回退主引擎。用户交互后按引擎 ID 保留选择；按下确认后固定当时的结果与会话，其他引擎完成或新会话开始不能改选。已覆盖取消、重录、迟到回调、待识别／失败结果不可确认及语言切换。
+
+Android 全量 **998 项**通过（0 failures、0 errors、0 skipped），`lintDebug` **0 errors、203 warnings**，调试 APK 构建通过；原生渲染的亮／暗卡片及全文截图已检查。新增确认竞态和短面板正文测试均先失败后修复。模拟器基础输入冒烟 **31 项**通过、无崩溃；该冒烟不验证真实多引擎语音准确率，三卡片手势由 Robolectric 真实 MotionEvent 回放覆盖。未在实体手机验收。
+
+Up to three equal-width cards show independent transcripts, with horizontal selection and animated emphasis. Tapping opens full text; only explicit confirmation commits. Full text scrolls vertically and switches horizontally. Short panels compact metadata to retain transcript space. Ranking uses shared-benchmark relative quality, with the primary engine as the unscored fallback. Engine IDs preserve deliberate selections, and pressing commit captures the result and session so later completions cannot change the choice. Pending/failed results cannot be committed.
+
+All **998 Android tests** passed, with zero failures/errors/skips. Lint reported **zero errors and 203 warnings**, and the debug APK built. Light/dark card and expanded-text renders were inspected. Confirmation-race and short-panel regressions failed before their fixes. All **31 emulator input smoke checks** passed without crashes; that smoke run does not measure real multi-engine accuracy. Card gestures use actual MotionEvent replay under Robolectric. Physical-device acceptance remains outstanding.
+
+**2026-10-20 手写基线 / Handwriting baseline**
+
+现有离线评测已可复现：同一 Apple M4 主机上，100 个三级合成变形字的生产融合识别 Top-1 为 84%、Top-5 为 94%，平均 25.16 ms、p95 31.64 ms。字形来源与训练重叠，这不是独立真人笔迹准确率，也不是 Android 时延。横向标准字形近距留白测试中，两字精确分组 98/100、四字 96/100；较宽留白均为 100/100。已定位的失败包括窄字「卜」并入相邻字，单字和宽字反例需与修复一起复测。尚无来源与授权均核实的真人测试集，因此未使用来源不明笔迹训练或发布新模型。
+
+The offline baseline is reproducible. On an Apple M4, production fusion recognized 100 level-three synthetic distortions at 84% top-1 and 94% top-5, with mean 25.16 ms and p95 31.64 ms. Glyph sources overlap training; these are neither independent real-writer accuracy nor Android latency. Close-gap canonical rows grouped exactly in 98/100 two-character and 96/100 four-character cases; wider gaps reached 100/100 in both cases. Narrow-character merges are reproducible. No new model was trained or published from handwriting with unresolved provenance or permission.
+
+分组修复增加一个有界的窄字切分候选，只允许细分原组、不得移动已有字界；每个新片段须有强模板匹配，被拆原组若有强整字模板或个人纠正匹配则保留整体。成对固定合成评测中，近距两字／四字整行首选从 95%／90% 到 100%／100%（各 40 行），较宽留白仍为 100%，单字 Top-1／Top-5 仍为 84%／94%。最终近距两字／四字平均 44.13／79.97 ms；并行工作负载影响计时，性能是否回退仍未确定。内核回归 170 项通过、2 项忽略，覆盖窄字、完整宽字、字界保护、个人纠正与四字上限。设备逐笔回放因前台应用切换中断，不计为通过。
+
+The bounded fix tests a narrower alternative that may refine original groups but cannot move existing boundaries. Every new piece requires a strong template match; strong whole-glyph or personal-correction evidence protects the original group. Paired fixed synthetic evaluation improves close-gap two-/four-character exact line top-1 from 95%/90% to 100%/100% over 40 rows each. Wider-gap and single-character scores remain unchanged. Final close-gap means are 44.13/79.97 ms; concurrent workloads leave performance regression unresolved. Core regression passed 170 tests with two ignored, covering narrow and wide glyphs, boundaries, personal corrections and the four-character limit. Device stroke replay was interrupted by a foreground application change and is not counted as passed.
+
+- 2026-10-20 Android 大小写与连续输入：字母会结束 Shift 的双击窗口，`Shift → A → Shift` 不再误锁定；上滑改成数字或系统取消触摸，在成功撤回字母后恢复单次大写，标点不消耗单次态。中英切换统一清理旧大写状态，覆盖软键、工具栏和 Ctrl+Space；移动正文光标重算自动大写，同位置回报保留用户手动关闭大写的选择。双拼组合中 Shift 可临时输入一个大写字母；英文上滑或长按撇号继续单词组合（`don't`），密码、网址、邮件与关闭联想的字段保持直接输入。
+  - Android 全量 **976 项**通过（0 failures、0 errors、0 skipped），`lintDebug` 0 errors（203 warnings、2 hints），调试 APK 构建通过。新增 18 项覆盖上述输入行为及撤回、空格／回车／候选确认；保留双指连打与长按回归。原生双拼专项 **11 项**通过，1 项真实词库检查按默认配置忽略。
+  - 模拟器（1080 × 2400、420dpi）真实触摸：长按 Shift 后 `QWER` 保持锁定；切中文后 `ni` 留在拼音组合；软键输入 `don`、上滑 J 输入撇号、再输入 `t`，整词保持组合，空格上屏 `don't `。截图已检查。`tools/device-smoke.sh` **31 项**全部通过，无崩溃。首次运行因测试应用记住英文选择而中止；恢复中文起始状态后重跑通过。冒烟脚本默认测试应用从中文开始；若该应用记住了英文选择，须先切回中文再运行。未在实体手机上验收。
+
+Android capitalization and continuous typing, 2026-10-20: letters end the Shift double-tap window; successful digit-swipe replacements and touch cancellations restore one-shot capitals. Punctuation preserves them. Language switches clear previous capitals; editor cursor moves recheck automatic capitals while preserving manually enabled capitals, and unchanged selection echoes preserve manual lowercase. Double-pinyin Shift accepts a temporary capital during composition, and an English apostrophe continues the word. All **976 Android tests** passed, lint reported **0 errors** (203 warnings and 2 hints), and the debug APK built successfully. Native double-pinyin checks passed **11 tests**, with one real-dictionary check ignored by default. Emulator touch checks verified caps lock, Chinese composition after switching, and swipe-entered `don't`. All **31 device smoke checks** passed with no crashes after restoring the script's expected Chinese starting mode; physical-device acceptance remains outstanding.
+
 - 2026-10-18 撤掉面板搜索、修「虚拟按键偶尔挡住键盘」：用户反馈两件事——面板里的迷你字母键盘「很难看、不需要」，以及切应用后键盘底部偶尔被系统虚拟按键挡住、要再点一下键（或收起再打开）才回来。
   - **面板搜索整套撤掉**：表情 / 颜文字 / 剪贴板 / 常用语面板里的搜索行与三行字母键（`PanelKeys`）、查询状态（`SearchQuery`）、目录的名称与拼音索引（`ExpressionSearch`）、`ExpressionCatalog.searchRows`、控制器 `lookupText`、实体键盘的 `hardwareToPanel` 路由、`{open-search}` 调试入口与相关用例、快照一并删除；面板回到「表头 + 网格」两段。撤的时候按 beta.25 之后的版本改，不是回退到功能之前：`8d68b1a` 修过的常用语表头图标与动作逐位对应（`headerIcons`）、卡片动作不误盖当前剪贴板卡片（`id >= 0`）、列表变短后滚动位置夹回范围都留着——第一次回退到功能之前的版本把这三处一起丢了，靠跑用例发现（`thePhraseHeaderPlusAddsTheClipboardText` 直接编译不过）。Mac 表情库窗口里的搜索框没有动：那是独立窗口里的真输入框，不是面板里的小键盘；要一并撤掉说一声。
   - **导航栏的根因**：拿到过渡值就重排。切应用的动画、窗口进出场、系统重算边衬时，`navigationBars` 会先报一次 0；键盘据此把底部留白收掉，之后没有事件再把它纠回来，于是一直压到下次重新显示（用户说的「点一下收缩键 / 设置键才恢复」正是重新走一遍显示流程）。三处改动：① 还没读到任何边衬时先按系统资源 `navigation_bar_height` 留出底边（三键导航；`navigation_mode == 2` 手势导航不预留，系统只画手势条），第一帧的高度里就有这条；② 把某条边整个收成 0 的读数不当真，记下来隔 180 ms 复核，两次一致才收下，中间来的其它读数（变大的、变小的但不归零的、横屏换到侧边的）一律立刻生效——多留一条空白只是不好看，少留就把键压在系统按键下面；③ 显示后在 120 / 350 / 700 ms 各再量一次，切应用动画走完、窗口真正定位好都在 `onShown` 那一瞬之后。复核**按时间算不是按次数**：那一下 0 常常连着几次重读都在（一次布局会触发好几遍重读），按「第二份相同读数」认等于没认。

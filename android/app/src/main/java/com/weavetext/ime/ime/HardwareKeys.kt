@@ -18,7 +18,7 @@ class HardwareKeys(private val controller: InputController) {
     private val consumed = HashSet<Int>()
 
     fun onKeyDown(keyCode: Int, e: KeyEvent): Boolean {
-        val handled = handle(keyCode, e)
+        val handled = handle(keyCode, e) || controller.routeTranslationDraftKey(e)
         if (handled) consumed += keyCode else consumed -= keyCode
         return handled
     }
@@ -138,6 +138,6 @@ class HardwareKeys(private val controller: InputController) {
 
     private companion object {
         /** v 模式里数字以外可输入的字符（与内核一致）。 Non-digit chars of the v mode, as in the engine. */
-        const val V_CHARS = ".+-*/()%^"
+        const val V_CHARS = ".．+-*/()%^×÷＋－−（）=＝"
     }
 }
