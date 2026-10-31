@@ -74,6 +74,19 @@
 
         <!-- 系统分享「发送到电脑」。 System share target "send to computer". -->
         <activity
+            android:name=".translate.SelectionTranslateActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/translate_selection"
+            android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".link.SendToComputerActivity"
             android:windowSoftInputMode="adjustResize"
             android:excludeFromRecents="true"

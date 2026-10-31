@@ -172,6 +172,27 @@ class PredictionFlowTest {
         deleteAll()
     }
 
+    @Test fun voiceCanReplaceTheSelectionPresentWhenDictationStarted() {
+        ic.commitText("hello world", 1)
+        ic.setSelection(0, 5)
+        controller.onSelectionUpdate(0, 5, -1, -1)
+        controller.voiceBegin()
+        controller.voiceFinal("你好")
+        assertEquals("你好 world", text())
+    }
+
+    @Test fun voiceFinalDoesNotReplaceANewEditorSelection() {
+        ic.commitText("hello world", 1)
+        controller.onSelectionUpdate(11, 11, -1, -1)
+        controller.voiceBegin()
+        ic.setSelection(0, 5)
+        controller.onSelectionUpdate(0, 5, -1, -1)
+        controller.voiceFinal("不应替换")
+        assertEquals("hello world", text())
+        assertEquals(0, android.text.Selection.getSelectionStart(ic.editable!!))
+        assertEquals(5, android.text.Selection.getSelectionEnd(ic.editable!!))
+    }
+
     @Test fun correctedVoiceAndEmojiDeleteWithoutResidue() {
         controller.voiceFinal("明天见")
         echo()

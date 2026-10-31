@@ -41,7 +41,7 @@ import kotlin.math.roundToInt
 /** 手写停笔判字的三档名称，与 [WeavePrefs.HAND_PAUSE_MS] 对应。 Names of the three pause levels. */
 private val HAND_PAUSE_NAMES = listOf("快", "中", "慢")
 
-private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "hand", "wubi86", "english")
+private val ALL_KEYBOARDS = listOf("pinyin", "shuangpin", "t9", "t14", "hand", "wubi86", "cangjie", "bopomofo", "japanese", "shuangpin14", "shuangpin9", "english")
 
 /** 输入方案（03 §5）。 Input schemes page. */
 @Composable
@@ -122,6 +122,21 @@ fun SchemesScreen() {
             RowDivider(false)
             SwitchRow("成对符号", "输入“（《【时自动补上另一半", checked = WeavePrefs.autoPair(p)) {
                 p.edit().putBoolean(WeavePrefs.AUTO_PAIR, it).apply()
+            }
+            RowDivider(false)
+            SwitchRow("中英之间加空格", "中文与英文字母、数字相邻时自动空一格，标点不加；默认关闭", checked = WeavePrefs.cjkSpacing(p), subtitleMaxLines = 2) {
+                p.edit().putBoolean(WeavePrefs.CJK_SPACING, it).apply()
+            }
+            RowDivider(false)
+            SwitchRow("西班牙语重音", "英文键盘长按字母出 á é í ó ú ü ñ；默认关闭", checked = WeavePrefs.spanishAccents(p), subtitleMaxLines = 2) {
+                p.edit().putBoolean(WeavePrefs.SPANISH_ACCENTS, it).apply()
+            }
+            RowDivider(false)
+            val region = WeavePrefs.traditionalRegion(p)
+            val regionName = when (region) { "taiwan" -> "台湾"; "hongkong" -> "香港"; else -> "标准" }
+            SettingRow("繁体字形", "繁体输出时使用的地区字形；点击在标准、台湾、香港之间切换", subtitleMaxLines = 2,
+                onClick = { p.edit().putString(WeavePrefs.TRADITIONAL_REGION, WeavePrefs.nextTraditionalRegion(region)).apply() }) {
+                ValueChevron(regionName)
             }
         }
         if (Extensions.scheme(p, "hand")) {

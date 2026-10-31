@@ -40,7 +40,7 @@ class StyleParserTest {
     }
 
     @Test fun builtInsParse() {
-        assertEquals(setOf("fresh", "classic"), repo.layoutIds.toSet())
+        assertEquals(setOf("fresh", "classic", "colemak", "qwjrtk", "cyletix10", "typewise"), repo.layoutIds.toSet())
         assertEquals(setOf("fresh", "ink", "mint", "dusk", "dynamic"), repo.themeIds.toSet())
         for (id in repo.layoutIds) {
             val l = repo.layout(id)
@@ -109,6 +109,30 @@ class StyleParserTest {
         assertRejects("工具栏") { layout(""""toolbar":{"items":["voice","hide","cursor"]}""") }
         assertRejects("id") { StyleParser.layout(JSONObject("""{"id":"Bad Id"}""")) }
         assertRejects("版本") { StyleParser.layout(JSONObject("""{"id":"t","version":99}""")) }
+    }
+
+    @Test fun colemakPresetKeepsItsLetterRowsAndSurvivesTheBuiltInFilter() {
+        assertTrue("colemak" in repo.layoutIds)
+        val l = repo.layout("colemak")
+        val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
+        fun letters(row: Int) = keys.filter { it.row == row && it.code in 'a'.code..'z'.code }.joinToString("") { it.code.toChar().toString() }
+        assertEquals("qwfpgjluy", letters(0))
+        assertEquals("arstdhneio", letters(1))
+        assertEquals("zxcvbkm", letters(2))
+    }
+
+    @Test fun qwjrtkAndCyletix10PresetsKeepTheirLetterRows() {
+        val expect = mapOf(
+            "qwjrtk" to listOf("qwjrtkuiop", "asdfghenl", "zxcybvm"),
+            "cyletix10" to listOf("qwdrfjkyp", "asetghliou", "zxcvbnm"),
+        )
+        for ((id, rows) in expect) {
+            val l = repo.layout(id)
+            val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
+            for ((row, letters) in rows.withIndex()) {
+                assertEquals("$id row $row", letters, keys.filter { it.row == row && it.code in 'a'.code..'z'.code }.joinToString("") { it.code.toChar().toString() })
+            }
+        }
     }
 
     private fun install(key: String) {
@@ -198,7 +222,9 @@ class StyleParserTest {
     }
 
     @Test fun rowsRoundTripThroughJson() {
-        val l = repo.layout(repo.layoutIds.last())
+        // 蜂窝排列需要 honeycomb 标记，这里不带它，所以用一个普通的字母排列。
+        // Honeycomb rows need their flag, which this JSON does not carry, so use a plain letter arrangement.
+        val l = repo.layout("cyletix10")
         val rows = JSONArray(l.qwerty.rows.map { r -> JSONArray(r.map { it.toString() }) })
         val again = layout(""""qwerty":{"rows":$rows}""")
         assertEquals(l.qwerty.rows.toString(), again.qwerty.rows.toString())

@@ -8,7 +8,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicReference
 
-object ClipPrivacy { @Volatile var privateField = false }
+object ClipPrivacy {
+    @Volatile var privateField = false
+    /** 无痕输入（本次运行）：剪贴板、常用符号都不记录。 Incognito for this run: no clipboard or symbol history. */
+    @Volatile var incognito = false
+    val recordingBlocked get() = privateField || incognito
+}
 
 /** 一条剪贴板/常用语记录。 One clipboard (or quick phrase) entry. */
 data class ClipItem(val id: Long, val text: String, val time: Long, val pinned: Boolean = false,

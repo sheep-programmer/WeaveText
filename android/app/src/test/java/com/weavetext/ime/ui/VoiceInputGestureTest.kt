@@ -5,8 +5,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.SystemClock
+import android.text.InputType
 import android.view.MotionEvent
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.testing.ScriptedRecognizer
 import com.weavetext.ime.testing.FakeEngine
@@ -18,6 +20,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -183,6 +186,43 @@ class VoiceInputGestureTest : KeyboardSnapshotSupport() {
         assertTrue(rec.isRunning)
         assertEquals(VoiceSession.State.CONNECTING, panel.session.state)
         assertEquals("正在加载离线模型…", v.microphoneHint())
+    }
+
+    @Test fun sensitiveEditorsRejectEveryVoiceEntryPoint() {
+        val rec = ScriptedRecognizer(engines)
+        shadowOf(app).grantPermissions(Manifest.permission.RECORD_AUDIO)
+        VoiceAccess.recognizerProvider = { rec }
+        val (k, controller) = keyboard(false)
+        for (editor in listOf(
+            EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD },
+            EditorInfo().apply { inputType = InputType.TYPE_CLASS_TEXT; imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING },
+        )) {
+            controller.onStartInput(editor, false)
+            k.onToolbar(2)
+            assertFalse(k.voiceSession.active)
+            k.onToolbarLong(2)
+            assertFalse(k.voiceSession.active)
+        }
+        assertNull(rec.listener)
+        assertFalse(rec.isRunning)
+    }
+
+    @Test fun switchingToASensitiveEditorCancelsCaptureAndDropsLateResults() {
+        val rec = ScriptedRecognizer(engines)
+        voiceView("tap", rec)
+        val panel = kb!!.panel as VoicePanel
+        panel.startFromToolbar()
+        val late = rec.listener!!
+        late.onPartial("隐私切换前的中间结果")
+        kb!!.controller.onStartInput(EditorInfo().apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }, false)
+        kb!!.onShown(false)
+        assertEquals(VoiceSession.State.IDLE, panel.session.state)
+        assertEquals(1, rec.cancels)
+        late.onFinal("切换后不应上屏")
+        assertEquals("", panel.session.committed.toString())
+        assertEquals(VoiceSession.State.IDLE, panel.session.state)
     }
 
     @Test fun holdingWithoutAnEnginePreparesModelsAndKeepsDownloadAndImportActions() {

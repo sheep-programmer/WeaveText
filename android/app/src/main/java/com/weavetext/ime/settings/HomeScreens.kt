@@ -236,9 +236,11 @@ fun HomeScreen(statusVersion: Int) {
             val translate = Extensions.feature(p, "translate")
             val stickers = Extensions.feature(p, "stickers")
             val link = Extensions.feature(p, "link")
-            if (voice || translate || stickers || link) {
+            run {
                 GroupTitle("已添加的工具")
                 GroupCard {
+                    SettingRow("拍照识字", "可选下载识字模型，装上后在工具箱里用", R.drawable.ic_toolbox, onClick = { nav.push(Route.Ocr) }) { Chevron() }
+                    SettingRow("实时字幕", "把周围的话转成文字，可区分说话人", R.drawable.ic_waveform, onClick = { nav.push(Route.Captions) }) { Chevron() }
                     if (voice) SettingRow("语音输入", "引擎与识别设置", R.drawable.ic_waveform, onClick = { nav.push(Route.Voice) }) { Chevron() }
                     if (translate) SettingRow("翻译", "服务与离线翻译插件", R.drawable.ic_globe, onClick = { nav.push(Route.Translation) }) { Chevron() }
                     if (stickers) SettingRow("表情收纳袋", "收藏与整理图片表情", R.drawable.ic_sticker_bag, onClick = { ctx.startActivity(Intent(ctx, com.weavetext.ime.stickers.StickerActivity::class.java)) }) { Chevron() }

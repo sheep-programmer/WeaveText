@@ -78,7 +78,9 @@ internal object SherpaModels {
             override fun isEndpoint(): Boolean = rec.isEndpoint(stream)
             override fun reset() = rec.reset(stream)
             override fun finish() {
-                stream.acceptWaveform(FloatArray(8000), 16000)
+                // X-ASR 按 960 ms 分块，句尾要送满编码器窗口；其余模型 0.5 秒足够。
+                // X-ASR's 960 ms chunks need the tail inside the encoder window; others flush with 0.5 s.
+                stream.acceptWaveform(FloatArray(if (spec.arch == "zipformer-transducer") 32_000 else 8_000), 16000)
                 while (rec.isReady(stream)) rec.decode(stream)
             }
             override fun release() {

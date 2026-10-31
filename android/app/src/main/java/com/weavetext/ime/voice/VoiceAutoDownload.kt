@@ -84,45 +84,28 @@ internal class VoiceModelPreparation(
     }
 
     /**
-     * 旧默认实时模型用户补装终稿，只迁移一次。中文只下载终稿，保留原 selection，由 finalCompanion
-     * 为单模型会话提供两遍终稿；双语沿用 SenseVoice 升级。手动改选优先，失败不影响已有模型。
+     * 旧默认中文实时用户补装终稿，只迁移一次。只下载终稿，保留原 selection，由 finalCompanion 为单模型会话
+     * 提供两遍终稿；手动改选优先，失败不影响已有模型。 Backfill the Chinese final companion once.
      */
     private fun upgradeInBackground() {
-        if (upgrading) return
-        val mode = engines.language
-        val chinese = mode == VoiceLanguage.CHINESE
-        val target = if (chinese) CHINESE_FINAL else BEST
-        val upgradeKey = if (chinese) CHINESE_UPGRADED else "${UPGRADED}_${mode.key}"
-        if (prefs.getBoolean(upgradeKey, false)) return
+        if (upgrading || engines.language != VoiceLanguage.CHINESE) return
+        if (prefs.getBoolean(CHINESE_UPGRADED, false)) return
         val selected = engines.selection().map { it.id }
-        val legacy = if (chinese) selected == listOf(CHINESE_STREAM) &&
+        val legacy = selected == listOf(CHINESE_STREAM) &&
             modelPrefs.getString(LocalAsrChoice.KEY_STREAM, CHINESE_STREAM) == CHINESE_STREAM &&
             modelPrefs.getString(LocalAsrChoice.KEY_FINAL, null) in listOf(null, CHINESE_FINAL)
-        else selected.isNotEmpty() && selected.all { it in STREAMING_BILINGUAL }
         if (!legacy) return
-        val pack = VoicePack(repo, modelIds = listOf(target))
+        val pack = VoicePack(repo, modelIds = listOf(CHINESE_FINAL))
         if (!pack.supported) return
         // 计流量网络上不排队、不标记完成；下次在 Wi-Fi 下打开面板再补装。
         if (pack.state() != VoicePack.State.Ready && repo.wifiOnly && repo.isMetered()) return
         upgrading = true
         val choice = watchChoice()
-        val upgraded = if (chinese) selected + target else listOf(target)
         fun finish(ready: Boolean) {
             choice.close()
             try {
-                if (ready && chinese) {
-                    // 补装不等于改选；即使用户在下载时换过模型，也只记录补装完成。
-                    prefs.edit().putBoolean(upgradeKey, true).apply()
-                } else if (ready && choice.unchanged(mode, selected)) {
-                    engines.setSelection(upgraded)
-                    prefs.edit().putBoolean(upgradeKey, true).apply()
-                } else if (ready && choice.preferencesUnchanged(mode) && engines.selection().map { it.id } == upgraded) {
-                    // 没保存过选择时，安装完成可能已使默认选择自然变成目标模型；无需再写 selection。
-                    prefs.edit().putBoolean(upgradeKey, true).apply()
-                } else if (choice.changed) {
-                    // 明确改选之后不在下次 ensure 又替用户改回去，包括改选后再切回实时模型。
-                    prefs.edit().putBoolean(upgradeKey, true).apply()
-                }
+                // 补装不等于改选；即使用户在下载时换过模型，也只记录补装完成。
+                if (ready || choice.changed) prefs.edit().putBoolean(CHINESE_UPGRADED, true).apply()
             } finally { upgrading = false; onChanged(state) }
         }
         startPack(pack, onStopped = { finish(false) }, onReady = { finish(true) })
@@ -212,18 +195,19 @@ internal class VoiceModelPreparation(
         PLUGIN_CHOICE_KEYS.map { pluginPrefs.all[it] }
 
     companion object {
-        private const val BEST = "asr-sensevoice"
-        private const val UPGRADED = "sensevoice_upgrade_done"
+        /** 混说默认：X-ASR 流式双语并自带标点，单模型即可实时出字与落句。 */
+        private const val BEST = "asr-x-asr-960"
+        /** 英文档位必须能真正指定 en，Whisper 是唯一在英文下稳定的整句选择。 */
+        private const val ENGLISH_DEFAULT = "asr-whisper-small"
         private const val CHINESE_STREAM = "asr-stream-small"
         private const val CHINESE_FINAL = "asr-final-small"
         private const val CHINESE_UPGRADED = "chinese_final_upgrade_done"
-        private val STREAMING_BILINGUAL = setOf("asr-stream-mixed-medium", "asr-stream-mixed-high")
         private val MODEL_CHOICE_KEYS = listOf("language", "selected_models", "selected_models_zh", "selected_models_en",
             LocalAsrChoice.KEY_STREAM, LocalAsrChoice.KEY_FINAL)
         private val PLUGIN_CHOICE_KEYS = listOf("active", "also")
         // 中文安装两个模型，只自动选择实时模型；finalCompanion 提供终稿。手工多选仍逐行确认。
         private val defaults = mapOf(
-            VoiceLanguage.MIXED to listOf(BEST), VoiceLanguage.ENGLISH to listOf(BEST),
+            VoiceLanguage.MIXED to listOf(BEST), VoiceLanguage.ENGLISH to listOf(ENGLISH_DEFAULT),
             VoiceLanguage.CHINESE to listOf(CHINESE_STREAM, CHINESE_FINAL),
         )
     }

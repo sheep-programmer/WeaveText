@@ -245,6 +245,22 @@ class TypingGestureDeviceTest {
                         assertEquals(com.weavetext.ime.style.ToolIds.CLIPBOARD, kb.topBar.activeTool)
                         assertEquals(null, kb.topBar.accessibilityNodeProvider
                             .createAccessibilityNodeInfo(emoji)?.stateDescription)
+                        editor.setText("hello world!")
+                        editor.setSelection(6, 11)
+                        controller.onSelectionUpdate(6, 11, -1, -1)
+                        controller.deleteWordBefore()
+                        assertEquals("hello !", editor.text.toString())
+                        assertEquals(6, editor.selectionEnd)
+                        editor.setText("hello world")
+                        editor.setSelection(11)
+                        controller.onSelectionUpdate(11, 11, -1, -1)
+                        controller.voiceBegin()
+                        editor.setSelection(0, 5)
+                        controller.onSelectionUpdate(0, 5, -1, -1)
+                        controller.voiceFinal("不应替换")
+                        assertEquals("hello world", editor.text.toString())
+                        assertEquals(0, editor.selectionStart)
+                        assertEquals(5, editor.selectionEnd)
                     }
                 } finally {
                     if (keyboardReady) scenario.onActivity {

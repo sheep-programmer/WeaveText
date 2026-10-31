@@ -3,6 +3,7 @@ package com.weavetext.ime.core
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * 用户词库管理（设置 App「词库」页，03 §8）。全部为挂起函数，实现负责切到后台线程。
@@ -10,7 +11,8 @@ import kotlinx.coroutines.withContext
  * the main thread themselves.
  */
 interface UserDictionary {
-    data class ImportResult(val imported: Int, val skipped: Int)
+    /** @param reasons 前几条跳过的原因。 The first few skip reasons. */
+    data class ImportResult(val imported: Int, val skipped: Int, val reasons: List<String> = emptyList())
 
     suspend fun count(): Int
     /** 最近使用在前，[query] 可按文字或拼音过滤。 Most recent first, filtered by text or pinyin. */
@@ -48,9 +50,10 @@ class NativeUserDictionary(private val ctx: Context) : UserDictionary {
     override suspend fun exportText() = withEngine("") { it.exportUserWords() }
 
     override suspend fun importText(text: String): UserDictionary.ImportResult {
-        val lines = text.lineSequence().count { it.isNotBlank() && !it.startsWith("#") }
-        val n = withEngine(0) { it.importUserWords(text) }
-        return UserDictionary.ImportResult(n, (lines - n).coerceAtLeast(0))
+        val reply = withEngine("") { it.features(JSONObject().put("op", "importUserWords").put("text", text).toString()) }
+        val r = runCatching { JSONObject(reply) }.getOrNull() ?: return UserDictionary.ImportResult(0, 0)
+        val reasons = r.optJSONArray("rejected")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+        return UserDictionary.ImportResult(r.optInt("added"), r.optInt("skipped"), reasons)
     }
 
     override suspend fun add(text: String, pinyin: String): Boolean {

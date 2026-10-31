@@ -151,8 +151,12 @@ class VoiceSession(
         return start()
     }
 
-    /** 开始；缺少权限返回 false。 Start; false without mic permission. */
+    /** 开始；隐私字段或缺少权限返回 false。 Start; false in a sensitive field or without mic permission. */
     fun start(): Boolean {
+        if (controller.isSensitiveField) {
+            cancel()
+            return false
+        }
         // 面板、工具栏和空格按住入口再次开始都表示重录；先取消旧收尾，不再吞掉前八秒的点击。
         if (state == State.FINALIZING) cancel()
         if (active) {

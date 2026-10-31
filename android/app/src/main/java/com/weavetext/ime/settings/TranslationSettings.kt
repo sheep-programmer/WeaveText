@@ -1,8 +1,6 @@
 package com.weavetext.ime.settings
 
 import android.content.SharedPreferences
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -19,7 +17,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -45,21 +42,24 @@ object TranslationSettings {
 
     const val MODEL_METERED_ALLOWED = "translation_model_metered_allowed"
     const val GOOGLE_DEVICE_MIGRATION = "translation_google_device_migrated_v1"
-    const val GOOGLE_WEB_MIGRATION = "translation_google_web_migrated_v1"
+    const val DEVICE_DEFAULT_MIGRATION = "translation_device_default_migrated_v1"
     private val migrationLock = Any()
 
-    /** 默认从内置 SDK 迁到官方网页，只做一次；显式自定义服务与保存的配置保留。 */
+    /**
+     * 旧的默认（官方网页）和已退役的预设都迁到离线插件，只做一次；显式自定义服务与保存的配置保留。
+     * Old defaults (the official web page) and retired presets move to the offline plugin, once.
+     */
     fun migrateLegacyProvider(prefs: SharedPreferences) = synchronized(migrationLock) {
-        if (prefs.getBoolean(GOOGLE_WEB_MIGRATION, false)) return@synchronized
+        if (prefs.getBoolean(DEVICE_DEFAULT_MIGRATION, false)) return@synchronized
         val stored = prefs.getString(PROTOCOL, null)
         val endpoint = prefs.getString(ENDPOINT, "").orEmpty().trim()
         val retiredPreset = stored == "mymemory" && TranslationProtocol.entries.none { it.id == stored } ||
             stored == null && endpoint.isBlank() && prefs.getBoolean(ONLINE_ENABLED, false)
         prefs.edit().apply {
-            putBoolean(GOOGLE_WEB_MIGRATION, true)
+            putBoolean(DEVICE_DEFAULT_MIGRATION, true)
             putBoolean(GOOGLE_DEVICE_MIGRATION, true)
-            if (stored == TranslationProtocol.GOOGLE_DEVICE.id || retiredPreset) {
-                putString(PROTOCOL, TranslationProtocol.GOOGLE_WEB.id)
+            if (stored == "google_web" || retiredPreset) {
+                putString(PROTOCOL, TranslationProtocol.GOOGLE_DEVICE.id)
                 putBoolean(ONLINE_ENABLED, false)
                 // Keep any previously saved custom configuration, but never reuse the retired preset URL/key.
                 val oldPreset = runCatching {
@@ -71,7 +71,7 @@ object TranslationSettings {
         }.apply()
     }
 
-    /** 自定义在线服务的单独开关，不控制 Google 官方网页或离线插件。 */
+    /** 自定义在线服务的单独开关，不控制离线插件。 */
     fun onlineEnabled(prefs: SharedPreferences): Boolean {
         migrateLegacyProvider(prefs)
         return prefs.getBoolean(ONLINE_ENABLED, false)
@@ -88,7 +88,7 @@ object TranslationSettings {
         val stored = prefs.getString(PROTOCOL, null)
         return TranslationProtocol.entries.firstOrNull { it.id == stored }
             ?: if (stored == null && endpoint(prefs).isNotBlank()) TranslationProtocol.GENERIC
-            else TranslationProtocol.GOOGLE_WEB
+            else TranslationProtocol.GOOGLE_DEVICE
     }
 
     /** Do not silently interpret an unknown provider as Google; factory callers use this checked getter. */
@@ -114,16 +114,23 @@ object TranslationSettings {
         }.apply()
     }
 
-    /** 安装状态由 IPC 入口提供；选择开关不代表安装或下载语言包。 */
-    fun setOfflinePluginEnabled(prefs: SharedPreferences, enabled: Boolean, ready: Boolean): Boolean {
-        if (enabled && !ready) return false
-        if (enabled) setProtocol(prefs, TranslationProtocol.GOOGLE_DEVICE)
-        else if (protocol(prefs) == TranslationProtocol.GOOGLE_DEVICE) setProtocol(prefs, TranslationProtocol.GOOGLE_WEB)
+    /** 离线插件是默认翻译方式；安装状态由 IPC 入口提供，未就绪时不能选择。 */
+    fun selectOfflinePlugin(prefs: SharedPreferences, ready: Boolean): Boolean {
+        if (!ready) return false
+        setProtocol(prefs, TranslationProtocol.GOOGLE_DEVICE)
         return true
     }
 
-    fun usesCustomHttp(protocol: TranslationProtocol) = protocol != TranslationProtocol.GOOGLE_WEB &&
-        protocol != TranslationProtocol.GOOGLE_DEVICE
+    fun usesCustomHttp(protocol: TranslationProtocol) = protocol != TranslationProtocol.GOOGLE_DEVICE
+
+    /**
+     * 停顿后自动翻译：离线插件总是自动（原文不出设备）；自定义联网服务只在启用后自动，
+     * 未启用时仍需点击翻译。 Auto-translate: the offline plugin always; a custom online service only once enabled.
+     */
+    fun autoTranslates(prefs: SharedPreferences): Boolean {
+        val selected = protocol(prefs)
+        return selected == TranslationProtocol.GOOGLE_DEVICE || (usesCustomHttp(selected) && onlineEnabled(prefs))
+    }
 
     fun apiKey(prefs: SharedPreferences): String {
         migrateLegacyProvider(prefs)
@@ -132,7 +139,7 @@ object TranslationSettings {
 
     fun httpConfig(prefs: SharedPreferences): HttpTranslationConfig {
         val selected = validatedProtocol(prefs)
-        require(usesCustomHttp(selected)) { "Google 官方网页和离线插件不使用自定义 HTTP 配置" }
+        require(usesCustomHttp(selected)) { "离线插件不使用自定义 HTTP 配置" }
         return HttpTranslationConfig(endpoint(prefs), timeoutMs(prefs), protocol = selected, apiKey = apiKey(prefs))
     }
 
@@ -171,7 +178,7 @@ object TranslationSettings {
     fun isValidEndpoint(value: String): Boolean = runCatching { HttpTranslationConfig(value).endpointUrl() }.isSuccess
 }
 
-/** 官方网页默认无模型下载；离线能力属于独立插件，自定义服务单独保存并启用。 */
+/** 离线插件是默认翻译方式；自定义联网服务默认关闭，单独保存并启用。 */
 @Composable
 fun TranslationSettingsScreen() {
     TranslationSettingsContent(LocalDeps.current.prefs)
@@ -182,7 +189,6 @@ internal fun TranslationSettingsContent(
     prefs: SharedPreferences,
     pluginActions: OfflineTranslationPluginActions = AndroidOfflineTranslationPluginActions,
 ) {
-    val ctx = LocalContext.current
     val p by rememberLivePrefs(prefs)
     var endpoint by rememberSaveable { mutableStateOf(TranslationSettings.endpoint(p)) }
     var timeoutText by rememberSaveable { mutableStateOf(TranslationSettings.timeoutMs(p).toString()) }
@@ -196,21 +202,6 @@ internal fun TranslationSettingsContent(
     val timeoutValid = timeout != null && timeout in TranslationSettings.MIN_TIMEOUT_MS..TranslationSettings.MAX_TIMEOUT_MS
 
     SubPage("翻译") {
-        GroupTitle("翻译方式")
-        GroupCard {
-            val chooseWeb = { TranslationSettings.setProtocol(p, TranslationProtocol.GOOGLE_WEB); message = "" }
-            SettingRow("Google 官方网页（默认）", "使用时需要联网，无需下载模型或语言包。", subtitleMaxLines = 2, onClick = chooseWeb) {
-                RadioButton(selected == TranslationProtocol.GOOGLE_WEB, onClick = chooseWeb,
-                    modifier = Modifier.testTag("translation_protocol_google_web"))
-            }
-            Text("无需 API key 或自建服务。只有点击翻译时才使用网页服务；原文会发送给 Google。",
-                Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodyMedium)
-            TextButton(onClick = {
-                message = if (runCatching {
-                    ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://translate.google.com/")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }.isSuccess) "" else "无法打开浏览器，请检查可用浏览器。"
-            }, modifier = Modifier.padding(horizontal = 8.dp)) { Text("打开 Google 官方网页") }
-        }
         OfflineTranslationPluginCard(prefs, pluginActions)
 
         GroupTitle("高级：自定义服务")
@@ -266,7 +257,7 @@ internal fun TranslationSettingsContent(
         if (message.isNotEmpty()) Text(message, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
         GroupTitle("隐私和确认")
         GroupCard {
-            Text("密码框和 NO_PERSONALIZED_LEARNING 输入框禁用翻译。源文仅来自已选文字或手动粘贴，不上传拼音组合串。译文须确认后写回，也可复制；目标失效时仍可复制。",
+            Text("密码框和 NO_PERSONALIZED_LEARNING 输入框禁用翻译。源文仅来自已选文字或手动粘贴，不上传拼音组合串。译文须确认后写回，也可复制；目标失效时仍可复制。离线插件在设备上处理原文；只有你启用的自定义服务会把原文发送到你填写的地址。",
                 modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
         }
     }

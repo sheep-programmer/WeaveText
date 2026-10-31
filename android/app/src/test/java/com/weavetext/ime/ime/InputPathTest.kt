@@ -11,6 +11,7 @@ import com.weavetext.ime.testing.FakeInputConnection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -37,6 +38,9 @@ class InputPathTest {
         override fun performContextMenuAction(id: Int): Boolean { menuActions += id; return true }
         val cursor get() = android.text.Selection.getSelectionStart(editable!!)
     }
+
+    /** 无痕是进程级标记：每个用例结束都还原，避免影响其他测试类。 Incognito is process-wide: reset after each case. */
+    @After fun resetIncognito() { com.weavetext.ime.ime.ClipPrivacy.incognito = false }
 
     private val ic = Connection()
     private val controller = InputController { ic }
@@ -85,6 +89,89 @@ class InputPathTest {
         assertEquals(EnterAction.NEWLINE, controller.state.enterAction)
         controller.onStartInputView(info(options = EditorInfo.IME_ACTION_SEARCH))
         assertEquals(EnterAction.SEARCH, controller.state.enterAction)
+    }
+
+    // ------------------------------------------------------------ CJK spacing
+
+    /** 开启中英空格后，中文上屏与前面的英文之间多一个空格；关闭时保持原样。 */
+    @Test fun cjkSpacingSeparatesChineseFromTheLatinTextBeforeIt() {
+        start()
+        controller.cjkSpacing = true
+        ic.commitText("abc", 1)
+        controller.onText("你好")
+        assertEquals("abc 你好", ic.text)
+        controller.onText("。")
+        assertEquals("abc 你好。", ic.text)
+    }
+
+    @Test fun withTheOptionOffChineseIsWrittenAsItIs() {
+        start()
+        ic.commitText("abc", 1)
+        controller.onText("你好")
+        assertEquals("abc你好", ic.text)
+    }
+
+    // ------------------------------------------------------------ statistics
+
+    /** 统计只拿到上屏的字数；无痕输入时不计。 Stats get only the count; nothing is counted while incognito. */
+    @Test fun committedCharactersAreCountedExceptWhileIncognito() {
+        start()
+        val counted = mutableListOf<Int>()
+        controller.onCommitted = { counted += it }
+        controller.onText("你好")
+        controller.setIncognito(true)
+        controller.onText("世界")
+        controller.setIncognito(false)
+        assertEquals(listOf(2), counted)
+    }
+
+    // ------------------------------------------------------------ incognito
+
+    /** 无痕输入：开启后所有输入框都不学习，直到关闭；密码框的保护与无痕状态无关。 */
+    @Test fun incognitoStopsLearningInEveryFieldUntilTurnedOff() {
+        start()
+        assertTrue(engine.learningValue)
+        controller.setIncognito(true)
+        assertFalse(engine.learningValue)
+        assertTrue(controller.state.incognito)
+        assertTrue(com.weavetext.ime.ime.ClipPrivacy.incognito)
+        controller.onFinishInput()
+        controller.onStartInput(info(), false)
+        assertFalse("a new field keeps incognito", engine.learningValue)
+        controller.setIncognito(false)
+        assertTrue(engine.learningValue)
+        assertFalse(com.weavetext.ime.ime.ClipPrivacy.incognito)
+    }
+
+    @Test fun incognitoAppliesToAnEngineAttachedLater() {
+        controller.setIncognito(true)
+        controller.onStartInput(info(), false)
+        controller.attachEngine(engine)
+        assertFalse(engine.learningValue)
+    }
+
+    @Test fun passwordFieldsNeverLearnWhetherOrNotIncognitoIsOn() {
+        start()
+        controller.onStartInput(info(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD), true)
+        controller.setIncognito(false)
+        assertFalse(engine.learningValue)
+    }
+
+    // ------------------------------------------------------------ selection case
+
+    /** 选中文字时 Shift 循环大小写，并替换选区；没有选区或正在组字时不动。 */
+    @Test fun shiftCyclesTheCaseOfASelectionOnly() {
+        start()
+        ic.commitText("hello world", 1)
+        ic.setSelection(0, 5)
+        assertTrue(controller.cycleSelectionCase())
+        assertEquals("Hello world", ic.text)
+        ic.setSelection(0, 5)
+        assertTrue(controller.cycleSelectionCase())
+        assertEquals("HELLO world", ic.text)
+        ic.setSelection(11, 11)
+        assertFalse(controller.cycleSelectionCase())
+        assertEquals("HELLO world", ic.text)
     }
 
     // ------------------------------------------------------------ late engine
@@ -214,6 +301,23 @@ class InputPathTest {
         assertEquals("哈哈", ic.text)
         controller.deleteWordBefore()
         assertEquals("", ic.text)
+    }
+
+    @Test fun acceleratedDeleteRemovesTheSelectionInsteadOfTheWordBeforeIt() {
+        start("hello world!")
+        android.text.Selection.setSelection(ic.editable!!, 6, 11)
+        controller.onSelectionUpdate(6, 11, -1, -1)
+        controller.deleteWordBefore()
+        assertEquals("hello !", ic.text)
+        assertEquals(6, ic.cursor)
+    }
+
+    @Test fun acceleratedDeleteQueriesAnUnknownSelectionBeforeDeletingAWord() {
+        start("hello world!", reportsSelection = false)
+        android.text.Selection.setSelection(ic.editable!!, 6, 11)
+        controller.deleteWordBefore()
+        assertEquals("hello !", ic.text)
+        assertEquals(6, ic.cursor)
     }
 
     @Test fun rejectedCommitIsNotUndoneFromRealText() {

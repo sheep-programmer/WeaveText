@@ -54,6 +54,10 @@ object WeavePrefs {
 
     /** 成对输入括号与引号（默认开）。 Insert closing brackets and quotes automatically (on by default). */
     const val AUTO_PAIR = "auto_pair"
+    const val CJK_SPACING = "cjk_spacing"
+    const val SPANISH_ACCENTS = "spanish_accents"
+    /** 繁体地区字形：standard / taiwan / hongkong。 Traditional regional forms. */
+    const val TRADITIONAL_REGION = "traditional_region"
     /** 上屏后推荐下一个词（默认开）。 Suggest the next word after a commit (on by default). */
     const val PREDICTION = "prediction"
     /** 联想深度：连着选联想词最多接几次（1–6）。 Prediction depth: how many predictions may be picked in a row. */
@@ -137,11 +141,12 @@ object WeavePrefs {
     )
 
     val SHUANGPIN_SCHEMES = listOf(
-        "xiaohe" to "小鹤", "ziranma" to "自然码", "microsoft" to "微软", "sogou" to "搜狗",
+        "xiaohe" to "小鹤", "shoudao" to "首道", "ziranma" to "自然码", "znabc" to "智能ABC", "jiajia" to "拼音加加",
+        "microsoft" to "微软", "sogou" to "搜狗",
     )
 
     val KEYBOARD_NAMES = mapOf(
-        "pinyin" to "全拼 26 键", "shuangpin" to "双拼", "t9" to "九键拼音", "t14" to "14 键拼音", "hand" to "手写", "wubi86" to "五笔 86", "english" to "英文 26 键",
+        "pinyin" to "全拼 26 键", "shuangpin" to "双拼", "t9" to "九键拼音", "t14" to "14 键拼音", "hand" to "手写", "wubi86" to "五笔 86", "cangjie" to "仓颉", "bopomofo" to "注音", "japanese" to "日语假名", "shuangpin14" to "双拼 14 键", "shuangpin9" to "双拼九键", "english" to "英文 26 键",
     )
 
     fun of(ctx: Context): SharedPreferences = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -162,6 +167,9 @@ object WeavePrefs {
     fun engineSchema(p: SharedPreferences, keyboard: String): String = when (keyboard) {
         "shuangpin" -> "shuangpin:" + shuangpinScheme(p)
         "english" -> "english"
+        "japanese" -> "romaji"
+        "shuangpin14" -> "shuangpin14:" + shuangpinScheme(p)
+        "shuangpin9" -> "shuangpin9:" + shuangpinScheme(p)
         else -> keyboard
     }
 
@@ -230,6 +238,15 @@ object WeavePrefs {
     fun handGuide(p: SharedPreferences) = p.getBoolean(HAND_GUIDE, true)
     fun handAreaMode(p: SharedPreferences) = HandwritingAreaMode.from(p.getString(HAND_AREA_MODE, null))
     fun autoPair(p: SharedPreferences) = p.getBoolean(AUTO_PAIR, true)
+    fun cjkSpacing(p: SharedPreferences) = p.getBoolean(CJK_SPACING, false)
+    fun spanishAccents(p: SharedPreferences) = p.getBoolean(SPANISH_ACCENTS, false)
+    fun traditionalRegion(p: SharedPreferences): String = p.getString(TRADITIONAL_REGION, "standard") ?: "standard"
+    /** 标准 → 台湾 → 香港 → 标准；未知值回到标准。 Standard, Taiwan, Hong Kong, then back to standard. */
+    fun nextTraditionalRegion(current: String): String = when (current) {
+        "standard" -> "taiwan"
+        "taiwan" -> "hongkong"
+        else -> "standard"
+    }
     fun cloudWords(p: SharedPreferences) = Extensions.feature(p, "cloudwords") && p.getBoolean(CLOUD_WORDS, false)
     fun linkEnabled(p: SharedPreferences) = Extensions.feature(p, "link") && p.getBoolean(LINK_ENABLED, false)
     fun linkClipSync(p: SharedPreferences) = p.getBoolean(LINK_CLIP_SYNC, true)

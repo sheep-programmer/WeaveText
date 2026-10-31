@@ -70,6 +70,8 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
     private var pressedChip = false
     private val chipRect = RectF()
     private val cellRect = RectF()
+    var incognito = false
+        set(v) { if (field != v) { field = v; invalidate() } }
     var clipChip: String? = null
         set(v) { field = v; invalidate(); a11y.invalidate() }
     private val a11y = VirtualA11y(this, A11ySource())
@@ -608,7 +610,9 @@ class TopBarView(ctx: Context, private val host: TopBarHost) : View(ctx) {
                 tmp.set(cx - m.dp(20f), cy - m.dp(18f), cx + m.dp(20f), cy + m.dp(18f))
                 c.drawRoundRect(tmp, m.dp(10f), m.dp(10f), fill)
             }
-            val col = if (tb.menuAccent && tools[i] == ToolIds.MENU) p.keyAccent else p.icon
+            // 无痕输入时工具栏的菜单按钮变色，始终可见，不必打开工具箱确认。
+            // While incognito, the menu button takes the accent colour so the state is always visible.
+            val col = if ((tb.menuAccent || incognito) && tools[i] == ToolIds.MENU) p.keyAccent else p.icon
             icons.draw(c, toolIcons[i], col, cx, cy, m.dp(if (tb.buttons == "circle") 22f else 24f))
         }
         if (chip != null) {

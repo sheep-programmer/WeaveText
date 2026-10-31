@@ -56,9 +56,9 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
             }
         val old = if (mode == VoiceLanguage.MIXED) prefs.getString(LocalAsrChoice.KEY_FINAL, null) else null
         val preferred = when (mode) {
-            VoiceLanguage.MIXED -> listOf("asr-sensevoice", "asr-stream-mixed-high", "asr-stream-mixed-medium")
+            VoiceLanguage.MIXED -> listOf("asr-x-asr-960", "asr-sensevoice")
             VoiceLanguage.CHINESE -> listOf("asr-sensevoice", "asr-stream-small", "asr-final-small")
-            VoiceLanguage.ENGLISH -> listOf("asr-whisper-small", "asr-whisper-base", "asr-sensevoice")
+            VoiceLanguage.ENGLISH -> listOf("asr-whisper-small", "asr-sensevoice")
         }
         val legacy = available.firstOrNull { it.id == old && (mode != VoiceLanguage.MIXED || supportsMixed(it)) }
         val best = legacy ?: preferred.firstNotNullOfOrNull { id -> available.firstOrNull { it.id == id } }
@@ -66,11 +66,14 @@ internal class OfflineModelSelection(ctx: Context, private val models: ModelRepo
         return listOfNotNull(best?.id)
     }
 
-    /** 单个双语实时模型用已装的 SenseVoice 补终稿，降低把英文猜成中文的概率。 */
+    /**
+     * 中文实时小模型用已装的终稿小模型复核整句。X-ASR 自带标点、中英混说准确，不再另挂隐藏终稿，
+     * 否则每句都会被不带标点的离线结果替换。 The Chinese streaming model gets an offline companion; X-ASR is
+     * self-punctuating and needs none.
+     */
     fun finalCompanion(id: String): String? {
         val spec = catalogModel(id) ?: return null
         val companion = when {
-            mode == VoiceLanguage.MIXED && supportsMixed(spec) -> "asr-sensevoice"
             mode == VoiceLanguage.CHINESE && id == "asr-stream-small" -> "asr-final-small"
             else -> null
         }

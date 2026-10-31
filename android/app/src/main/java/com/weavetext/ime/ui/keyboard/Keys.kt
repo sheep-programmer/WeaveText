@@ -122,6 +122,10 @@ object Layouts {
         listOf("0", "⁰", "₀", "⓪"),
     )
 
+    /** 西班牙语字母的重音变体。 Spanish accented variants of letters. */
+    private val SPANISH_ACCENTS = mapOf(
+        'a' to listOf("á"), 'e' to listOf("é"), 'i' to listOf("í"), 'o' to listOf("ó"), 'u' to listOf("ú", "ü"), 'n' to listOf("ñ"),
+    )
     private val HINTS_CN = hintMap(CN_UP)
     private val HINTS_EN = hintMap(EN_UP)
 
@@ -138,7 +142,7 @@ object Layouts {
      * 26 键（中文或英文），按布局风格的行定义生成；默认行与原固定布局逐键一致。
      * QWERTY for Chinese or English built from the layout style's rows; the default rows match the original layout key by key.
      */
-    fun qwerty(english: Boolean, spec: QwertySpec = DEFAULT.qwerty, labels: LabelSpec = DEFAULT.labels): List<Key> {
+    fun qwerty(english: Boolean, spec: QwertySpec = DEFAULT.qwerty, labels: LabelSpec = DEFAULT.labels, accents: Boolean = false): List<Key> {
         val hints = if (english) HINTS_EN else HINTS_CN
         val rows = if (english) spec.rowsEnglish ?: spec.rows else spec.rows
         val keys = ArrayList<Key>(36)
@@ -159,7 +163,11 @@ object Layouts {
                     val s = hints[c]?.toString()
                     val i = ROW1.indexOf(c)
                     val alts = if (i >= 0) DIGIT_VARIANTS[i] else if (s != null) listOf(s, c.toString()) else null
-                    keys += Key(c.code, c.uppercase(), s, s, alts).apply { row = r; weight = t.weight; gapBefore = gap }
+                    // 西班牙语重音排在长按的最前面；其余长按候选保持不变。
+                    // Spanish accents go first in the long-press list; the other alternates stay as they were.
+                    val accented = if (accents && english) SPANISH_ACCENTS[c] else null
+                    val longs = if (accented != null) accented + alts.orEmpty() else alts
+                    keys += Key(c.code, c.uppercase(), s, s, longs).apply { row = r; weight = t.weight; gapBefore = gap }
                     gap = 0f
                 }
                 continue
@@ -472,6 +480,38 @@ object Layouts {
     const val T9_SYMBOLS = "@#*/+-=_&%"
     const val NUM_SYMBOLS = "+-*/%=.,:@()#"
 
+    /**
+     * 注音（标准键盘）：四行符号加底行。每个键的字符是按键（发给引擎），标签是注音符号。
+     * Bopomofo on the standard keyboard: four symbol rows and the control row. Each key sends its key character;
+     * the label shows the bopomofo symbol.
+     */
+    fun bopomofo(labels: LabelSpec = DEFAULT.labels): List<Key> {
+        val keys = ArrayList<Key>(48)
+        val rows = listOf("1234567890-", "qwertyuiop", "asdfghjkl;", "zxcvbnm,./")
+        for ((r, text) in rows.withIndex()) {
+            if (r == 3) keys += func(KeyCode.SHIFT, icon = com.weavetext.ime.R.drawable.ic_shift).apply { this.row = r; weight = 1.5f }
+            for (c in text) {
+                keys += Key(c.code, BOPOMOFO_SYMBOLS[c] ?: c.toString()).apply { this.row = r; weight = 1f; preview = false }
+            }
+            if (r == 3) keys += func(KeyCode.DELETE, icon = com.weavetext.ime.R.drawable.ic_backspace).apply { this.row = r; weight = 1.5f }
+        }
+        keys += func(KeyCode.SYMBOL, labels.symbol).apply { row = 4; weight = 1.42f }
+        keys += func(KeyCode.LANG).apply { row = 4; weight = 1.42f }
+        keys += Key(KeyCode.SPACE).apply { row = 4; weight = 4.6f; preview = false }
+        keys += func(KeyCode.ENTER).apply { row = 4; weight = 1.42f }
+        return keys
+    }
+
+    /** 注音键 → 符号（标准键盘，声调键也列在内）。 Bopomofo key → symbol, tones included. */
+    private val BOPOMOFO_SYMBOLS: Map<Char, String> = mapOf(
+        '1' to "ㄅ", 'q' to "ㄆ", 'a' to "ㄇ", 'z' to "ㄈ", '2' to "ㄉ", 'w' to "ㄊ", 's' to "ㄋ", 'x' to "ㄌ",
+        'e' to "ㄍ", 'd' to "ㄎ", 'c' to "ㄏ", 'r' to "ㄐ", 'f' to "ㄑ", 'v' to "ㄒ", '5' to "ㄓ", 't' to "ㄔ",
+        'g' to "ㄕ", 'b' to "ㄖ", 'y' to "ㄗ", 'h' to "ㄘ", 'n' to "ㄙ", 'u' to "ㄧ", 'j' to "ㄨ", 'm' to "ㄩ",
+        '8' to "ㄚ", 'i' to "ㄛ", 'k' to "ㄜ", ',' to "ㄝ", '9' to "ㄞ", 'o' to "ㄟ", 'l' to "ㄠ", '.' to "ㄡ",
+        '0' to "ㄢ", 'p' to "ㄣ", ';' to "ㄤ", '/' to "ㄥ", '-' to "ㄦ",
+        '3' to "ˇ", '4' to "ˋ", '6' to "ˊ", '7' to "˙",
+    )
+
     fun numpad(fieldKind: Int, labels: LabelSpec = DEFAULT.labels): List<Key> {
         val keys = ArrayList<Key>(16)
         for (d in 1..9) keys += Key('0'.code + d, d.toString()).apply { preview = false; large = true; gx = 1 + (d - 1) % 3; gy = (d - 1) / 3 }
@@ -529,16 +569,50 @@ object ShuangpinHints {
         'n' to "in", 'm' to "ian",
     )
     private val SOGOU = MICROSOFT
+    private val SHOUDAO = mapOf(
+        'q' to "iu", 'w' to "ua", 'e' to "sh/e", 'r' to "ie", 't' to "uan", 'y' to "ang", 'u' to "u", 'i' to "ch/i",
+        'o' to "uo", 'p' to "iao", 'a' to "a", 's' to "ou", 'd' to "ao", 'f' to "eng", 'g' to "ing/uai", 'h' to "ong/iong",
+        'j' to "an", 'k' to "en/ia", 'l' to "ai/ue", 'z' to "un", 'x' to "iang/uang", 'c' to "in", 'v' to "zh/ui",
+        'b' to "ve", 'n' to "ian", 'm' to "ei",
+    )
+    private val ZHINENG_ABC = mapOf(
+        'q' to "ei", 'w' to "ian", 'e' to "ch/e", 'r' to "iu/er", 't' to "iang/uang", 'y' to "ing", 'u' to "u", 'i' to "i",
+        'o' to "uo/o", 'p' to "uan", 'a' to "zh/a", 's' to "ong/iong", 'd' to "ia/ua", 'f' to "en", 'g' to "eng", 'h' to "ang",
+        'j' to "an", 'k' to "ao", 'l' to "ai", 'z' to "iao", 'x' to "ie", 'c' to "in/uai", 'v' to "sh/v", 'b' to "ou",
+        'n' to "un", 'm' to "ui/ue/ve",
+    )
+    private val JIAJIA = mapOf(
+        'q' to "ing/er", 'w' to "ei", 'e' to "e", 'r' to "en", 't' to "eng", 'y' to "ong/iong", 'u' to "ch/u", 'i' to "sh/i",
+        'o' to "o/uo", 'p' to "ou", 'a' to "a", 's' to "ai", 'd' to "ao", 'f' to "an", 'g' to "ang", 'h' to "iang/uang",
+        'j' to "ian", 'k' to "iao", 'l' to "in", 'z' to "un", 'x' to "ue/ve/uai", 'c' to "uan", 'v' to "zh/ui", 'b' to "ia/ua",
+        'n' to "iu", 'm' to "ie",
+    )
 
     fun of(scheme: String): Map<Char, String> = when (scheme) {
         "ziranma" -> ZIRANMA
         "microsoft" -> MICROSOFT
         "sogou" -> SOGOU
+        "shoudao" -> SHOUDAO
+        "znabc" -> ZHINENG_ABC
+        "jiajia" -> JIAJIA
         else -> XIAOHE
     }
 
     /** 微软/搜狗用 ; 表示 ing，26 键没有该键，放在 L 的上滑。 These schemes use ';' for "ing". */
     fun usesSemicolon(scheme: String) = scheme == "microsoft" || scheme == "sogou"
+}
+
+/**
+ * 仓颉字根：码表（Jackchows/Cangjie5，MIT）里单字母码的字。x、z 在码表中没有单字条目，留空。
+ * Cangjie roots: the characters of the single-letter codes in Cangjie 5 (MIT). x and z have no single-letter entry.
+ */
+object CangjieRoots {
+    private val ROOTS = "a日b月c金d木e水f火g土h竹i戈j十k大l中m一n弓o人p心q手r口s尸t廿u山v女w田y卜"
+
+    fun of(letter: Char): String? {
+        val i = ROOTS.indexOf(letter)
+        return if (i >= 0) ROOTS[i + 1].toString() else null
+    }
 }
 
 /** 五笔键名与口诀（02 §6）。 Wubi key names and rhymes. */

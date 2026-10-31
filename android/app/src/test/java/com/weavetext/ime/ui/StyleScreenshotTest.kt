@@ -73,7 +73,7 @@ class StyleScreenshotTest : KeyboardSnapshotSupport() {
     @Test fun numrow() = each("numrow")
 
     @Test fun allLayoutsCovered() {
-        org.junit.Assert.assertEquals(listOf("fresh", "classic", "bright", "plain", "round", "refined", "numrow"), layouts)
+        org.junit.Assert.assertEquals(listOf("fresh", "classic", "colemak", "bright", "qwjrtk", "plain", "cyletix10", "round", "typewise", "refined", "numrow"), layouts)
     }
 
     /** 每套配色主题配默认布局的 26 键（输入中）。 Every theme on the default layout, composing. */

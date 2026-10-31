@@ -48,6 +48,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.weavetext.ime.R
 import com.weavetext.ime.core.UserWord
+import com.weavetext.ime.core.EngineHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +69,8 @@ fun DictionaryScreen() {
     var tick by remember { mutableIntStateOf(0) }
     var count by remember { mutableStateOf<Int?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+    var confirmPins by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
     LaunchedEffect(tick) { count = runCatching { dict.count() }.getOrNull() }
 
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -77,7 +80,8 @@ fun DictionaryScreen() {
             if (text == null) { snack.showSnackbar("无法读取文件"); return@launch }
             val r = dict.importText(text)
             tick++
-            snack.showSnackbar("导入 ${r.imported} 个" + if (r.skipped > 0) "，跳过 ${r.skipped} 个（格式错误）" else "")
+            val why = r.reasons.firstOrNull()?.let { "：$it" }.orEmpty()
+            snack.showSnackbar("导入 ${r.imported} 个" + if (r.skipped > 0) "，跳过 ${r.skipped} 个$why" else "")
         }
     }
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri: Uri? ->
@@ -119,12 +123,54 @@ fun DictionaryScreen() {
         }
         androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 16.dp))
         GroupCard {
+            SettingRow("输入统计", "今天、近 7 天与累计的上屏字数；只计数，不保存内容", subtitleMaxLines = 2, onClick = { showStats = true }) { Chevron() }
+            RowDivider(false)
+            SettingRow("清空置顶与降权", "只撤销候选的置顶和降权，学到的词频保留", subtitleMaxLines = 2, onClick = { confirmPins = true })
+            RowDivider(false)
             SettingRow("清除学习记录", titleColor = MaterialTheme.colorScheme.error, onClick = { confirmClear = true })
         }
         Text(
             "导入格式：每行「词语<Tab>拼音<Tab>词频」，拼音用空格分隔，词频可省略。",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+        )
+    }
+    if (showStats) {
+        val now = System.currentTimeMillis()
+        val stats = remember(showStats, tick) { com.weavetext.ime.stats.TypingStatsStore.load(deps.prefs) }
+        fun line(label: String, d: com.weavetext.ime.stats.Day) = "$label：${"%,d".format(d.chars)} 字 · ${"%,d".format(d.commits)} 次上屏"
+        AlertDialog(
+            onDismissRequest = { showStats = false },
+            title = { Text("输入统计") },
+            text = { Column {
+                Text(line("今天", stats.day(now)))
+                Text(line("近 7 天", stats.lastDays(now, 7)))
+                Text(line("累计", stats.total()))
+                Text("只记录数量，不保存输入的文字；无痕输入与密码框不计入。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } },
+            confirmButton = { TextButton(onClick = { showStats = false }) { Text("好") } },
+            dismissButton = { TextButton(onClick = {
+                com.weavetext.ime.stats.TypingStatsStore.clear(deps.prefs)
+                tick++; showStats = false
+            }) { Text("清空统计", color = MaterialTheme.colorScheme.error) } },
+        )
+    }
+    if (confirmPins) {
+        AlertDialog(
+            onDismissRequest = { confirmPins = false },
+            title = { Text("清空置顶与降权？") },
+            text = { Text("候选的置顶和降权会回到默认顺序；学到的词频和用户词不变。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmPins = false
+                    scope.launch {
+                        val response = withContext(Dispatchers.IO) { EngineHolder.getBlocking(ctx)?.features("""{"op":"clearCandidatePreferences"}""") }
+                        val cleared = runCatching { org.json.JSONObject(response.orEmpty()).optInt("cleared", -1) }.getOrDefault(-1)
+                        snack.showSnackbar(if (cleared >= 0) "已清空 $cleared 项置顶与降权" else "清空失败")
+                    }
+                }) { Text("清空") }
+            },
+            dismissButton = { TextButton(onClick = { confirmPins = false }) { Text("取消") } },
         )
     }
     if (confirmClear) {

@@ -12,11 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,7 +68,7 @@ internal fun OfflineTranslationPluginCard(
     var status by remember(ctx, actions) { mutableStateOf(actions.status(ctx)) }
     var installing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    val selected = TranslationSettings.protocol(p) == TranslationProtocol.GOOGLE_DEVICE
+    val selected = TranslationSettings.protocol(p) == TranslationProtocol.GOOGLE_DEVICE && status.ready
 
     DisposableEffect(owner, ctx, actions) {
         val observer = LifecycleEventObserver { _, event ->
@@ -77,12 +76,6 @@ internal fun OfflineTranslationPluginCard(
         }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }
-    }
-    LaunchedEffect(status.state, selected) {
-        if (selected && !status.ready) {
-            TranslationSettings.setOfflinePluginEnabled(prefs, enabled = false, ready = false)
-            message = "离线插件不可用，已改用 Google 官方网页；请先安装兼容且可信的插件。"
-        }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -111,7 +104,7 @@ internal fun OfflineTranslationPluginCard(
     GroupCard(Modifier.testTag("offline_translation_plugin_card")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Google 离线翻译插件", style = MaterialTheme.typography.titleMedium)
-            Text("独立 APK，使用 Google 翻译模型在设备上翻译，无需 API key 或自建服务器。安装插件后，在插件内准备、删除语言包；键盘不会自动下载语言包。",
+            Text("默认翻译方式。独立 APK，使用 Google 翻译模型在设备上翻译，无需 API key 或服务器。语言包需在插件内首次准备（需要联网），准备好后翻译不经过网络；键盘不会自动下载语言包。",
                 style = MaterialTheme.typography.bodyMedium)
             val label = when (status.state) {
                 OfflinePluginState.MISSING -> "未安装 · 请先安装插件"
@@ -127,18 +120,16 @@ internal fun OfflineTranslationPluginCard(
             if (status.message.isNotBlank()) Text(status.message, style = MaterialTheme.typography.bodySmall)
         }
         SettingRow("使用离线翻译插件",
-            if (status.ready) "启用后使用插件；关闭后使用 Google 官方网页。" else "请先安装兼容且可信的插件，再启用离线翻译。",
+            if (status.ready) "默认翻译方式；选中后原文在设备上处理。" else "请先安装兼容且可信的插件，再选择。",
             enabled = status.ready && !installing, subtitleMaxLines = 2,
             onClick = {
                 status = actions.status(ctx)
-                message = if (TranslationSettings.setOfflinePluginEnabled(prefs, !selected, status.ready)) ""
-                    else "请先安装兼容且可信的插件。"
+                message = if (TranslationSettings.selectOfflinePlugin(prefs, status.ready)) "" else "请先安装兼容且可信的插件。"
             },
         ) {
-            Switch(selected, onCheckedChange = { enabled ->
+            RadioButton(selected, onClick = {
                 status = actions.status(ctx)
-                message = if (TranslationSettings.setOfflinePluginEnabled(prefs, enabled, status.ready)) ""
-                    else "请先安装兼容且可信的插件。"
+                message = if (TranslationSettings.selectOfflinePlugin(prefs, status.ready)) "" else "请先安装兼容且可信的插件。"
             }, enabled = status.ready && !installing, modifier = Modifier.testTag("offline_translation_plugin_enabled"))
         }
         FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

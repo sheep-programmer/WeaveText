@@ -12,9 +12,11 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.settings.TranslationSettings
 import com.weavetext.ime.translate.*
@@ -27,7 +29,7 @@ class TranslationPanel(
     private val serviceProvider: () -> TranslationService = { TranslationServices.from(kb.ctx, kb.prefs) },
     toolbarIndex: Int = -1,
 ) : KbPanel(kb) {
-    override val inlineHeightDp: Float get() = 44f
+    override val inlineHeightDp: Float get() = 104f
     override val toolIndex = toolbarIndex
     private val controllerEditor = if (editor == null) ControllerTranslationEditor(kb.controller) else null
     private val editor = editor ?: controllerEditor!!
@@ -81,6 +83,9 @@ class TranslationPanel(
     override val view: View = panel
     private var call: TranslationCall? = null
     private var generation = 0L
+    /** 上一次发出的请求；自动翻译据此跳过同一段文字，文字变化时由 cancelTranslation 清掉。 */
+    private var lastRequest: TranslationRequest? = null
+    private val autoTranslate = Runnable { translate(automatic = true) }
 
     init {
         panel.onTranslate = { translate() }
@@ -92,19 +97,6 @@ class TranslationPanel(
         panel.onClear = {
             kb.controller.reset()
             setDraft("")
-        }
-        panel.onWeb = {
-            if (!kb.controller.isSensitiveField) {
-                cancelTranslation()
-                panel.clearResult()
-                val request = TranslationRequest(panel.sourceLanguage(), panel.targetLanguage(), panel.sourceText())
-                runCatching {
-                    val url = TranslationWeb.google(request)
-                    kb.ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, url)
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-                    panel.showStatus("请在官方网页复制译文，再返回粘贴")
-                }.onFailure { panel.showStatus(if (it is IllegalArgumentException) it.message.orEmpty() else "无法打开网页翻译，请检查浏览器", true) }
-            }
         }
         panel.onCopy = {
             if (!kb.controller.isSensitiveField && panel.resultText().isNotBlank()) {
@@ -119,6 +111,7 @@ class TranslationPanel(
             panel.clearResult()
             kb.prefs.edit().putString(TranslationSettings.SOURCE_LANGUAGE, source)
                 .putString(TranslationSettings.TARGET_LANGUAGE, target).apply()
+            scheduleAutoTranslate()
         }
         panel.onManage = {
             cancelTranslation()
@@ -138,6 +131,7 @@ class TranslationPanel(
             kb.prefs.getString(TranslationSettings.TARGET_LANGUAGE, "en") ?: "en")
         syncing = false; shown = true
         syncSource()
+        scheduleAutoTranslate()
     }
     override fun onHide() {
         shown = false
@@ -161,6 +155,7 @@ class TranslationPanel(
             cancelTranslation()
             panel.setSource(text)
             if (!active) panel.showStatus("输入位置已改变，请关闭后重新打开翻译", true)
+            scheduleAutoTranslate()
         }
     }
     private fun setDraft(text: String) {
@@ -174,6 +169,7 @@ class TranslationPanel(
         kb.controller.editor.reset(text.length, text.length)
         syncing = false
         syncSource()
+        scheduleAutoTranslate()
     }
 
     private fun clipboard() = kb.ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -192,18 +188,28 @@ class TranslationPanel(
         cancelTranslation()
         setDraft(text)
     }
-    private fun translate() {
+    /** 只有设备端离线插件自动翻译：原文不出设备，自定义在线服务仍需点按钮才发送。 */
+    private fun autoTranslates() = shown && !kb.controller.isSensitiveField && TranslationSettings.autoTranslates(kb.prefs)
+
+    private fun scheduleAutoTranslate() {
+        panel.removeCallbacks(autoTranslate)
+        if (autoTranslates() && panel.sourceText().isNotBlank()) panel.postDelayed(autoTranslate, AUTO_DELAY_MS)
+    }
+
+    private fun translate(automatic: Boolean = false) {
+        if (automatic && (kb.controller.state.composing || !autoTranslates())) return
         syncSource()
         if (controllerEditor != null && !kb.controller.translationDraftActive(draft)) return
-        if (kb.controller.isSensitiveField) { panel.showStatus("此输入框不可使用翻译", true); return }
+        if (kb.controller.isSensitiveField) { if (!automatic) panel.showStatus("此输入框不可使用翻译", true); return }
         if (kb.controller.state.composing) {
             kb.controller.commitFirst()
             syncSource()
         }
-        if (TranslationSettings.protocol(kb.prefs) == TranslationProtocol.GOOGLE_WEB) { panel.onWeb(); return }
         val request = TranslationRequest(panel.sourceLanguage(), panel.targetLanguage(), panel.sourceText())
-        request.validationError()?.let { panel.showStatus(it.message, true); return }
+        if (automatic && request == lastRequest) return
+        request.validationError()?.let { if (!automatic) panel.showStatus(it.message, true); return }
         cancelTranslation()
+        lastRequest = request
         val current = generation
         panel.clearResult()
         panel.setBusy(true)
@@ -226,6 +232,8 @@ class TranslationPanel(
     }
     private fun cancelTranslation() {
         generation++
+        lastRequest = null
+        panel.removeCallbacks(autoTranslate)
         call?.cancel(); call = null
         if (panel.busy) { panel.setBusy(false); panel.showStatus("已取消翻译") }
     }
@@ -265,7 +273,11 @@ class TranslationPanel(
             }
         }
         private val clearButton = ImageView(ctx)
+        /** 译文卡片里唯一可见的文字：译文、进度或提示。 The only visible text in the result card. */
         private val result = TextView(ctx)
+        private val resultScroll = ScrollView(ctx)
+        private val card = FrameLayout(ctx)
+        /** 只用于状态检查，不显示；可见的进度和错误由卡片展示。 State tracker only; the card shows messages. */
         private val status = TextView(ctx)
         private val langPill = LinearLayout(ctx)
         private val sourceSpinner = Spinner(ctx)
@@ -274,12 +286,12 @@ class TranslationPanel(
         private val sourceLanguages = TranslationLanguages.all
         private val targetLanguages = TranslationLanguages.all.filter { it.code != TranslationLanguages.AUTO }
         private val moreButton = object : Button(ctx) {
-            private val micIcon = ContextCompat.getDrawable(ctx, com.weavetext.ime.R.drawable.ic_mic)?.mutate()
+            private val moreIcon = ContextCompat.getDrawable(ctx, com.weavetext.ime.R.drawable.ic_more)?.mutate()
             override fun onDraw(canvas: android.graphics.Canvas) {
                 super.onDraw(canvas)
-                micIcon?.let { icon ->
+                moreIcon?.let { icon ->
                     icon.setTint(kb.palette.label)
-                    val size = dp(18)
+                    val size = dp(20)
                     val l = (width - size) / 2
                     val t = (height - size) / 2
                     icon.setBounds(l, t, l + size, t + size)
@@ -291,6 +303,8 @@ class TranslationPanel(
         private val inputBox = FrameLayout(ctx)
         private var sourceValue = ""
         private var resultValue = ""
+        private var statusValue = ""
+        private var statusError = false
         private var languagesValue: Pair<String, String>? = null
         var busy = false
             private set
@@ -301,7 +315,6 @@ class TranslationPanel(
         var onRead: () -> Unit = {}
         var onPaste: () -> Unit = {}
         var onClear: () -> Unit = {}
-        var onWeb: () -> Unit = {}
         var onManage: () -> Unit = {}
         var onCopy: () -> Unit = {}
         var onReplace: () -> Unit = {}
@@ -309,14 +322,14 @@ class TranslationPanel(
         var onLanguagesChanged: (String, String) -> Unit = { _, _ -> }
 
         init {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+            orientation = VERTICAL
+            setPadding(dp(10), dp(6), dp(10), dp(6))
 
-            // 1. Language pill [ 中 > 英 ]
+            // 第一行：语言 · 原文输入 · 更多 · 完成
+            val inputRow = LinearLayout(ctx).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             langPill.orientation = HORIZONTAL
             langPill.gravity = Gravity.CENTER_VERTICAL
-            langPill.setPadding(dp(8), 0, dp(8), 0)
+            langPill.setPadding(dp(10), 0, dp(10), 0)
             for (picker in listOf(sourceSpinner, targetSpinner)) {
                 picker.background = null
                 picker.setPadding(0, 0, 0, 0)
@@ -325,16 +338,15 @@ class TranslationPanel(
             targetSpinner.adapter = adapter(targetLanguages)
             sourceSpinner.onItemSelectedListener = listener()
             targetSpinner.onItemSelectedListener = listener()
-            arrowView.text = ">"
-            arrowView.textSize = 11f
+            arrowView.text = "→"
+            arrowView.textSize = 13f
             arrowView.gravity = Gravity.CENTER
-            arrowView.setPadding(dp(3), 0, dp(3), 0)
+            arrowView.setPadding(dp(4), 0, dp(4), 0)
             langPill.addView(sourceSpinner, LayoutParams(-2, -2))
             langPill.addView(arrowView, LayoutParams(-2, -2))
             langPill.addView(targetSpinner, LayoutParams(-2, -2))
-            addView(langPill, LayoutParams(-2, dp(34)))
+            inputRow.addView(langPill, LayoutParams(-2, dp(36)))
 
-            // 2. Circular Mic / Options button ( 🎙️ )
             moreButton.apply {
                 contentDescription = "更多"
                 text = "更多"
@@ -348,14 +360,14 @@ class TranslationPanel(
                         val actions = listOf(
                             "插入" to onInsert, "复制" to onCopy, "清空" to onClear,
                             "读取选区" to onRead, "粘贴文字" to onPaste, "替换选区" to onReplace,
-                            "网页翻译" to onWeb, "离线插件" to onManage, "设置" to onSettings
+                            "离线插件" to onManage, "设置" to onSettings
                         )
                         val available = !kb.controller.isSensitiveField
                         actions.forEachIndexed { index, item ->
                             menu.add(0, index, index, item.first).isEnabled = when (item.first) {
                                 "插入", "替换选区", "复制" -> available && !busy && resultValue.isNotBlank()
                                 "读取选区", "粘贴文字" -> available && !busy
-                                "网页翻译", "清空" -> available
+                                "清空" -> available
                                 else -> true
                             }
                         }
@@ -363,18 +375,16 @@ class TranslationPanel(
                     }.show()
                 }
             }
-            addView(moreButton, LayoutParams(dp(34), dp(34)).apply {
-                marginStart = dp(6); marginEnd = dp(6)
-            })
+            inputRow.addView(moreButton, LayoutParams(dp(36), dp(36)).apply { marginStart = dp(8) })
 
-            // 3. Draft input capsule [ 晚安大小姐   ✕ ]
+            // 原文胶囊：直接在这里输入，清除按钮在右侧。
             source.hint = "直接使用下方键盘输入原文"
             source.contentDescription = "翻译原文"
             source.isSingleLine = true
             source.maxLines = 1
-            source.textSize = 14f
+            source.textSize = 15f
             source.gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            source.setPadding(dp(12), 0, dp(30), 0)
+            source.setPadding(dp(14), 0, dp(32), 0)
             source.setOnTouchListener { _, event ->
                 if (event.action == android.view.MotionEvent.ACTION_UP && kb.controller.translationDraftActive(draft)) {
                     kb.controller.commitFirst()
@@ -389,30 +399,24 @@ class TranslationPanel(
 
             clearButton.setImageResource(com.weavetext.ime.R.drawable.ic_close)
             clearButton.scaleType = ImageView.ScaleType.CENTER_INSIDE
-            clearButton.setPadding(dp(3), dp(3), dp(3), dp(3))
+            clearButton.setPadding(dp(4), dp(4), dp(4), dp(4))
             clearButton.visibility = GONE
             clearButton.setOnClickListener { onClear() }
-            inputBox.addView(clearButton, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.END or Gravity.CENTER_VERTICAL).apply {
-                marginEnd = dp(6)
+            inputBox.addView(clearButton, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.END or Gravity.CENTER_VERTICAL).apply {
+                marginEnd = dp(7)
             })
-
-            // Invisible result and status TextViews for state tracking and test inspection
-            result.contentDescription = "翻译结果"
-            result.visibility = GONE
-            inputBox.addView(result, FrameLayout.LayoutParams(0, 0))
+            status.contentDescription = "翻译状态"
             status.visibility = GONE
             inputBox.addView(status, FrameLayout.LayoutParams(0, 0))
+            inputRow.addView(inputBox, LayoutParams(0, dp(36), 1f).apply { marginStart = dp(8) })
 
-            addView(inputBox, LayoutParams(0, dp(34), 1f))
-
-            // 4. Action button "完成" (Done)
             doneButton.apply {
                 text = "完成"
                 contentDescription = "完成"
-                textSize = 15f
+                textSize = 14f
                 isAllCaps = false
                 minWidth = 0; minimumWidth = 0
-                setPadding(dp(6), 0, dp(6), 0)
+                setPadding(dp(16), 0, dp(16), 0)
                 setOnClickListener {
                     if (busy) {
                         onCancel()
@@ -425,7 +429,20 @@ class TranslationPanel(
                     }
                 }
             }
-            addView(doneButton, LayoutParams(-2, dp(34)).apply { marginStart = dp(6) })
+            inputRow.addView(doneButton, LayoutParams(-2, dp(36)).apply { marginStart = dp(8) })
+            addView(inputRow, LayoutParams(-1, dp(36)))
+
+            // 第二行：译文卡片。进度、错误和空状态也在这里显示。
+            result.contentDescription = "翻译结果"
+            result.textSize = 15f
+            result.gravity = Gravity.CENTER_VERTICAL
+            result.setPadding(dp(14), dp(6), dp(14), dp(6))
+            result.setLineSpacing(dp(2).toFloat(), 1f)
+            resultScroll.isFillViewport = true
+            resultScroll.isVerticalScrollBarEnabled = false
+            resultScroll.addView(result, FrameLayout.LayoutParams(-1, -2))
+            card.addView(resultScroll, FrameLayout.LayoutParams(-1, -1))
+            addView(card, LayoutParams(-1, dp(50)).apply { topMargin = dp(6) })
         }
 
         fun reset(text: String, sourceCode: String, targetCode: String) {
@@ -433,12 +450,9 @@ class TranslationPanel(
             targetSpinner.setSelection(targetLanguages.indexOfFirst { it.code == targetCode }.takeIf { it >= 0 } ?: 1, false)
             languagesValue = sourceLanguage() to targetLanguage()
             sourceValue = ""; source.text = ""; clearResult(); setBusy(false)
+            statusValue = ""; statusError = false
             if (kb.controller.isSensitiveField) showStatus("此输入框不可使用翻译", true)
-            else {
-                setSource(text)
-                showStatus(if (usesGoogle()) "使用已安装的离线插件和语言包" else
-                    if (TranslationSettings.protocol(kb.prefs) == TranslationProtocol.GOOGLE_WEB) "官方网页翻译" else "在线翻译")
-            }
+            else setSource(text)
         }
         fun setSource(text: String) {
             if (text == sourceValue) return
@@ -453,7 +467,7 @@ class TranslationPanel(
         fun sourceLanguage() = sourceLanguages.getOrNull(sourceSpinner.selectedItemPosition)?.code ?: "auto"
         fun targetLanguage() = targetLanguages.getOrNull(targetSpinner.selectedItemPosition)?.code ?: "en"
         fun resultText() = resultValue
-        fun clearResult() { resultValue = ""; result.text = ""; updateActions() }
+        fun clearResult() { resultValue = ""; refreshCard(); updateActions() }
         fun setBusy(value: Boolean) {
             busy = value; updateActions()
             if (value) showStatus("正在翻译…")
@@ -466,40 +480,57 @@ class TranslationPanel(
             targetSpinner.isEnabled = available && !busy
         }
         fun showResult(text: String) {
-            resultValue = text; result.text = text; updateActions()
-            showStatus("翻译完成")
+            resultValue = text; statusValue = ""; statusError = false; status.text = ""
+            refreshCard(); updateActions()
+            result.alpha = 0f
+            result.animate().alpha(1f).setDuration(180).start()
         }
         fun showStatus(text: String, error: Boolean = false) {
-            status.text = text
+            statusValue = text; statusError = error; status.text = text
+            refreshCard()
+        }
+        /** 卡片内容：译文优先，其次是进度或错误，最后是空状态提示。 Result first, then progress or error, then the empty hint. */
+        private fun refreshCard() {
+            val pal = kb.palette
+            val hasResult = resultValue.isNotEmpty()
+            result.text = when {
+                hasResult -> resultValue
+                statusValue.isNotEmpty() -> statusValue
+                sourceValue.isBlank() -> "在上方输入原文，译文会显示在这里"
+                autoTranslates() -> "停顿片刻后自动翻译"
+                else -> "输入后点「完成」翻译"
+            }
+            result.setTextColor(when {
+                hasResult -> pal.label
+                statusError -> ERROR_COLOR
+                else -> pal.labelSecondary
+            })
+            result.textSize = if (hasResult) 15f else 13f
         }
         fun applyPalette() {
             val pal = kb.palette
-            // Language pill styling
             langPill.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(17).toFloat()
+                cornerRadius = dp(18).toFloat()
                 setColor(pal.card)
                 setStroke(dp(1), pal.divider)
             }
             arrowView.setTextColor(pal.labelSecondary)
 
-            // Mic button styling
             moreButton.background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(pal.card)
                 setStroke(dp(1), pal.divider)
             }
 
-            // Input box styling: soft accent tint with border
             val boxBg = if (pal.dark) 0xFF202A38.toInt() else 0xFFEAF1FB.toInt()
             val boxStroke = if (pal.dark) 0xFF2E3E56.toInt() else 0xFFCADDF7.toInt()
             inputBox.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(17).toFloat()
+                cornerRadius = dp(18).toFloat()
                 setColor(boxBg)
                 setStroke(dp(1), boxStroke)
             }
-
             source.setTextColor(pal.label)
             source.setHintTextColor(pal.labelHint)
 
@@ -509,12 +540,24 @@ class TranslationPanel(
             }
             clearButton.setColorFilter(0xFFFFFFFF.toInt())
 
-            doneButton.background = null
-            doneButton.setTextColor(pal.label)
+            card.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(ColorUtils.setAlphaComponent(pal.keyAccent, if (pal.dark) 0x26 else 0x1A))
+            }
+
+            doneButton.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(18).toFloat()
+                setColor(pal.keyAccent)
+            }
+            doneButton.setTextColor(pal.onAccent)
+            refreshCard()
         }
-        private fun usesGoogle() = TranslationSettings.protocol(kb.prefs) == TranslationProtocol.GOOGLE_DEVICE
+        private fun autoTranslates() = TranslationSettings.autoTranslates(kb.prefs)
         private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
         private fun shortLabel(label: String): String = when {
+            label.contains("自动") -> "自动"
             label.contains("中") -> "中"
             label.contains("英") -> "英"
             label.contains("日") -> "日"
@@ -523,7 +566,6 @@ class TranslationPanel(
             label.contains("德") -> "德"
             label.contains("西") -> "西"
             label.contains("俄") -> "俄"
-            label.contains("自动") -> "中"
             else -> label.take(1)
         }
         private fun adapter(items: List<TranslationLanguage>) = object : ArrayAdapter<String>(context,
@@ -545,5 +587,10 @@ class TranslationPanel(
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
+    }
+
+    private companion object {
+        const val AUTO_DELAY_MS = 450L
+        const val ERROR_COLOR = 0xFFE5484D.toInt()
     }
 }

@@ -370,7 +370,7 @@ class CandidateGridPanel(kb: WeaveKeyboard) : KbPanel(kb) {
 
         override fun onItemTap(index: Int) {
             if (index < nPinyin) { kb.controller.onPinyinOption(index); return }
-            shown.getOrNull(index - nPinyin)?.let { kb.controller.onVisibleCandidate(it, shownGeneration) }
+            shown.getOrNull(index - nPinyin)?.let { kb.pickVisibleCandidate(it, shownGeneration) }
         }
 
         override fun onItemLong(index: Int): Boolean =
@@ -470,11 +470,14 @@ class PickerPanel(kb: WeaveKeyboard) : KbPanel(kb) {
             "hand" -> "单字"
             "shuangpin" -> com.weavetext.ime.settings.WeavePrefs.SHUANGPIN_SCHEMES.firstOrNull { it.first == com.weavetext.ime.settings.WeavePrefs.shuangpinScheme(kb.prefs) }?.second ?: ""
             "wubi86" -> "86"
+            "cangjie" -> "仓颉"
+            "bopomofo" -> "注音"
+            "japanese" -> "日语"
             else -> "English"
         }
 
         private fun title(k: String): String = when (k) {
-            "pinyin" -> "26键"; "t9" -> "九键"; "t14" -> "14键"; "hand" -> "手写"; "shuangpin" -> "双拼"; "wubi86" -> "五笔"; else -> "英文"
+            "pinyin" -> "26键"; "t9" -> "九键"; "t14" -> "14键"; "hand" -> "手写"; "shuangpin" -> "双拼"; "wubi86" -> "五笔"; "cangjie" -> "仓颉"; "bopomofo" -> "注音"; "japanese" -> "日语"; else -> "英文"
         }
 
         override fun onDraw(c: Canvas) {

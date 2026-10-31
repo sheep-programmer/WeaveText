@@ -237,39 +237,33 @@ class VoiceAutoDownloadTest {
         ShadowLooper.idleMainLooper()
         for (id in listOf(AsrRuntime.ID, STREAM, FINAL)) f.installed(id)
         assertEquals(VoiceLanguage.ENGLISH, f.engines.language)
-        assertTrue(f.downloads.any { it.first == "asr-sensevoice" })
-        f.installed("asr-sensevoice")
-        assertEquals(listOf("asr-sensevoice"), f.ids())
+        assertTrue(f.downloads.any { it.first == "asr-whisper-small" })
+        f.installed("asr-whisper-small")
+        assertEquals(listOf("asr-whisper-small"), f.ids())
     }
 
-    @Test fun bilingualMigrationStillAdoptsSenseVoiceOnceWhenTheChoiceIsUnchanged() {
+    /** 英文档位必须落到能指定 en 的整句模型，不能沿用混说的流式默认。 */
+    @Test fun englishModeDownloadsWhisperInsteadOfTheMixedDefault() {
+        val f = fixture(installed = emptyList(), mode = VoiceLanguage.ENGLISH, lite = true)
+        assertTrue(f.preparation.ensure())
+        assertEquals(setOf(AsrRuntime.ID, "vad-silero", "asr-whisper-small"), f.downloads.map { it.first }.toSet())
+    }
+
+    /** 已下线的旧双语实时模型不再出现在选择里，首次使用会装新的流式默认。 */
+    @Test fun retiredBilingualSelectionFallsBackToTheStreamingDefault() {
         val f = fixture(listOf("vad-silero", "asr-stream-mixed-medium"), VoiceLanguage.MIXED)
         f.engines.setSelection(listOf("asr-stream-mixed-medium"))
         ShadowLooper.idleMainLooper()
-        f.preparation.ensure()
-        assertEquals(listOf("asr-sensevoice" to false), f.downloads)
-        f.installed("asr-sensevoice")
-        assertEquals(listOf("asr-sensevoice"), f.ids())
-        f.engines.setSelection(listOf("asr-stream-mixed-medium"))
-        f.preparation.ensure()
-        assertEquals(listOf("asr-stream-mixed-medium"), f.ids())
-    }
-
-    @Test fun bilingualMigrationDoesNotStealAManualCombinationMadeDuringDownload() {
-        val f = fixture(listOf("vad-silero", "asr-stream-mixed-medium", "asr-stream-mixed-high"), VoiceLanguage.MIXED)
-        f.engines.setSelection(listOf("asr-stream-mixed-medium"))
-        ShadowLooper.idleMainLooper()
-        f.preparation.ensure()
-        f.engines.setSelection(listOf("asr-stream-mixed-medium", "asr-stream-mixed-high"))
-        ShadowLooper.idleMainLooper()
-        f.installed("asr-sensevoice")
-        assertEquals(listOf("asr-stream-mixed-medium", "asr-stream-mixed-high"), f.ids())
-        f.preparation.ensure()
-        assertEquals(listOf("asr-stream-mixed-medium", "asr-stream-mixed-high"), f.ids())
+        assertTrue(f.ids().isEmpty())
+        assertTrue(f.preparation.ensure())
+        assertEquals(listOf(MIXED to false), f.downloads)
+        f.installed(MIXED)
+        assertEquals(listOf(MIXED), f.ids())
     }
 
     private companion object {
         const val STREAM = "asr-stream-small"
         const val FINAL = "asr-final-small"
+        const val MIXED = "asr-x-asr-960"
     }
 }

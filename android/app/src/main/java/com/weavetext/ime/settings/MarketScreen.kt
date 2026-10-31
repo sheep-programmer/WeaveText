@@ -188,7 +188,7 @@ private fun extensionRoute(item: ExtensionItem): Route? = when (item.key) {
     "feature:translate" -> Route.Translation
     "feature:link" -> Route.Link
     "feature:cloudwords" -> Route.Dictionary
-    "scheme:hand", "scheme:wubi86" -> Route.Schemes
+    "scheme:hand", "scheme:wubi86", "scheme:cangjie", "scheme:bopomofo", "scheme:japanese" -> Route.Schemes
     else -> null
 }
 

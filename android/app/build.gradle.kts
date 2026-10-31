@@ -150,6 +150,24 @@ val fetchBuiltinModels by tasks.registering {
     }
 }
 
+// OCR 模型（PP-OCRv5 mobile，Apache-2.0；RapidOCR 的 ONNX 发行版，未修改）。只给测试用，不进安装包。
+// OCR models (PP-OCRv5 mobile, Apache-2.0, unmodified RapidOCR ONNX build). Test-only: they are not in the APK.
+val ocrModelsDir = rootProject.projectDir.resolve("../.ref/ocr")
+val ocrModels = listOf(
+    Triple("https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+        "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", "ch_PP-OCRv5_det_mobile.onnx"),
+    Triple("https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+        "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5", "ch_PP-OCRv5_rec_mobile.onnx"),
+    Triple("https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
+        "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b", "ppocrv5_dict.txt"),
+)
+val fetchOcrTestModels by tasks.registering {
+    group = "weave"
+    outputs.dir(ocrModelsDir)
+    doLast { for ((url, sha, name) in ocrModels) fetchVerified(url, sha, ocrModelsDir.resolve(name)) }
+}
+tasks.matching { it.name == "testDebugUnitTest" }.configureEach { dependsOn(fetchOcrTestModels) }
+
 /** 桌面测试用的模型（与是否内置无关）。 Models for the desktop tests, independent of what is built in. */
 val testModelsDir = layout.buildDirectory.dir("testModels").get().asFile
 val fetchTestModels by tasks.registering {
@@ -224,6 +242,9 @@ android {
         jniLibs.useLegacyPackaging = !liteBuild
         // sherpa-onnx 的 JNI 库只依赖 onnxruntime，C/C++ API 库用不到。 JNI lib needs only onnxruntime.
         jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
+        // 拍照识字的 ONNX Runtime 与 sherpa 自带的 libonnxruntime.so 同名：两者都是 ONNX Runtime，保留 sherpa 那份（1.28.2，比 1.28.0 新，向后兼容）。
+        // OCR's ONNX Runtime and sherpa's bundled libonnxruntime.so share a name. Keep sherpa's 1.28.2: it is newer than 1.28.0.
+        jniLibs.pickFirsts += listOf("lib/arm64-v8a/libonnxruntime.so", "lib/armeabi-v7a/libonnxruntime.so", "lib/x86/libonnxruntime.so", "lib/x86_64/libonnxruntime.so")
     }
     androidResources {
         // 模型文件不压缩：ONNX 压缩率很低，且可以直接从 APK 读取。 Keep ONNX uncompressed.
@@ -306,10 +327,10 @@ val syncDicts by tasks.registering(Sync::class) {
             require(h.getInt(4) == version) { "${f.name} has format version ${h.getInt(4)}, engine expects $version" }
         }
         // 原始文件的格式版本（打包前）与打包后的容器头。 Raw format versions, then the packed containers.
-        for (n in listOf("pinyin.wvl", "wubi86.wvl", "english.wvl")) check(dataBuildDir.resolve(n), "WVLX", 4)
+        for (n in listOf("pinyin.wvl", "wubi86.wvl", "cangjie.wvl", "english.wvl")) check(dataBuildDir.resolve(n), "WVLX", 4)
         check(dataBuildDir.resolve("grammar.wvg"), "WVGM", 1)
         val dir = dictAssetsDir.resolve("dict")
-        for (key in listOf("pinyin", "wubi86", "english", "grammar", "st_phrases", "st_characters", "emoji", "hand", "hand_net", "follow", "shape")) {
+        for (key in listOf("pinyin", "wubi86", "cangjie", "english", "grammar", "st_phrases", "st_characters", "tw_variants", "hk_variants", "emoji", "hand", "hand_net", "follow", "shape")) {
             check(dir.resolve("$key.wvz"), "WVPK", 1)
         }
     }
@@ -337,6 +358,9 @@ val bundleMarket by tasks.registering(Sync::class) {
 tasks.named("preBuild") { dependsOn(bundleMarket, buildRust, syncDicts, bundlePlugins, bundleExpressions, fetchSherpa, fetchBuiltinModels) }
 
 dependencies {
+    // 拍照识字（可选下载的模型）用的 ONNX Runtime；轻量版没有 OCR，不引入。
+    // ONNX Runtime for the optional OCR plugin; the lite build has no OCR and skips it.
+    if (!liteBuild) implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
     val composeBom = platform("androidx.compose:compose-bom:2026.04.01")
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.16.0")
@@ -358,6 +382,9 @@ dependencies {
     androidTestImplementation("androidx.test:core:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     testImplementation("junit:junit:4.13.2")
+    // 桌面版 ONNX Runtime 只用于测试里跑 OCR 模型；安装包里的运行时仍由 sherpa 提供，不在这里引入。
+    // Desktop ONNX Runtime, for running the OCR models in tests only; the APK does not get this dependency.
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.28.0")
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.75.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.75.0")

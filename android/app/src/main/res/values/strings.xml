@@ -4,4 +4,5 @@
     <string name="send_to_computer">WeaveText · 发送到设备</string>
     <string name="subtype_zh">中文（织文）</string>
     <string name="sticker_collect">收纳到织文</string>
+    <string name="translate_selection">翻译</string>
 </resources>

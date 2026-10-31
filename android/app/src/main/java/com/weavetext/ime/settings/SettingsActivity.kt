@@ -71,6 +71,8 @@ sealed class Route {
     data object Link : Route()
     data object DictPacks : Route()
     data object Toolbar : Route()
+    data object Ocr : Route()
+    data object Captions : Route()
 
     companion object {
         /**
@@ -166,6 +168,8 @@ fun SettingsApp(deps: SettingsDeps, nav: Navigator, statusVersion: Int = 0) {
                     Route.Link -> LinkScreen()
                     Route.DictPacks -> DictPacksScreen()
                     Route.Toolbar -> ToolbarScreen()
+                    Route.Ocr -> OcrPluginScreen()
+                    Route.Captions -> CaptionsScreen()
                 }
             }
         }

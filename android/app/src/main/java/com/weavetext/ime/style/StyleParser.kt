@@ -117,7 +117,7 @@ object StyleParser {
         val tb = o.optJSONObject("toolbar") ?: JSONObject()
         val p = o.optJSONObject("popup") ?: JSONObject()
         val s = o.optJSONObject("symbols") ?: JSONObject()
-        val rows = q.optJSONArray("rows")?.let { rows(it, "qwerty.rows") } ?: DEFAULT_ROWS
+        val rows = q.optJSONArray("rows")?.let { rows(it, "qwerty.rows", honeycomb = q.optBoolean("honeycomb", false)) } ?: DEFAULT_ROWS
         val rowsEn = q.optJSONArray("rowsEnglish")?.let { rows(it, "qwerty.rowsEnglish") }
         val right = t.optJSONArray("right")?.let { tokens(it, "t9.right", t9 = true) } ?: DEFAULT_T9_RIGHT
         val bottom = t.optJSONArray("bottom")?.let { tokens(it, "t9.bottom", t9 = true) } ?: DEFAULT_T9_BOTTOM
@@ -199,7 +199,8 @@ object StyleParser {
         )
     }
 
-    private fun rows(a: JSONArray, field: String): List<List<KeyToken>> {
+    private fun rows(a: JSONArray, field: String, honeycomb: Boolean = false): List<List<KeyToken>> {
+        if (honeycomb) return honeycombRows(a, field)
         if (a.length() != 4 && a.length() != 5) throw StyleException("$field 须为 4 行（或首行为数字行的 5 行）")
         val all5 = List(a.length()) { tokens(a.optJSONArray(it) ?: throw StyleException("$field[$it] 不是数组"), "$field[$it]", t9 = false, digits = it == 0 && a.length() == 5) }
         val numberRow = if (all5.size == 5) all5[0] else null
@@ -218,6 +219,22 @@ object StyleParser {
         val all = out.flatten().map { it.name }
         for (need in listOf("delete", "enter")) if (need !in all) throw StyleException("$field 缺少 $need")
         return all5
+    }
+
+    /**
+     * 蜂窝排列（如 Typewise）：四行字母错开排列，行宽不同由布局居中形成蜂窝；第五行是底行。
+     * Honeycomb arrangement (such as Typewise): four staggered letter rows, the fifth row is the control row.
+     */
+    private fun honeycombRows(a: JSONArray, field: String): List<List<KeyToken>> {
+        if (a.length() != 5) throw StyleException("$field 蜂窝排列须为 4 行字母加底行")
+        val all = List(5) { tokens(a.optJSONArray(it) ?: throw StyleException("$field[$it] 不是数组"), "$field[$it]", t9 = false) }
+        val letters = all.take(4).flatten().filter { it.isLetters }.joinToString("") { it.name }
+        if (letters.length != 26 || letters.toSet().size != 26) throw StyleException("$field 前 4 行须恰好包含 26 个字母")
+        if (all[4].none { it.name == "space" }) throw StyleException("$field 底行须有空格键")
+        if (all[4].any { it.isLetters }) throw StyleException("$field 底行只能放功能键")
+        val names = all.flatten().map { it.name }
+        for (need in listOf("delete", "enter")) if (need !in names) throw StyleException("$field 缺少 $need")
+        return all
     }
 
     private fun tokens(a: JSONArray, field: String, t9: Boolean, digits: Boolean = false): List<KeyToken> {

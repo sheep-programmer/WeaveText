@@ -40,7 +40,7 @@ class ExtensionStoreTest {
         assertEquals(Extensions.defaults, s.items.filter { it.builtin }.map { it.key }.toSet())
         for (item in s.items.filter { it.source == "bundled" }) s.install(item)
         val repo = StyleRepository.get(app)
-        assertEquals(7, repo.layoutIds.size)
+        assertEquals(11, repo.layoutIds.size)
         assertEquals(16, repo.themeIds.size)
         for (id in repo.layoutIds) {
             assertEquals(id, repo.layout(id).id)

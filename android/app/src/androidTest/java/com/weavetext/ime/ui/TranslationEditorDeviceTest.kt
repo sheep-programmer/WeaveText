@@ -93,7 +93,7 @@ class TranslationEditorDeviceTest {
                                 app.getSharedPreferences("$namespace-$name", mode).also { preferenceNames += "$namespace-$name" }
                         }
                         WeavePrefs.of(context).edit()
-                            .putBoolean(TranslationSettings.GOOGLE_WEB_MIGRATION, true)
+                            .putBoolean(TranslationSettings.DEVICE_DEFAULT_MIGRATION, true)
                             .putString(TranslationSettings.PROTOCOL, TranslationProtocol.GENERIC.id)
                             .putBoolean(WeavePrefs.FLOATING, floating)
                             .putBoolean(WeavePrefs.KEY_PREVIEW, false)

@@ -35,26 +35,26 @@ class OfflineModelSelectionTest {
         assertFalse(selection.toggle("asr-wenet-mixed"))
     }
     @Test fun languageModesRememberIndependentSelections() {
-        val repo = FakeModels(listOf("asr-stream-mixed-medium", "asr-stream-small", "asr-sensevoice", "asr-whisper-base").associateWith { ModelState.Installed })
+        val repo = FakeModels(listOf("asr-x-asr-960", "asr-stream-small", "asr-sensevoice", "asr-whisper-small").associateWith { ModelState.Installed })
         val selection = OfflineModelSelection(ctx, repo)
         assertEquals(VoiceLanguage.MIXED, selection.mode)
-        selection.select(listOf("asr-stream-mixed-medium", "asr-sensevoice"))
+        selection.select(listOf("asr-x-asr-960", "asr-sensevoice"))
         // 英文档位必须能真正指定 en，不能把双语自动识别当成英文专用识别。
         selection.mode = VoiceLanguage.ENGLISH
-        assertEquals(setOf("asr-sensevoice", "asr-whisper-base"), selection.available().map { it.id }.toSet())
-        selection.select(listOf("asr-whisper-base"))
+        assertEquals(setOf("asr-sensevoice", "asr-whisper-small"), selection.available().map { it.id }.toSet())
+        selection.select(listOf("asr-whisper-small"))
         selection.mode = VoiceLanguage.CHINESE
         assertEquals(listOf("asr-sensevoice"), selection.ids())
         selection.select(listOf("asr-stream-small"))
         selection.mode = VoiceLanguage.MIXED
-        assertEquals(listOf("asr-stream-mixed-medium", "asr-sensevoice"), selection.ids())
+        assertEquals(listOf("asr-x-asr-960", "asr-sensevoice"), selection.ids())
         selection.mode = VoiceLanguage.ENGLISH
-        assertEquals(listOf("asr-whisper-base"), selection.ids())
+        assertEquals(listOf("asr-whisper-small"), selection.ids())
     }
 
     /** 只有不支持指定语言的双语实时模型时，英文档位必须准备语言可控模型，不能继续出中文。 */
     @Test fun englishModeDoesNotTreatAutoBilingualStreamingAsForcedEnglish() {
-        val repo = FakeModels(mapOf("asr-stream-mixed-medium" to ModelState.Installed))
+        val repo = FakeModels(mapOf("asr-x-asr-960" to ModelState.Installed))
         val selection = OfflineModelSelection(ctx, repo)
         selection.mode = VoiceLanguage.ENGLISH
         assertTrue(selection.ids().isEmpty())
@@ -64,13 +64,14 @@ class OfflineModelSelectionTest {
         assertTrue(selection.primaryOk())
     }
 
-    @Test fun aSingleMixedStreamingModelUsesAnInstalledFinalCompanion() {
-        val repo = FakeModels(listOf("asr-stream-mixed-high", "asr-sensevoice", "asr-stream-small", "asr-final-small").associateWith { ModelState.Installed })
+    /** X-ASR 自带标点，不挂隐藏终稿；中文实时小模型仍由终稿小模型复核。 */
+    @Test fun onlyTheChineseStreamingModelGetsAHiddenFinalCompanion() {
+        val repo = FakeModels(listOf("asr-x-asr-960", "asr-sensevoice", "asr-stream-small", "asr-final-small").associateWith { ModelState.Installed })
         val selection = OfflineModelSelection(ctx, repo)
-        selection.select(listOf("asr-stream-mixed-high"))
-        assertEquals("asr-sensevoice", selection.finalCompanion("asr-stream-mixed-high"))
-        selection.select(listOf("asr-stream-mixed-high", "asr-sensevoice"))
-        assertNull(selection.finalCompanion("asr-stream-mixed-high"))
+        selection.select(listOf("asr-x-asr-960"))
+        assertNull(selection.finalCompanion("asr-x-asr-960"))
+        selection.select(listOf("asr-x-asr-960", "asr-sensevoice"))
+        assertNull(selection.finalCompanion("asr-x-asr-960"))
         selection.mode = VoiceLanguage.CHINESE
         selection.select(listOf("asr-stream-small"))
         assertEquals("asr-final-small", selection.finalCompanion("asr-stream-small"))
@@ -93,10 +94,10 @@ class OfflineModelSelectionTest {
 
     /** 混说档位下只剩中文专用模型、同时装了双语模型时，自动改用双语模型而不是继续只出中文。 */
     @Test fun mixedModeSkipsAPinnedChineseOnlyModelWhenABilingualOneIsInstalled() {
-        val repo = FakeModels(mapOf("asr-stream-small" to ModelState.Installed, "asr-stream-mixed-medium" to ModelState.Installed))
+        val repo = FakeModels(mapOf("asr-stream-small" to ModelState.Installed, "asr-x-asr-960" to ModelState.Installed))
         val selection = OfflineModelSelection(ctx, repo)
         selection.select(listOf("asr-stream-small"))
-        assertEquals(listOf("asr-stream-mixed-medium"), selection.ids())
+        assertEquals(listOf("asr-x-asr-960"), selection.ids())
         assertTrue(selection.primaryOk())
     }
 

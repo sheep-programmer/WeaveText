@@ -469,7 +469,7 @@ internal class AndroidLinkSink(private val ctx: Context) : LinkSink {
     override fun onConnections(count: Int, firstName: String?) = LinkNotifications.ongoing(ctx, count, firstName)
 
     override fun setClipboardText(text: String) {
-        if (WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.privateField) LinkContent.history(ctx).add(text, System.currentTimeMillis())
+        if (WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.recordingBlocked) LinkContent.history(ctx).add(text, System.currentTimeMillis())
         runCatching { cm?.setPrimaryClip(ClipData.newPlainText("WeaveLink", text)) }
     }
 
@@ -483,7 +483,7 @@ internal class AndroidLinkSink(private val ctx: Context) : LinkSink {
     override fun setClipboardFileAt(file: File, mime: String, name: String, done: (String?, String?) -> Unit) {
         LinkContent.io.execute {
             runCatching {
-                val item = LinkContent.importFile(ctx, file, mime, name, WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.privateField)
+                val item = LinkContent.importFile(ctx, file, mime, name, WeavePrefs.clipboardRecord(WeavePrefs.of(ctx)) && !com.weavetext.ime.ime.ClipPrivacy.recordingBlocked)
                 main.post {
                     runCatching { cm?.setPrimaryClip(ClipData("WeaveLink", arrayOf(mime), ClipData.Item(android.net.Uri.parse(item.uri)))) }
                         .fold({ done(item.uri, null) }, { done(null, "剪贴板写入失败：${it.message}") })

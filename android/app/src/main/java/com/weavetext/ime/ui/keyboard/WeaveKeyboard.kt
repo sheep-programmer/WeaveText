@@ -167,6 +167,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     var state = ImeState()
         private set
     private var layoutSig = ""
+    /** 覆盖层手写结束后要恢复的中文方案；非空时保留当前键面。 Schema to restore after direct handwriting. */
+    private var directReturnSchema: String? = null
+    /** 开始覆盖层手写时的 [InputController.externalSelection]；光标被挪走就收起。 Selection mark for the overlay. */
+    private var directSelectionMark = 0
     private var numberMode = false
     private val shift = com.weavetext.ime.ime.ShiftState()
     private var consumedShiftKey: Key? = null
@@ -305,7 +309,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     private fun handAreaMode(): HandwritingAreaMode =
-        if (state.chinese && state.schema == "hand" && !state.privateField && !state.passwordField &&
+        if (state.chinese && state.schema == "hand" && directReturnSchema == null && !state.privateField && !state.passwordField &&
             !floating && !hardwareMode && !numberMode && controller.numericFieldKind() == 0 && panel == null
         ) WeavePrefs.handAreaMode(prefs) else HandwritingAreaMode.KEYBOARD
 
@@ -758,6 +762,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         controller.calcEnabled = Extensions.feature(prefs, "calc")
         controller.setOption("features.calculator", controller.calcEnabled)
         controller.autoPair = WeavePrefs.autoPair(prefs)
+        controller.cjkSpacing = WeavePrefs.cjkSpacing(prefs)
+        controller.onCommitted = { n -> com.weavetext.ime.stats.TypingStatsStore.record(prefs, n) }
+        controller.feature(org.json.JSONObject().put("op", "setTraditionalRegion").put("region", WeavePrefs.traditionalRegion(prefs)))
         controller.refreshEngineOptions()
     }
 
@@ -769,6 +776,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     /** 选择键盘（浮层 / 中英长按）。 Choose a keyboard. */
     fun chooseKeyboard(kb: String) {
+        finishDirectHand()
         if (kb == "english") {
             if (state.chinese) controller.toggleChinese()
             return
@@ -794,6 +802,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
      * once per frame: touch dispatch only runs the engine call, the frame callback draws the final state.
      */
     private fun onState(s: ImeState) {
+        topBar.incognito = s.incognito
         val previousArea = handAreaMode()
         if (s.preedit != state.preedit || s.candidates != state.candidates || s.privateField) candidatePopup?.dismiss()
         // 中英切换统一清掉旧模式的大写，工具栏与实体键盘也走这里，首个拼音不会意外变成 N。
@@ -875,17 +884,21 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     fun refreshLayout() {
         val s = state
         val field = controller.numericFieldKind()
+        val schema = directReturnSchema ?: s.schema
         val kind = when {
             numberMode || field != 0 -> "num$field"
             !s.chinese -> "en"
-            s.schema == "t9" -> "t9"
-            s.schema == "t14" -> "t14"
-            s.schema == "hand" -> "hand"
-            else -> "cn:" + s.schema
+            schema == "t9" -> "t9"
+            schema == "t14" -> "t14"
+            schema == "hand" -> "hand"
+            schema == "bopomofo" -> "bpmf"
+            schema.startsWith("shuangpin14:") -> "t14"
+            schema.startsWith("shuangpin9:") -> "t9"
+            else -> "cn:" + schema
         }
         val hintsOn = when {
-            s.schema.startsWith("shuangpin") -> WeavePrefs.shuangpinHints(prefs)
-            s.schema == "wubi86" -> WeavePrefs.wubiRootHints(prefs)
+            schema.startsWith("shuangpin") -> WeavePrefs.shuangpinHints(prefs)
+            schema == "wubi86" -> WeavePrefs.wubiRootHints(prefs)
             else -> false
         }
         val sig = "$kind:$hintsOn"
@@ -900,11 +913,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 }
                 kind == "t9" -> keyboardView.setT9(Layouts.t9(l.t9, l.labels))
                 kind == "hand" -> keyboardView.setHand(Layouts.hand(l.t9, l.labels))
+                kind == "bpmf" -> keyboardView.setQwerty(Layouts.bopomofo(l.labels))
                 kind == "t14" -> keyboardView.setT14(Layouts.t14(l.t9, l.labels, lower = l.qwerty.letterCase == "lower"))
-                kind == "en" -> keyboardView.setQwerty(Layouts.qwerty(english = true, l.qwerty, l.labels))
+                kind == "en" -> keyboardView.setQwerty(Layouts.qwerty(english = true, l.qwerty, l.labels, accents = WeavePrefs.spanishAccents(prefs)))
                 else -> {
                     val keys = Layouts.qwerty(english = false, l.qwerty, l.labels)
-                    decorateChinese(keys, s.schema, hintsOn)
+                    decorateChinese(keys, schema, hintsOn)
                     keyboardView.setQwerty(keys)
                 }
             }
@@ -926,6 +940,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 keys.firstOrNull { it.code == 'l'.code }?.let { it.hint = "；"; it.up = ";"; it.longPress = listOf(";", "？", "l") }
                 keys.firstOrNull { it.code == 'l'.code }?.corner = "ai"
             }
+        } else if (schema == "cangjie") {
+            // 仓颉：每个字母键的角标是它的字根（码表里单字母的条目）。 Each letter's corner is its Cangjie root.
+            for (k in keys) if (k.code in 'a'.code..'z'.code) k.corner = CangjieRoots.of(k.code.toChar())
         } else if (schema == "wubi86") {
             for (k in keys) if (k.code in 'a'.code..'z'.code) {
                 val c = k.code.toChar()
@@ -1030,6 +1047,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     // ================================================================ KeyboardHost
 
     override fun onKey(key: Key) {
+        // 覆盖层手写中按了普通键：先把墨迹上屏、回到键面，别让按键落进手写方案里。
+        // An ordinary key during overlay handwriting: put the ink out and return to the keys first,
+        // or the press would land in the hand schema with the overlay still up.
+        if (key.code != KeyCode.DELETE && key.code != KeyCode.HAND_CLEAR && key.code != KeyCode.HAND_MODE) {
+            endDirectHandBeforeKey()
+        }
         val s = state
         topBar.clearAction()
         consumedShiftKey = null
@@ -1128,10 +1151,14 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             if (s.schema == "pinyin") controller.onChar('\''.code)
             return
         }
+        // 选中了文字时，Shift 先循环选区大小写，不改变之后输入的大小写状态。
+        // With text selected, Shift cycles the selection's case and leaves the typing state alone.
+        if (controller.cycleSelectionCase()) return
         if (shift.tap(SystemClock.uptimeMillis(), allowLock = !s.chinese)) updateLabels()
     }
 
     override fun onKeyText(key: Key, text: String) {
+        endDirectHandBeforeKey()
         topBar.clearAction()
         if (key.code == KeyCode.LANG) {
             val kb = WeavePrefs.KEYBOARD_NAMES.entries.firstOrNull { it.value == text }?.key ?: return
@@ -1170,6 +1197,38 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun onKeyRevert(key: Key) {
         if (controller.undoLastInput() && consumedShiftKey === key && shift.restoreConsumed()) updateLabels()
         consumedShiftKey = null
+    }
+
+    override fun directHandAvailable(key: Key): Boolean =
+        key.isChar && directReturnSchema == null && state.chinese && state.schema != "hand" &&
+            !controller.isSensitiveField && !numberMode && controller.numericFieldKind() == 0 &&
+            (layoutSig.startsWith("t9:") || layoutSig.startsWith("cn:"))
+
+    override fun onDirectHandStart(key: Key): Boolean {
+        if (!directHandAvailable(key)) return false
+        val returnSchema = state.schema
+        onKeyRevert(key)
+        directReturnSchema = returnSchema
+        directSelectionMark = controller.externalSelection
+        keyboardView.beginDirectHand()
+        if (controller.setSchema("hand")) return true
+        directReturnSchema = null
+        keyboardView.endDirectHand()
+        return false
+    }
+
+    /** 结束覆盖层手写并把认出的字上屏；没有结果时只收起墨迹。 Commit the ink, then return to the keys. */
+    private fun endDirectHandBeforeKey() {
+        if (directReturnSchema == null) return
+        controller.commitFirst()
+        finishDirectHand()
+    }
+
+    private fun finishDirectHand() {
+        val returnSchema = directReturnSchema ?: return
+        directReturnSchema = null
+        keyboardView.endDirectHand()
+        controller.setPreferredSchema(returnSchema)
     }
 
     // 组合中滑动空格移动拼音里的光标（九键、五笔等不支持时不滑）。 While composing, the space slide moves the caret in the pinyin.
@@ -1241,6 +1300,12 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onHandCommit(): Boolean = keyboardView.hand?.drawing != true && controller.commitFirst()
 
+    override fun onHandIdleCommit(): Boolean {
+        val committed = onHandCommit()
+        if (committed) finishDirectHand()
+        return committed
+    }
+
     override fun onDeleteClear() {
         val removed = controller.clearBeforeCursor() ?: return
         topBar.showAction("已清空", "撤销", 3000) { controller.restoreCleared(removed) }
@@ -1267,6 +1332,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     override fun onVoiceHoldEnd(cancelled: Boolean) { voiceStrip?.end(cancelled) }
 
     override fun onSideItem(index: Int) {
+        endDirectHandBeforeKey()
         val s = state
         val side = keyboardView.side ?: return
         val item = side.items.getOrNull(index) ?: return
@@ -1290,6 +1356,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     // ================================================================ TopBarHost
 
     override fun onToolbar(index: Int) {
+        // 工具栏会插入表情、剪贴板、语音等文字：先把覆盖层手写的墨迹上屏再执行。
+        // Toolbar actions insert text (emoji, clips, voice): commit the overlay's ink first.
+        endDirectHandBeforeKey()
         when (index) {
             0 -> togglePanel("toolbox")
             1 -> {
@@ -1307,10 +1376,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onToolbarLong(index: Int): Boolean {
+        endDirectHandBeforeKey()
         when (index) {
             0 -> openSettings(null)
             // 长按 🎙：不打开面板，直接按住说话，松手结束。 Long-press mic: hold-to-talk, release to end.
             2 -> startHoldVoice()
+            // 长按光标：全选，不打开光标面板（光标面板仍可单击打开）。 Long-press cursor: select all; a tap still opens the panel.
+            ToolIds.CURSOR -> controller.contextMenuAction(android.R.id.selectAll)
             else -> return false
         }
         return true
@@ -1325,6 +1397,9 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (keyboardView.hand?.drawing == true) return
         val lc = localCands
         if (lc != null) {
+            // 本地候选（九键标点）直接上屏：覆盖层手写的字要先出去。
+            // A local candidate (T9 punctuation) goes straight out: the overlay's ink must go first.
+            endDirectHandBeforeKey()
             val t = lc.getOrNull(index) ?: return
             localCands = null
             if(t in T9_ONE_PUNCT && !controller.isSensitiveField) SymbolUsage.record(prefs,t)
@@ -1332,7 +1407,18 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             updateCandidates(null)
             return
         }
-        candidateState?.let { controller.onVisibleCandidate(index, it.candidateGeneration) }
+        candidateState?.let { pickVisibleCandidate(index, it.candidateGeneration) }
+    }
+
+    /**
+     * 候选项上屏（候选栏、展开的网格都走这里）；覆盖层手写的字这样上屏后收起覆盖层、回到原来的键面。
+     * Commit a visible candidate (candidate bar or expanded grid); a direct-handwriting overlay ends once its
+     * character is out, returning to the unchanged keys.
+     */
+    internal fun pickVisibleCandidate(index: Int, generation: Long): Boolean {
+        val committed = controller.onVisibleCandidate(index, generation)
+        if (committed) finishDirectHand()
+        return committed
     }
 
     override fun onCandidateLong(index: Int): Boolean {
@@ -1422,6 +1508,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
 
     override fun onClipChip() {
         val t = pendingClip ?: return
+        endDirectHandBeforeKey()
         topBar.clipChip = null
         controller.onText(t)
     }
@@ -1560,6 +1647,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
      * 工具箱「发到电脑」：把当前剪贴板文字发给已连接的电脑；未开启或未连接时引导去设置。
      * Toolbox "send to computer": send the current clipboard text to the connected computer, or point to settings.
      */
+    /** 拍照识字：识别剪贴板里的图片，结果直接输入。 Recognise the clipboard image and type the result. */
+    fun recognizeClipboardImage() {
+        com.weavetext.ime.ocr.ClipboardOcr.run(ctx, { text -> controller.onText(text) }, { msg ->
+            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show()
+        })
+    }
+
     fun sendClipboardToComputer() {
         if (!Extensions.feature(prefs, "link")) return
         val link = com.weavetext.ime.link.LinkManager.get(ctx)
@@ -1943,6 +2037,11 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
      * app rewrote the text): keep the number layout, caps lock and the open panel; only re-check sentence caps.
      */
     override fun onShown(restarting: Boolean) {
+        finishDirectHand()
+        if (controller.isSensitiveField) {
+            voiceSession.cancel()
+            stopVoice()
+        }
         com.weavetext.ime.stickers.StickerSending.activate(controller)
         root.post {val loc=IntArray(2);card.getLocationOnScreen(loc);if(card.height>0)com.weavetext.ime.stickers.StickerOverlayService.avoidKeyboard(loc[1])}
         // 重用输入视图时也请求最新边衬，再于窗口定位后校正。Refresh reused input views and recheck after positioning.
@@ -1981,6 +2080,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onHidden() {
+        finishDirectHand()
         controller.discardClearRecovery()
         controller.candidatesVisible(null)
         candidatePopup?.dismiss()
@@ -2001,6 +2101,10 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     }
 
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        // 光标被挪到别处（点了文字、粘贴）：覆盖层里的字已经不在这里了，收起墨迹而不是把旧字插到新光标处。
+        // The cursor moved elsewhere (a tap in the text, a paste): the overlay's char no longer belongs here,
+        // so drop the ink instead of inserting the stale character at the new cursor.
+        if (directReturnSchema != null && controller.externalSelection != directSelectionMark) finishDirectHand()
         (panel as? CursorPanel)?.onSelection(selStart != selEnd)
         // 只在编辑器真变了时重算；同位置的回声不能把用户刚关掉的句首大写打开。
         // Recheck actual editor changes; an unchanged echo must not undo the user's lowercase choice.

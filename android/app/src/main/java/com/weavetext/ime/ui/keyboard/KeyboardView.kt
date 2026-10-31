@@ -46,6 +46,11 @@ interface KeyboardHost {
     fun onHandStroke(strokes: List<FloatArray>) {}
     /** 手写：停笔后又落笔，先上屏首选。 Handwriting: pen down after a pause; commit the top candidate first. */
     fun onHandCommit(): Boolean = false
+    /** 直接在按键上书写：滑过阈值时撤回按键并启用手写。 Direct handwriting begins after a deliberate slide. */
+    fun directHandAvailable(key: Key): Boolean = false
+    fun onDirectHandStart(key: Key): Boolean = false
+    /** 停笔自动上屏；与再次落笔时的确认分开，便于结束覆盖层手写。 Idle auto-commit, distinct from pen-down confirmation. */
+    fun onHandIdleCommit(): Boolean = onHandCommit()
 }
 
 /**
@@ -71,6 +76,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     /** 手写书写区（仅手写布局）。 The handwriting pad (handwriting layout only). */
     var hand: HandPad? = null
         private set
+    private var directHand = false
     /** Body height for an expanded docked handwriting pad; other layouts always use the style's key height. */
     var handAreaHeight = 0
         set(value) {
@@ -138,7 +144,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             postDelayed(handIdle, remaining)
             return
         }
-        if (host?.onHandCommit() != true) return
+        if (host?.onHandIdleCommit() != true) return
         pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
         invalidate()
     }
@@ -182,6 +188,10 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         var mode = M_NONE
         /** 字符已在按下时输出。 The char was emitted on DOWN. */
         var emitted = false
+        /** 按键上的暂存笔迹；只有滑过阈值才显示并识别。 Tentative ink for a possible direct-handwriting slide. */
+        var directInk = false
+        /** 暂存笔迹起于覆盖层手写：画布上已有写完的字，取消时不能整块清掉。 Started over the direct overlay's ink. */
+        var overlayInk = false
         var cursorAnchor = 0f
         var cursorMoved = false
         var lastMoveT = 0L
@@ -283,9 +293,22 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (hand == null) return
         cancelTouch()
         hand = null
+        directHand = false
         removeCallbacks(handIdle)
         handPad.reset()
         inkLayer?.invalidate()
+    }
+
+    /** Keep the current keys and expose their whole area as an ink surface. */
+    fun beginDirectHand() {
+        hand = handPad
+        directHand = true
+        handPad.rect.set(0f, 0f, width.toFloat(), height.toFloat())
+        invalidateInk()
+    }
+
+    fun endDirectHand() {
+        if (directHand) dropHand()
     }
 
     /**
@@ -320,6 +343,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
     private fun relayout() {
         if (width > 0 && ::metrics.isInitialized) builder?.invoke(width.toFloat())
+        if (directHand) handPad.rect.set(0f, 0f, width.toFloat(), height.toFloat())
         invalidate()
         a11y.invalidate()
     }
@@ -461,7 +485,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         if (!::palette.isInitialized) return
         side?.let { drawSide(canvas, it) }
         for (k in keys) drawKey(canvas, k)
-        hand?.let { drawHand(canvas, it) }
+        if (!directHand) hand?.let { drawHand(canvas, it) }
     }
 
     private fun drawKey(c: Canvas, k: Key) {
@@ -876,7 +900,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val y = e.getY(index)
         p.lastX = x; p.lastY = y
         val pad = hand
-        if (pad != null && inPad(pad, x, y, e.eventTime)) {
+        // 覆盖层手写里按键和九键侧栏仍然可点：点按打字，滑动才继续写，写完的字不会吞掉下一列符号。
+        // Keys and the T9 side column stay tappable in the overlay: a tap types and a deliberate slide keeps
+        // writing, so a finished character can't swallow the next key or symbol.
+        val overlayKey = keyAt(x, y)?.takeIf { !it.disabled }?.takeIf { directHand }
+        val overlaySide = directHand && side?.cell?.contains(x, y) == true
+        if (overlayKey == null && !overlaySide && pad != null && inPad(pad, x, y, e.eventTime)) {
             settleOthers()
             removeCallbacks(handIdle)
             p.id = e.getPointerId(index)
@@ -940,11 +969,24 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         postDelayed(p.longPress, (e.eventTime + timeout - SystemClock.uptimeMillis()).coerceAtLeast(0L))
         if (k.code == KeyCode.DELETE) postDelayed(p.repeat, 400)
         // 字符键按下即输出；上滑、长按改写时替换这一个字。 Char keys emit on DOWN; swipe/long-press replace it.
+        // 覆盖层手写里这一下先攒着：抬手是打字，滑过阈值才是继续写。
+        // In the overlay the sample waits: lifting types the key, sliding past the threshold keeps writing.
         if (k.isChar) {
-            p.emitted = true
-            measureNear(k, x, y)
-            host?.onKey(k)
-            nearCode = 0
+            if (directHand) {
+                handPad.begin(x, y, e.eventTime, inkPressure(e, index))
+                p.directInk = handPad.drawing
+                p.overlayInk = true
+            } else {
+                p.emitted = true
+                measureNear(k, x, y)
+                host?.onKey(k)
+                nearCode = 0
+                if (host?.directHandAvailable(k) == true) {
+                    handPad.rect.set(0f, 0f, width.toFloat(), height.toFloat())
+                    handPad.begin(x, y, e.eventTime, inkPressure(e, index))
+                    p.directInk = true
+                }
+            }
         }
     }
 
@@ -1018,6 +1060,11 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 M_INFO -> { ov?.hideInfo(); o.mode = M_DONE }
                 M_CURSOR -> if (!o.cursorMoved && k != null) { o.mode = M_DONE; host?.onKey(k) }
             }
+            if (o.directInk) {
+                discardTentative(SystemClock.uptimeMillis(), o.overlayInk)
+                o.directInk = false
+                o.overlayInk = false
+            }
         }
     }
 
@@ -1090,6 +1137,23 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                 } else if (abs(dx) > slop || abs(dy) > slop) {
                     removeCallbacks(p.longPress)
                 }
+                if (p.directInk && max(abs(dx), abs(dy)) >= swipeMin && (dy >= 0f || abs(dx) > abs(dy))) {
+                    // 覆盖层里的暂存笔迹本来就在手写方案里：不用切换，直接接着写。
+                    // A tentative stroke over the overlay is already in the hand schema: keep writing in place.
+                    if (p.overlayInk || host?.onDirectHandStart(k) == true) {
+                        removeCallbacks(p.longPress)
+                        p.mode = M_INK
+                        inkOwner = p
+                        if (bubbleOwner === p) { host?.overlay?.hideBubble(); bubbleOwner = null }
+                        handPad.add(x, y, t, 1f)
+                        invalidateInk()
+                        return
+                    }
+                    discardTentative(t, p.overlayInk)
+                    p.directInk = false
+                } else if (p.directInk) {
+                    handPad.add(x, y, t, 1f)
+                }
             }
             M_CURSOR -> {
                 // 速度按事件时间计算，主线程卡顿时不会虚高。 Speed from event time, not processing time.
@@ -1133,6 +1197,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         for (h in 0 until e.historySize) pad.add(e.getHistoricalX(i, h) - l, e.getHistoricalY(i, h) - t, e.getHistoricalEventTime(h), inkPressure(e, i, h))
         pad.add(e.getX(i) - l, e.getY(i) - t, e.eventTime, inkPressure(e, i))
         invalidateInk()
+    }
+
+    /** 丢掉暂存的一笔；覆盖层画布上已经写完的字要留着。 Drop the tentative stroke; the overlay's finished ink stays. */
+    private fun discardTentative(t: Long, overlay: Boolean) {
+        handPad.cancel(t)
+        if (!overlay) handPad.reset()
     }
 
     private fun inkPressure(event: MotionEvent, index: Int, history: Int = -1): Float {
@@ -1192,6 +1262,9 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         p.mode = M_NONE
         if (bubbleOwner === p) { ov?.hideBubble(); bubbleOwner = null }
         if (m == M_CLEAR) dangerKey = null
+        if (p.directInk && m != M_INK) discardTentative(evTime, p.overlayInk)
+        p.directInk = false
+        p.overlayInk = false
         when (m) {
             M_INK -> {
                 inkOwner = null

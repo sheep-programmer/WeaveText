@@ -29,12 +29,12 @@ class TranslationSettingsTest {
 
     @Test fun onlineTranslationIsOffAndProducesNoConfiguredClientByDefault() {
         assertFalse(TranslationSettings.onlineEnabled(prefs))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         assertEquals("", TranslationSettings.endpoint(prefs))
         assertEquals("", TranslationSettings.apiKey(prefs))
         assertEquals("auto", TranslationSettings.sourceLanguage(prefs))
         assertFalse(TranslationSettings.allowMobileModelDownload(prefs))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertTrue(runCatching { TranslationSettings.httpConfig(prefs) }.isFailure)
     }
 
@@ -64,7 +64,7 @@ class TranslationSettingsTest {
 
     @Test fun googleNeedsNoCustomNetworkConsentEndpointOrApiKey() {
         assertFalse(TranslationSettings.onlineEnabled(prefs))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.setOnlineEnabled(prefs, true))
         assertFalse(prefs.contains(TranslationSettings.ENDPOINT))
         assertFalse(prefs.contains(TranslationSettings.API_KEY))
@@ -77,16 +77,16 @@ class TranslationSettingsTest {
         assertEquals("en", TranslationSettings.sourceLanguage(prefs))
         TranslationSettings.setProtocol(prefs, TranslationProtocol.LIBRE_TRANSLATE)
         assertEquals("en", TranslationSettings.sourceLanguage(prefs))
-        TranslationSettings.setProtocol(prefs, TranslationProtocol.GOOGLE_WEB)
+        TranslationSettings.setProtocol(prefs, TranslationProtocol.GOOGLE_DEVICE)
         assertEquals("en", TranslationSettings.sourceLanguage(prefs))
     }
 
     @Test fun switchingToGoogleKeepsCustomSettingsWithoutUsingThem() {
         assertTrue(TranslationSettings.saveConfiguration(prefs, "https://example.test/translate", TranslationProtocol.LIBRE_TRANSLATE, "private-libre-key", 8_000))
         assertTrue(TranslationSettings.setOnlineEnabled(prefs, true))
-        TranslationSettings.setProtocol(prefs, TranslationProtocol.GOOGLE_WEB)
+        TranslationSettings.setProtocol(prefs, TranslationProtocol.GOOGLE_DEVICE)
         assertFalse(TranslationSettings.onlineEnabled(prefs))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertEquals("https://example.test/translate", TranslationSettings.endpoint(prefs))
         assertEquals("private-libre-key", TranslationSettings.apiKey(prefs))
         TranslationSettings.setProtocol(prefs, TranslationProtocol.LIBRE_TRANSLATE)
@@ -99,7 +99,7 @@ class TranslationSettingsTest {
             .putString(TranslationSettings.ENDPOINT, "https://api.mymemory.translated.net/get")
             .putString(TranslationSettings.API_KEY, "old-preset-key")
             .putBoolean(TranslationSettings.ONLINE_ENABLED, true).commit()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.onlineEnabled(prefs))
         assertEquals("", TranslationSettings.endpoint(prefs))
         assertEquals("", TranslationSettings.apiKey(prefs))
@@ -115,9 +115,9 @@ class TranslationSettingsTest {
     @Test fun oldImplicitEnabledPresetMigratesWithoutPublicServiceFallback() {
         prefs.edit().putBoolean(TranslationSettings.ONLINE_ENABLED, true)
             .putString(TranslationSettings.API_KEY, "stray-preset-key").commit()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.onlineEnabled(prefs))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         assertEquals("", TranslationSettings.endpoint(prefs))
         assertEquals("", TranslationSettings.apiKey(prefs))
     }
@@ -127,7 +127,7 @@ class TranslationSettingsTest {
             .putString(TranslationSettings.ENDPOINT, "http://192.168.1.3:5000/translate")
             .putString(TranslationSettings.API_KEY, "saved-private-key")
             .putBoolean(TranslationSettings.ONLINE_ENABLED, true).commit()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.validatedProtocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.onlineEnabled(prefs))
         assertEquals("http://192.168.1.3:5000/translate", TranslationSettings.endpoint(prefs))
         assertEquals("saved-private-key", TranslationSettings.apiKey(prefs))
@@ -231,18 +231,25 @@ class TranslationSettingsTest {
         assertEquals(TranslationFailure.NOT_ENABLED, (result as TranslationResult.Failure).error.kind)
     }
 
-    @Test fun oldDeviceDefaultMigratesToWebEvenAfterThePreviousMigration() {
-        prefs.edit().putString(TranslationSettings.PROTOCOL, "google_device")
-            .putBoolean(TranslationSettings.GOOGLE_DEVICE_MIGRATION, true)
+    @Test fun storedGoogleWebChoiceMigratesToTheOfflinePluginOnceAndDropsOnlineConsent() {
+        prefs.edit().putString(TranslationSettings.PROTOCOL, "google_web")
             .putBoolean(TranslationSettings.ONLINE_ENABLED, true).commit()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.onlineEnabled(prefs))
-        assertTrue(prefs.getBoolean(TranslationSettings.GOOGLE_WEB_MIGRATION, false))
+        assertTrue(prefs.getBoolean(TranslationSettings.DEVICE_DEFAULT_MIGRATION, false))
+    }
+
+    @Test fun storedOfflinePluginSelectionSurvivesTheDefaultMigration() {
+        prefs.edit().putString(TranslationSettings.PROTOCOL, "google_device")
+            .putBoolean(TranslationSettings.GOOGLE_DEVICE_MIGRATION, true).commit()
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
+        assertFalse(TranslationSettings.onlineEnabled(prefs))
     }
 
     @Test fun migrationDoesNotRepeatAfterExplicitlyEnablingTheReadyPlugin() {
         TranslationSettings.migrateLegacyProvider(prefs)
-        assertTrue(TranslationSettings.setOfflinePluginEnabled(prefs, enabled = true, ready = true))
+        assertTrue(TranslationSettings.selectOfflinePlugin(prefs, ready = true))
         repeat(3) { TranslationSettings.migrateLegacyProvider(prefs) }
         assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.validatedProtocol(prefs))
         assertFalse(TranslationSettings.onlineEnabled(prefs))
@@ -255,7 +262,7 @@ class TranslationSettingsTest {
             .putInt(TranslationSettings.TIMEOUT_MS, 12_000)
             .putString(TranslationSettings.SOURCE_LANGUAGE, "fr")
             .putString(TranslationSettings.TARGET_LANGUAGE, "zh").commit()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         assertEquals("https://custom.test/translate", TranslationSettings.endpoint(prefs))
         assertEquals("saved-key", TranslationSettings.apiKey(prefs))
         assertEquals(12_000, TranslationSettings.timeoutMs(prefs))
@@ -263,23 +270,38 @@ class TranslationSettingsTest {
         assertEquals("zh", prefs.getString(TranslationSettings.TARGET_LANGUAGE, null))
     }
 
-    @Test fun onlyReadyPluginCanBeEnabledAndDisablingItSelectsWeb() {
-        assertFalse(TranslationSettings.setOfflinePluginEnabled(prefs, enabled = true, ready = false))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
-        assertTrue(TranslationSettings.setOfflinePluginEnabled(prefs, enabled = true, ready = true))
+    @Test fun onlyAReadyPluginCanBeSelected() {
+        assertFalse(TranslationSettings.selectOfflinePlugin(prefs, ready = false))
+        TranslationSettings.setProtocol(prefs, TranslationProtocol.LIBRE_TRANSLATE)
+        assertFalse(TranslationSettings.selectOfflinePlugin(prefs, ready = false))
+        assertEquals(TranslationProtocol.LIBRE_TRANSLATE, TranslationSettings.protocol(prefs))
+        assertTrue(TranslationSettings.selectOfflinePlugin(prefs, ready = true))
         assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
-        assertTrue(TranslationSettings.setOfflinePluginEnabled(prefs, enabled = false, ready = false))
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
     }
 
-    @Test fun disablingAnUnselectedPluginDoesNotOverrideCustomProvider() {
-        TranslationSettings.setProtocol(prefs, TranslationProtocol.GENERIC)
-        TranslationSettings.setOfflinePluginEnabled(prefs, enabled = false, ready = false)
-        assertEquals(TranslationProtocol.GENERIC, TranslationSettings.protocol(prefs))
+    @Test fun selectingThePluginKeepsASavedCustomServiceForLaterUse() {
+        assertTrue(TranslationSettings.saveConfiguration(prefs, "https://example.test/translate", TranslationProtocol.LIBRE_TRANSLATE, "keep-me", 8_000))
+        assertTrue(TranslationSettings.setOnlineEnabled(prefs, true))
+        assertTrue(TranslationSettings.selectOfflinePlugin(prefs, ready = true))
+        assertFalse(TranslationSettings.onlineEnabled(prefs))
+        assertEquals("https://example.test/translate", TranslationSettings.endpoint(prefs))
+        assertEquals("keep-me", TranslationSettings.apiKey(prefs))
+    }
+
+    /** 离线插件是默认：设备端翻译，原文不出设备，自定义联网服务需要单独启用。 */
+    @Test fun offlinePluginIsTheDefaultAndOnlyEnabledOnlineServicesAutoTranslate() {
+        assertTrue(TranslationSettings.autoTranslates(prefs))
+        TranslationSettings.setProtocol(prefs, TranslationProtocol.LIBRE_TRANSLATE)
+        assertFalse(TranslationSettings.autoTranslates(prefs))
+        assertTrue(TranslationSettings.saveConfiguration(prefs, "https://example.test/translate", TranslationProtocol.LIBRE_TRANSLATE, "", 8_000))
+        assertTrue(TranslationSettings.setOnlineEnabled(prefs, true))
+        assertTrue(TranslationSettings.autoTranslates(prefs))
+        assertTrue(TranslationSettings.selectOfflinePlugin(prefs, ready = true))
+        assertTrue(TranslationSettings.autoTranslates(prefs))
     }
 
     @Test fun bothGoogleModesRejectCustomHttpConfiguration() {
-        for (protocol in listOf(TranslationProtocol.GOOGLE_WEB, TranslationProtocol.GOOGLE_DEVICE)) {
+        for (protocol in listOf(TranslationProtocol.GOOGLE_DEVICE)) {
             TranslationSettings.setProtocol(prefs, protocol)
             assertFalse(TranslationSettings.usesCustomHttp(protocol))
             assertFalse(TranslationSettings.saveConfiguration(prefs, "https://custom.test/translate", protocol, "key", 8_000))

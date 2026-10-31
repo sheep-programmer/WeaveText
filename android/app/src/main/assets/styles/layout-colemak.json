@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "colemak",
+  "extends": "fresh",
+  "order": 3,
+  "name": "Colemak",
+  "description": "Colemak 字母排列：高频字母落在主排，其余与清爽相同",
+  "qwerty": {
+    "rows": [
+      [
+        "qwfpgjluy"
+      ],
+      [
+        "arstdhneio"
+      ],
+      [
+        "shift:1.42",
+        "gap:0.08",
+        "zxcvbkm",
+        "gap:0.08",
+        "delete:1.42"
+      ],
+      [
+        "symbol:1.42",
+        "number:1.42",
+        "comma",
+        "space:2.32",
+        "period",
+        "lang:1.42",
+        "enter:1.42"
+      ]
+    ]
+  }
+}

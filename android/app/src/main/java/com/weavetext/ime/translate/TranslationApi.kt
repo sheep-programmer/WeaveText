@@ -174,8 +174,7 @@ object TranslationLanguages {
 }
 
 enum class TranslationProtocol(val id: String, val label: String) {
-    GOOGLE_WEB("google_web", "Google Translate 网页（无需下载）"),
-    GOOGLE_DEVICE("google_device", "Google 离线翻译插件"),
+    GOOGLE_DEVICE("google_device", "离线翻译插件（默认，设备端）"),
     LIBRE_TRANSLATE("libretranslate", "LibreTranslate"),
     GENERIC("generic", "Generic JSON"),
 }
@@ -191,7 +190,7 @@ class HttpTranslationConfig(
     val headers: Map<String, String> = headers.toMap()
 
     fun endpointUrl(): URL {
-        require(protocol != TranslationProtocol.GOOGLE_DEVICE && protocol != TranslationProtocol.GOOGLE_WEB) { "设备端翻译不使用 HTTP 地址" }
+        require(protocol != TranslationProtocol.GOOGLE_DEVICE) { "设备端翻译不使用 HTTP 地址" }
         require(endpoint.length <= 2_000) { "翻译服务地址过长" }
         require(apiKey.length <= MAX_API_KEY_CHARS && apiKey.none { it.isISOControl() }) { "API key 格式无效" }
         val uri = try { URI(endpoint.trim()) } catch (_: Exception) {
@@ -295,7 +294,7 @@ class HttpTranslationService(
 
     private fun encode(request: TranslationRequest): String {
         val json = when (config.protocol) {
-            TranslationProtocol.GOOGLE_DEVICE, TranslationProtocol.GOOGLE_WEB -> error("Device and web translation do not use custom HTTP")
+            TranslationProtocol.GOOGLE_DEVICE -> error("Device translation does not use custom HTTP")
             TranslationProtocol.LIBRE_TRANSLATE -> JSONObject()
                 .put("q", request.text).put("source", request.sourceLanguage)
                 .put("target", request.targetLanguage).put("format", "text")
@@ -325,7 +324,7 @@ class HttpTranslationService(
         // Never expose the service's error text: it may echo the API key or source text.
         if (root.has("error")) throw TranslationError(TranslationFailure.SERVICE_ERROR, "翻译服务返回错误，请检查语言及服务配置")
         val values = when (config.protocol) {
-            TranslationProtocol.GOOGLE_DEVICE, TranslationProtocol.GOOGLE_WEB -> error("Device and web translation do not use custom HTTP")
+            TranslationProtocol.GOOGLE_DEVICE -> error("Device translation does not use custom HTTP")
             TranslationProtocol.LIBRE_TRANSLATE -> sequenceOf(root.opt("translatedText"))
             TranslationProtocol.GENERIC -> sequenceOf(
                 root.opt("translation"), root.opt("translatedText"), root.opt("text"),
@@ -471,7 +470,6 @@ object TranslationServices {
     /** Compatibility entry for custom HTTP services. Device translation needs an application Context. */
     fun from(prefs: android.content.SharedPreferences): TranslationService {
         val protocol = selectedProtocol(prefs) ?: return invalidConfiguration()
-        if (protocol == TranslationProtocol.GOOGLE_WEB) return DisabledTranslationService(TranslationError(TranslationFailure.NOT_CONFIGURED, "请使用 Google Translate 官方网页入口"))
         if (protocol == TranslationProtocol.GOOGLE_DEVICE) {
             return DisabledTranslationService(TranslationError(
                 TranslationFailure.NOT_CONFIGURED, "Google 设备端翻译需要应用上下文，请使用带 Context 的服务入口",

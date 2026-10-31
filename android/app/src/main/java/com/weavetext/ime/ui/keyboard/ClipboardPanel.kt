@@ -114,7 +114,7 @@ class ClipboardRepo(private val ctx: Context, private val kb: WeaveKeyboard) {
         if (recent && (fresh || changed || offerCurrent)) kb.onNewClip(text)
         if (!changed) return
         lastSeen = text
-        if (recording && unrecorded(clip, fresh)) {
+        if (recording && !com.weavetext.ime.ime.ClipPrivacy.incognito && unrecorded(clip, fresh)) {
             history.add(text, now)
             notifyChanged()
         }

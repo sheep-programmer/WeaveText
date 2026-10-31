@@ -38,23 +38,23 @@ class ModelsTest {
     private val models = File(System.getProperty("weave.models"))
     private val cache = File(System.getProperty("weave.cache"))
 
-    @Test fun bilingualArchivesKeepTheVerifiedRootModels() {
+    @Test fun streamingArchivesKeepTheVerifiedRootModels() {
         val cat = ModelCatalog.parse(File("../app/src/main/assets/models/catalog.json").readText())
-        for (id in listOf("asr-stream-mixed-medium", "asr-stream-mixed-high")) {
-            val spec = cat.find(id)!!
-            val archive = File(cache, spec.archiveUrl.substringAfterLast('/'))
-            assumeTrue("Optional official model fixture: $archive", archive.isFile)
-            val dest = Files.createTempDirectory("weave-bilingual-archive").toFile()
-            try {
-                assertEquals(null, NativeArchive.nativeExtractTarBz2(archive.path, dest.path, spec.fileNames().joinToString("\n")))
-                for (entry in spec.files) {
-                    val file = File(dest, entry.name)
-                    assertEquals(entry.size, file.length())
-                    assertEquals(entry.sha256, Downloader.sha256Of(file))
-                }
-                assertTrue("Alternative context exports must not replace root models", !File(dest, "64").exists() && !File(dest, "96").exists())
-            } finally { dest.deleteRecursively() }
-        }
+        val spec = cat.find("asr-x-asr-960")!!
+        val archive = File(cache, spec.archiveUrl.substringAfterLast('/'))
+        assumeTrue("Optional official model fixture: $archive", archive.isFile)
+        val dest = Files.createTempDirectory("weave-stream-archive").toFile()
+        try {
+            assertEquals(null, NativeArchive.nativeExtractTarBz2(archive.path, dest.path, spec.fileNames().joinToString("\n")))
+            for (entry in spec.files) {
+                val file = File(dest, entry.name)
+                assertEquals(entry.size, file.length())
+                assertEquals(entry.sha256, Downloader.sha256Of(file))
+            }
+            // 只解包目录里登记的文件：bpe.model 与 test_wavs 不进安装目录。
+            // Only the catalogued files are installed: bpe.model and test_wavs stay out.
+            assertEquals(spec.fileNames().sorted(), dest.list()!!.sorted())
+        } finally { dest.deleteRecursively() }
     }
 
     // ------------------------------------------------------------ catalog

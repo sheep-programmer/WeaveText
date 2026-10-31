@@ -53,7 +53,7 @@ class TranslationPanelTest {
 
     private fun withKeyboard(block: (WeaveKeyboard, InputController, FakeInputConnection) -> Unit) {
         WeavePrefs.of(app).edit().clear()
-            .putBoolean(com.weavetext.ime.settings.TranslationSettings.GOOGLE_WEB_MIGRATION, true)
+            .putBoolean(com.weavetext.ime.settings.TranslationSettings.DEVICE_DEFAULT_MIGRATION, true)
             .putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, TranslationProtocol.GENERIC.id).commit()
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val frame = FrameLayout(activity)
@@ -164,6 +164,109 @@ class TranslationPanelTest {
         assertEquals("", ic.text)
         action(panel.view, "插入")
         assertEquals("hello", ic.text)
+    }
+
+    private fun described(root: View, description: String): View? {
+        if (root.contentDescription == description) return root
+        if (root is ViewGroup) for (i in 0 until root.childCount) described(root.getChildAt(i), description)?.let { return it }
+        return null
+    }
+    private fun shownResult(root: View): String? =
+        described(root, "翻译结果")!!.takeIf { it.visibility == View.VISIBLE }?.let { (it as android.widget.TextView).text.toString() }
+
+    /** 离线插件模式下，输入停顿后自动翻译，结果直接显示在条里，不需要点按钮。 */
+    @Test fun typingTranslatesAutomaticallyOnceThePauseEnds() = withKeyboard { kb, controller, _ ->
+        WeavePrefs.of(app).edit().putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, TranslationProtocol.GOOGLE_DEVICE.id).commit()
+        val requests = mutableListOf<String>()
+        val panel = TranslationPanel(kb, serviceProvider = { object : TranslationService {
+            override fun translate(request: TranslationRequest, callback: (TranslationResult) -> Unit): TranslationCall {
+                requests += request.text; callback(TranslationResult.Success("hello")); return TranslationCall {}
+            }
+        } })
+        (kb.view as ViewGroup).addView(panel.view)
+        panel.onShow(); ShadowLooper.idleMainLooper()
+        controller.onText("你好"); panel.onState(controller.state)
+        ShadowLooper.idleMainLooper()
+        assertTrue("no request before the pause ends", requests.isEmpty())
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertEquals(listOf("你好"), requests)
+        assertEquals("hello", shownResult(panel.view))
+    }
+
+    /** 拼音组合中的字母不是原文，只在组合上屏后翻译。 */
+    @Test fun preeditIsNotTranslatedBeforeTheCompositionCommits() = withKeyboard { kb, controller, _ ->
+        WeavePrefs.of(app).edit().putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, TranslationProtocol.GOOGLE_DEVICE.id).commit()
+        val requests = mutableListOf<String>()
+        val panel = TranslationPanel(kb, serviceProvider = { object : TranslationService {
+            override fun translate(request: TranslationRequest, callback: (TranslationResult) -> Unit): TranslationCall {
+                requests += request.text; callback(TranslationResult.Success("hello")); return TranslationCall {}
+            }
+        } })
+        (kb.view as ViewGroup).addView(panel.view)
+        panel.onShow(); ShadowLooper.idleMainLooper()
+        controller.onChar('n'.code); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertTrue("composing letters are not source text", requests.isEmpty())
+        controller.commitFirst(); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertEquals(1, requests.size)
+    }
+
+    /** 旧的网页选择迁移到离线插件：不再打开浏览器，输入停顿后直接翻译。 */
+    @Test fun aLegacyGoogleWebChoiceMigratesToThePluginAndTranslatesWithoutABrowser() = withKeyboard { kb, controller, _ ->
+        WeavePrefs.of(app).edit().clear().putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, "google_web").commit()
+        val requests = mutableListOf<String>()
+        val panel = TranslationPanel(kb, serviceProvider = { object : TranslationService {
+            override fun translate(request: TranslationRequest, callback: (TranslationResult) -> Unit): TranslationCall {
+                requests += request.text; callback(TranslationResult.Success("hello")); return TranslationCall {}
+            }
+        } })
+        (kb.view as ViewGroup).addView(panel.view)
+        panel.onShow(); ShadowLooper.idleMainLooper()
+        controller.onText("你好"); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertEquals(listOf("你好"), requests)
+        assertNull("no browser window", org.robolectric.Shadows.shadowOf(app).nextStartedActivity)
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, com.weavetext.ime.settings.TranslationSettings.protocol(WeavePrefs.of(app)))
+    }
+
+    /** 启用了自定义联网服务后，输入停顿同样自动翻译；未启用时仍需点按钮。 */
+    @Test fun anEnabledCustomServiceTranslatesAsYouPause() = withKeyboard { kb, controller, _ ->
+        val prefs = WeavePrefs.of(app)
+        com.weavetext.ime.settings.TranslationSettings.saveConfiguration(prefs, "https://example.test/translate", TranslationProtocol.LIBRE_TRANSLATE, "", 8_000)
+        val requests = mutableListOf<String>()
+        val panel = TranslationPanel(kb, serviceProvider = { object : TranslationService {
+            override fun translate(request: TranslationRequest, callback: (TranslationResult) -> Unit): TranslationCall {
+                requests += request.text; callback(TranslationResult.Success("hello")); return TranslationCall {}
+            }
+        } })
+        (kb.view as ViewGroup).addView(panel.view)
+        panel.onShow(); ShadowLooper.idleMainLooper()
+        controller.onText("你好"); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertTrue("disabled services wait for a tap", requests.isEmpty())
+        com.weavetext.ime.settings.TranslationSettings.setOnlineEnabled(prefs, true)
+        controller.onText("好"); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertEquals(listOf("你好好"), requests)
+    }
+
+    /** 未启用的自定义服务不会自动发送原文，只在点击翻译时发送。 */
+    @Test fun customOnlineServicesStillRequireAnExplicitTap() = withKeyboard { kb, controller, _ ->
+        WeavePrefs.of(app).edit().putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, TranslationProtocol.GENERIC.id).commit()
+        val requests = mutableListOf<String>()
+        val panel = TranslationPanel(kb, serviceProvider = { object : TranslationService {
+            override fun translate(request: TranslationRequest, callback: (TranslationResult) -> Unit): TranslationCall {
+                requests += request.text; callback(TranslationResult.Success("hello")); return TranslationCall {}
+            }
+        } })
+        (kb.view as ViewGroup).addView(panel.view)
+        panel.onShow(); ShadowLooper.idleMainLooper()
+        controller.onText("你好"); panel.onState(controller.state)
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        assertTrue(requests.isEmpty())
+        button(panel.view, "完成")!!.performClick(); ShadowLooper.idleMainLooper()
+        assertEquals(listOf("你好"), requests)
     }
 
     @Test fun hardwareEditingCannotEscapeTranslationDraft() = withKeyboard { kb, controller, ic ->
@@ -309,7 +412,7 @@ class TranslationPanelTest {
 
     @Test fun selectedTextTranslatesAndRequiresExplicitWriteback() {
         WeavePrefs.of(app).edit().clear()
-            .putBoolean(com.weavetext.ime.settings.TranslationSettings.GOOGLE_WEB_MIGRATION, true)
+            .putBoolean(com.weavetext.ime.settings.TranslationSettings.DEVICE_DEFAULT_MIGRATION, true)
             .putString(com.weavetext.ime.settings.TranslationSettings.PROTOCOL, com.weavetext.ime.translate.TranslationProtocol.GOOGLE_DEVICE.id)
             .putString(com.weavetext.ime.settings.TranslationSettings.SOURCE_LANGUAGE, "en")
             .putString(com.weavetext.ime.settings.TranslationSettings.TARGET_LANGUAGE, "zh").commit()

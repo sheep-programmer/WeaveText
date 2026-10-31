@@ -29,6 +29,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(HEIGHT, R.drawable.ic_resize, null, "键盘调节"),
         Item(DARK, R.drawable.ic_moon, null, "深色模式"),
         Item(TRAD, 0, "繁", "繁体输出"),
+        Item(INCOGNITO, 0, "隐", "无痕输入"),
         Item(EMOJI, R.drawable.ic_emoji, null, "表情"),
         Item(PHRASES, R.drawable.ic_quick_phrase, null, "常用语"),
         Item(ONE_HAND, R.drawable.ic_one_hand, null, "单手模式"),
@@ -41,9 +42,12 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         Item(TRANSLATE, R.drawable.ic_globe, null, "翻译"),
         Item(STICKERS, R.drawable.ic_sticker_bag, null, "表情收纳袋"),
         Item(TOOLBAR, R.drawable.ic_toolbox, null, "工具栏设置"),
+        Item(OCR, 0, "识", "拍照识字"),
     )
 
     private val items get() = allItems.filter { item ->
+        // 拍照识字只在模型装好后出现。 Shown only once the OCR model is installed.
+        if (item.id == OCR) return@filter com.weavetext.ime.ocr.OcrPlugin.state(kb.ctx) == com.weavetext.ime.ocr.OcrPlugin.State.INSTALLED
         val feature = when (item.id) {
             PHRASES -> "phrases"; ENGINES -> "voice"; LINK -> "link"; TRANSLATE -> "translate"; STICKERS -> "stickers"
             else -> null
@@ -58,6 +62,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
     private fun isOn(id: Int): Boolean = when (id) {
         DARK -> StyleRepository.get(kb.ctx).isDark(kb.ctx, kb.prefs)
         TRAD -> WeavePrefs.traditional(kb.prefs)
+        INCOGNITO -> kb.controller.state.incognito
         ONE_HAND -> WeavePrefs.oneHand(kb.prefs) != 0
         FLOAT -> kb.floating
         else -> false
@@ -79,6 +84,9 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
                 p.edit().putString(WeavePrefs.THEME, if (StyleRepository.get(kb.ctx).isDark(kb.ctx, p)) "light" else "dark").apply()
             }
             TRAD -> p.edit().putBoolean(WeavePrefs.TRADITIONAL, !WeavePrefs.traditional(p)).apply()
+            // 无痕只在本次运行有效，不写入偏好：下次启动输入法时自动关闭。
+            // Incognito lasts for this run only and is not saved: the next start turns it off.
+            INCOGNITO -> kb.controller.setIncognito(!kb.controller.state.incognito)
             EMOJI -> { kb.showPanel("symbol"); (kb.panelNamed("symbol") as? SymbolPanel)?.selectEmoji() }
             PHRASES -> kb.showPanel("phrases")
             ONE_HAND -> p.edit().putInt(WeavePrefs.ONE_HAND, (WeavePrefs.oneHand(p) + 1) % 3).apply()
@@ -93,6 +101,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
             STICKERS -> kb.showPanel("stickers")
             // 直接打开「工具栏」设置页，挑选、排序工具栏按钮。 Straight to the toolbar page to pick and order buttons.
             TOOLBAR -> kb.openSettings("toolbar")
+            OCR -> { kb.closePanel(); kb.recognizeClipboardImage() }
         }
         view.invalidate()
     }
@@ -193,6 +202,7 @@ class ToolboxPanel(kb: WeaveKeyboard) : KbPanel(kb), PrefAware {
         const val EMOJI = 4; const val PHRASES = 5; const val ONE_HAND = 6; const val ENGINES = 7
         const val CURSOR = 8; const val CLIPBOARD = 9; const val SETTINGS = 10; const val FLOAT = 11
         const val LINK = 12; const val TRANSLATE = 13; const val STICKERS = 14; const val TOOLBAR = 15
+        const val INCOGNITO = 16; const val OCR = 17
         private const val ROWS = 3
     }
 }

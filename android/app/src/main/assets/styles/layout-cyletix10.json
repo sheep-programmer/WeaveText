@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "kind": "layout",
+  "id": "cyletix10",
+  "extends": "fresh",
+  "order": 5,
+  "name": "Cyletix10（实验）",
+  "description": "作者 Cyletix 的 10/10/7 研究排列；分号等非字母键不保留",
+  "qwerty": {
+    "rows": [
+      [
+        "qwdrfjkyp"
+      ],
+      [
+        "asetghliou"
+      ],
+      [
+        "shift:1.42",
+        "gap:0.08",
+        "zxcvbnm",
+        "gap:0.08",
+        "delete:1.42"
+      ],
+      [
+        "symbol:1.42",
+        "number:1.42",
+        "comma",
+        "space:2.32",
+        "period",
+        "lang:1.42",
+        "enter:1.42"
+      ]
+    ]
+  }
+}

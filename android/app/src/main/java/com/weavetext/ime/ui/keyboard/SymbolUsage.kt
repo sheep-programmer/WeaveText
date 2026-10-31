@@ -1,6 +1,7 @@
 package com.weavetext.ime.ui.keyboard
 
 import android.content.SharedPreferences
+import com.weavetext.ime.ime.ClipPrivacy
 import com.weavetext.ime.settings.WeavePrefs
 import org.json.JSONObject
 
@@ -16,7 +17,7 @@ object SymbolUsage {
         return (recent.take(6)+frequent+recent).distinct().take(24)
     }
     fun record(p:SharedPreferences,text:String) {
-        if(text.isEmpty() || text.length>256 || text.contains('\u0001'))return
+        if(ClipPrivacy.incognito || text.isEmpty() || text.length>256 || text.contains('\u0001'))return
         val recent=(listOf(text)+recent(p).filter{it!=text}).take(24)
         val counts=counts(p)
         counts.put(text,counts.optInt(text).coerceIn(0,999_999)+1)

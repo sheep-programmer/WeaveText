@@ -51,6 +51,8 @@ data class ImeState(
     val passwordField: Boolean = false,
     /** 密码框或要求不做个性化学习（IME_FLAG_NO_PERSONALIZED_LEARNING）：不显示/不记录剪贴板。 Private field. */
     val privateField: Boolean = false,
+    /** 无痕输入（本次运行有效）：所有输入框都不学习、不记录剪贴板与表情常用。 Incognito for this run: no learning anywhere. */
+    val incognito: Boolean = false,
     val engineReady: Boolean = false,
 )
 
@@ -131,7 +133,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         inputEpoch++
         translationDraft = null
         editor.invalidate()
-        engineRef?.setLearning(!state.privateField)
+        engineRef?.setLearning(learningAllowed())
         engineRef?.breakChain()
         engineRef?.setContext(null)
         refresh()
@@ -335,7 +337,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         engine = e
         engineFailed = false
         syncClock(e)
-        e.setLearning(!state.privateField && translationDraft == null)
+        e.setLearning(learningAllowed())
         // 首选方案缺词库时退回全拼，只公布内核接受的方案。 Fall back to pinyin when the schema's lexicon is missing.
         if (!e.setSchema(chineseSchema) && chineseSchema != "pinyin" && e.setSchema("pinyin")) chineseSchema = "pinyin"
         if (!state.chinese) e.setSchema("english")
@@ -415,7 +417,9 @@ class InputController(private val icProvider: () -> InputConnection?) {
         val password = cls == InputType.TYPE_CLASS_TEXT && variation in PASSWORD_VARIATIONS ||
             cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
         val noLearn = password || (info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING != 0
-        engine?.setLearning(!noLearn && translationDraft == null)
+        // 这里的 privateField 还是上一个输入框的状态，要用本框的 noLearn 判断，不能调用 learningAllowed()。
+        // privateField here still belongs to the previous field: use this field's noLearn, not learningAllowed().
+        engine?.setLearning(!noLearn && !state.incognito && translationDraft == null)
         val urlOrEmail = cls == InputType.TYPE_CLASS_TEXT && variation in LATIN_VARIATIONS
         latinField = urlOrEmail
         webField = cls == InputType.TYPE_CLASS_TEXT && variation in WEB_VARIATIONS
@@ -443,6 +447,15 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
     }
 
+    /**
+     * 编辑器回报的、不是我们造成的选区变化次数（用户点了别处、粘贴、别的输入法改了文字）。界面据此判断
+     * 手写覆盖层里的字是不是已经不属于当前光标了。
+     * How many selection reports weren't caused by our own edits (a tap elsewhere, a paste, another IME): the
+     * UI uses it to tell that a pending handwriting overlay no longer belongs at the cursor.
+     */
+    var externalSelection = 0
+        private set
+
     /** 编辑器回报的选区变化。 Selection update from the editor. */
     fun onSelectionUpdate(selStart: Int, selEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
         if (translationDraft != null) {
@@ -454,6 +467,7 @@ class InputController(private val icProvider: () -> InputConnection?) {
         // 光标被挪到别处（点了别的位置、粘贴…）：联想词对应的上文已经不对了，收起并断开连续造词。
         // The cursor moved elsewhere (a tap, a paste…): the predictions no longer fit, dismiss them and break the chain.
         if (editor.onUpdate(selStart, selEnd, candidatesStart, candidatesEnd)) {
+            externalSelection++
             if (!applyingHandResult && (handJob != null || handCommits.isNotEmpty())) {
                 discardHand()
                 engineRef?.clear()
@@ -623,6 +637,10 @@ class InputController(private val icProvider: () -> InputConnection?) {
 
     /** 成对符号开关（设置里可关）。 Paired-punctuation switch. */
     var autoPair = true
+    /** 中英之间自动加空格（设置里开关）。 Automatic space between Chinese and Latin (settings switch). */
+    var cjkSpacing = false
+    /** 每次上屏的字数（统计用，不含内容）。 Characters committed each time, for statistics only. */
+    var onCommitted: ((Int) -> Unit)? = null
 
     /**
      * 成对符号：输入「“（《【」等左半边时补上右半边、光标停在中间；紧接着输入右半边时只把光标移过去，不重复插入。
@@ -1052,6 +1070,16 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** 候选展开时分页加载。 Load more candidates for the expanded grid. */
     fun loadCandidates(offset: Int, limit: Int): List<Candidate> = engine?.candidates(offset, limit).orEmpty()
 
+    /** 无痕输入开关：开启后直到关闭或进程重启前，任何输入框都不学习。 Incognito on/off for the whole run. */
+    fun setIncognito(on: Boolean) {
+        update { it.copy(incognito = on) }
+        ClipPrivacy.incognito = on
+        engine?.setLearning(learningAllowed())
+    }
+
+    /** 学习只在普通输入框、无无痕、不在翻译草稿中进行。 Learning runs only in ordinary fields, outside incognito and drafts. */
+    private fun learningAllowed() = !state.privateField && !state.incognito && translationDraft == null
+
     fun toggleChinese() {
         // 内核未就绪时记下的字母按原样上屏，不带到另一种模式里。 Kept letters go out as typed, not into the other mode.
         if (engine == null) replayPending()
@@ -1200,6 +1228,20 @@ class InputController(private val icProvider: () -> InputConnection?) {
     fun hasSelection(): Boolean =
         if (editor.selectionKnown) !editor.selectionEmpty else !activeConnection()?.getSelectedText(0).isNullOrEmpty()
 
+    /** 选中文字时，Shift 循环它的大小写并替换选区；没有选区或正在组字时返回 false。 Cycles the selection's case. */
+    fun cycleSelectionCase(): Boolean {
+        // 只读取选区：不走 ic()，它会结算手写并让编辑器失效；手写尚未落定时选区可能过期，直接不处理。
+        // Read-only: skip ic(), which settles handwriting and invalidates the editor; pending handwriting makes the selection stale.
+        if (state.composing || isSensitiveField || handJob != null || handCommits.isNotEmpty()) return false
+        val ic = activeConnection() ?: return false
+        val selected = ic.getSelectedText(0)?.toString().orEmpty()
+        if (selected.isEmpty()) return false
+        val next = CaseCycle.next(selected)
+        if (next == selected) return false
+        ic.commitText(next, 1)
+        return true
+    }
+
     /** 复制/剪切/粘贴/全选。 Copy / cut / paste / select all. */
     fun contextMenuAction(id: Int) {
         val ic = ic() ?: return
@@ -1298,6 +1340,19 @@ class InputController(private val icProvider: () -> InputConnection?) {
         }
         if (e != null && !state.composing && state.candidates.isNotEmpty()) refresh()
         val ic = ic(modeled = true) ?: return
+        if (!keyEventsOnly) {
+            if (editor.selectionKnown) {
+                if (!editor.selectionEmpty) {
+                    ic.commitText("", 1)
+                    editor.onCommit("")
+                    return
+                }
+            } else if (!ic.getSelectedText(0).isNullOrEmpty()) {
+                editor.invalidate()
+                ic.commitText("", 1)
+                return
+            }
+        }
         val mirrored = if (editor.commitPending) null else editor.textBefore(64)
         val before = mirrored ?: ic.getTextBeforeCursor(64, 0)?.toString().orEmpty().also { editor.fill(it, 64) }
         if (before.isEmpty()) { editor.invalidate(); sendKeyTo(ic, KeyEvent.KEYCODE_DEL); return }
@@ -1511,10 +1566,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
     /** 开始说话时所在的输入框。 The editor dictation started in. */
     private var voiceField: Pair<String?, Int>? = null
     private var voiceEpoch: Long? = null
+    private var voiceSelection: Pair<Int, Int>? = null
     private fun field(info: EditorInfo?) = info?.packageName to (info?.fieldId ?: 0)
 
     /** 记下开始说话的输入框。 Remember which editor dictation started in. */
-    fun voiceBegin() { voiceField = field(editorInfo); voiceEpoch = inputEpoch }
+    fun voiceBegin() {
+        voiceField = field(editorInfo); voiceEpoch = inputEpoch
+        voiceSelection = if (editor.selStart >= 0 && editor.selEnd >= 0) editor.selStart to editor.selEnd else null
+    }
 
     /**
      * 语音的输入连接：收起键盘后才出来的终稿，只写回开始说话的那个输入框；用户已经换到别的应用或输入框就丢掉，
@@ -1526,7 +1585,16 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private fun voiceIc(): InputConnection? {
         val started = voiceField
         if (started != null && (started != field(editorInfo) || voiceEpoch != inputEpoch)) return null
-        return ic()
+        val mirrored = if (editor.selStart >= 0 && editor.selEnd >= 0) editor.selStart to editor.selEnd else null
+        val connection = ic() ?: return null
+        if (!connection.getSelectedText(0).isNullOrEmpty()) {
+            val extracted = runCatching { connection.getExtractedText(ExtractedTextRequest(), 0) }.getOrNull()
+            val current = extracted?.let { it.startOffset + it.selectionStart to it.startOffset + it.selectionEnd } ?: mirrored
+            // 开始语音时已有的选区仍可正常替换；之后新出现的选区不能被迟到结果吃掉。
+            // Replace a selection present when dictation began, but never one made while recognition was pending.
+            if (current == null || current != voiceSelection) return null
+        }
+        return connection
     }
 
     /** 语音中间结果以 composing 文本显示（带下划线）。 Voice interim result as composing text. */
@@ -1597,8 +1665,14 @@ class InputController(private val icProvider: () -> InputConnection?) {
     private fun write(text: String) {
         if (text.isEmpty()) return
         val ic = ic(modeled = true) ?: return
-        ic.commitText(text, 1)
-        editor.onCommit(text)
+        // 中英之间的空格只在开关打开时加，并且看光标前的字符，不改变已有文字。
+        // The optional CJK–Latin space depends on the character before the caret and never changes existing text.
+        val before = if (cjkSpacing) ic.getTextBeforeCursor(1, 0)?.lastOrNull() else null
+        val out = if (CjkSpacing.needsSpace(before, text[0])) " $text" else text
+        ic.commitText(out, 1)
+        editor.onCommit(out)
+        // 统计只计数；无痕与私密输入框不计。 Stats only count; incognito and private fields are not counted.
+        if (!state.incognito && !state.privateField) onCommitted?.invoke(out.trim().length)
     }
 
     /**

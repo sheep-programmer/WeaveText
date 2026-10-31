@@ -13,8 +13,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -109,11 +108,10 @@ class OfflineTranslationPluginCardTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
     }
 
-    @Test fun defaultShowsOfficialWebAndARealMissingPluginInsteadOfAnInstalledToggle() {
+    @Test fun defaultIsTheOfflinePluginAndAMissingPluginShowsAnInstallPrompt() {
         open()
-        compose.onNodeWithTag("translation_protocol_google_web").assertIsSelected()
         compose.onNodeWithText("未安装 · 请先安装插件").assertExists()
-        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled().assertIsOff()
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled().assertIsNotSelected()
         compose.onNodeWithTag("offline_translation_plugin_install").assertIsEnabled()
         compose.onNodeWithTag("offline_translation_plugin_manage").assertIsNotEnabled()
         compose.onNodeWithTag("offline_translation_plugin_uninstall").assertIsNotEnabled()
@@ -138,20 +136,21 @@ class OfflineTranslationPluginCardTest {
         compose.onNodeWithText("版本：0.5").assertExists()
         compose.onNodeWithText("已安装 · 签名不可信，无法启用").assertExists()
         compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
     }
 
-    @Test fun installedReadyPluginIsAnExplicitChoiceAndTurningItOffSelectsWeb() {
+    @Test fun installedReadyPluginIsSelectedAndCustomServicesCanBeChosenThenReturnedTo() {
         actions.current = OfflinePluginStatus(OfflinePluginState.READY, "1.2")
         open()
         compose.onNodeWithText("已安装 · 兼容").assertExists()
-        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsOff()
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsSelected()
+        click("translation_advanced_toggle")
+        click("translation_protocol_libretranslate")
+        assertEquals(TranslationProtocol.LIBRE_TRANSLATE, TranslationSettings.protocol(prefs))
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotSelected()
         click("offline_translation_plugin_enabled")
         assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
-        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsOn()
-        click("offline_translation_plugin_enabled")
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
-        compose.onNodeWithTag("translation_protocol_google_web").assertIsSelected()
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsSelected()
         assertTrue(actions.imports.isEmpty())
         assertEquals(0, actions.managers)
     }
@@ -174,7 +173,7 @@ class OfflineTranslationPluginCardTest {
         resume()
         assertTrue(actions.statusReads > reads)
         compose.onNodeWithText("版本：1.3").assertExists()
-        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsEnabled().assertIsOff()
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsEnabled().assertIsSelected()
     }
 
     @Test fun pickerCancellationDoesNotInstallOrChangeProvider() {
@@ -183,7 +182,7 @@ class OfflineTranslationPluginCardTest {
         compose.runOnIdle { picker.choose(null) }
         compose.waitForIdle()
         assertTrue(actions.imports.isEmpty())
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
     }
 
     @Test fun validationFailureShowsTheRealReasonAndDoesNotEnablePlugin() {
@@ -192,7 +191,7 @@ class OfflineTranslationPluginCardTest {
         click("offline_translation_plugin_install")
         compose.runOnIdle { picker.choose(Uri.parse("content://test-plugin/wrong-signature")) }
         awaitMessage("插件签名与输入法不匹配")
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
     }
 
@@ -207,10 +206,9 @@ class OfflineTranslationPluginCardTest {
         assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         compose.runOnIdle { actions.current = OfflinePluginStatus(OfflinePluginState.MISSING) }
         resume()
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
-        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsOff().assertIsNotEnabled()
-        compose.onNodeWithTag("translation_protocol_google_web").assertIsSelected()
-        compose.onNodeWithText("离线插件不可用，已改用 Google 官方网页；请先安装兼容且可信的插件。").assertExists()
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
+        compose.onNodeWithText("未安装 · 请先安装插件").assertExists()
     }
 
     @Test fun aReadyDisplayIsRecheckedBeforeEnablingWhenPackageStateChanges() {
@@ -218,7 +216,7 @@ class OfflineTranslationPluginCardTest {
         open()
         compose.runOnIdle { actions.current = OfflinePluginStatus(OfflinePluginState.UNTRUSTED, "1.2") }
         click("offline_translation_plugin_enabled")
-        assertEquals(TranslationProtocol.GOOGLE_WEB, TranslationSettings.protocol(prefs))
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
         compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
     }
 

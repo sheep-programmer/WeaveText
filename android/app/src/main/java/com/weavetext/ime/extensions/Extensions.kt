@@ -20,7 +20,7 @@ object Extensions {
     val defaults = setOf("feature:voice", "feature:translate", "feature:stickers", "feature:phrases", "feature:link", "feature:cloudwords", "feature:calc", "scheme:hand", "scheme:wubi86")
     fun enabled(p: SharedPreferences, key: String) = key in (p.getStringSet(ENABLED, defaults) ?: defaults)
     fun feature(p: SharedPreferences, id: String) = enabled(p, "feature:$id")
-    fun scheme(p: SharedPreferences, id: String) = id !in setOf("hand", "wubi86") || enabled(p, "scheme:$id")
+    fun scheme(p: SharedPreferences, id: String) = id !in setOf("hand", "wubi86", "cangjie", "bopomofo", "japanese", "shuangpin14", "shuangpin9") || enabled(p, "scheme:$id")
     fun tool(p: SharedPreferences, id: String) = when (id) {
         "voice", "stickers", "phrases", "link" -> feature(p, id)
         "translation" -> feature(p, "translate")

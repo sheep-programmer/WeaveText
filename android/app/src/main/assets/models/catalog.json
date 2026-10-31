@@ -127,79 +127,41 @@
       "hf": "csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01"
     },
     {
-      "id": "asr-stream-mixed-high",
+      "id": "asr-x-asr-960",
       "kind": "asr-streaming",
       "arch": "zipformer-transducer",
-      "name": "中英实时 · 增强",
-      "description": "专门训练中文与英语的双语流式 Zipformer，支持中英混说并实时出字。使用较大模型，可配合 SenseVoice 比较结果。",
-      "license": "Apache-2.0（k2-fsa/sherpa-onnx）",
+      "name": "中英实时 · X-ASR",
+      "description": "X-ASR 中英双语流式模型，960 毫秒分块实时出字并自带标点，中文、英语与混说都适用；标准档默认模型。",
+      "license": "Apache-2.0（X-ASR，k2-fsa/sherpa-onnx 转换）",
       "builtin": false,
       "archive": {
-        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20-mobile.tar.bz2",
-        "size": 346965352,
-        "sha256": "45b8d04fe8faf5146397ff2e71d90ca8effdfcbe9adc30fdce769e92cabd6b03"
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-960ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2",
+        "size": 133895831,
+        "sha256": "0a92b798bd6801c333c7ce8aebf5ba769bfe7f3f3511699a67837b2288428603"
       },
       "files": [
         {
-          "name": "encoder-epoch-99-avg-1.int8.onnx",
-          "size": 105276499,
-          "sha256": "f559f422d970323e0c266aaa3c56cf6d1a3a4bc0c0822124727686c1e43e9447"
+          "name": "encoder.int8.onnx",
+          "size": 155276576,
+          "sha256": "017e3cf23097302dbc57ebd72cf4a209cf55c367920669e2d9ce9c0381a96ddd"
         },
         {
-          "name": "decoder-epoch-99-avg-1.onnx",
-          "size": 13876452,
-          "sha256": "2e3b5ec371f8899ee6acd829fd753ba45772df57a91bdf37cde3136354e7db7d"
+          "name": "decoder.onnx",
+          "size": 11309084,
+          "sha256": "a1cbc9eac2d5e3fb6617a218c67ad6daaa7f4e0fd225f08b2c22ab0413c8c257"
         },
         {
-          "name": "joiner-epoch-99-avg-1.int8.onnx",
-          "size": 3228404,
-          "sha256": "1ed689c5ed19dbaa725d9d191bb4822b5f4855a39e1ffd28cbc1f340d25b2ee0"
-        },
-        {
-          "name": "tokens.txt",
-          "size": 56317,
-          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3"
-        }
-      ],
-      "installedSize": 122437672,
-      "bench": null
-    },
-    {
-      "id": "asr-stream-mixed-medium",
-      "kind": "asr-streaming",
-      "arch": "zipformer-transducer",
-      "name": "中英实时 · 标准",
-      "description": "专门训练中文与英语的双语流式 Zipformer，支持中英混说并实时出字。标准档默认模型。",
-      "license": "Apache-2.0（k2-fsa/sherpa-onnx）",
-      "builtin": false,
-      "archive": {
-        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile.tar.bz2",
-        "size": 357630934,
-        "sha256": "fcb4d28973a13d8b32bb363df56e3b15b173c64c00837139b9ea3f212659d14c"
-      },
-      "files": [
-        {
-          "name": "encoder-epoch-99-avg-1.int8.onnx",
-          "size": 32631819,
-          "sha256": "ed2932a455d69fb6555ee6a1badcc4b765bef60e426796b62fca18b36328b941"
-        },
-        {
-          "name": "decoder-epoch-99-avg-1.onnx",
-          "size": 13877276,
-          "sha256": "89be509a83175261695bdef5fd1c7b9ab1129a663d1284e7ba9f8507b21e0906"
-        },
-        {
-          "name": "joiner-epoch-99-avg-1.int8.onnx",
-          "size": 3228485,
-          "sha256": "bdda356d6f9b8c2d7cee9ee0e26075fa537490f7fd06520be408d287073667b9"
+          "name": "joiner.int8.onnx",
+          "size": 2581422,
+          "sha256": "aedb7fa697b2ab43f20499826fff7c997eea7d67db77be97769aeeeb726e63b3"
         },
         {
           "name": "tokens.txt",
-          "size": 56317,
-          "sha256": "a8e0e4ec53810e433789b54a5c0134a7eaa2ffca595a6334d54c00da858841d3"
+          "size": 58806,
+          "sha256": "b818a60878b9aae978cbb8ad594acbd403d76d1af2e31ef4197c84e2dbdba27c"
         }
       ],
-      "installedSize": 49793897,
+      "installedSize": 169225888,
       "bench": null
     },
     {
@@ -304,45 +266,11 @@
       "hf": "csukuangfj/sherpa-onnx-whisper-small"
     },
     {
-      "id": "asr-whisper-base",
-      "kind": "asr-offline",
-      "arch": "whisper",
-      "name": "Whisper · 中英终稿",
-      "description": "OpenAI Whisper 多语种整句识别，支持自动、中文、英文模式；英文词句补强，中英混说优先双语实时模型。",
-      "license": "MIT（OpenAI Whisper；sherpa-onnx 转换）",
-      "builtin": false,
-      "archive": {
-        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
-        "size": 207557382,
-        "sha256": "911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de"
-      },
-      "files": [
-        {
-          "name": "base-encoder.int8.onnx",
-          "size": 29120534,
-          "sha256": "0b8fb1304b6109976038efff5ace81720e00386f3ff6b54ee8c75291ca0a1e11"
-        },
-        {
-          "name": "base-decoder.int8.onnx",
-          "size": 130672026,
-          "sha256": "9759d217388a01b3a4c7c15533201067b48ae819c4daafc8624e64b9409dc02d"
-        },
-        {
-          "name": "base-tokens.txt",
-          "size": 816730,
-          "sha256": "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"
-        }
-      ],
-      "installedSize": 160609290,
-      "bench": null,
-      "hf": "csukuangfj/sherpa-onnx-whisper-base"
-    },
-    {
       "id": "asr-sensevoice",
       "kind": "asr-offline",
       "arch": "sense-voice",
-      "name": "SenseVoice · 中英标准",
-      "description": "中文、英语与中英混说，也支持粤语、日语、韩语。自带标点与数字规整。",
+      "name": "SenseVoice · 混说终稿",
+      "description": "在粤语数据上微调的 SenseVoice，普通话与中英混说实测准确，也支持粤语、日语、韩语；整句识别，不自带标点。",
       "license": "FunASR Model License（需署名）",
       "builtin": false,
       "archive": {
@@ -374,8 +302,8 @@
       "id": "asr-paraformer",
       "kind": "asr-offline",
       "arch": "paraformer",
-      "name": "Paraformer 中文",
-      "description": "中文终稿识别，干净环境准确率高，约 238 MB。",
+      "name": "Paraformer · 中文（川渝）",
+      "description": "以四川方言数据微调的 Paraformer 大模型，普通话与川渝口音终稿准确，不识别英文；约 238 MB。",
       "license": "FunASR Model License（需署名）",
       "builtin": false,
       "archive": {

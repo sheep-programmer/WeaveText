@@ -70,7 +70,7 @@ class StyleRepository private constructor(private val app: Context) {
         val stamp = WeavePrefs.of(app).getLong(Extensions.STAMP, 0)
         if (stamp == extensionStamp) return
         extensionStamp = stamp
-        rawLayouts.keys.removeAll { it !in setOf("fresh", "classic") }
+        rawLayouts.keys.removeAll { it !in setOf("fresh", "classic", "colemak", "qwjrtk", "cyletix10", "typewise") }
         rawThemes.keys.removeAll { it !in setOf("fresh", "ink", "mint", "dusk", "dynamic") }
         for (kind in listOf("theme", "layout")) {
             java.io.File(app.filesDir, "extensions/$kind").listFiles().orEmpty().filter { it.extension == "json" }.forEach { f ->
