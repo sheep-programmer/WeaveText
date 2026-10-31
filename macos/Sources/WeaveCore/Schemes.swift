@@ -10,7 +10,11 @@ public struct InputScheme: Identifiable, Equatable, Sendable {
         InputScheme(id: "shuangpin:ziranma", name: "自然码双拼"),
         InputScheme(id: "shuangpin:microsoft", name: "微软双拼"),
         InputScheme(id: "shuangpin:sogou", name: "搜狗双拼"),
+        InputScheme(id: "shuangpin:shoudao", name: "首道双拼"),
+        InputScheme(id: "shuangpin:znabc", name: "智能ABC双拼"),
+        InputScheme(id: "shuangpin:jiajia", name: "拼音加加"),
         InputScheme(id: "wubi86", name: "五笔 86"),
+        InputScheme(id: "cangjie", name: "仓颉"),
         InputScheme(id: "english", name: "English"),
     ]
 

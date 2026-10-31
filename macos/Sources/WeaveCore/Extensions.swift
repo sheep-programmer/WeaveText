@@ -2,12 +2,12 @@ import Combine
 import Foundation
 
 public enum ExtensionRegistry {
-    public static let defaults: Set<String> = ["feature:voice", "feature:translate", "feature:stickers", "feature:phrases", "feature:link", "feature:cloudwords", "feature:calc", "scheme:hand", "scheme:wubi86"]
+    public static let defaults: Set<String> = ["feature:voice", "feature:translate", "feature:stickers", "feature:phrases", "feature:link", "feature:cloudwords", "feature:calc", "scheme:hand", "scheme:wubi86", "scheme:cangjie"]
     public static func enabled(_ key: String, defaults: UserDefaults = .standard) -> Bool {
         Set(defaults.stringArray(forKey: "extensionsEnabled") ?? Array(Self.defaults)).contains(key)
     }
     public static func scheme(_ id: String, enabled: Set<String>) -> Bool {
-        !["hand", "wubi86"].contains(id) || enabled.contains("scheme:" + id)
+        !["hand", "wubi86", "cangjie"].contains(id) || enabled.contains("scheme:" + id)
     }
 }
 
