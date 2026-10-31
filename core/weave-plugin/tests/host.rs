@@ -1009,10 +1009,10 @@ fn stop_without_emit_end_times_out() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// docs/plugin-host.md 里的示例插件必须能跑。The example plugin in docs/plugin-host.md must work.
+/// 插件开发文档里的示例（夹具副本，docs/ 不进仓库）必须能跑。The documented example plugin must work.
 #[test]
 fn doc_example_plugin() {
-    let doc = include_str!("../../../docs/plugin-host.md");
+    let doc = include_str!("fixtures/plugin-example.md");
     let example = &doc[doc.find("### 示例").expect("example section")..];
     let block = |lang: &str| {
         let start = example.find(&format!("```{lang}\n")).unwrap() + lang.len() + 4;

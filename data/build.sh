@@ -2,6 +2,7 @@
 # 构建词库二进制 / Build compiled dictionaries.
 # 源数据（只读，不入库）放在 .ref/，缺失时自动浅克隆。许可证见 docs/THIRD_PARTY.md：
 #   拼音、英文：万象拼音 rime_wanxiang（CC BY 4.0）  五笔86：rime-wubi（LGPL-3.0，独立数据文件）
+#   仓颉：Jackchows/Cangjie5（MIT），字频取自万象单字表
 # Sources live in .ref/ (git-ignored), shallow-cloned on demand. Licenses: docs/THIRD_PARTY.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,6 +20,7 @@ fetch_repo() { # <github repo> <dir> <commit>
 }
 fetch_repo amzxyz/rime_wanxiang rime_wanxiang 516b1bb66bdce1fd5785f5481c415f13ff736548
 fetch_repo rime/rime-wubi rime-wubi 152a0d3f3efe40cae216d1e3b338242446848d07
+fetch_repo Jackchows/Cangjie5 cangjie5 c9b64e77951cba48bdfa5de8eaedd1a908666b9b
 # 手写模板：Make Me a Hanzi 的 graphics.txt（Arphic Public License，派生数据仍适用该许可，见 docs/licenses/）。
 # Handwriting templates from Make Me a Hanzi's graphics.txt (Arphic Public License; see docs/licenses/).
 fetch_repo skishore/makemeahanzi makemeahanzi bddc96d41bef78427ed0e034e9f7e31d71fd1b92
@@ -36,6 +38,8 @@ fi
 "$DICTGEN" pinyin "$OUT/pinyin.wvl" "$WX/zi.dict.yaml" "$WX/jichu.dict.yaml" "$WX/diming.dict.yaml" \
   "$WX/renming.dict.yaml" "$WX/mingren.dict.yaml" "$WX/shici.dict.yaml" "$WX/lianxiang.dict.yaml" "$WX/duoyin.dict.yaml"
 "$DICTGEN" letters "$OUT/wubi86.wvl" "$REF/rime-wubi/wubi86.dict.yaml"
+python3 "$ROOT/data/cangjie/make_cangjie.py" "$REF/cangjie5/Cangjie5.txt" "$WX/zi.dict.yaml" "$OUT/cangjie.tsv"
+"$DICTGEN" letters "$OUT/cangjie.wvl" "$OUT/cangjie.tsv"
 "$DICTGEN" letters "$OUT/english.wvl" "$WX/en.dict.yaml"
 # 字符搭配模型：万象 RIME-LMDG（CC BY 4.0）剪枝为 2~3 字搭配。 Collocation model from RIME-LMDG.
 GRAM_SRC="$REF/wanxiang-lts-zh-hans.gram"
@@ -51,7 +55,10 @@ if [ ! -f "$GRAM_SRC" ] || [ "$(sha256 "$GRAM_SRC")" != "$GRAM_SHA" ]; then
   mv "$GRAM_SRC.part" "$GRAM_SRC"
 fi
 "$ROOT/core/target/release/gramdump" build "$GRAM_SRC" "$OUT/grammar.wvg" 99
-cp "$REF/rime_wanxiang/opencc/wanxiang/STPhrases.txt" "$REF/rime_wanxiang/opencc/wanxiang/STCharacters.txt" "$REF/rime_wanxiang/opencc/wanxiang/emoji.txt" "$OUT/"
+cp "$REF/rime_wanxiang/opencc/wanxiang/STPhrases.txt" "$REF/rime_wanxiang/opencc/wanxiang/STCharacters.txt" "$REF/rime_wanxiang/opencc/wanxiang/emoji.txt" \
+  "$REF/rime_wanxiang/opencc/wanxiang/TWVariants.txt" "$REF/rime_wanxiang/opencc/wanxiang/HKVariants.txt" "$OUT/"
+# 台湾、香港字形表（OpenCC 的 s2tw、s2hk）：标准繁体之后按地区替换字形。
+# Taiwan and Hong Kong form tables (OpenCC s2tw, s2hk): applied after standard traditional, per region.
 # 分块压缩版（WVPK）：APK 内不压缩存放、由内核按需解压，手机上不再解压出第二份。
 # Block-compressed copies (WVPK), stored uncompressed in the APK and decoded on demand by the engine.
 "$ROOT/core/target/release/handgen" "$REF/makemeahanzi/graphics.txt" "$OUT/hand.wvh" "$WX/zi.dict.yaml"
@@ -64,8 +71,9 @@ cp "$ROOT/data/hand/hand_net.wvn" "$OUT/hand_net.wvn"
 # Shape table: strokes and component readings from Wanxiang's reverse lookup, chars of the pinyin char list only.
 "$ROOT/core/target/release/shapegen" "$REF/rime_wanxiang/wanxiang_reverse.dict.yaml" "$OUT/shape.wvs" "$WX/zi.dict.yaml"
 PACK="$ROOT/core/target/release/wvpack"
-for pair in pinyin:pinyin.wvl wubi86:wubi86.wvl english:english.wvl grammar:grammar.wvg \
-    st_phrases:STPhrases.txt st_characters:STCharacters.txt emoji:emoji.txt hand:hand.wvh hand_net:hand_net.wvn follow:follow.wvf shape:shape.wvs; do
+for pair in pinyin:pinyin.wvl wubi86:wubi86.wvl cangjie:cangjie.wvl english:english.wvl grammar:grammar.wvg \
+    st_phrases:STPhrases.txt st_characters:STCharacters.txt tw_variants:TWVariants.txt hk_variants:HKVariants.txt \
+    emoji:emoji.txt hand:hand.wvh hand_net:hand_net.wvn follow:follow.wvf shape:shape.wvs; do
   "$PACK" "$OUT/${pair#*:}" "$OUT/${pair%%:*}.wvz"
 done
 touch "$stamp"

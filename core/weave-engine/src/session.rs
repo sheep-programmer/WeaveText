@@ -10,12 +10,14 @@ mod features;
 mod handrank;
 mod shape;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use weave_dict::lexicon::Lexicon;
 use weave_dict::syllable::{self, SyllableId};
 
+use crate::bopomofo;
 use crate::convert::{Emoji, Traditional};
 use crate::decoder::{CandKind, Candidate, Decoder, Lattice, LmParams};
 use crate::graph::{self, FuzzyOptions, Letters, Near, SyllableGraph};
@@ -34,7 +36,15 @@ pub enum Schema {
     /// 九键 / 14 键：一个键对应多个字母。 T9 / 14-key: several letters per key.
     Keypad(Grouping),
     Wubi86,
+    /** 仓颉（五代码表，单字码）。 Cangjie 5 code table, one character per code. */
+    Cangjie,
     English,
+    /** 注音（标准键盘）。 Bopomofo on the standard keyboard. */
+    Bopomofo,
+    /** 九键 / 14 键双拼：每次按键是一个字母组，一个音节两次按键。 Keypad shuangpin: one letter group per tap, two taps per syllable. */
+    ShuangpinKeypad(SchemeId, Grouping),
+    /** 日语罗马字 → 假名（不做汉字转换）。 Japanese romaji to kana (no kanji conversion). */
+    Romaji,
     /** 手写（单字）。 Handwriting, one character at a time. */
     Hand,
 }
@@ -47,12 +57,22 @@ impl Schema {
             "t9" => Some(Schema::Keypad(Grouping::Nine)),
             "t14" => Some(Schema::Keypad(Grouping::Fourteen)),
             "wubi86" => Some(Schema::Wubi86),
+            "cangjie" => Some(Schema::Cangjie),
+            "bopomofo" => Some(Schema::Bopomofo),
+            "romaji" => Some(Schema::Romaji),
             "english" => Some(Schema::English),
             "hand" => Some(Schema::Hand),
             _ => k
                 .strip_prefix("shuangpin:")
                 .and_then(SchemeId::from_key)
-                .map(Schema::Shuangpin),
+                .map(Schema::Shuangpin)
+                .or_else(|| {
+                    k
+                        .strip_prefix("shuangpin9:")
+                        .map(|id| (id, Grouping::Nine))
+                        .or_else(|| k.strip_prefix("shuangpin14:").map(|id| (id, Grouping::Fourteen)))
+                        .and_then(|(id, g)| SchemeId::from_key(id).map(|sid| Schema::ShuangpinKeypad(sid, g)))
+                })
         }
     }
 
@@ -62,6 +82,11 @@ impl Schema {
             Schema::Keypad(Grouping::Nine) => "t9".into(),
             Schema::Keypad(Grouping::Fourteen) => "t14".into(),
             Schema::Wubi86 => "wubi86".into(),
+            Schema::Cangjie => "cangjie".into(),
+            Schema::Bopomofo => "bopomofo".into(),
+            Schema::Romaji => "romaji".into(),
+            Schema::ShuangpinKeypad(sid, Grouping::Nine) => format!("shuangpin9:{}", sid.key()),
+            Schema::ShuangpinKeypad(sid, Grouping::Fourteen) => format!("shuangpin14:{}", sid.key()),
             Schema::English => "english".into(),
             Schema::Hand => "hand".into(),
             Schema::Shuangpin(s) => format!("shuangpin:{}", s.key()),
@@ -69,7 +94,7 @@ impl Schema {
     }
 
     fn is_pinyin_family(&self) -> bool {
-        matches!(self, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_))
+        matches!(self, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Bopomofo | Schema::ShuangpinKeypad(..))
     }
 }
 
@@ -85,6 +110,11 @@ pub struct Options {
     pub wubi_completion: bool,
     /// 繁体输出。 Output traditional Chinese.
     pub traditional: bool,
+    /// 跨按键复用跨度候选（只影响速度，不影响结果；关闭用于对照验证）。
+    /// Reuse span candidates across keystrokes (speed only, never results; off for verification).
+    pub span_memo: bool,
+    /// 繁体的地区字形（标准、台湾、香港）。 Traditional regional forms (standard, Taiwan, Hong Kong).
+    pub traditional_region: crate::convert::Region,
     /// 表情联想。 Emoji suggestions after matching words.
     pub emoji: bool,
     /// 搭配模型权重（0 关闭）与未命中基线（nat）。 Collocation model weight (0 = off) and miss baseline.
@@ -118,6 +148,8 @@ impl Default for Options {
             wubi_pinyin_lookup: true,
             wubi_completion: true,
             traditional: false,
+            span_memo: true,
+            traditional_region: crate::convert::Region::Standard,
             emoji: true,
             lm_weight: 0.25,
             lm_baseline: 12.0,
@@ -315,10 +347,14 @@ struct Selection {
 pub struct Paths {
     pub pinyin_lexicon: Option<Source>,
     pub wubi_lexicon: Option<Source>,
+    pub cangjie_lexicon: Option<Source>,
     pub english_lexicon: Option<Source>,
     /// OpenCC 简繁词组表与单字表。 OpenCC phrase and character tables.
     pub st_phrases: Option<Source>,
     pub st_characters: Option<Source>,
+    /// 台湾与香港字形表（OpenCC TWVariants、HKVariants）。 Taiwan and Hong Kong form tables.
+    pub tw_variants: Option<Source>,
+    pub hk_variants: Option<Source>,
     /// 表情联想表。 Emoji suggestion table.
     pub emoji: Option<Source>,
     /// 手写识别模板（.wvh）。 Handwriting templates.
@@ -339,13 +375,16 @@ pub struct Paths {
 
 /// 资源名 → 原始文件名；分块压缩版统一命名为 `<资源名>.wvz`。
 /// Resource key → raw file name; packed copies are named `<key>.wvz`.
-pub const RESOURCES: [(&str, &str); 11] = [
+pub const RESOURCES: [(&str, &str); 14] = [
     ("pinyin", "pinyin.wvl"),
     ("wubi86", "wubi86.wvl"),
+    ("cangjie", "cangjie.wvl"),
     ("english", "english.wvl"),
     ("grammar", "grammar.wvg"),
     ("st_phrases", "STPhrases.txt"),
     ("st_characters", "STCharacters.txt"),
+    ("tw_variants", "TWVariants.txt"),
+    ("hk_variants", "HKVariants.txt"),
     ("emoji", "emoji.txt"),
     ("hand", "hand.wvh"),
     ("hand_net", "hand_net.wvn"),
@@ -365,10 +404,13 @@ impl Paths {
         let slot = match key {
             "pinyin" => &mut self.pinyin_lexicon,
             "wubi86" => &mut self.wubi_lexicon,
+            "cangjie" => &mut self.cangjie_lexicon,
             "english" => &mut self.english_lexicon,
             "grammar" => &mut self.gram_model,
             "st_phrases" => &mut self.st_phrases,
             "st_characters" => &mut self.st_characters,
+            "tw_variants" => &mut self.tw_variants,
+            "hk_variants" => &mut self.hk_variants,
             "emoji" => &mut self.emoji,
             "hand" => &mut self.hand,
             "hand_net" => &mut self.hand_net,
@@ -411,9 +453,12 @@ pub struct Engine {
     packs: Vec<Lexicon>,
     pack_ids: Vec<String>,
     wubi: Option<Lexicon>,
+    cangjie: Option<Lexicon>,
     english: Option<Lexicon>,
     user_pinyin: UserDict,
     user_english: UserDict,
+    /// 跨按键的跨度候选缓存（词库或学习变化时作废）。 Cross-keystroke span memo (invalidated by lexicon or learning changes).
+    span_memo: RefCell<crate::decoder::SpanMemo>,
     personal: crate::personal::Personal,
     schema: Schema,
     pub options: Options,
@@ -442,6 +487,8 @@ pub struct Engine {
     last_word: Option<String>,
     wubi_reverse: Option<HashMap<String, String>>,
     st_sources: (Option<Source>, Option<Source>),
+    /// 台湾、香港字形表的来源。 Sources of the Taiwan and Hong Kong form tables.
+    variant_sources: (Option<Source>, Option<Source>),
     traditional: Option<Traditional>,
     /// 手写模型来源（模板、网络）与首次使用时载入的模型（可在线程间共享，识别不必持有引擎锁）。
     /// Handwriting sources (templates, network) and the models loaded on first use (shareable, so recognition
@@ -504,6 +551,8 @@ fn open_lex(p: &Option<Source>) -> Option<Lexicon> {
 }
 
 const PAGE_INITIAL: usize = 60;
+/// 注音最多适用的候选字数（超过则不标）。 Longest candidate, in characters, that gets pronunciation.
+const PINYIN_HINT_MAX_CHARS: usize = 3;
 /// 每次按键先生成的候选数；翻页超出时再补齐（每键不必把几百个候选都构造一遍）。
 /// Candidates built per keystroke; the rest are built only when paging goes past them.
 const CAND_FIRST: usize = 120;
@@ -549,9 +598,11 @@ impl Engine {
             packs,
             pack_ids,
             wubi: open_lex(&paths.wubi_lexicon),
+            cangjie: open_lex(&paths.cangjie_lexicon),
             english: open_lex(&paths.english_lexicon),
             user_pinyin,
             user_english,
+            span_memo: RefCell::new(crate::decoder::SpanMemo::default()),
             personal: crate::personal::Personal::open(paths.user_dir.as_deref()),
             schema: Schema::Pinyin,
             options: Options::default(),
@@ -572,6 +623,7 @@ impl Engine {
             wubi_reverse: None,
             emoji: paths.emoji.as_ref().map(Emoji::load).unwrap_or_default(),
             st_sources: (paths.st_phrases.clone(), paths.st_characters.clone()),
+            variant_sources: (paths.tw_variants.clone(), paths.hk_variants.clone()),
             traditional: None,
             hand_src: (paths.hand.clone(), paths.hand_net.clone()),
             hand: None,
@@ -632,7 +684,7 @@ impl Engine {
 
     /// 清空所有分块压缩数据的解压缓存。 Drop every packed file's decode cache.
     pub fn trim_caches(&self) {
-        for l in [&self.pinyin, &self.wubi, &self.english].into_iter().flatten() {
+        for l in [&self.pinyin, &self.wubi, &self.cangjie, &self.english].into_iter().flatten() {
             l.blob().trim();
         }
         if let Some(g) = &self.gram {
@@ -654,6 +706,7 @@ impl Engine {
         for (name, blob) in [
             ("pinyin", self.pinyin.as_ref().map(|l| l.blob())),
             ("wubi86", self.wubi.as_ref().map(|l| l.blob())),
+            ("cangjie", self.cangjie.as_ref().map(|l| l.blob())),
             ("english", self.english.as_ref().map(|l| l.blob())),
             ("grammar", self.gram.as_ref().map(|g| g.blob())),
         ] {
@@ -671,32 +724,48 @@ impl Engine {
             return s.to_owned();
         }
         if self.traditional.is_none() {
-            let t = match &self.st_sources {
+            let mut t = match &self.st_sources {
                 (Some(p), Some(c)) => Traditional::load(p, c),
                 _ => Traditional::default(),
             };
+            if let (Some(tw), Some(hk)) = &self.variant_sources {
+                t = t.with_region_tables(tw, hk);
+            }
             self.traditional = Some(t);
         }
+        let region = self.options.traditional_region;
         self.traditional
             .as_ref()
-            .map(|t| t.convert(s))
+            .map(|t| t.convert_in(region, s))
             .unwrap_or_else(|| s.to_owned())
     }
 
     /// Add pronunciation independently of other notes, before traditional conversion.
     fn add_pinyin_hints(&mut self) {
+        // 快照只显示首屏；其余候选的注音在翻页时按需补算（见 [`Engine::candidates`]）。
+        // Snapshots show only the first page; the rest are annotated on demand when paged (see `candidates`).
+        self.hint_candidates(0..PAGE_INITIAL);
+    }
+
+    /// 给 `range` 内的候选补上注音（关闭注音提示时什么也不做）。
+    /// Annotate the candidates in `range` with pronunciation (a no-op when the hint is off).
+    fn hint_candidates(&mut self, range: std::ops::Range<usize>) {
         if !self.options.pinyin_hint || self.schema == Schema::English {
             return;
         }
         let tones = self.options.pinyin_tones;
-        for cand in &mut self.cands {
+        let end = range.end.min(self.cands.len());
+        for cand in &mut self.cands[range.start.min(end)..end] {
             let hint = match &cand.action {
                 Action::Pinyin(p) => crate::tones::pinyin(&p.text, Some(&p.key), tones),
                 Action::Table { text } => crate::tones::pinyin(text, None, tones),
             };
-            if let Some(h) = hint {
-                cand.view.pinyin = h;
-            }
+            // 只给三个字以内的候选注音；更长的拼音会挡住后面的候选，所以不标。
+            // Only candidates of up to three characters get pronunciation: a longer one would cover the candidates after it.
+            cand.view.pinyin = match hint {
+                Some(h) if cand.view.text.chars().count() <= PINYIN_HINT_MAX_CHARS => h,
+                _ => String::new(),
+            };
         }
     }
 
@@ -704,7 +773,7 @@ impl Engine {
     fn decorate(&mut self) {
         self.add_pinyin_hints();
         // 拆字查字（u 模式）只列字，不插表情。 Lookups by shape (the u mode) list chars only, no emoji.
-        if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 && self.u_code().is_none() {
+        if self.options.emoji && self.schema != Schema::English && self.schema != Schema::Wubi86 && self.schema != Schema::Cangjie && self.u_code().is_none() {
             let mut i = 0;
             let mut inserted = 0;
             // 手写每个候选都是单字，各带一个表情会把别的字挤出候选栏：只给首选配一个。
@@ -793,8 +862,10 @@ impl Engine {
         }
         if let Some(i) = self.pack_ids.iter().position(|p| p == id) {
             self.packs[i] = lex;
+            self.span_memo.get_mut().clear();
         } else if self.packs.len() + 1 < crate::decoder::MAX_LEX {
             self.packs.push(lex);
+        self.span_memo.get_mut().clear();
             self.pack_ids.push(id.to_string());
         } else {
             return false;
@@ -816,6 +887,7 @@ impl Engine {
     pub fn unload_pack(&mut self, id: &str) -> bool {
         let Some(i) = self.pack_ids.iter().position(|p| p == id) else { return false };
         self.packs.remove(i);
+        self.span_memo.get_mut().clear();
         self.pack_ids.remove(i);
         true
     }
@@ -827,8 +899,10 @@ impl Engine {
 
     pub fn has_lexicon(&self, schema: Schema) -> bool {
         match schema {
-            Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) => self.pinyin.is_some(),
+            Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Bopomofo | Schema::ShuangpinKeypad(..) => self.pinyin.is_some(),
             Schema::Wubi86 => self.wubi.is_some(),
+            Schema::Cangjie => self.cangjie.is_some(),
+            Schema::Romaji => true,
             Schema::English => self.english.is_some(),
             Schema::Hand => self.hand_src.0.is_some() || self.hand_src.1.is_some(),
         }
@@ -937,7 +1011,7 @@ impl Engine {
         if !self.options.prediction || !self.user_pinyin.learning || !committed.chars().last().is_some_and(is_cjk) {
             return;
         }
-        if !matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Hand) {
+        if !matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_) | Schema::Keypad(_) | Schema::Bopomofo | Schema::ShuangpinKeypad(..) | Schema::Hand) {
             return;
         }
         self.refresh_predictions();
@@ -1007,6 +1081,33 @@ impl Engine {
                 }
                 false
             }
+            Schema::ShuangpinKeypad(_, grouping) => {
+                // 字母或按键码都可以：键入任一字母，存下它所在的按键组。 Any letter of a group, stored as its group code.
+                let code = match grouping {
+                    Grouping::Nine if ('2'..='9').contains(&c) => Some(c),
+                    Grouping::Nine if c.is_ascii_alphabetic() => Some(char::from(grouping.code(c.to_ascii_lowercase() as u8))),
+                    Grouping::Fourteen if c.is_ascii_alphabetic() => Some(char::from(grouping.code(c.to_ascii_lowercase() as u8))),
+                    _ => None,
+                };
+                match code {
+                    Some(code) => {
+                        self.insert_key(code);
+                        self.push_long_composition();
+                        self.refresh();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Schema::Bopomofo => {
+                if c.is_ascii() && bopomofo::is_key(c as u8) {
+                    self.insert_key(c);
+                    self.push_long_composition();
+                    self.refresh();
+                    return true;
+                }
+                false
+            }
             Schema::Shuangpin(_) => {
                 // Preserve the literal keys; only the syllable graph is lowercased.
                 if c.is_ascii_alphabetic() || (c == ';' && !self.raw.is_empty()) {
@@ -1055,6 +1156,34 @@ impl Engine {
                     && self.raw.len() == 4
                     && self.cands.len() == 1
                 {
+                    self.select(0);
+                }
+                true
+            }
+            Schema::Romaji => {
+                if c.is_ascii_alphabetic() || c == '-' {
+                    self.insert_key(c.to_ascii_lowercase());
+                    self.refresh();
+                    return true;
+                }
+                false
+            }
+            Schema::Cangjie => {
+                let lc = c.to_ascii_lowercase();
+                if !lc.is_ascii_lowercase() {
+                    return false;
+                }
+                // 顶屏：满五码后再敲一码，先把首选上屏；空码则丢弃。 Push: a 6th key commits the top choice first.
+                if self.raw.len() >= 5 {
+                    if self.cands.is_empty() {
+                        self.clear();
+                    } else {
+                        self.commit_first();
+                    }
+                }
+                self.raw.push(lc);
+                self.refresh();
+                if self.raw.len() == 5 && self.cands.len() == 1 {
                     self.select(0);
                 }
                 true
@@ -1441,29 +1570,48 @@ impl Engine {
     /// 从文本导入（格式同导出；也接受无次数的两列）。返回导入条数。
     /// Import from text (export format; two columns accepted). Returns imported rows.
     pub fn import_user_words(&mut self, text: &str) -> usize {
-        let mut n = 0;
-        for line in text.lines() {
+        self.import_user_words_report(text).added
+    }
+
+    /// 导入并报告：读音缺失的词用内置读音补全，Rime `.dict.yaml` 头部跳过，声调数字可识别；
+    /// 读不出读音的行计入跳过并给出原因（最多保留前五条）。
+    /// Import with a report: words without a reading get the built-in reading, Rime `.dict.yaml` headers are
+    /// skipped, tone numbers are accepted, and unreadable rows are counted with a reason (first five kept).
+    pub fn import_user_words_report(&mut self, text: &str) -> UserImportReport {
+        let mut report = UserImportReport::default();
+        for line in strip_yaml_header(text).lines() {
             if line.starts_with('#') || line.trim().is_empty() {
                 continue;
             }
-            let mut cols = line.split('\t');
-            let (Some(word), Some(py)) = (cols.next(), cols.next()) else {
+            let mut cols = line.split('\t').map(str::trim);
+            let word = cols.next().unwrap_or("");
+            let second = cols.next();
+            // 第二列是数字时视为「词<Tab>次数」，读音从内置读音补全。
+            let (reading, count) = match second {
+                Some(c) if c.parse::<f64>().is_ok() && cols.next().is_none() => (None, c),
+                Some(py) => (Some(py), cols.next().unwrap_or("1")),
+                None => (None, "1"),
+            };
+            let key = match reading {
+                Some(py) => reading_key(py),
+                None => crate::tones::pinyin(word, None, false).and_then(|py| reading_key(&py)),
+            };
+            let Some(key) = key.filter(|_| !word.is_empty()) else {
+                report.skipped += 1;
+                if report.rejected.len() < 5 {
+                    let reason = if word.is_empty() { "缺少词" } else { "读音无法识别（可能是五笔码或拼音有误）" };
+                    report.rejected.push(format!("{word}：{reason}"));
+                }
                 continue;
             };
-            let count = cols
-                .next()
-                .and_then(|c| c.trim().parse().ok())
-                .unwrap_or(1u32)
-                .max(1);
-            if let Some(key) = syllable::parse_seq(py) {
-                self.user_pinyin.import(&key, word.trim(), count);
-                n += 1;
-            }
+            let count = count.parse::<f64>().map_or(1, |c| c.round().max(1.0) as u32);
+            self.user_pinyin.import(&key, word, count);
+            report.added += 1;
+            if reading.is_none() { report.filled += 1; }
         }
         self.user_pinyin.flush();
-        n
+        report
     }
-
     pub fn clear_user_words(&mut self) -> bool {
         let pinyin = self.user_pinyin.clear().is_ok();
         let english = self.user_english.clear().is_ok();
@@ -1506,6 +1654,7 @@ impl Engine {
             self.refresh();
             self.cand_cap = CAND_FIRST;
         }
+        self.hint_candidates(offset..offset.saturating_add(limit));
         self.cands
             .iter()
             .skip(offset)
@@ -1680,7 +1829,7 @@ impl Engine {
     fn graph_len(&self) -> usize {
         match self.schema {
             Schema::Pinyin => Letters::parse(self.rest_raw()).keys.len(),
-            Schema::Shuangpin(_) => self.rest_raw().len(),
+            Schema::Shuangpin(_) | Schema::Bopomofo | Schema::ShuangpinKeypad(..) => self.rest_raw().len(),
             Schema::Keypad(_) => T9Input::from_units(&self.t9_units[self.consumed..], self.grouping())
                 .digits
                 .len(),
@@ -1703,7 +1852,7 @@ impl Engine {
                 }
                 self.rest_raw().len()
             }
-            Schema::Shuangpin(_) => end,
+            Schema::Shuangpin(_) | Schema::Bopomofo | Schema::ShuangpinKeypad(..) => end,
             Schema::Keypad(_) => {
                 let mut pos = 0;
                 for (i, u) in self.t9_units[self.consumed..].iter().enumerate() {
@@ -1722,6 +1871,36 @@ impl Engine {
         }
     }
 
+    /// 跨按键缓存的引用（选项关闭时为 None）。 The span memo for the decoder (None when the option is off).
+    fn span_memo_ref(&self) -> Option<&RefCell<crate::decoder::SpanMemo>> {
+        self.options.span_memo.then_some(&self.span_memo)
+    }
+
+    /// 把学到的纠错加成边：同样的打法，意图的读法更便宜。图中一条边只承载一个音节，所以按音节切开：
+    /// 拼对的一段记为完整音节（无罚分），拼错的一段记为 Fuzzy 并带学到的罚分。
+    /// Add learned corrections as edges. An edge carries one syllable, so the intended reading is split into one edge
+    /// per syllable: a correct piece is a full syllable (no penalty), a mistyped piece is Fuzzy with the learned penalty.
+    fn add_learned_typos(&self, g: &mut SyllableGraph, keys: &[u8]) {
+        let typed = String::from_utf8_lossy(keys).into_owned();
+        if typed.is_empty() || g.len != typed.len() {
+            return;
+        }
+        for (count, intended) in crate::typo_learn::decode(self.personal.get(&crate::typo_learn::key(&typed))) {
+            let words: Vec<&str> = intended.split_whitespace().collect();
+            let Some(pieces) = crate::typo_learn::align(&typed, &words) else { continue };
+            for (start, end, id, spelled_right) in pieces {
+                let (kind, penalty) = if spelled_right {
+                    (graph::EdgeKind::Full, 0)
+                } else {
+                    // 用户接受过的读法与模糊音一样参与近期偏好（纠错边不参与），所以记为 Fuzzy。
+                    // An accepted reading takes part in recent preferences like a fuzzy one; corrections do not.
+                    (graph::EdgeKind::Fuzzy, crate::typo_learn::penalty_for(count))
+                };
+                g.push(graph::Edge { start, end, syls: vec![id], penalty, kind, bits: Vec::new() });
+            }
+        }
+    }
+
     fn build_graph(&self) -> (SyllableGraph, Vec<u8>) {
         self.build_graph_with(false)
     }
@@ -1733,11 +1912,21 @@ impl Engine {
             Schema::Pinyin => {
                 let l = Letters::parse(self.rest_raw());
                 let near = self.rest_near();
-                (graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near, typos), l.keys)
+                let mut g = graph::build_full_pinyin_near(&l, &self.options.fuzzy, &near, typos);
+                self.add_learned_typos(&mut g, &l.keys);
+                (g, l.keys)
             }
             Schema::Shuangpin(id) => {
                 let keys = self.rest_raw().to_ascii_lowercase().into_bytes();
                 (shuangpin::build_graph(id, &keys, &self.options.fuzzy), keys)
+            }
+            Schema::Bopomofo => {
+                let keys = self.rest_raw().as_bytes().to_vec();
+                (bopomofo::build_graph(&keys), keys)
+            }
+            Schema::ShuangpinKeypad(id, grouping) => {
+                let keys = self.rest_raw().as_bytes().to_vec();
+                (shuangpin::build_keypad_graph(id, &keys, grouping), keys)
             }
             Schema::Keypad(_) => {
                 let inp = T9Input::from_units(&self.t9_units[self.consumed..], self.grouping());
@@ -1762,6 +1951,8 @@ impl Engine {
         let pinyin = match self.schema {
             s if s.is_pinyin_family() => self.refresh_pinyin(selected),
             Schema::Wubi86 => { self.refresh_wubi(); None }
+            Schema::Cangjie => { self.refresh_cangjie(); None }
+            Schema::Romaji => { self.refresh_romaji(); None }
             Schema::English => { self.refresh_english(); None }
             Schema::Hand => { self.refresh_hand(); None }
             _ => None,
@@ -2032,7 +2223,7 @@ impl Engine {
         // 纠错时忽略偶然拼出的短英文（ragdajia 的 rag），但保留大写、学过的词和较长英文里的混输。
         // Ignore accidental short English fragments during correction, but keep explicit capitals, learned words and longer English.
         let decode = |graph: &SyllableGraph, correcting: bool| {
-            let d=Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm };
+            let d=Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph, context, lm, memo: self.span_memo_ref() };
             if self.schema == Schema::Pinyin {
                 d.decode_with_latin(self.english.as_ref(), &original, self.rest_raw(),
                     self.user_english.learning.then_some(&self.user_english), correcting)
@@ -2042,7 +2233,7 @@ impl Engine {
         let protected_chinese = if matches!(self.schema, Schema::Shuangpin(_)) && g1.spells_fully()
             && !lat1.best.is_empty() {
             let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs,
-                user: &self.user_pinyin, graph: &g1, context, lm };
+                user: &self.user_pinyin, graph: &g1, context, lm, memo: self.span_memo_ref() };
             let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&original[s..e]).into_owned();
             plain.candidates(&lat1, &raw_text, 1).into_iter().next()
         } else { None };
@@ -2051,7 +2242,7 @@ impl Engine {
                 || (self.user_english.learning && self.user_english.entry_count() > 0) {
                 let mixed = shuangpin::build_mixed_graph(id, &keys1, &self.options.fuzzy);
                 let decoder = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs,
-                    user: &self.user_pinyin, graph: &mixed, context, lm };
+                    user: &self.user_pinyin, graph: &mixed, context, lm, memo: self.span_memo_ref() };
                 let mixed_lat = decoder.decode_shuangpin_with_latin(self.english.as_ref(), &original,
                     self.rest_raw(), self.user_english.learning.then_some(&self.user_english));
                 if mixed_lat.best.iter().any(|(si, _)| mixed_lat.spans[*si].literal.is_some()) {
@@ -2095,7 +2286,7 @@ impl Engine {
                 if swap { TYPO_MARGIN_VOWEL } else { margin }
             } else { margin };
             if lat2.best_cost.saturating_add(margin) < lat1.best_cost {
-                let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g1, context, lm };
+                let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g1, context, lm, memo: self.span_memo_ref() };
                 let raw_text = |s: usize, e: usize| String::from_utf8_lossy(&original[s..e]).into_owned();
                 if lat1.best_cost < lat2.best_cost.saturating_add(KEEP_UNCORRECTED) {
                     uncorrected = plain.candidates(&lat1, &raw_text, 1).into_iter().find(|c| c.end == g1.len && c.kind != CandKind::Raw);
@@ -2104,7 +2295,7 @@ impl Engine {
             }
         }
         let (g, keys, lat) = chosen.unwrap_or((g1, keys1, lat1));
-        let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm };
+        let dec = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin, graph: &g, context, lm, memo: self.span_memo_ref() };
         let raw_text = |s: usize, e: usize| String::from_utf8_lossy(
             if matches!(self.schema, Schema::Pinyin | Schema::Shuangpin(_)) { &original[s..e] }
             else { &keys[s..e] }).into_owned();
@@ -2124,7 +2315,7 @@ impl Engine {
         if lat.best.iter().any(|(index, _)| lat.spans[*index].penalty > 0) {
             let full = g.full_reading();
             let plain = Decoder { lex: self.pinyin.as_ref(), packs: &self.packs, user: &self.user_pinyin,
-                graph: &full, context, lm };
+                graph: &full, context, lm, memo: self.span_memo_ref() };
             let literal = plain.decode();
             if !literal.best.is_empty() {
                 let alternatives = plain.candidates(&literal, &raw_text, 3).into_iter()
@@ -2187,6 +2378,13 @@ impl Engine {
         self.marks = marks.into_iter().map(|m| PreeditMark { start: m.start + at, end: m.end + at, ..m }).collect();
         self.caret_map = map.into_iter().map(|i| i + at).collect();
         self.preedit = format!("{selected}{rest}");
+        if self.schema == Schema::Bopomofo {
+            // 注音：预编辑显示注音符号，每个按键一个字符，光标映射与按键一一对应。
+            // Bopomofo: the preedit shows the symbols, one character per key, so the caret maps key by key.
+            self.preedit = format!("{selected}{}", bopomofo::display(self.rest_raw().as_bytes()));
+            self.caret_map = (0..=self.rest_raw().len()).map(|i| i + at).collect();
+            self.marks.clear();
+        }
         self.cands = cands
             .into_iter()
             .map(|c| Cand {
@@ -2431,6 +2629,8 @@ impl Engine {
                 graph: &g,
                 context: None,
                 lm: None,
+                // 临时的空用户词库：不能与真实的缓存混用。 A throwaway empty user dictionary: never share the memo.
+                memo: None,
             };
             let lat = dec.decode();
             let keys = letters.keys.clone();
@@ -2460,6 +2660,50 @@ impl Engine {
         } else {
             0
         };
+        for c in table::lookup(lex, &self.raw, limit) {
+            self.cands.push(Cand {
+                view: CandidateView { pinyin: String::new(), cloud: false,
+                    text: c.text.clone(),
+                    comment: c.comment,
+                    user: false,
+                },
+                action: Action::Table { text: c.text },
+            });
+        }
+    }
+
+    /// 日语：罗马字转假名，候选依次是平假名、片假名和原文；未拼完的罗马字接在后面。
+    /// Japanese: romaji to kana; candidates are hiragana, katakana and the typed romaji, with any incomplete tail appended.
+    fn refresh_romaji(&mut self) {
+        self.preedit = self.raw.clone();
+        self.caret_map = (0..=self.raw.len()).collect();
+        if self.raw.is_empty() {
+            return;
+        }
+        let conv = crate::romaji::convert(&self.raw);
+        let hira = format!("{}{}", conv.kana, conv.pending);
+        let kata = crate::romaji::katakana(&hira);
+        for text in [hira.clone(), kata, self.raw.clone()] {
+            if text.is_empty() || self.cands.iter().any(|c| c.view.text == text) {
+                continue;
+            }
+            self.cands.push(Cand {
+                view: CandidateView { pinyin: String::new(), cloud: false,
+                    text: text.clone(),
+                    comment: String::new(),
+                    user: false,
+                },
+                action: Action::Table { text },
+            });
+        }
+    }
+
+    /// 仓颉：直接查码表；码未满五码时给出以该码开头的字（补全），满码后不再补全。
+    /// Cangjie: look the code up; shorter codes also list characters that start with it.
+    fn refresh_cangjie(&mut self) {
+        self.preedit = self.raw.clone();
+        let Some(lex) = &self.cangjie else { return };
+        let limit = if self.raw.len() < 5 { 40 } else { 0 };
         for c in table::lookup(lex, &self.raw, limit) {
             self.cands.push(Cand {
                 view: CandidateView { pinyin: String::new(), cloud: false,
@@ -2679,6 +2923,49 @@ pub fn open_pack(id: &str, src: &Source) -> Option<Lexicon> {
     Lexicon::open_source(src).ok()
 }
 
+/// 用户词导入的结果。 Outcome of a user-word import.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserImportReport {
+    pub added: usize,
+    /// 读音由内置读音补全的词数。 Words whose reading came from the built-in readings.
+    pub filled: usize,
+    pub skipped: usize,
+    /// 前几条跳过原因，给设置页显示。 The first few skip reasons, for the settings page.
+    pub rejected: Vec<String>,
+}
+
+/// Rime `.dict.yaml`：开头 `---` 到 `...` 之间是元数据，跳过；没有头部则原样返回。
+/// A Rime `.dict.yaml` starts with metadata between `---` and `...`; it is skipped. Without one, the text is returned.
+fn strip_yaml_header(text: &str) -> &str {
+    if !text.trim_start().starts_with("---") {
+        return text;
+    }
+    let mut offset = 0;
+    let mut in_header = false;
+    for line in text.split_inclusive('\n') {
+        offset += line.len();
+        let t = line.trim_end();
+        if !in_header && t == "---" {
+            in_header = true;
+        } else if in_header && t == "..." {
+            return &text[offset..];
+        }
+    }
+    text
+}
+
+/// 读音 → 音节序列：去掉声调数字，ü 写作 v，大小写不计。 Reading to syllables: tone digits off, ü as v, case ignored.
+fn reading_key(reading: &str) -> Option<Vec<weave_dict::syllable::SyllableId>> {
+    let spelled: Vec<String> = reading
+        .split_whitespace()
+        .map(|syl| syl.trim_end_matches(|c: char| c.is_ascii_digit()).replace('ü', "v").to_ascii_lowercase())
+        .collect();
+    if spelled.is_empty() {
+        return None;
+    }
+    weave_dict::syllable::parse_seq(&spelled.join(" "))
+}
+
 /// 验签并编译云端热词，返回 (词库, 词数)；不需要引擎，可在锁外调用（验签与建表较慢）。
 /// Verify and compile cloud hot words into (lexicon, word count); needs no engine, so the slow verification
 /// and build can run outside the lock.
@@ -2688,6 +2975,52 @@ pub fn compile_hotwords(tsv: &[u8], sig_hex: &str, utc_offset_min: i32) -> Resul
     let c = crate::cloud::compile(tsv, sig_hex, &crate::cloud::HOTWORDS_KEY, today)?;
     let lex = Lexicon::from_bytes(c.lexicon).map_err(|e| format!("{e:?}"))?;
     Ok((lex, c.words))
+}
+
+#[cfg(test)]
+mod cangjie_tests {
+    use super::*;
+    use weave_dict::lexicon::{letter_sym, Builder, Kind};
+
+    fn engine() -> Engine {
+        let mut b = Builder::new(Kind::Letters);
+        let k = |s: &str| s.bytes().map(|c| letter_sym(c).unwrap()).collect::<Vec<_>>();
+        b.insert(&k("a"), "日", 10);
+        b.insert(&k("hqi"), "我", 10);
+        b.insert(&k("hqiyy"), "測", 10);
+        b.insert(&k("hqiyz"), "試", 10);
+        let mut e = Engine::new(&Paths::default());
+        e.cangjie = Some(Lexicon::from_bytes(b.build()).unwrap());
+        e.set_schema(Schema::Cangjie);
+        e
+    }
+
+    fn typing(e: &mut Engine, s: &str) {
+        for c in s.chars() {
+            assert!(e.input_char(c), "rejected {c}");
+        }
+    }
+
+    #[test]
+    fn a_code_lists_its_characters() {
+        let mut e = engine();
+        typing(&mut e, "hqi");
+        assert_eq!(e.snapshot().candidates[0].text, "我");
+    }
+
+    #[test]
+    fn a_short_code_completes_to_characters_that_start_with_it() {
+        let mut e = engine();
+        typing(&mut e, "h");
+        assert!(e.snapshot().candidates.iter().any(|c| c.text == "我"));
+    }
+
+    #[test]
+    fn a_full_five_code_commits_its_only_candidate() {
+        let mut e = engine();
+        typing(&mut e, "hqiyy");
+        assert_eq!(e.snapshot().commit, "測");
+    }
 }
 
 #[cfg(test)]

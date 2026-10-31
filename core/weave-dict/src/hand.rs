@@ -168,6 +168,33 @@ impl Builder {
 
 // ------------------------------------------------------------------ recognizer
 
+/// 扫描中的一个候选：字、得分、模板序号（同分时按序号排）。 A scan candidate: char, score, template index (ties by index).
+#[derive(Clone, Copy)]
+struct Hit {
+    ch: char,
+    score: f32,
+    at: usize,
+}
+
+/// 下界 `v` 是否已经比门槛 `(阈值, 阈值模板序号)` 差：同分时序号靠后的算差。
+/// Whether a lower bound `v` is already worse than the threshold `(value, template index)`; ties go to the later index.
+fn worse_than(v: f32, bound: (f32, usize), at: usize) -> bool {
+    v > bound.0 || (v == bound.0 && at > bound.1)
+}
+
+/// 按 (得分, 序号) 插入，最多保留 `top` 个。 Insert by (score, index), keeping at most `top`.
+fn insert_hit(best: &mut Vec<Hit>, hit: Hit, top: usize) {
+    if best.len() == top && top > 0 {
+        let last = best[top - 1];
+        if (hit.score, hit.at) >= (last.score, last.at) {
+            return;
+        }
+    }
+    let pos = best.partition_point(|b| (b.score, b.at) < (hit.score, hit.at));
+    best.insert(pos, hit);
+    best.truncate(top);
+}
+
 struct Template {
     ch: char,
     prior: f32,
@@ -184,6 +211,8 @@ pub struct Recognizer {
     feats: Vec<Feat>,
     /// Cached adjacent-join headings: 24 bytes per stored stroke, no joined trajectory copies.
     joined_feats: Vec<Feat>,
+    /// Adjacent-join trajectories, parallel to `joined_feats`.
+    joined_points: Vec<Samples>,
     /// 字 → 字频先验（查找用）。 Char → frequency prior, for lookups.
     priors: std::collections::HashMap<char, f32>,
 }
@@ -324,13 +353,15 @@ impl Recognizer {
         }
         let feats = points.iter().map(Feat::of).collect();
         let mut joined_feats = vec![Feat { c: (0.0, 0.0), ang: [NO_DIR; POINTS - 1] }; points.len()];
+        let mut joined_points = vec![[(0f32, 0f32); POINTS]; points.len()];
         for t in &templates {
             for i in t.strokes.clone().take(t.strokes.len().saturating_sub(1)) {
-                joined_feats[i] = Feat::of(&join(&points[i], &points[i + 1]));
+                joined_points[i] = join(&points[i], &points[i + 1]);
+                joined_feats[i] = Feat::of(&joined_points[i]);
             }
         }
         let priors = templates.iter().map(|t| (t.ch, t.prior)).collect();
-        Ok(Recognizer { model_id: next_model_id(), templates, points, feats, joined_feats, priors })
+        Ok(Recognizer { model_id: next_model_id(), templates, points, feats, joined_feats, joined_points, priors })
     }
 
     pub fn len(&self) -> usize {
@@ -362,14 +393,14 @@ impl Recognizer {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(self.templates.len() / 1000).clamp(1, 4);
         let chunk = self.templates.len().div_ceil(threads);
         let mut all: Vec<(char, f32)> = if threads == 1 {
-            self.scan(&self.templates, input, top, None, None)
+            self.scan(&self.templates, input, top, None, None, false)
         } else {
             std::thread::scope(|sc| {
                 let handles: Vec<_> = self
                     .templates
                     .chunks(chunk.max(1))
                     .map(|part| {
-                        sc.spawn(move || self.scan(part, input, top, None, None))
+                        sc.spawn(move || self.scan(part, input, top, None, None, false))
                     })
                     .collect();
                 handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
@@ -387,7 +418,7 @@ impl Recognizer {
         if top == 0 { return Vec::new(); }
         let Some(prepared) = PreparedInk::new(strokes) else { return Vec::new(); };
         let input = prepared.view();
-        self.scan(self.templates.iter().filter(|t| t.strokes.len() == input.points.len()), input, top, None, None)
+        self.scan(&self.templates, input, top, None, None, true)
     }
 
     /// Boolean threshold query for ambiguous segmentation. It does not need a top-30 list or the best match:
@@ -395,81 +426,60 @@ impl Recognizer {
     pub(crate) fn has_strong_match(&self, strokes: &[Stroke], ceiling: f32) -> bool {
         let Some(input) = PreparedInk::new(strokes) else { return false; };
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(self.templates.len() / 1000).clamp(1, 4);
-        if threads == 1 { return !self.scan(&self.templates, input.view(), 1, Some(ceiling), None).is_empty(); }
+        if threads == 1 { return !self.scan(&self.templates, input.view(), 1, Some(ceiling), None, false).is_empty(); }
         let found = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|sc| {
             for part in self.templates.chunks(self.templates.len().div_ceil(threads)) {
                 let (input, found) = (input.view(), &found);
-                sc.spawn(move || { self.scan(part, input, 1, Some(ceiling), Some(found)); });
+                sc.spawn(move || { self.scan(part, input, 1, Some(ceiling), Some(found), false); });
             }
         });
         found.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// 在一段模板里找最好的 `top` 个。 The best `top` within a slice of templates.
-    fn scan<'a>(&self, templates: impl IntoIterator<Item = &'a Template>, ink: StrokeView<'_>, top: usize, ceiling: Option<f32>, stop: Option<&std::sync::atomic::AtomicBool>) -> Vec<(char, f32)> {
-        let (input, input_feats) = (ink.points, ink.feats);
-        let n = input.len();
-        let mut best: Vec<(char, f32)> = Vec::with_capacity(top + 1);
+    /// 在一段模板里找最好的 `top` 个，按 (代价, 模板序号) 排序；结果与逐个顺序扫描完全一致。
+    /// The best `top` within a slice of templates, ordered by (cost, template index): the same result as an in-order scan.
+    /// 先精算位置下界最小的一批模板，让门槛尽早变紧，再扫其余模板；被剪掉的模板不可能进前 `top`。
+    /// Seeds: the templates with the smallest position bounds are scored first so the threshold tightens early;
+    /// anything pruned later could not enter the top `top`.
+    fn scan(&self, templates: &[Template], ink: StrokeView<'_>, top: usize, ceiling: Option<f32>, stop: Option<&std::sync::atomic::AtomicBool>, same_count: bool) -> Vec<(char, f32)> {
+        let n = ink.points.len();
+        let mut best: Vec<Hit> = Vec::with_capacity(top + 1);
         let mut cost = vec![0f32; n * 64];
-        for t in templates {
+        let mut seeded = vec![false; templates.len()];
+        if ceiling.is_none() && top > 0 && n > 0 {
+            let mut keys: Vec<(f32, usize)> = templates
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.strokes.len() == n)
+                .map(|(at, t)| (self.position_bound(ink, t), at))
+                .collect();
+            let seeds = (2 * top).min(keys.len());
+            if seeds > 0 && seeds < keys.len() {
+                keys.select_nth_unstable_by(seeds - 1, |a, b| a.0.total_cmp(&b.0));
+            }
+            for &(_, at) in keys.iter().take(seeds) {
+                seeded[at] = true;
+                if let Some(score) = self.template_score(ink, &templates[at], at, &mut cost, None) {
+                    insert_hit(&mut best, Hit { ch: templates[at].ch, score, at }, top);
+                }
+            }
+        }
+        for (at, t) in templates.iter().enumerate() {
             if stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) { break; }
-            let m = t.strokes.len();
             // 连笔会让笔数变少，漏写、多写也常见：笔数相差太多的直接跳过。
             // Joined strokes reduce the count; skip templates whose stroke count is far off.
-            if m == 0 || n > m + 2 || m > n + 4 + n / 2 {
+            let m = t.strokes.len();
+            if seeded[at] || m == 0 || n > m + 2 || m > n + 4 + n / 2 || (same_count && m != n) {
                 continue;
             }
-            let tmpl = &self.points[t.strokes.clone()];
-            let tf = &self.feats[t.strokes.clone()];
-            let tv = StrokeView { points: tmpl, feats: tf, joined_feats: &self.joined_feats[t.strokes.clone()], joined_points: None };
-            if cost.len() < n * m {
-                cost.resize(n * m, 0.0);
-            }
-            for (i, u) in input.iter().enumerate() {
-                for (j, v) in tmpl.iter().enumerate() {
-                    cost[i * m + j] = stroke_distance(u, &input_feats[i], v, &tf[j]);
-                }
-            }
-            let unmatched_tmpl = m.saturating_sub(n) as f32;
-            let unmatched_input = n.saturating_sub(m) as f32;
-            let penalty = MISSING * unmatched_tmpl / m as f32 + EXTRA * unmatched_input / n as f32;
-            let fixed = penalty - PRIOR * t.prior;
-            // 剪枝：每行（或每列）各取最小值之和是指派代价的下界；下界已比当前第 top 名差就不必精算。
-            // Pruning: the sum of per-row (or per-column) minima bounds the assignment from below.
-            let threshold = if best.len() == top { Some(best[top - 1].1) } else { ceiling };
-            if let Some(threshold) = threshold {
-                let k = n.min(m);
-                let lower = if n <= m {
-                    (0..n).map(|i| cost[i * m..i * m + m].iter().copied().fold(f32::MAX, f32::min)).sum::<f32>()
-                } else {
-                    (0..m).map(|j| (0..n).map(|i| cost[i * m + j]).fold(f32::MAX, f32::min)).sum::<f32>()
-                };
-                // A join can reduce the matched distance as well as the count penalty. The single-stroke lower
-                // bound is only sufficient when counts agree; otherwise also bound the adjacent joined shapes.
-                if lower / k.max(1) as f32 + fixed - penalty >= threshold {
-                    let cutoff = (threshold - fixed + penalty) * k.max(1) as f32;
-                    if n == m || joined_lower(&cost[..n * m], n, m, ink, tv, cutoff) / k.max(1) as f32 + fixed - penalty >= threshold {
-                        continue;
-                    }
-                }
-            }
-            let (mut assigned, pairs) = assignment(&cost[..n * m], n, m);
-            let mut fixed = fixed;
-            if n != m {
-                let (gain, freed) = if n < m {
-                    joins(&cost, &pairs, n, m, ink, tv, false)
-                } else {
-                    joins(&cost, &pairs, n, m, ink, tv, true)
-                };
-                assigned -= gain;
-                fixed -= freed as f32 * if n < m { MISSING / m as f32 } else { EXTRA / n as f32 };
-            }
-            // 笔数少时一次错位就占很大比例（先竖后横写「十」很常见）：按配对数打折。
-            // With few strokes one swap is a large fraction (writing 十 vertical-first is common): scale it down.
-            let k = pairs.len() as f32;
-            let inv = inversions(&pairs) * (k - 1.0).max(0.0) / (k + 1.0);
-            let score = assigned / n.min(m).max(1) as f32 + INVERSION * inv + fixed;
+            let bound = if best.len() == top && top > 0 {
+                let last = best[top - 1];
+                Some((last.score, last.at))
+            } else {
+                ceiling.map(|c| (c, 0))
+            };
+            let Some(score) = self.template_score(ink, t, at, &mut cost, bound) else { continue };
             if let Some(ceiling) = ceiling {
                 if score < ceiling {
                     if let Some(stop) = stop { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
@@ -477,13 +487,97 @@ impl Recognizer {
                 }
                 continue;
             }
-            if best.len() < top || score < best.last().map_or(f32::MAX, |b| b.1) {
-                let pos = best.partition_point(|b| b.1 <= score);
-                best.insert(pos, (t.ch, score));
-                best.truncate(top);
+            insert_hit(&mut best, Hit { ch: t.ch, score, at }, top);
+        }
+        best.into_iter().map(|h| (h.ch, h.score)).collect()
+    }
+
+    /// 同字数时每个模板的位置下界（只用位置项，约等于 `template_score` 的下界）。
+    /// Position-only lower bound on a template's score, valid when the stroke counts are equal.
+    fn position_bound(&self, ink: StrokeView<'_>, t: &Template) -> f32 {
+        let tf = &self.feats[t.strokes.clone()];
+        let n = ink.feats.len();
+        let rows: f32 = ink.feats.iter().map(|fu| {
+            tf.iter().map(|fv| W_POS * (oct((fu.c.0 - fv.c.0).abs(), (fu.c.1 - fv.c.1).abs()) / 255.0)).fold(f32::MAX, f32::min)
+        }).sum();
+        rows / n as f32 - PRIOR * t.prior
+    }
+
+    /// 一个模板的得分（越小越像）。`bound` 是 (门槛, 门槛所在模板序号)：下界已确定比门槛差时返回 `None`。
+    /// Score of one template (lower is better). `bound` is (threshold, its template index); returns `None` when the
+    /// lower bound is already worse than the threshold.
+    fn template_score(&self, ink: StrokeView<'_>, t: &Template, at: usize, cost: &mut Vec<f32>, bound: Option<(f32, usize)>) -> Option<f32> {
+        let (input, input_feats) = (ink.points, ink.feats);
+        let n = input.len();
+        let m = t.strokes.len();
+        let tmpl = &self.points[t.strokes.clone()];
+        let tf = &self.feats[t.strokes.clone()];
+        let tv = StrokeView { points: tmpl, feats: tf, joined_feats: &self.joined_feats[t.strokes.clone()], joined_points: Some(&self.joined_points[t.strokes.clone()]) };
+        if cost.len() < n * m {
+            cost.resize(n * m, 0.0);
+        }
+        let unmatched_tmpl = m.saturating_sub(n) as f32;
+        let unmatched_input = n.saturating_sub(m) as f32;
+        let penalty = MISSING * unmatched_tmpl / m as f32 + EXTRA * unmatched_input / n as f32;
+        let fixed = penalty - PRIOR * t.prior;
+        let k = n.min(m).max(1) as f32;
+        // 剪枝：每行（或每列）各取最小值之和是指派代价的下界；下界已比门槛差就不必精算。
+        // Pruning: the sum of per-row (or per-column) minima bounds the assignment from below.
+        match bound {
+            // 同字数：逐行填矩阵，行最小值之和只增不减，已经比门槛差就立即停止（结果与填完再判断相同）。
+            // Equal counts: fill row by row. The running sum of row minima only grows, so stop as soon as it is already worse.
+            Some(bound) if n == m => {
+                let mut lower = 0f32;
+                for (i, u) in input.iter().enumerate() {
+                    let row = &mut cost[i * m..i * m + m];
+                    for (j, (v, f)) in tmpl.iter().zip(tf).enumerate() {
+                        row[j] = stroke_distance(u, &input_feats[i], v, f);
+                    }
+                    lower += row.iter().copied().fold(f32::MAX, f32::min);
+                    if worse_than(lower / k + fixed - penalty, bound, at) {
+                        return None;
+                    }
+                }
+            }
+            _ => {
+                for (i, u) in input.iter().enumerate() {
+                    for (j, v) in tmpl.iter().enumerate() {
+                        cost[i * m + j] = stroke_distance(u, &input_feats[i], v, &tf[j]);
+                    }
+                }
+                if let Some(bound) = bound {
+                    let lower = if n <= m {
+                        (0..n).map(|i| cost[i * m..i * m + m].iter().copied().fold(f32::MAX, f32::min)).sum::<f32>()
+                    } else {
+                        (0..m).map(|j| (0..n).map(|i| cost[i * m + j]).fold(f32::MAX, f32::min)).sum::<f32>()
+                    };
+                    // A join can reduce the matched distance as well as the count penalty. The single-stroke lower
+                    // bound is only sufficient when counts agree; otherwise also bound the adjacent joined shapes.
+                    if worse_than(lower / k + fixed - penalty, bound, at) {
+                        let cutoff = (bound.0 - fixed + penalty) * k;
+                        if worse_than(joined_lower(&cost[..n * m], n, m, ink, tv, cutoff) / k + fixed - penalty, bound, at) {
+                            return None;
+                        }
+                    }
+                }
             }
         }
-        best
+        let (mut assigned, pairs) = assignment(&cost[..n * m], n, m);
+        let mut fixed = fixed;
+        if n != m {
+            let (gain, freed) = if n < m {
+                joins(cost, &pairs, n, m, ink, tv, false)
+            } else {
+                joins(cost, &pairs, n, m, ink, tv, true)
+            };
+            assigned -= gain;
+            fixed -= freed as f32 * if n < m { MISSING / m as f32 } else { EXTRA / n as f32 };
+        }
+        // 笔数少时一次错位就占很大比例（先竖后横写「十」很常见）：按配对数打折。
+        // With few strokes one swap is a large fraction (writing 十 vertical-first is common): scale it down.
+        let k = pairs.len() as f32;
+        let inv = inversions(&pairs) * (k - 1.0).max(0.0) / (k + 1.0);
+        Some(assigned / n.min(m).max(1) as f32 + INVERSION * inv + fixed)
     }
 }
 
@@ -506,22 +600,20 @@ fn stroke_distance(u: &[(f32, f32); POINTS], fu: &Feat, v: &[(f32, f32); POINTS]
     }
     let t = dir_cost_table();
     let (mut df, mut dr, mut nf, mut nr) = (0f32, 0f32, 0f32, 0f32);
+    // 无走向的段不计入（用 0/1 掩码代替分支，结果与跳过相同：加上的是 0）。
+    // Degenerate segments are masked out instead of branched on; the masked terms add exactly zero.
     for k in 0..POINTS - 1 {
         let a = fu.ang[k];
-        if a == NO_DIR {
-            continue;
-        }
+        let ma = f32::from(u8::from(a != NO_DIR));
         let b = fv.ang[k];
-        if b != NO_DIR {
-            df += t[((a + 256 - b) & 255) as usize];
-            nf += 1.0;
-        }
+        let mb = ma * f32::from(u8::from(b != NO_DIR));
+        df += mb * t[(a.wrapping_sub(b) & 255) as usize];
+        nf += mb;
         // 反向：模板倒着走，每段走向转 180°。 Reversed: walk the template backwards, each heading turned 180°.
         let c = fv.ang[POINTS - 2 - k];
-        if c != NO_DIR {
-            dr += t[((a + 256 - ((c + 128) & 255)) & 255) as usize];
-            nr += 1.0;
-        }
+        let mc = ma * f32::from(u8::from(c != NO_DIR));
+        dr += mc * t[(a.wrapping_sub(c.wrapping_add(128) & 255) & 255) as usize];
+        nr += mc;
     }
     let norm = POINTS as f32 * 255.0;
     let fwd = ws * sf / norm + wd * if nf > 0.0 { df / nf } else { 0.0 };
@@ -531,8 +623,7 @@ fn stroke_distance(u: &[(f32, f32); POINTS], fu: &Feat, v: &[(f32, f32); POINTS]
 
 #[inline]
 fn oct(a: f32, b: f32) -> f32 {
-    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
-    hi + 0.41 * lo
+    a.max(b) + 0.41 * a.min(b)
 }
 
 /// 把两笔按书写顺序接成一笔并重采样。 Join two strokes in order and resample.
@@ -652,26 +743,37 @@ fn joins(
 /// Minimum-cost assignment of min(n, m) pairs (Hungarian algorithm on the padded square matrix).
 fn assignment(cost: &[f32], n: usize, m: usize) -> (f32, Vec<(usize, usize)>) {
     let size = n.max(m);
-    let at = |i: usize, j: usize| if i < n && j < m { cost[i * m + j] } else { 0.0 };
+    // 补零成方阵（与原先越界取 0 的语义相同），内层循环直接索引，不再逐元素判断边界。
+    // Zero-padded square matrix (same as the old out-of-range zeros); the inner loops index it directly.
+    let mut c = vec![0f32; size * size];
+    for i in 0..n {
+        c[i * size..i * size + m].copy_from_slice(&cost[i * m..i * m + m]);
+    }
     // 经典 O(size³) 匈牙利算法（势函数版）。 Classic O(size³) Hungarian with potentials.
+    // 运算顺序与原版完全一致，结果逐位相同；缓冲区在行之间复用。
+    // The operation order matches the original exactly, so results are bit-identical; buffers are reused across rows.
     let inf = f32::MAX / 4.0;
     let mut u = vec![0f32; size + 1];
     let mut v = vec![0f32; size + 1];
     let mut p = vec![0usize; size + 1];
     let mut way = vec![0usize; size + 1];
+    let mut minv = vec![inf; size + 1];
+    let mut used = vec![false; size + 1];
     for i in 1..=size {
         p[0] = i;
         let mut j0 = 0;
-        let mut minv = vec![inf; size + 1];
-        let mut used = vec![false; size + 1];
+        minv.fill(inf);
+        used.fill(false);
         loop {
             used[j0] = true;
             let i0 = p[j0];
+            let row = &c[(i0 - 1) * size..i0 * size];
+            let ui0 = u[i0];
             let mut delta = inf;
             let mut j1 = 0;
             for j in 1..=size {
                 if !used[j] {
-                    let cur = at(i0 - 1, j - 1) - u[i0] - v[j];
+                    let cur = row[j - 1] - ui0 - v[j];
                     if cur < minv[j] {
                         minv[j] = cur;
                         way[j] = j0;
@@ -709,7 +811,7 @@ fn assignment(cost: &[f32], n: usize, m: usize) -> (f32, Vec<(usize, usize)>) {
     for j in 1..=size {
         let i = p[j];
         if i >= 1 && i <= n && j <= m {
-            total += at(i - 1, j - 1);
+            total += cost[(i - 1) * m + (j - 1)];
             pairs.push((i - 1, j - 1));
         }
     }
@@ -819,6 +921,97 @@ mod tests {
         }
         assert!(r.recognize(&[vec![(f32::NAN, 0.0)]], 1).is_empty());
         assert!(r.recognize(&vec![vec![(0.0, 0.0)]; 65], 1).is_empty());
+    }
+
+    /// 原版指派（参照）。 The original assignment, kept as the reference.
+    fn assignment_reference(cost: &[f32], n: usize, m: usize) -> (f32, Vec<(usize, usize)>) {
+        let size = n.max(m);
+        let at = |i: usize, j: usize| if i < n && j < m { cost[i * m + j] } else { 0.0 };
+        // 经典 O(size³) 匈牙利算法（势函数版）。 Classic O(size³) Hungarian with potentials.
+        let inf = f32::MAX / 4.0;
+        let mut u = vec![0f32; size + 1];
+        let mut v = vec![0f32; size + 1];
+        let mut p = vec![0usize; size + 1];
+        let mut way = vec![0usize; size + 1];
+        for i in 1..=size {
+            p[0] = i;
+            let mut j0 = 0;
+            let mut minv = vec![inf; size + 1];
+            let mut used = vec![false; size + 1];
+            loop {
+                used[j0] = true;
+                let i0 = p[j0];
+                let mut delta = inf;
+                let mut j1 = 0;
+                for j in 1..=size {
+                    if !used[j] {
+                        let cur = at(i0 - 1, j - 1) - u[i0] - v[j];
+                        if cur < minv[j] {
+                            minv[j] = cur;
+                            way[j] = j0;
+                        }
+                        if minv[j] < delta {
+                            delta = minv[j];
+                            j1 = j;
+                        }
+                    }
+                }
+                for j in 0..=size {
+                    if used[j] {
+                        u[p[j]] += delta;
+                        v[j] -= delta;
+                    } else {
+                        minv[j] -= delta;
+                    }
+                }
+                j0 = j1;
+                if p[j0] == 0 {
+                    break;
+                }
+            }
+            loop {
+                let j1 = way[j0];
+                p[j0] = p[j1];
+                j0 = j1;
+                if j0 == 0 {
+                    break;
+                }
+            }
+        }
+        let mut pairs = Vec::with_capacity(n.min(m));
+        let mut total = 0f32;
+        for j in 1..=size {
+            let i = p[j];
+            if i >= 1 && i <= n && j <= m {
+                total += at(i - 1, j - 1);
+                pairs.push((i - 1, j - 1));
+            }
+        }
+        pairs.sort_unstable();
+        (total, pairs)
+    }
+
+    /// 新旧实现在随机矩阵（方形与非方形）上逐位一致。 Old and new agree bit for bit on random matrices, square and not.
+    #[test]
+    fn assignment_matches_the_reference_bit_for_bit() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        for n in 1..=12 {
+            for m in 1..=12 {
+                for _ in 0..8 {
+                    let cost: Vec<f32> = (0..n * m).map(|_| next() * 2.0).collect();
+                    let (a, pa) = assignment(&cost, n, m);
+                    let (b, pb) = assignment_reference(&cost, n, m);
+                    assert_eq!(a.to_bits(), b.to_bits(), "total differs for {n}x{m}");
+                    assert_eq!(pa, pb, "pairs differ for {n}x{m}");
+                }
+            }
+        }
     }
 
     #[test]

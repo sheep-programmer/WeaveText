@@ -30,6 +30,7 @@ fn main() {
                     weight: 0.25,
                     baseline: 12.0,
                 }),
+                memo: None,
             };
             let lat = decoder.decode();
             let parts: Vec<_> = lat

@@ -77,6 +77,9 @@ impl Engine {
         self.caret = None;
         self.shape = None;
         if covers_all {
+            if self.selected.is_empty() && sel.intentional {
+                self.learn_typo(&sel);
+            }
             self.selected.push(sel);
             self.commit_selected();
             return;
@@ -87,6 +90,27 @@ impl Engine {
         self.skip_separators();
         self.undo_picks = true;
         self.refresh();
+    }
+
+    /// 整段输入一次明确选中：若打的字母只差一两个字母于意图的拼音，记下这次纠错。
+    /// A whole-input explicit pick: when the typed letters are one or two edits from the intended spelling, record it.
+    fn learn_typo(&mut self, sel: &Selection) {
+        if !self.user_pinyin.learning || self.schema != Schema::Pinyin {
+            return;
+        }
+        let typed: String = self.rest_raw().chars().filter(|c| c.is_ascii_lowercase()).collect();
+        let intended: Vec<&str> = sel
+            .words
+            .iter()
+            .flat_map(|(keys, _)| keys.iter().map(|id| weave_dict::syllable::spelling(*id)))
+            .collect();
+        if !crate::typo_learn::is_typo(&typed, &intended.concat()) {
+            return;
+        }
+        let key = crate::typo_learn::key(&typed);
+        let mut records = crate::typo_learn::decode(self.personal.get(&key));
+        crate::typo_learn::record(&mut records, &intended.join(" "));
+        self.personal.set(key, crate::typo_learn::encode(&records));
     }
 
     /// 撤回最近一次选词，把它吃掉的按键还给组合串。 Undo the latest pick, returning its keys to the composition.

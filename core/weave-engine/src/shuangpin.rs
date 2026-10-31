@@ -21,14 +21,23 @@ pub enum SchemeId {
     Microsoft,
     /// 搜狗双拼 Sogou
     Sogou,
+    /// 首道双拼 Shoudao
+    Shoudao,
+    /// 智能ABC双拼 Zhineng ABC
+    ZhinengAbc,
+    /// 拼音加加 Pinyin Jiajia
+    Jiajia,
 }
 
 impl SchemeId {
-    pub const ALL: [SchemeId; 4] = [
+    pub const ALL: [SchemeId; 7] = [
         SchemeId::Xiaohe,
         SchemeId::Ziranma,
         SchemeId::Microsoft,
         SchemeId::Sogou,
+        SchemeId::Shoudao,
+        SchemeId::ZhinengAbc,
+        SchemeId::Jiajia,
     ];
 
     pub fn key(self) -> &'static str {
@@ -37,6 +46,9 @@ impl SchemeId {
             SchemeId::Ziranma => "ziranma",
             SchemeId::Microsoft => "microsoft",
             SchemeId::Sogou => "sogou",
+            SchemeId::Shoudao => "shoudao",
+            SchemeId::ZhinengAbc => "znabc",
+            SchemeId::Jiajia => "jiajia",
         }
     }
 
@@ -50,6 +62,9 @@ impl SchemeId {
             SchemeId::Ziranma => "自然码",
             SchemeId::Microsoft => "微软双拼",
             SchemeId::Sogou => "搜狗双拼",
+            SchemeId::Shoudao => "首道双拼",
+            SchemeId::ZhinengAbc => "智能ABC双拼",
+            SchemeId::Jiajia => "拼音加加",
         }
     }
 }
@@ -61,6 +76,12 @@ enum ZeroRule {
     Natural,
     /// 固定 o 键 + 韵母键（微软、搜狗）。 'o' + final key.
     OKey,
+    /// 固定 o 键 + 韵母键，不加备用编码（智能ABC）。 'o' + final key, no alternates (Zhineng ABC).
+    OKeyStrict,
+    /// 零声母首字母 + 韵母键（拼音加加）：aa、ai→as、ou→op、er→eq。 First letter + final key (Jiajia).
+    FirstLetter,
+    /// 逐个写明的两键（首道）。 Each zero-initial syllable spelled out (Shoudao).
+    Explicit(&'static [(&'static str, &'static str)]),
 }
 
 struct Scheme {
@@ -214,12 +235,123 @@ const SOGOU: Scheme = Scheme {
     zero: ZeroRule::OKey,
 };
 
+const SHOUDAO: Scheme = Scheme {
+    zh: b'v',
+    ch: b'i',
+    sh: b'e',
+    finals: &[
+        (b'a', &["a"]),
+        (b'b', &["ve"]),
+        (b'c', &["in"]),
+        (b'd', &["ao"]),
+        (b'e', &["e"]),
+        (b'f', &["eng"]),
+        (b'g', &["ing", "uai"]),
+        (b'h', &["ong", "iong"]),
+        (b'i', &["i"]),
+        (b'j', &["an"]),
+        (b'k', &["en", "ia"]),
+        (b'l', &["ai", "ue"]),
+        (b'm', &["ei"]),
+        (b'n', &["ian"]),
+        (b'o', &["uo", "o"]),
+        (b'p', &["iao"]),
+        (b'q', &["iu"]),
+        (b'r', &["ie"]),
+        (b's', &["ou"]),
+        (b't', &["uan"]),
+        (b'u', &["u"]),
+        (b'v', &["ui", "v"]),
+        (b'w', &["ua"]),
+        (b'x', &["iang", "uang"]),
+        (b'y', &["ang"]),
+        (b'z', &["un"]),
+    ],
+    zero: ZeroRule::Explicit(&[
+        ("a", "aa"), ("o", "oo"), ("e", "ue"), ("ai", "ai"), ("ei", "ui"), ("ao", "ao"), ("ou", "ou"),
+        ("an", "an"), ("en", "en"), ("ang", "ay"), ("eng", "uf"), ("er", "er"),
+    ]),
+};
+
+const ZHINENG_ABC: Scheme = Scheme {
+    zh: b'a',
+    ch: b'e',
+    sh: b'v',
+    finals: &[
+        (b'a', &["a"]),
+        (b'b', &["ou"]),
+        (b'c', &["in", "uai"]),
+        (b'd', &["ia", "ua"]),
+        (b'e', &["e"]),
+        (b'f', &["en"]),
+        (b'g', &["eng"]),
+        (b'h', &["ang"]),
+        (b'i', &["i"]),
+        (b'j', &["an"]),
+        (b'k', &["ao"]),
+        (b'l', &["ai"]),
+        (b'm', &["ui", "ue", "ve"]),
+        (b'n', &["un"]),
+        (b'o', &["uo", "o"]),
+        (b'p', &["uan"]),
+        (b'q', &["ei"]),
+        (b'r', &["iu", "er"]),
+        (b's', &["ong", "iong"]),
+        (b't', &["iang", "uang"]),
+        (b'u', &["u"]),
+        (b'v', &["v"]),
+        (b'w', &["ian"]),
+        (b'x', &["ie"]),
+        (b'y', &["ing"]),
+        (b'z', &["iao"]),
+    ],
+    zero: ZeroRule::OKeyStrict,
+};
+
+const JIAJIA: Scheme = Scheme {
+    zh: b'v',
+    ch: b'u',
+    sh: b'i',
+    finals: &[
+        (b'a', &["a"]),
+        (b'b', &["ia", "ua"]),
+        (b'c', &["uan"]),
+        (b'd', &["ao"]),
+        (b'e', &["e"]),
+        (b'f', &["an"]),
+        (b'g', &["ang"]),
+        (b'h', &["iang", "uang"]),
+        (b'i', &["i"]),
+        (b'j', &["ian"]),
+        (b'k', &["iao"]),
+        (b'l', &["in"]),
+        (b'm', &["ie"]),
+        (b'n', &["iu"]),
+        (b'o', &["o", "uo"]),
+        (b'p', &["ou"]),
+        (b'q', &["ing", "er"]),
+        (b'r', &["en"]),
+        (b's', &["ai"]),
+        (b't', &["eng"]),
+        (b'u', &["u"]),
+        (b'v', &["ui", "v"]),
+        (b'w', &["ei"]),
+        (b'x', &["ue", "ve", "uai"]),
+        (b'y', &["ong", "iong"]),
+        (b'z', &["un"]),
+    ],
+    zero: ZeroRule::FirstLetter,
+};
+
 fn scheme(id: SchemeId) -> &'static Scheme {
     match id {
         SchemeId::Xiaohe => &XIAOHE,
         SchemeId::Ziranma => &ZIRANMA,
         SchemeId::Microsoft => &MICROSOFT,
         SchemeId::Sogou => &SOGOU,
+        SchemeId::Shoudao => &SHOUDAO,
+        SchemeId::ZhinengAbc => &ZHINENG_ABC,
+        SchemeId::Jiajia => &JIAJIA,
     }
 }
 
@@ -236,6 +368,14 @@ impl Scheme {
     /// 韵母所在的全部键（第一个为主键）。 All keys carrying a final; the first is primary.
     fn final_keys(&self, fin: &str) -> Vec<u8> {
         self.finals.iter().filter(|(_, fs)| fs.contains(&fin)).map(|(k, _)| *k).collect()
+    }
+
+    /// 两个音节同声母，且韵母的键有交集（方案内的共键）。 Same initial, and their final keys overlap.
+    #[cfg(test)]
+    fn shares_final_key(&self, a: &str, b: &str) -> bool {
+        let (ia, fa) = syllable::split(a);
+        let (ib, fb) = syllable::split(b);
+        ia == ib && self.final_keys(fa).iter().any(|k| self.final_keys(fb).contains(k))
     }
 
     /// 音节的全部可接受编码，主编码在前。与各方案的通行键位一致：
@@ -264,6 +404,21 @@ impl Scheme {
                     }
                     for k in keys {
                         push([first, k]);
+                    }
+                }
+                ZeroRule::Explicit(table) => {
+                    if let Some((_, code)) = table.iter().find(|(f, _)| *f == fin) {
+                        push(code.as_bytes().try_into().expect("two-key code"));
+                    }
+                }
+                ZeroRule::FirstLetter => {
+                    for k in keys {
+                        push([first, k]);
+                    }
+                }
+                ZeroRule::OKeyStrict => {
+                    for k in keys {
+                        push([b'o', k]);
                     }
                 }
                 ZeroRule::OKey => {
@@ -355,6 +510,66 @@ pub fn is_input_key(c: u8) -> bool {
 }
 
 /// 为双拼输入建音节图。 Build the syllable graph for shuangpin input.
+/// 九键 / 14 键的双拼建图：每次按键对应一个字母组（如 14 键的 `qw`），一个音节是两次按键。
+/// 两个按键组里的每一对字母都查双拼表，所以歧义由解码器与语言模型一起消解。
+/// Keypad shuangpin: each tap is a letter group (such as `qw` on 14 keys); a syllable is two taps.
+/// Every letter pair across the two groups is looked up, and the decoder with the language model resolves ambiguity.
+pub fn build_keypad_graph(id: SchemeId, taps: &[u8], grouping: crate::t9::Grouping) -> SyllableGraph {
+    let t = table(id);
+    let n = taps.len();
+    let mut g = SyllableGraph::new(n);
+    let letters: Vec<&str> = taps.iter().map(|&k| grouping.letters(k)).collect();
+    for i in 0..n {
+        if i + 1 < n {
+            let mut seen: Vec<SyllableId> = Vec::new();
+            for a in letters[i].bytes() {
+                for b in letters[i + 1].bytes() {
+                    for &sy in t.decode(a, b) {
+                        if !seen.contains(&sy) {
+                            seen.push(sy);
+                        }
+                    }
+                }
+            }
+            if !seen.is_empty() {
+                g.push(Edge {
+                    start: i,
+                    end: i + 2,
+                    syls: seen,
+                    penalty: 0,
+                    kind: EdgeKind::Full,
+                    bits: Vec::new(),
+                });
+            }
+        } else {
+            // 末尾的单键：只写了声母键，取各字母开头的音节（与双拼的单键补全相同）。
+            // A trailing single tap: the syllables starting with any of its letters, as in the plain shuangpin.
+            let mut starts: Vec<SyllableId> = Vec::new();
+            for a in letters[i].bytes() {
+                if let Some(v) = t.by_first.get(&a) {
+                    for &sy in v {
+                        if !starts.contains(&sy) {
+                            starts.push(sy);
+                        }
+                    }
+                }
+            }
+            if !starts.is_empty() {
+                g.push(Edge {
+                    start: i,
+                    end: i + 1,
+                    syls: starts,
+                    penalty: penalty::ABBREV_END,
+                    kind: EdgeKind::Abbrev,
+                    bits: Vec::new(),
+                });
+            }
+        }
+    }
+    g.ensure_connected();
+    g
+}
+
 pub fn build_graph(id: SchemeId, keys: &[u8], fuzzy: &FuzzyOptions) -> SyllableGraph {
     build_graph_with_step(id, keys, fuzzy, 2)
 }
@@ -424,13 +639,16 @@ mod tests {
                 let s = syllable::spelling(sy);
                 let all = sch.encodings(s);
                 assert!(!all.is_empty(), "{sid:?} cannot encode {s}");
-                // 主编码与备用编码都不能和别的音节撞键（lo/luo 是各方案公认的共键）。
-                // Neither primary nor alternate pairs may collide (lo/luo is a known shared pair).
+                // 主编码与备用编码都不能和别的音节撞键。同声母且韵母共用一键的一对（首道 en/ia，智能ABC ui/ue/ve）
+                // 是方案本身的共键，交给语言模型区分；lo/luo 同理。
+                // Neither primary nor alternate pairs may collide, except shared keys within one initial whose finals
+                // share a key (Shoudao en/ia, Zhineng ABC ui/ue/ve): the language model tells them apart.
                 for k in all {
                     if let Some(prev) = seen.insert(k, s) {
                         let known = [("lo", "luo")];
+                        let shared_final = sch.shares_final_key(prev, s);
                         assert!(
-                            prev == s || known.contains(&(prev, s)) || known.contains(&(s, prev)),
+                            prev == s || known.contains(&(prev, s)) || known.contains(&(s, prev)) || shared_final,
                             "{sid:?}: {s} and {prev} both encode to {:?}",
                             std::str::from_utf8(&k)
                         );
@@ -455,6 +673,12 @@ mod tests {
             (Microsoft, "ol", "ai"), (Microsoft, "al", "ai"), (Microsoft, "or", "er"), (Microsoft, "ob", "ou"),
             (Microsoft, "lt", "lve"), (Microsoft, "lv", "lve"), (Microsoft, "ly", "lv"), (Microsoft, "x;", "xing"),
             (Sogou, "ol", "ai"), (Sogou, "al", "ai"), (Sogou, "lt", "lve"), (Sogou, "jy", "ju"), (Sogou, "x;", "xing"),
+            // 首道：zh→V、ch→I、sh→E；零声母 e→UE、ang→AY。 Shoudao: zh V, ch I, sh E; zero e→ue, ang→ay.
+            (Shoudao, "vh", "zhong"), (Shoudao, "ie", "che"), (Shoudao, "ue", "e"), (Shoudao, "ay", "ang"), (Shoudao, "ai", "ai"),
+            // 智能ABC：zh→A、ch→E、sh→V；零声母 O + 韵母键。 Zhineng ABC: zh A, ch E, sh V; zero O + final key.
+            (ZhinengAbc, "as", "zhong"), (ZhinengAbc, "ol", "ai"), (ZhinengAbc, "or", "er"), (ZhinengAbc, "oa", "a"),
+            // 拼音加加：zh→V、ch→U、sh→I；零声母首字母 + 韵母键。 Jiajia: zh V, ch U, sh I; zero first letter + final key.
+            (Jiajia, "vy", "zhong"), (Jiajia, "as", "ai"), (Jiajia, "eq", "er"), (Jiajia, "op", "ou"), (Jiajia, "aa", "a"),
         ] {
             if sid == Xiaohe && keys == "ek" {
                 // 非法音节：确认不会被解码。 Invalid syllables must not decode.
@@ -485,6 +709,19 @@ mod tests {
         let t = table(SchemeId::Microsoft);
         assert_eq!(syllable::spelling(t.decode(b'x', b';')[0]), "xing");
         assert_eq!(syllable::spelling(t.decode(b'o', b'l')[0]), "ai");
+    }
+
+    #[test]
+    fn keypad_shuangpin_resolves_two_taps_through_their_letter_groups() {
+        use crate::t9::Grouping;
+        // 14 键：v 在 cv（L），s 在 as（F）。zhong = zh(v) + ong(s)。
+        let taps = [Grouping::Fourteen.code(b'v'), Grouping::Fourteen.code(b's')];
+        let g = build_keypad_graph(SchemeId::Xiaohe, &taps, Grouping::Fourteen);
+        assert!(g.out[0].iter().any(|e| e.end == 2 && e.syls.iter().any(|&s| syllable::spelling(s) == "zhong")));
+        // 九键：v 在 8（tuv），s 在 7（pqrs）。
+        let taps = [Grouping::Nine.code(b'v'), Grouping::Nine.code(b's')];
+        let g = build_keypad_graph(SchemeId::Xiaohe, &taps, Grouping::Nine);
+        assert!(g.out[0].iter().any(|e| e.end == 2 && e.syls.iter().any(|&s| syllable::spelling(s) == "zhong")));
     }
 
     #[test]

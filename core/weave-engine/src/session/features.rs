@@ -2,6 +2,62 @@ use super::*;
 use serde_json::{json, Value};
 
 impl Engine {
+    /// 一个输入码的全部短语，权重从高到低。 All phrases for one code, highest weight first.
+    fn phrase_entries(&self, code: &str) -> Vec<crate::phrases::Entry> {
+        let value = self.personal.records.get(&crate::phrases::key(code)).map_or("", |r| r.value.as_str());
+        crate::phrases::ordered(crate::phrases::decode(value))
+    }
+
+    /// 写回一个输入码的全部短语；空列表即删除该码。个人数据立即落盘，可随互联同步。
+    /// Store one code's phrases; an empty list deletes the code. The personal store saves at once and syncs.
+    fn store_phrases(&mut self, code: &str, entries: &[crate::phrases::Entry]) {
+        self.personal.set(crate::phrases::key(code), crate::phrases::encode(entries));
+    }
+
+    /// 整个输入正好是某个输入码时，它的短语排在最前（按权重），按模板展开后上屏，不学习。
+    /// When the whole input is a code, its phrases come first (by weight), template-expanded, and are not learned.
+    fn insert_phrases(&mut self) {
+        let code = self.rest_raw().to_ascii_lowercase();
+        if code.is_empty() { return; }
+        let offset = self.options.utc_offset_min;
+        for (k, entry) in self.phrase_entries(&code).into_iter().enumerate() {
+            let text = expand(&entry.text, offset);
+            let pinyin = if self.options.pinyin_hint {
+                crate::tones::pinyin(&text, None, self.options.pinyin_tones).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let view = CandidateView { pinyin, cloud: false, text: text.clone(), comment: "快捷短语".into(), user: false };
+            self.cands.insert(k, Cand { view, action: Action::Table { text } });
+        }
+    }
+
+    /// 清空置顶与降权（只动候选偏好，不动学到的词频）；手写字形的偏好另有单独的清空，这里跳过。
+    /// Clears pins and demotions only; learned frequencies stay. Handwriting glyph preferences have their own reset.
+    pub fn clear_candidate_preferences(&mut self) -> usize {
+        let keys: Vec<String> = self.personal.records.iter()
+            .filter(|(k, r)| (k.starts_with("pin:") || k.starts_with("policy:")) && !r.value.is_empty())
+            .filter(|(k, _)| !k.starts_with("pin:hand:") && !k.starts_with("policy:[\"hand:"))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let pins: Vec<(Vec<u16>, String)> = self.personal.records.iter()
+            .filter(|(k, r)| k.starts_with("pinlearn:") && !r.value.is_empty())
+            .filter_map(|(k, _)| serde_json::from_str::<(Vec<u16>, String)>(k.strip_prefix("pinlearn:")?).ok())
+            .collect();
+        for (key, text) in &pins {
+            self.user_pinyin.forget(key, text);
+        }
+        let pin_keys: Vec<String> = self.personal.records.iter()
+            .filter(|(k, r)| k.starts_with("pinlearn:") && !r.value.is_empty())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in keys.iter().chain(pin_keys.iter()) {
+            self.personal.set(key.clone(), String::new());
+        }
+        self.user_pinyin.flush();
+        keys.len()
+    }
+
     fn policy_scope(&self, c: &Cand) -> String {
         match &c.action {
             Action::Pinyin(p) if p.text.chars().any(|c| c.is_ascii_alphabetic()) => {
@@ -90,24 +146,7 @@ impl Engine {
             .collect();
         scored.sort_by_key(|(k, _)| *k);
         self.cands = scored.into_iter().map(|(_, c)| c).collect();
-        if let Some(template) = self
-            .personal
-            .records
-            .get(&format!("snippet:{}", self.rest_raw().to_ascii_lowercase()))
-            .map(|r| r.value.clone())
-            .filter(|s| !s.is_empty())
-        {
-            let text = expand(&template, self.options.utc_offset_min);
-            let c = Cand {
-                view: CandidateView { pinyin: if self.options.pinyin_hint {crate::tones::pinyin(&text,None,self.options.pinyin_tones).unwrap_or_default()} else {String::new()}, cloud: false,
-                    text: text.clone(),
-                    comment: "快捷短语".into(),
-                    user: false,
-                },
-                action: Action::Table { text },
-            };
-            self.cands.insert(0, c);
-        }
+        self.insert_phrases();
     }
     /// Legacy manual priorities yield to a subsequent explicit choice for the same reading.
     pub(super) fn supersede_manual_priority(&mut self, candidate: &Cand) {
@@ -143,7 +182,79 @@ impl Engine {
                 json!({"ok":true})
             }
             "expandSnippet" => json!({"ok":true,"text":expand(cmd["text"].as_str().unwrap_or(""),self.options.utc_offset_min)}),
+            "clearCandidatePreferences" => json!({"ok":true,"cleared":self.clear_candidate_preferences()}),
+            "setTraditionalRegion" => {
+                use crate::convert::Region;
+                let region = match cmd["region"].as_str() {
+                    Some("standard") => Region::Standard,
+                    Some("taiwan") => Region::Taiwan,
+                    Some("hongkong") => Region::HongKong,
+                    _ => return json!({"ok":false}),
+                };
+                self.options.traditional_region = region;
+                self.refresh();
+                json!({"ok":true})
+            }
             "exportUserWords" => json!({"ok":true,"text":self.export_user_words()}),
+            "importUserWords" => {
+                let r = self.import_user_words_report(cmd["text"].as_str().unwrap_or(""));
+                json!({"ok":true,"added":r.added,"filled":r.filled,"skipped":r.skipped,"rejected":r.rejected})
+            }
+            "addPhrase" => {
+                let code = cmd["code"].as_str().unwrap_or("");
+                if !crate::phrases::valid_code(code) {
+                    return json!({"ok":false,"error":crate::phrases::PhraseError::BadCode.message()});
+                }
+                let mut entries = self.phrase_entries(code);
+                let weight = cmd["weight"].as_u64().map(|w| u16::try_from(w).unwrap_or(0));
+                match crate::phrases::add(&mut entries, cmd["text"].as_str().unwrap_or(""), weight) {
+                    Ok(()) => { self.store_phrases(code, &entries); json!({"ok":true}) }
+                    Err(e) => json!({"ok":false,"error":e.message()}),
+                }
+            }
+            "removePhrase" => {
+                let code = cmd["code"].as_str().unwrap_or("");
+                let mut entries = self.phrase_entries(&code);
+                match crate::phrases::remove(&mut entries, cmd["text"].as_str().unwrap_or("")) {
+                    Ok(()) => { self.store_phrases(&code, &entries); json!({"ok":true}) }
+                    Err(e) => json!({"ok":false,"error":e.message()}),
+                }
+            }
+            "setPhraseWeight" => {
+                let code = cmd["code"].as_str().unwrap_or("");
+                let mut entries = self.phrase_entries(&code);
+                let weight = u16::try_from(cmd["weight"].as_u64().unwrap_or(0)).unwrap_or(0);
+                match crate::phrases::set_weight(&mut entries, cmd["text"].as_str().unwrap_or(""), weight) {
+                    Ok(()) => { self.store_phrases(&code, &entries); json!({"ok":true}) }
+                    Err(e) => json!({"ok":false,"error":e.message()}),
+                }
+            }
+            "importPhrases" => {
+                let (rows, mut skipped) = crate::phrases::parse_import(cmd["text"].as_str().unwrap_or(""));
+                let mut touched: std::collections::BTreeMap<String, Vec<crate::phrases::Entry>> = std::collections::BTreeMap::new();
+                let mut added = 0usize;
+                for row in rows {
+                    let entries = touched.entry(row.code.clone()).or_insert_with(|| self.phrase_entries(&row.code));
+                    match crate::phrases::add(entries, &row.text, row.weight) {
+                        Ok(()) => added += 1,
+                        Err(_) => skipped += 1,
+                    }
+                }
+                for (code, entries) in &touched {
+                    self.store_phrases(code, entries);
+                }
+                json!({"ok":true,"added":added,"skipped":skipped})
+            }
+            "exportPhrases" => {
+                let mut rows = Vec::new();
+                for (key, record) in &self.personal.records {
+                    let Some(code) = key.strip_prefix(crate::phrases::KEY_PREFIX) else { continue };
+                    for entry in crate::phrases::decode(&record.value) {
+                        rows.push((code.to_string(), entry));
+                    }
+                }
+                json!({"ok":true,"text":crate::phrases::export(&rows)})
+            }
             "policy" => {
                 let Some(c) = cmd["index"]
                     .as_u64()
@@ -178,6 +289,10 @@ impl Engine {
                             if p.text.chars().all(is_cjk) {
                                 self.user_pinyin.import(&p.key, &p.text, 1);
                                 self.user_pinyin.flush();
+                                // 记下这次置顶写入的学习记录，清空偏好时一并撤销。
+                                // Remember the record this pin wrote so clearing preferences can undo it.
+                                let record = json!([p.key, p.text]).to_string();
+                                self.personal.set(format!("pinlearn:{record}"), "1".into());
                             }
                         }
                         if self.schema == Schema::Hand {
@@ -219,7 +334,12 @@ impl Engine {
             }
             "reconvert" => json!({"ok":cmd["text"].as_str().is_some_and(|s|self.reconvert(s))}),
             "snippets" => {
-                json!({"ok":true,"items":self.personal.records.iter().filter_map(|(k,r)|k.strip_prefix("snippet:").filter(|_|!r.value.is_empty()).map(|code|json!({"code":code,"text":r.value}))).collect::<Vec<_>>()})
+                let items: Vec<Value> = self.personal.records.iter()
+                    .filter_map(|(k, r)| k.strip_prefix(crate::phrases::KEY_PREFIX).map(|code| (code, r)))
+                    .flat_map(|(code, r)| crate::phrases::decode(&r.value).into_iter()
+                        .map(move |e| json!({"code":code,"text":e.text,"weight":e.weight})))
+                    .collect();
+                json!({"ok":true,"items":items})
             }
             "setSnippet" => {
                 let (code, text) = (
@@ -233,10 +353,13 @@ impl Engine {
                 {
                     return json!({"ok":false});
                 }
-                self.personal.set(
-                    format!("snippet:{}", code.to_ascii_lowercase()),
-                    text.into(),
-                );
+                let code = code.to_ascii_lowercase();
+                let entries = if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![crate::phrases::Entry { weight: crate::phrases::DEFAULT_WEIGHT, text: text.into() }]
+                };
+                self.store_phrases(&code, &entries);
                 json!({"ok":true})
             }
             "exportPersonal" => {

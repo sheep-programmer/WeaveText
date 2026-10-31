@@ -1,8 +1,8 @@
 //! 织文输入法插件宿主：加载织文 Lua 插件格式的插件（`manifest.yaml` + `main.lua` + `resources/`
-//! + 可选 `libs/`，打包为 `.xipk` zip）。架构与 host API 见 `docs/plugin-host.md`。
+//! + 可选 `libs/`，打包为 `.xipk` zip）。架构与 host API 的说明不随仓库分发。
 //!
 //! WeaveText plugin host for the WeaveText Lua 5.4 plugin format. See
-//! `docs/plugin-host.md` for the architecture and the host API reference.
+//! the architecture and host API notes are not distributed with the repository.
 
 mod config;
 mod crypto;

@@ -53,16 +53,94 @@ pub struct BigramStat {
     pub last: u64,
 }
 
+/// 用户二元组：先按上文、再按下文分层存放，查询时只借用 `&str`，不为每次查询分配字符串。
+/// User bigrams, keyed by previous word and then next word, so a lookup borrows `&str` and allocates nothing.
+#[derive(Default)]
+struct BigramMap {
+    by_prev: HashMap<String, HashMap<String, BigramStat>>,
+    len: usize,
+}
+
+impl BigramMap {
+    fn get_pair(&self, prev: &str, next: &str) -> Option<&BigramStat> {
+        self.by_prev.get(prev)?.get(next)
+    }
+
+    /// 取得（没有则新建为默认值）。 Get the entry for this pair, creating it with the default value if absent.
+    fn entry_pair(&mut self, prev: &str, next: &str) -> &mut BigramStat {
+        if self.get_pair(prev, next).is_none() {
+            self.insert_pair(prev.to_string(), next.to_string(), BigramStat::default());
+        }
+        self.by_prev.get_mut(prev).and_then(|inner| inner.get_mut(next)).expect("inserted above")
+    }
+
+    fn insert_pair(&mut self, prev: String, next: String, stat: BigramStat) -> Option<BigramStat> {
+        let old = self.by_prev.entry(prev).or_default().insert(next, stat);
+        if old.is_none() {
+            self.len += 1;
+        }
+        old
+    }
+
+    fn remove_pair(&mut self, prev: &str, next: &str) -> Option<BigramStat> {
+        let inner = self.by_prev.get_mut(prev)?;
+        let old = inner.remove(next);
+        if old.is_some() {
+            self.len -= 1;
+            if inner.is_empty() {
+                self.by_prev.remove(prev);
+            }
+        }
+        old
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn clear(&mut self) {
+        self.by_prev.clear();
+        self.len = 0;
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, &str, &BigramStat)> {
+        self.by_prev.iter().flat_map(|(p, inner)| inner.iter().map(move |(n, s)| (p.as_str(), n.as_str(), s)))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &BigramStat> {
+        self.by_prev.values().flat_map(|inner| inner.values())
+    }
+
+    fn after(&self, prev: &str) -> impl Iterator<Item = (&str, &BigramStat)> {
+        self.by_prev.get(prev).into_iter().flat_map(|inner| inner.iter().map(|(n, s)| (n.as_str(), s)))
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&str, &str, &BigramStat) -> bool) {
+        for (p, inner) in self.by_prev.iter_mut() {
+            inner.retain(|n, s| keep(p, n, s));
+        }
+        self.by_prev.retain(|_, inner| !inner.is_empty());
+        self.len = self.by_prev.values().map(HashMap::len).sum();
+    }
+}
+
 /// 用户词库。 User dictionary.
 pub struct UserDict {
     nodes: Vec<UNode>,
-    bigrams: HashMap<(String, String), BigramStat>,
+    bigrams: BigramMap,
     tick: u64,
     path: Option<PathBuf>,
     log: Option<BufWriter<File>>,
     log_lines: usize,
     /// 学习开关（密码框等场景由上层关闭）。 Learning switch.
     pub learning: bool,
+    /// 每次改变查词结果的修改都加一；跨按键的词条缓存用它判断是否还有效。
+    /// Bumped by every change that can alter a lookup; the cross-keystroke span memo uses it for validity.
+    generation: u64,
 }
 
 impl Default for UserDict {
@@ -102,12 +180,13 @@ impl UserDict {
     pub fn in_memory() -> Self {
         UserDict {
             nodes: vec![UNode::default()],
-            bigrams: HashMap::new(),
+            bigrams: BigramMap::default(),
             tick: 0,
             path: None,
             log: None,
             log_lines: 0,
             learning: true,
+            generation: 0,
         }
     }
 
@@ -170,9 +249,9 @@ impl UserDict {
                     let k = (prev.to_string(), next.to_string());
                     // 次数 0 = 撤销后删除。 A zero count means removed by an undo.
                     if c == 0 {
-                        self.bigrams.remove(&k);
+                        self.bigrams.remove_pair(&k.0, &k.1);
                     } else {
-                        self.bigrams.insert(k, BigramStat { count: c, last: t });
+                        self.bigrams.insert_pair(k.0, k.1, BigramStat { count: c, last: t });
                     }
                     self.tick = self.tick.max(t);
                 }
@@ -197,6 +276,7 @@ impl UserDict {
 
     /// 压缩：只保留当前有效状态。 Rewrite the log with live state only.
     pub fn compact(&mut self) -> std::io::Result<()> {
+        self.generation = self.generation.wrapping_add(1);
         let Some(path) = self.path.clone() else {
             return Ok(());
         };
@@ -229,7 +309,7 @@ impl UserDict {
                     stack.push((c, k));
                 }
             }
-            for ((p, n), s) in &self.bigrams {
+            for (p, n, s) in self.bigrams.iter() {
                 writeln!(w, "B\t{p}\t{n}\t{}\t{}", s.count, s.last)?;
                 lines += 1;
             }
@@ -239,6 +319,11 @@ impl UserDict {
         }
         std::fs::rename(&tmp, &path)?;
         self.open_log()
+    }
+
+    /// 查词结果的代数；每次可能改变查词结果的修改都会变。 Lookup generation; changes on every mutation that can alter lookups.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn tick(&self) -> u64 {
@@ -256,7 +341,7 @@ impl UserDict {
                 n.choice = None;
             }
         }
-        self.bigrams.retain(|_, s| !stale(s.count, s.last));
+        self.bigrams.retain(|_, _, s| !stale(s.count, s.last));
         let words = self.entry_count();
         if words > MAX_WORDS {
             let mut all: Vec<f64> = self.nodes.iter().flat_map(|n| n.entries.iter().map(|e| decayed(e.count, tick.saturating_sub(e.last)))).collect();
@@ -271,7 +356,7 @@ impl UserDict {
             let mut all: Vec<f64> = self.bigrams.values().map(|s| decayed(s.count, tick.saturating_sub(s.last))).collect();
             all.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
             let cut = all[MAX_BIGRAMS - 1];
-            self.bigrams.retain(|_, s| decayed(s.count, tick.saturating_sub(s.last)) >= cut);
+            self.bigrams.retain(|_, _, s| decayed(s.count, tick.saturating_sub(s.last)) >= cut);
         }
     }
 
@@ -326,6 +411,7 @@ impl UserDict {
 
     /// 学习一个词：次数 +1、刷新时间。 Learn one word.
     pub fn learn(&mut self, key: &[u16], text: &str) {
+        self.generation = self.generation.wrapping_add(1);
         if !self.learning || key.is_empty() || !clean(text) {
             return;
         }
@@ -351,12 +437,24 @@ impl UserDict {
         self.find(key).and_then(|n| self.nodes[n as usize].choice.as_ref())
     }
 
+    /// 这段读音近期明确选过的词（有效时），与 [`Self::preferred`] 的条件相同。
+    /// The word recently and explicitly chosen for this reading, if still in effect; same rule as [`Self::preferred`].
+    pub fn preferred_text(&self, key: &[u16]) -> Option<String> {
+        if !self.learning {
+            return None;
+        }
+        self.choice(key)
+            .filter(|c| c.repeats >= 1 && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
+            .map(|c| c.text.clone())
+    }
+
     pub fn preferred(&self, key: &[u16], text: &str) -> bool {
         self.learning && self.choice(key).is_some_and(|c| c.text == text && c.repeats >= 1 && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
     }
 
     /// Called only for a chosen candidate; generated sentence components just receive normal counts.
     pub fn select(&mut self, key: &[u16], text: &str) {
+        self.generation = self.generation.wrapping_add(1);
         if !self.learning || key.is_empty() || self.get(key, text).is_none() { return; }
         let repeats = self.choice(key).filter(|c| c.text == text && self.tick.saturating_sub(c.last) <= CHOICE_WINDOW)
             .map_or(1, |c| c.repeats.saturating_add(1));
@@ -364,6 +462,7 @@ impl UserDict {
     }
 
     pub fn restore_choice(&mut self, key: &[u16], choice: Option<RecentChoice>) {
+        self.generation = self.generation.wrapping_add(1);
         let n = self.node_for(key);
         let line = match &choice {
             Some(c) => format!("P\t{}\t{}\t{}\t{}", key_str(key), c.text, c.repeats, c.last),
@@ -375,6 +474,7 @@ impl UserDict {
 
     /// Restore the complete pre-commit state, including recency, rather than decrementing a fresh timestamp.
     pub fn restore_entry(&mut self, key: &[u16], text: &str, previous: Option<UserEntry>) {
+        self.generation = self.generation.wrapping_add(1);
         match previous {
             Some(e) => {
                 self.set_entry(key, text, e.count, e.last);
@@ -385,23 +485,22 @@ impl UserDict {
     }
 
     pub fn restore_bigram(&mut self, prev: &str, next: &str, previous: Option<BigramStat>) {
+        self.generation = self.generation.wrapping_add(1);
         let key = (prev.to_string(), next.to_string());
         let stat = previous.unwrap_or_default();
-        if previous.is_some() { self.bigrams.insert(key, stat); } else { self.bigrams.remove(&key); }
+        if previous.is_some() { self.bigrams.insert_pair(key.0, key.1, stat); } else { self.bigrams.remove_pair(&key.0, &key.1); }
         self.write_line(format!("B\t{prev}\t{next}\t{}\t{}", stat.count, stat.last));
     }
 
     /// 学习相邻两个词的搭配。 Learn that `next` followed `prev`.
     pub fn learn_bigram(&mut self, prev: &str, next: &str) {
+        self.generation = self.generation.wrapping_add(1);
         if !self.learning || !clean(prev) || !clean(next) {
             return;
         }
         self.tick += 1;
         let tick = self.tick;
-        let s = self
-            .bigrams
-            .entry((prev.to_string(), next.to_string()))
-            .or_default();
+        let s = self.bigrams.entry_pair(prev, next);
         s.count = (decayed(s.count, tick.saturating_sub(s.last)).round() as u32).saturating_add(1);
         s.last = tick;
         let line = format!("B\t{prev}\t{next}\t{}\t{}", s.count, s.last);
@@ -411,6 +510,7 @@ impl UserDict {
     /// 撤销一次学习（选错后马上退格）：次数减一，减到 0 就删掉。
     /// Undo one learning step (backspace right after a wrong pick): count minus one, removed at zero.
     pub fn unlearn(&mut self, key: &[u16], text: &str) {
+        self.generation = self.generation.wrapping_add(1);
         let Some(e) = self.get(key, text).cloned() else { return };
         if e.count <= 1 {
             self.forget(key, text);
@@ -421,19 +521,21 @@ impl UserDict {
     }
 
     pub fn unlearn_bigram(&mut self, prev: &str, next: &str) {
+        self.generation = self.generation.wrapping_add(1);
         let k = (prev.to_string(), next.to_string());
-        let Some(s) = self.bigrams.get(&k).copied() else { return };
+        let Some(s) = self.bigrams.get_pair(&k.0, &k.1).copied() else { return };
         let c = s.count.saturating_sub(1);
         if c == 0 {
-            self.bigrams.remove(&k);
+            self.bigrams.remove_pair(&k.0, &k.1);
         } else {
-            self.bigrams.insert(k, BigramStat { count: c, last: s.last });
+            self.bigrams.insert_pair(k.0, k.1, BigramStat { count: c, last: s.last });
         }
         self.write_line(format!("B\t{prev}\t{next}\t{c}\t{}", s.last));
     }
 
     /// 删除一个用户词。 Forget a user word.
     pub fn forget(&mut self, key: &[u16], text: &str) {
+        self.generation = self.generation.wrapping_add(1);
         if self.remove_entry(key, text) {
             self.write_line(format!("D\t{}\t{}", key_str(key), text));
         }
@@ -441,22 +543,20 @@ impl UserDict {
 
     /// 删除一条用户二元组（长按删除联想词）。 Forget a user bigram (deleting a predicted word).
     pub fn forget_bigram(&mut self, prev: &str, next: &str) {
+        self.generation = self.generation.wrapping_add(1);
         let k = (prev.to_string(), next.to_string());
-        if let Some(s) = self.bigrams.remove(&k) {
+        if let Some(s) = self.bigrams.remove_pair(&k.0, &k.1) {
             self.write_line(format!("B\t{prev}\t{next}\t0\t{}", s.last));
         }
     }
 
     /// 以 `prev` 开头的全部用户二元组（联想用）。 All user bigrams starting with `prev`, for prediction.
     pub fn bigrams_after(&self, prev: &str) -> Vec<(String, BigramStat)> {
-        self.bigrams.iter().filter(|((p, _), _)| p == prev).map(|((_, n), s)| (n.clone(), *s)).collect()
+        self.bigrams.after(prev).map(|(n, s)| (n.to_string(), *s)).collect()
     }
 
     pub fn bigram(&self, prev: &str, next: &str) -> Option<BigramStat> {
-        // 避免为查询分配：常见路径下 bigrams 很小，但仍用 owned key 查 HashMap。
-        self.bigrams
-            .get(&(prev.to_string(), next.to_string()))
-            .copied()
+        self.bigrams.get_pair(prev, next).copied()
     }
 
     pub fn has_bigrams(&self) -> bool {
@@ -514,6 +614,7 @@ impl UserDict {
 
     /// 清空全部用户数据。 Wipe all user data.
     pub fn clear(&mut self) -> std::io::Result<()> {
+        self.generation = self.generation.wrapping_add(1);
         self.nodes = vec![UNode::default()];
         self.bigrams.clear();
         self.compact()
@@ -521,6 +622,7 @@ impl UserDict {
 
     /// 导入一个词条（count 取较大值）。 Import an entry, keeping the larger count.
     pub fn import(&mut self, key: &[u16], text: &str, count: u32) {
+        self.generation = self.generation.wrapping_add(1);
         if key.is_empty() || !clean(text) {
             return;
         }

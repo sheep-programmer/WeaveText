@@ -8,18 +8,22 @@
 //! - [`table`]：五笔与英文码表查询 / wubi & English table lookup
 //! - [`session`]：给界面用的状态机 / UI-facing state machine
 
+pub mod bopomofo;
 pub mod cloud;
 pub mod convert;
 pub mod decoder;
 pub mod graph;
 pub mod predict;
+pub mod romaji;
 pub mod personal;
+pub mod phrases;
 pub mod session;
 pub mod shuangpin;
 pub mod special;
 pub mod t9;
 pub mod table;
 pub mod tones;
+pub mod typo_learn;
 pub mod userdict;
 
 pub use session::{CandidateView, Engine, MarkKind, Options, Paths, PreeditMark, Schema, Snapshot, UserWord};

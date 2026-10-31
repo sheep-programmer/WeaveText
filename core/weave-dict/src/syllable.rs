@@ -70,10 +70,29 @@ pub fn table_fingerprint() -> u32 {
     h
 }
 
-fn index() -> &'static HashMap<&'static str, SyllableId> {
-    static INDEX: OnceLock<HashMap<&'static str, SyllableId>> = OnceLock::new();
+/// 音节拼写很短（至多 6 个字母），标准 SipHash 的开销比查找本身还大；这里用 FxHash 式的乘加哈希。
+/// Spellings are at most six letters, so SipHash costs more than the lookup; a multiply-add hash is used instead.
+#[derive(Default)]
+struct SpellingHasher(u64);
+
+impl std::hash::Hasher for SpellingHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type SpellingMap = HashMap<&'static str, SyllableId, std::hash::BuildHasherDefault<SpellingHasher>>;
+
+fn index() -> &'static SpellingMap {
+    static INDEX: OnceLock<SpellingMap> = OnceLock::new();
     INDEX.get_or_init(|| {
-        let mut m: HashMap<&'static str, SyllableId> = SYLLABLES
+        let mut m: SpellingMap = SYLLABLES
             .iter()
             .enumerate()
             .map(|(i, s)| (*s, (i + 1) as SyllableId))

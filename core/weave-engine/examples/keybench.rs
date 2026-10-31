@@ -64,6 +64,8 @@ fn main() {
     std::fs::create_dir_all(&user).unwrap();
     let mut e = Engine::new(&paths_in(&data, &user));
     e.options.emoji = false;
+    // --no-memo 关闭跨按键缓存，用于对照。 --no-memo turns the cross-keystroke span memo off, for comparison.
+    e.options.span_memo = !args.iter().any(|a| a == "--no-memo");
     report("empty user dict", run(&mut e, &inputs));
     // 学一遍：把每句的首选上屏（首选不对的句子按正确答案学不了，只学首选即可制造用户词）。
     // Learn: commit the top candidate of every sentence, which fills the user dictionary.

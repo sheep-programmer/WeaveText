@@ -302,6 +302,7 @@ fn main() {
                 weight: 1.0,
                 baseline: 12.0,
             }),
+            memo: None,
         };
         let decode = || {
             if keypad {

@@ -436,6 +436,15 @@ fn api() -> Result<Arc<Api>, String> {
         .ok_or_else(|| "speech runtime not loaded".to_string())
 }
 
+/// 句尾补足的静音长度。 Trailing silence padded at finish().
+///
+/// X-ASR 按 960 ms 分块，句尾要送满编码器窗口才会出字，0.5 秒会吞掉最后几个字；
+/// 其余流式模型 0.5 秒足够。 X-ASR's 960 ms chunks need the tail inside the encoder window;
+/// 0.5 s swallows the last words. Other streaming models flush with 0.5 s.
+fn tail_padding(arch: &str) -> usize {
+    if arch == "zipformer-transducer" { 32_000 } else { 8_000 }
+}
+
 fn cstr(s: &str) -> Result<CString, String> {
     CString::new(s).map_err(|_| "string contains NUL".to_string())
 }
@@ -462,6 +471,8 @@ pub struct Online {
     rec: H,
     stream: H,
     hotword_path: String,
+    /// 模型结构，决定 finish() 补多少静音。 Architecture; selects the finish() tail padding.
+    arch: &'static str,
 }
 
 // SAFETY: sherpa-onnx 的识别器与流可以在线程间移动；我们保证同一时刻只有一个线程使用（外层互斥）。
@@ -481,6 +492,9 @@ impl Online {
         if arch != "zipformer2-ctc" && arch != "zipformer-transducer" {
             return Err(format!("unsupported streaming arch {arch}"));
         }
+        // 模型结构只取这几个已知值，finish() 的补静音长度跟着它走。
+        // The arch is one of the known values; finish()'s tail padding follows it.
+        let arch: &'static str = if arch == "zipformer-transducer" { "zipformer-transducer" } else { "zipformer2-ctc" };
         let options = if arch == "zipformer-transducer" {
             Some(serde_json::from_str::<serde_json::Value>(model).map_err(|e| format!("invalid transducer files: {e}"))?)
         } else { None };
@@ -535,7 +549,7 @@ impl Online {
             unsafe { (api.destroy_online)(rec) };
             return Err("failed to create stream".into());
         }
-        Ok(Online { api, rec, stream, hotword_path:hotword_path.into() })
+        Ok(Online { api, rec, stream, hotword_path:hotword_path.into(), arch })
     }
 
     fn make_stream(api:&Api,rec:H,path:&str)->Result<H,String> {
@@ -585,7 +599,7 @@ impl Online {
 
     /// 补 0.5 秒静音并解码完剩余部分。 Pad 0.5 s of silence and decode the rest.
     pub fn finish(&mut self) {
-        self.accept(&[0f32; 8000]);
+        self.accept(&vec![0f32; tail_padding(self.arch)]);
     }
 
     /// 标记输入结束（之后只能 reset）。 Mark input finished (reset before reuse).
@@ -763,6 +777,16 @@ mod tests {
 
     /// 结构体大小与字段偏移与 v1.13.8 头文件一致（数值由 clang 编译官方 c-api.h 得到，LP64）。
     /// Sizes and offsets match the v1.13.8 header (values from clang on the official c-api.h, LP64).
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn transducer_finish_pads_two_seconds() {
+        // X-ASR 的 960 ms 分块要把句尾送满编码器窗口，0.5 秒静音会吞掉最后几个字。
+        // A 960 ms chunked transducer needs its tail inside the encoder window; 0.5 s swallows the last words.
+        assert_eq!(tail_padding("zipformer-transducer"), 32_000);
+        assert_eq!(tail_padding("zipformer2-ctc"), 8_000);
+        assert_eq!(tail_padding("anything-else"), 8_000);
+    }
+
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn layout_matches_header() {

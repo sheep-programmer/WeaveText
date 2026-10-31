@@ -9,6 +9,8 @@
 //! 3. 候选 = 整句 + 以 0 开头的词（覆盖越长越靠前，同长按 cost）。
 //!    Candidates = sentence + words starting at 0, longer coverage first, then by cost.
 
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -73,7 +75,7 @@ impl std::hash::Hash for SpanKey {
 
 /// 每个词库在前缀树上的位置（下标 0 = 系统词库，其后为扩展词库）；紧凑存放，按值传递很便宜。
 /// Position in each lexicon's trie (index 0 = system lexicon, then the extra packs); compact and cheap to copy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Nodes([NodeId; MAX_LEX]);
 
 impl Nodes {
@@ -230,6 +232,79 @@ pub struct Decoder<'a> {
     pub context: Option<&'a str>,
     /// 字符搭配模型与其权重。 Character collocation model and its weighting.
     pub lm: Option<LmParams<'a>>,
+    /// 跨按键复用的跨度候选；None 时每次现算。 Span candidates reused across keystrokes; None computes every time.
+    pub memo: Option<&'a RefCell<SpanMemo>>,
+}
+
+/// 跨度的候选及其搭配信息（每个候选的首尾字 id 与文字哈希）。缓存命中时整体复用，不再逐键重算。
+/// A span's candidates with their collocation ids and text hashes; reused whole on a cache hit.
+#[derive(Clone)]
+pub struct SpanWords {
+    pub words: Vec<Scored>,
+    info: Vec<(WordIds, u64)>,
+}
+
+/// 文字哈希（去重用）。 Hash of a word's text, used for de-duplication.
+fn text_hash(t: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut h = FastHasher::default();
+    h.write(t.as_bytes());
+    h.finish()
+}
+
+/// 跨度候选的缓存键：只含决定结果的量（音节、词库节点、用户节点、惩罚、上限、搭配模型是否存在、学习开关）。
+/// 位置不在键里：同样的音节在句中不同位置得到同样的候选。
+/// Memo key: only what determines the result (syllables, lexicon and user nodes, penalty, limit, whether a
+/// collocation model is present, the learning switch). Position is not part of it: the same syllables at another
+/// position get the same candidates.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct MemoKey {
+    key: Vec<SyllableId>,
+    penalty: u32,
+    usr: Option<UNodeId>,
+    sys: Nodes,
+    limit: usize,
+    lm: bool,
+    learning: bool,
+}
+
+/// 跨按键的跨度候选缓存。有效期由 [`SpanMemo::stamp`] 判定：用户词库的代数、扩展词库数量变了就整体作废。
+/// Cross-keystroke span memo. Valid while the stamp (user dictionary generation and extra-lexicon count) holds.
+#[derive(Default)]
+pub struct SpanMemo {
+    stamp: (u64, usize),
+    entries: HashMap<MemoKey, Arc<SpanWords>>,
+    /// 搭配模型的原始分（不含权重与基线）：只取决于词表，跨按键复用。
+    /// Raw collocation scores (no weight or baseline): they depend only on the table, so they are reused across keys.
+    colloc: HashMap<(Ids, Ids), Option<f32>>,
+}
+
+/// 搭配缓存上限。 Capacity of the collocation memo.
+const COLLOC_CAPACITY: usize = 65_536;
+
+/// 缓存上限：超过就整体清掉（正常输入远到不了）。 Capacity; cleared wholesale when exceeded.
+const MEMO_CAPACITY: usize = 8192;
+
+impl SpanMemo {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.colloc.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn check(&mut self, stamp: (u64, usize)) {
+        if self.stamp != stamp {
+            self.entries.clear();
+            self.stamp = stamp;
+        }
+    }
 }
 
 /// 搭配模型参数：每个词边界加 `weight × (−分值)` nat，未命中时分值为 `−baseline`。
@@ -311,14 +386,17 @@ struct WordIds {
 
 impl LmParams<'_> {
     /// 边界代价（cost 单位，可为负）。 Boundary cost in cost units (may be negative).
-    fn boundary(&self, ctx: Ids, word: Ids) -> i64 {
+    /// 原始搭配分由 `raw` 给出（可能来自缓存）；权重与基线每次都按当前值计算。
+    /// The raw collocation score comes from `raw` (possibly cached); weight and baseline are applied each time.
+    fn boundary_from(&self, raw: Option<f32>) -> i64 {
+        let score = raw.map_or(-self.baseline, |s| s.max(-self.baseline));
+        (-score * self.weight * 1000.0) as i64
+    }
+
+    fn collocation(&self, ctx: Ids, word: Ids) -> Option<f32> {
         let (c, n) = ctx.to_array();
         let (w, m) = word.to_array();
-        let score = self
-            .gram
-            .collocation_ids(&c[..n], &w[..m])
-            .map_or(-self.baseline, |s| s.max(-self.baseline));
-        (-score * self.weight * 1000.0) as i64
+        self.gram.collocation_ids(&c[..n], &w[..m])
     }
 
     fn word_ids(&self, word: &str) -> WordIds {
@@ -375,6 +453,29 @@ pub struct Lattice {
 }
 
 impl<'a> Decoder<'a> {
+    /// 边界代价，原始搭配分先查跨按键缓存。 Boundary cost; the raw score is looked up in the cross-keystroke memo first.
+    fn lm_boundary(&self, lm: &LmParams, ctx: Ids, word: Ids) -> i64 {
+        let raw = match self.memo {
+            Some(memo) => {
+                let hit = memo.borrow().colloc.get(&(ctx, word)).copied();
+                match hit {
+                    Some(v) => v,
+                    None => {
+                        let v = lm.collocation(ctx, word);
+                        let mut m = memo.borrow_mut();
+                        if m.colloc.len() >= COLLOC_CAPACITY {
+                            m.colloc.clear();
+                        }
+                        m.colloc.insert((ctx, word), v);
+                        v
+                    }
+                }
+            }
+            None => lm.collocation(ctx, word),
+        };
+        lm.boundary_from(raw)
+    }
+
     /// 第 i 个词库（0 = 系统词库）。 The i-th lexicon (0 = system).
     fn lexicon(&self, i: usize) -> Option<&'a Lexicon> {
         if i == 0 {
@@ -792,6 +893,65 @@ impl<'a> Decoder<'a> {
         limit: usize,
         raw_text: &dyn Fn(usize, usize) -> String,
     ) -> Vec<Scored> {
+        self.span_words_shared(span, limit, raw_text).words.clone()
+    }
+
+    /// 跨度候选及搭配信息；缓存命中时直接共享，不复制。
+    /// The span's candidates and collocation info; shared without copying on a cache hit.
+    fn span_words_shared(
+        &self,
+        span: &Span,
+        limit: usize,
+        raw_text: &dyn Fn(usize, usize) -> String,
+    ) -> Arc<SpanWords> {
+        // 原样输出与字面片段每次都很便宜，不进缓存；其余跨度按键查缓存，没有才现算。
+        // Raw and literal spans are cheap and never cached; the rest are looked up, and computed on a miss.
+        let Some(memo) = self.memo.filter(|_| !span.raw && span.literal.is_none()) else {
+            return Arc::new(self.span_words_info(self.span_words_uncached(span, limit, raw_text)));
+        };
+        let stamp = (self.user.generation(), self.packs.len());
+        let key = MemoKey {
+            key: span.key.clone(),
+            penalty: span.penalty,
+            usr: span.usr,
+            sys: span.sys,
+            limit,
+            lm: self.lm.is_some(),
+            learning: self.user.learning,
+        };
+        {
+            let mut m = memo.borrow_mut();
+            m.check(stamp);
+            if let Some(hit) = m.entries.get(&key) {
+                return hit.clone();
+            }
+        }
+        let words = Arc::new(self.span_words_info(self.span_words_uncached(span, limit, raw_text)));
+        let mut m = memo.borrow_mut();
+        m.check(stamp);
+        if m.entries.len() >= MEMO_CAPACITY {
+            m.entries.clear();
+        }
+        m.entries.insert(key, Arc::clone(&words));
+        words
+    }
+
+    /// 为每个候选算出搭配 id 与文字哈希（只依赖词文字与词表，可缓存）。
+    /// Collocation ids and text hash for each candidate (depends only on the text and the tables, so it can be cached).
+    fn span_words_info(&self, words: Vec<Scored>) -> SpanWords {
+        let info = words
+            .iter()
+            .map(|s| (self.lm.map(|lm| lm.word_ids(&s.text)).unwrap_or_default(), text_hash(&s.text)))
+            .collect();
+        SpanWords { words, info }
+    }
+
+    fn span_words_uncached(
+        &self,
+        span: &Span,
+        limit: usize,
+        raw_text: &dyn Fn(usize, usize) -> String,
+    ) -> Vec<Scored> {
         if let Some((text,cost))=&span.literal{return vec![Scored{text:text.clone(),cost:*cost,origin:Origin::Raw}];}
         if span.raw {
             return vec![Scored {
@@ -878,7 +1038,10 @@ impl<'a> Decoder<'a> {
         // default candidate records one too) must not lift the overridden phrase back to the top, or a
         // learned short word could never win its longer sentence. The demoted cost is absolute either way.
         self.demote_overridden_phrases(&span.key, &mut out);
-        out.sort_by_key(|s| (s.cost, !self.user.preferred(&span.key, &s.text)));
+        // 偏好只查一次：排序的每次比较都去查选择记录，开销随候选数成倍增长。
+        // The preference is looked up once: looking it up on every comparison multiplies with the candidate count.
+        let preferred_text = self.user.preferred_text(&span.key);
+        out.sort_by_key(|s| (s.cost, preferred_text.as_deref() != Some(s.text.as_str())));
         // 并列代价不截断：截断掉谁等于按词库顺序投票，模型本该看到全部同音词。
         // Do not cut ties at the limit: cutting would vote by lexicon order, and the model should see all.
         if out.len() > limit {
@@ -894,13 +1057,28 @@ impl<'a> Decoder<'a> {
         spans: &[Span],
         by_start: &[Vec<usize>],
     ) -> ((Vec<(usize, String)>, u32), (Vec<(usize, String)>, u32)) {
+        /// 状态的文字：起点是上文，其余是某个跨度里的一个词。词与跨度共享，不再为每个状态复制字符串。
+        /// A state's text: the context at the start, otherwise one word of a span, shared rather than copied per state.
+        #[derive(Clone)]
+        enum StateText {
+            Context(String),
+            Word(Arc<SpanWords>, usize),
+        }
+        impl StateText {
+            fn as_str(&self) -> &str {
+                match self {
+                    StateText::Context(text) => text,
+                    StateText::Word(shared, i) => &shared.words[*i].text,
+                }
+            }
+        }
         #[derive(Clone)]
         struct State {
             /// 可为负（搭配奖励可能超过词代价）。 May go negative with collocation bonuses.
             cost: i64,
             back: Option<(usize, usize)>,
             span: usize,
-            text: String,
+            text: StateText,
             /// text 的哈希，去重时先比它。 Hash of `text`, compared before the string.
             text_hash: u64,
             /// 已组句文字末尾 3 字的 id（含上文），供搭配模型用。 Ids of the last three chars.
@@ -914,7 +1092,7 @@ impl<'a> Decoder<'a> {
             cost: 0,
             back: None,
             span: usize::MAX,
-            text: self.context.unwrap_or("").to_string(),
+            text: StateText::Context(self.context.unwrap_or("").to_string()),
             text_hash: 0,
             tail: self
                 .lm
@@ -923,14 +1101,11 @@ impl<'a> Decoder<'a> {
             clean: true,
         });
         let no_raw = |_: usize, _: usize| String::new();
-        let hash_text = |t: &str| {
-            use std::hash::Hasher;
-            let mut h = FastHasher::default();
-            h.write(t.as_bytes());
-            h.finish()
-        };
         // 同一次解码里 (上文尾, 词头) 组合大量重复：缓存边界代价。 Cache boundary costs per decode.
         let mut lm_cache: FastMap<(Ids, Ids), i64> = FastMap::default();
+        // 每个跨度的词表示（序号、搭配 id、文字哈希），一次解码里复用同一块缓冲区。
+        // Per-span word list (index, collocation ids, text hash), reused across the whole decode.
+        let mut words: Vec<(usize, WordIds, u64)> = Vec::new();
         for pos in 0..n {
             if states[pos].is_empty() {
                 continue;
@@ -942,7 +1117,7 @@ impl<'a> Decoder<'a> {
                 let span = &spans[si];
                 // Each span belongs to exactly one by_start slot, visited once.
                 // Score it once here instead of retaining a never-reused cache.
-                let words: Vec<_> = {
+                let shared = {
                     // 有搭配模型时每个跨度都要让模型挑：只给跨度开头留大池子，会让“迟”“圣”这类
                     // 低频同音词连参赛资格都没有（你吃早饭了吗 → 你迟早反了吗）。
                     // With a collocation model every span is model-scored: limiting the larger pool to the
@@ -952,36 +1127,39 @@ impl<'a> Decoder<'a> {
                     } else if span.penalty == 0 && span.start == 0 {
                         SPAN_TOP
                     } else { SPECULATIVE_TOP };
-                    let mut w = self.span_words(span, limit, &no_raw);
+                    let mut shared = self.span_words_shared(span, limit, &no_raw);
                     if span.raw && span.literal.is_none() {
-                        w[0].text = String::new();
+                        let m = Arc::make_mut(&mut shared);
+                        m.words[0].text = String::new();
+                        m.info[0] = (self.lm.map(|lm| lm.word_ids("")).unwrap_or_default(), text_hash(""));
                     }
+                    shared
+                };
+                {
                     // 学过的词顶替了系统首选（她们 顶 他们）：搭配模型按被顶替的词来算，上下文不再把它压回去。
                     // A learned word that displaced the system's first choice (她们 over 他们) is scored by the
                     // collocation model as the displaced word, so context does not push it back.
                     let alias = if self.lm.is_some() && !span.raw { self.learned_winner(&span.key) } else { None };
-                    w.into_iter()
-                        .map(|s| {
-                            let lm_text = match &alias {
-                                Some((learned, _, shown)) if *learned == s.text => shown.as_str(),
-                                _ => s.text.as_str(),
-                            };
-                            let ids = self.lm.map(|lm| lm.word_ids(lm_text)).unwrap_or_default();
-                            let h = hash_text(&s.text);
-                            (s, ids, h)
-                        })
-                        .collect()
-                };
+                    words.clear();
+                    words.extend(shared.words.iter().zip(shared.info.iter()).enumerate().map(|(wi, (s, &(ids, h)))| {
+                        match &alias {
+                            Some((learned, _, shown)) if *learned == s.text => {
+                                (wi, self.lm.map(|lm| lm.word_ids(shown.as_str())).unwrap_or_default(), h)
+                            }
+                            _ => (wi, ids, h),
+                        }
+                    }));
+                }
                 // 只在两个干净跨度之间用搭配模型：否则它会奖励把完整音节拆成简拼。
                 // Only between two clean spans; otherwise it rewards splitting syllables.
                 let clean = span.penalty == 0 && !span.raw;
                 let slot = &mut states[span.end];
                 for (pi, prev) in cur.iter().enumerate() {
-                    for (w, ids, text_hash) in words.iter() {
-                        let text_hash = *text_hash;
+                    for &(wi, ids, text_hash) in words.iter() {
+                        let w = &shared.words[wi];
                         let mut cost = prev.cost + (w.cost + WORD_COST) as i64;
-                        if self.user.has_bigrams() && !prev.text.is_empty() {
-                            if let Some(b) = self.user.bigram(&prev.text, &w.text) {
+                        if self.user.has_bigrams() && !prev.text.as_str().is_empty() {
+                            if let Some(b) = self.user.bigram(prev.text.as_str(), &w.text) {
                                 cost -= learn_cost::bigram_bonus(b.count, self.user.tick().saturating_sub(b.last)) as i64;
                             }
                         }
@@ -992,16 +1170,16 @@ impl<'a> Decoder<'a> {
                                 } else if clean && prev.clean {
                                     cost += *lm_cache
                                         .entry((prev.tail, ids.head))
-                                        .or_insert_with(|| lm.boundary(prev.tail, ids.head));
+                                        .or_insert_with(|| self.lm_boundary(lm, prev.tail, ids.head));
                                 } else {
                                     cost += (lm.baseline * lm.weight * 1000.0) as i64;
                                 }
-                                lm.next_tail(prev.tail, ids)
+                                lm.next_tail(prev.tail, &ids)
                             }
                             None => Ids::default(),
                         };
                         if let Some(same) = slot.iter_mut().find(|s| {
-                            s.text_hash == text_hash && s.tail == tail && s.text == w.text
+                            s.text_hash == text_hash && s.tail == tail && s.text.as_str() == w.text
                         }) {
                             if cost < same.cost {
                                 same.cost = cost;
@@ -1014,7 +1192,7 @@ impl<'a> Decoder<'a> {
                                 cost,
                                 back: Some((pos, pi)),
                                 span: si,
-                                text: w.text.clone(),
+                                text: StateText::Word(Arc::clone(&shared), wi),
                                 text_hash,
                                 tail,
                                 clean,
@@ -1033,7 +1211,7 @@ impl<'a> Decoder<'a> {
             let mut path = Vec::new();
             let mut cur = end;
             while let Some((p, i)) = cur.back {
-                path.push((cur.span, cur.text.clone()));
+                path.push((cur.span, cur.text.as_str().to_string()));
                 cur = &states[p][i];
             }
             path.reverse();
@@ -1146,14 +1324,28 @@ impl<'a> Decoder<'a> {
                 cost,
             }
         };
-        if !lat.best.is_empty() {
+        // 完整读音已有词典词条时，词条优先于多词拼接；纠错、简拼和未完成尾音节不受此限制。
+        // 因已学习子词而让位的完整词不拦截拆句；含原样 Latin 的混合句也始终保留。
+        // An exact full/fuzzy-reading dictionary phrase takes precedence over synthesized multi-word
+        // sentences. Correction, abbreviation and unfinished-tail candidates retain normal decoding.
+        // Learned-subphrase overrides and sentences containing literal Latin are exempt.
+        let exact_phrase = lat.by_start[0].iter().any(|&si| {
+            let span = &lat.spans[si];
+            span.end == n && !span.raw && span.matches_preference_reading(self.graph, false)
+                && self.override_winners(&span.key).is_empty()
+        });
+        let synthesized = |path: &[(usize, String)]| path.len() > 1 && path.iter().all(|(si, _)| {
+            let span = &lat.spans[*si];
+            !span.raw && span.literal.is_none()
+        });
+        if !lat.best.is_empty() && (!exact_phrase || !synthesized(&lat.best)) {
             let c = sentence(&lat.best, lat.best_cost);
             if seen.insert(c.text.clone()) && out.len() < cap { out.push(c); }
         }
         // 次优整句总是放在第 2 位（最优是单个词时，它排在那个词之后）。
         // The runner-up always goes second, also when the best result is a single word.
         let mut alt_sentence = None;
-        if lat.alt.len() >= 2 && lat.alt_cost <= lat.best_cost.saturating_add(ALT_SENTENCE_MARGIN) {
+        if lat.alt.len() >= 2 && (!exact_phrase || !synthesized(&lat.alt)) && lat.alt_cost <= lat.best_cost.saturating_add(ALT_SENTENCE_MARGIN) {
             let c = sentence(&lat.alt, lat.alt_cost);
             if seen.insert(c.text.clone()) {
                 alt_sentence = Some(c);
@@ -1249,7 +1441,7 @@ mod debug_tests {
                 kind: EdgeKind::Full, bits: Vec::new() });
         }
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
-            graph: &graph, context: None, lm: None };
+            graph: &graph, context: None, lm: None, memo: None };
         let lattice = decoder.decode();
         let spans: Vec<_> = lattice.spans.iter().filter(|s| s.key == key && s.end == 4).collect();
         assert_eq!(spans.len(), 2);
@@ -1281,7 +1473,7 @@ mod debug_tests {
         for _ in 0..5 { user.learn_bigram("虚拟", "视界"); }
         let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
-            graph: &graph, context: Some("虚拟"), lm: None };
+            graph: &graph, context: Some("虚拟"), lm: None, memo: None };
         let lat = decoder.decode();
         assert_eq!(lat.best[0].1, "视界");
         let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
@@ -1299,7 +1491,7 @@ mod debug_tests {
         for _ in 0..20 { user.learn_bigram("虚拟", "视界"); }
         let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
-            graph: &graph, context: Some("虚拟"), lm: None };
+            graph: &graph, context: Some("虚拟"), lm: None, memo: None };
         let lat = decoder.decode();
         assert_eq!(lat.best[0].1, "视界");
         let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
@@ -1321,7 +1513,7 @@ mod debug_tests {
         user.learn(&key, "使劲"); user.select(&key, "使劲");
         let graph = build_full_pinyin(&Letters::parse("sj"), &FuzzyOptions::default());
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
-            graph: &graph, context: Some("任意"), lm: None };
+            graph: &graph, context: Some("任意"), lm: None, memo: None };
         assert_eq!(decoder.candidates(&decoder.decode(), &|_, _| String::new(), 20)[0].text, "使劲");
     }
 
@@ -1336,7 +1528,7 @@ mod debug_tests {
         let graph = build_full_pinyin(&Letters::parse("shijie"), &FuzzyOptions::default());
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
             graph: &graph, context: Some("虚拟"),
-            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }) };
+            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }), memo: None };
         let lat = decoder.decode();
         assert_eq!(lat.best[0].1, "视界");
         assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 20)[0].text, "视界");
@@ -1357,7 +1549,7 @@ mod debug_tests {
         let graph = build_full_pinyin(&Letters::parse("mai"), &FuzzyOptions::default());
         let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user,
             graph: &graph, context: Some("我"),
-            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }) };
+            lm: Some(LmParams { gram: &gram, weight: 0.25, baseline: 12.0 }), memo: None };
         let lat = decoder.decode();
         assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 20)[0].text, "买");
     }
@@ -1371,7 +1563,7 @@ mod debug_tests {
         let lex = Lexicon::from_bytes(builder.build()).unwrap();
         let user = UserDict::in_memory();
         let graph = build_full_pinyin(&Letters::parse("xiuba"), &FuzzyOptions::default());
-        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user, graph: &graph, context: None, lm: None };
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user, graph: &graph, context: None, lm: None, memo: None };
         let lat = decoder.decode();
         assert_eq!(lat.best.len(), 1);
         assert_eq!(lat.alt.len(), 2);
@@ -1380,6 +1572,23 @@ mod debug_tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].text, "秀吧");
         assert_eq!(decoder.candidates(&lat, &|_, _| String::new(), 2).len(), 2);
+    }
+
+    #[test]
+    fn an_exact_full_reading_phrase_is_not_displaced_by_a_multi_word_sentence() {
+        let mut builder = Builder::new(Kind::Pinyin);
+        for (py, text, cost) in [("xiu ba", "秀吧", 12000), ("xiu", "修", 100), ("ba", "吧", 100)] {
+            builder.insert(&syllable::parse_seq(py).unwrap(), text, cost);
+        }
+        let lex = Lexicon::from_bytes(builder.build()).unwrap();
+        let user = UserDict::in_memory();
+        let graph = build_full_pinyin(&Letters::parse("xiuba"), &FuzzyOptions::default());
+        let decoder = Decoder { lex: Some(&lex), packs: &[], user: &user, graph: &graph, context: None, lm: None, memo: None };
+        let lat = decoder.decode();
+        assert_eq!(lat.best.len(), 2, "the fixture must reproduce sentence over-segmentation");
+        let candidates = decoder.candidates(&lat, &|_, _| String::new(), 20);
+        assert_eq!(candidates[0].text, "秀吧");
+        assert!(candidates.iter().all(|c| c.kind != CandKind::Sentence));
     }
 
     #[test]
@@ -1413,6 +1622,7 @@ mod debug_tests {
             graph: &g,
             context: None,
             lm: None,
+            memo: None,
         };
         let lat = d.decode();
         let raw = |_: usize, _: usize| String::new();

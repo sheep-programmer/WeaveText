@@ -14,3 +14,6 @@ captures/
 android/.kotlin/
 keystore.properties
 *.jks
+
+# 文档不进仓库（不提交、不推送）/ Documentation stays out of the repository (never committed or pushed)
+docs/

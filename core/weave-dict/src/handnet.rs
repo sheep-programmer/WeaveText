@@ -763,18 +763,26 @@ pub fn raster(strokes: &[Stroke], n: usize, margin: f32, r: f32) -> Option<Vec<f
 
 /// 输出列按这么宽分块计算，块内累加器留在寄存器 / L1 里。 Output columns are processed in tiles this wide.
 const TILE: usize = 64;
+/// 一次同时算的输出通道数（aarch64 上 4 通道 × 16 列正好占满 NEON 寄存器）。
+/// Output channels computed together; on aarch64, 4 channels × 16 columns fills the NEON registers.
+const ROWS: usize = 4;
+/// 一块里每行的列数，也是 im2col 行长的对齐单位。 Columns per block; im2col rows are padded to this multiple.
+const COLS: usize = 16;
 
-/// 3×3 卷积（补零保持尺寸）+ ReLU。先展开成 (cin·9) × (side²) 的矩阵，再按输出通道分给几个线程。
-/// 3×3 convolution with zero padding and ReLU: im2col into a (cin·9) × side² matrix, output channels split across threads.
+/// 3×3 卷积（补零保持尺寸）+ ReLU。先展开成 (cin·9) × side² 的矩阵（行长补齐到 [`COLS`] 的倍数），再按输出通道分给几个线程。
+/// 每个输出都按同一顺序累加（偏置，然后 kk 递增，跳过零权重），与朴素实现逐位一致。
+/// 3×3 convolution with zero padding and ReLU: im2col into a (cin·9) × side² matrix (rows padded to a multiple of [`COLS`]),
+/// output channels split across threads. Every output accumulates in the same order as the naive loop, so results are bit-identical.
 fn conv3x3(x: &[f32], cin: usize, side: usize, w: &[f32], b: &[f32], cout: usize, threads: usize) -> Vec<f32> {
     let hw = side * side;
     let k = cin * 9;
-    let mut col = vec![0f32; k * hw];
+    let stride = hw.div_ceil(COLS) * COLS;
+    let mut col = vec![0f32; k * stride];
     for c in 0..cin {
         let plane = &x[c * hw..(c + 1) * hw];
         for ky in 0..3 {
             for kx in 0..3 {
-                let row = &mut col[((c * 9) + ky * 3 + kx) * hw..][..hw];
+                let row = &mut col[((c * 9) + ky * 3 + kx) * stride..][..hw];
                 for y in 0..side {
                     let sy = y as isize + ky as isize - 1;
                     if sy < 0 || sy >= side as isize {
@@ -793,28 +801,16 @@ fn conv3x3(x: &[f32], cin: usize, side: usize, w: &[f32], b: &[f32], cout: usize
     let mut out = vec![0f32; cout * hw];
     let per = cout.div_ceil(threads.max(1));
     let work = |o0: usize, part: &mut [f32]| {
-        for (oi, dst) in part.chunks_exact_mut(hw).enumerate() {
-            let o = o0 + oi;
-            let wr = &w[o * k..(o + 1) * k];
-            let mut t0 = 0;
-            while t0 < hw {
-                let tl = TILE.min(hw - t0);
-                let mut acc = [0f32; TILE];
-                let acc = &mut acc[..tl];
-                acc.fill(b[o]);
-                for (kk, &wv) in wr.iter().enumerate() {
-                    if wv == 0.0 {
-                        continue;
-                    }
-                    let src = &col[kk * hw + t0..kk * hw + t0 + tl];
-                    for (a, &s) in acc.iter_mut().zip(src) {
-                        *a += wv * s;
-                    }
-                }
-                for (d, &a) in dst[t0..t0 + tl].iter_mut().zip(acc.iter()) {
-                    *d = a.max(0.0);
-                }
-                t0 += tl;
+        let end = o0 + part.len() / hw;
+        let mut o = o0;
+        while o < end {
+            let dst = &mut part[(o - o0) * hw..];
+            if end - o >= ROWS {
+                conv_block(&col, stride, k, &w[o * k..], &b[o..], hw, dst);
+                o += ROWS;
+            } else {
+                conv_row(&col, stride, k, &w[o * k..(o + 1) * k], b[o], &mut dst[..hw]);
+                o += 1;
             }
         }
     };
@@ -829,6 +825,78 @@ fn conv3x3(x: &[f32], cin: usize, side: usize, w: &[f32], b: &[f32], cout: usize
         });
     }
     out
+}
+
+/// 单个输出通道：按 [`TILE`] 分块，块内累加器在栈上。 One output channel, tiled by [`TILE`] with the accumulator on the stack.
+fn conv_row(col: &[f32], stride: usize, k: usize, wr: &[f32], bias: f32, dst: &mut [f32]) {
+    let hw = dst.len();
+    let mut t0 = 0;
+    while t0 < hw {
+        let tl = TILE.min(hw - t0);
+        let mut acc = [0f32; TILE];
+        let acc = &mut acc[..tl];
+        acc.fill(bias);
+        for (kk, &wv) in wr.iter().enumerate().take(k) {
+            if wv == 0.0 {
+                continue;
+            }
+            let src = &col[kk * stride + t0..kk * stride + t0 + tl];
+            for (a, &s) in acc.iter_mut().zip(src) {
+                *a += wv * s;
+            }
+        }
+        for (d, &a) in dst[t0..t0 + tl].iter_mut().zip(acc.iter()) {
+            *d = a.max(0.0);
+        }
+        t0 += tl;
+    }
+}
+
+/// [`ROWS`] 个输出通道一块：权重从 `w` 起（每通道 `k` 个），偏置从 `b` 起，结果写到 `dst` 起的 `ROWS` 行。
+/// [`ROWS`] output channels at once: weights from `w` (k per channel), biases from `b`, results to the rows at `dst`.
+#[cfg(target_arch = "aarch64")]
+fn conv_block(col: &[f32], stride: usize, k: usize, w: &[f32], b: &[f32], hw: usize, dst: &mut [f32]) {
+    use std::arch::aarch64::{float32x4_t, vaddq_f32, vdupq_n_f32, vld1q_f32, vmaxq_f32, vmulq_f32, vst1q_f32};
+    // SAFETY: NEON is part of the aarch64 baseline. Each 16-float load starts at a multiple of COLS inside a row of
+    // `stride` (a multiple of COLS, ≥ hw), so it stays inside `col`; the stores go to a local buffer first.
+    // Multiply and add are separate intrinsics (no fused multiply-add), so every rounding matches the scalar kernel.
+    unsafe {
+        let zero = vdupq_n_f32(0.0);
+        let mut t0 = 0;
+        while t0 < hw {
+            let mut acc = [[vdupq_n_f32(0.0); 4]; ROWS];
+            for (r, a) in acc.iter_mut().enumerate() {
+                *a = [vdupq_n_f32(b[r]); 4];
+            }
+            for kk in 0..k {
+                let p = col.as_ptr().add(kk * stride + t0);
+                let s: [float32x4_t; 4] = [vld1q_f32(p), vld1q_f32(p.add(4)), vld1q_f32(p.add(8)), vld1q_f32(p.add(12))];
+                for (r, a) in acc.iter_mut().enumerate() {
+                    let wv = vdupq_n_f32(w[r * k + kk]);
+                    for (d, &sq) in a.iter_mut().zip(&s) {
+                        *d = vaddq_f32(*d, vmulq_f32(wv, sq));
+                    }
+                }
+            }
+            let tl = COLS.min(hw - t0);
+            for (r, a) in acc.iter().enumerate() {
+                let mut tmp = [0f32; COLS];
+                for (q, &v) in a.iter().enumerate() {
+                    vst1q_f32(tmp.as_mut_ptr().add(4 * q), vmaxq_f32(v, zero));
+                }
+                dst[r * hw + t0..][..tl].copy_from_slice(&tmp[..tl]);
+            }
+            t0 += tl;
+        }
+    }
+}
+
+/// 其他平台：逐通道计算，结果与 aarch64 路径相同。 Other targets: channel by channel, with the same results.
+#[cfg(not(target_arch = "aarch64"))]
+fn conv_block(col: &[f32], stride: usize, k: usize, w: &[f32], b: &[f32], hw: usize, dst: &mut [f32]) {
+    for r in 0..ROWS {
+        conv_row(col, stride, k, &w[r * k..(r + 1) * k], b[r], &mut dst[r * hw..(r + 1) * hw]);
+    }
 }
 
 /// 2×2 最大池化。 2×2 max pooling.
@@ -849,6 +917,56 @@ fn pool2(x: &[f32], ch: usize, side: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    /// 朴素参考：同样的累加顺序（偏置，再按 kk 递增累加，跳过零权重），越界处不计。
+    /// Naive reference with the same accumulation order: bias, then kk ascending, zero weights skipped, out-of-bounds taps not counted.
+    fn conv_reference(x: &[f32], cin: usize, side: usize, w: &[f32], b: &[f32], cout: usize) -> Vec<f32> {
+        let (hw, k) = (side * side, cin * 9);
+        let mut out = vec![0f32; cout * hw];
+        for o in 0..cout {
+            for y in 0..side {
+                for xx in 0..side {
+                    let mut acc = b[o];
+                    for c in 0..cin {
+                        for ky in 0..3 {
+                            for kx in 0..3 {
+                                let wv = w[o * k + c * 9 + ky * 3 + kx];
+                                let (sy, sx) = (y as isize + ky as isize - 1, xx as isize + kx as isize - 1);
+                                if wv == 0.0 || sy < 0 || sx < 0 || sy >= side as isize || sx >= side as isize {
+                                    continue;
+                                }
+                                acc += wv * x[c * hw + sy as usize * side + sx as usize];
+                            }
+                        }
+                    }
+                    out[o * hw + y * side + xx] = acc.max(0.0);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn conv3x3_matches_the_naive_reference_for_odd_sizes_and_channel_counts() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        for &(cin, side, cout) in &[(1usize, 5usize, 6usize), (3, 7, 9), (2, 16, 4), (4, 8, 1), (5, 3, 13)] {
+            let x: Vec<f32> = (0..cin * side * side).map(|_| next()).collect();
+            let mut w: Vec<f32> = (0..cout * cin * 9).map(|_| next()).collect();
+            w[0] = 0.0;
+            let b: Vec<f32> = (0..cout).map(|_| next()).collect();
+            let expect = conv_reference(&x, cin, side, &w, &b, cout);
+            for threads in [1, 3] {
+                let got = super::conv3x3(&x, cin, side, &w, &b, cout, threads);
+                assert_eq!(got, expect, "cin={cin} side={side} cout={cout} threads={threads}");
+            }
+        }
+    }
+
     #[test]
     fn explicit_groups_recognize_overlapping_characters_in_pen_order() {
         let cross = vec![vec![(0.0, 50.0), (100.0, 50.0)], vec![(50.0, 0.0), (50.0, 100.0)]];
