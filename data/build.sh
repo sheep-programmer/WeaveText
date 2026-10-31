@@ -47,7 +47,9 @@ GRAM_SRC="$REF/wanxiang-lts-zh-hans.gram"
 # 旧字节上游不再提供，换一次就必须跟着换一次校验值。
 # The upstream LTS asset is replaced in place (once on 2026-10-16, again on 2026-10-17); only the digest pins a
 # version, and the old bytes are gone, so a replacement means updating the digest.
-GRAM_SHA=1849e5e4acbdbfaf41fceeb86b739d5d0c85d574bd8a688562cba1e6beb78488
+# 2026-10-31 上游替换后更新：整句评测（1000 句）新旧两版 top1、top3、字准确率逐项一致。
+# Updated 2026-10-31 after an upstream replacement: sentence eval (1000) matched the old digest on top1, top3 and char accuracy.
+GRAM_SHA=e34500ab44626dc039a0641792ecba98ab63307646eb3d29186be56608ffe094
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 if [ ! -f "$GRAM_SRC" ] || [ "$(sha256 "$GRAM_SRC")" != "$GRAM_SHA" ]; then
   curl -fsSL --retry 3 -o "$GRAM_SRC.part" "https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram"
