@@ -110,7 +110,6 @@ fun LookScreen() {
         }
         GroupTitle("按键手感")
         GroupCard { KeyFeelCard(p, feedback, view) }
-        FloatingResizeSettingsCard(p)
         androidx.compose.foundation.layout.Spacer(Modifier.height(GroupGap))
         GroupCard {
             SwitchRow("按键气泡", "按下时放大显示字符", WeavePrefs.keyPreview(p)) { p.edit().putBoolean(WeavePrefs.KEY_PREVIEW, it).apply() }

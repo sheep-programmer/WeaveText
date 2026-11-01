@@ -337,10 +337,7 @@ class TypingFeelTest {
         idle()
         val card = kb.board.parent as android.view.View
         assertEquals(kb.metrics.dp(28f + 14f), (card.height - kb.board.height).toFloat(), 2f)
-        com.weavetext.ime.settings.FloatingResizeSettings.write(WeavePrefs.of(app),
-            setOf(com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_LEFT, com.weavetext.ime.ui.keyboard.FloatingResizeCorner.TOP_RIGHT))
         idle()
-        // The new frame reserves the bottom gutter even when bottom corners are disabled.
         assertEquals(kb.metrics.dp(28f + 14f), (card.height - kb.board.height).toFloat(), 2f)
     }
 

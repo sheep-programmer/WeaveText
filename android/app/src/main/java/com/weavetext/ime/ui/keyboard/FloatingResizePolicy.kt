@@ -1,6 +1,6 @@
 package com.weavetext.ime.ui.keyboard
 
-/** Stable ids are stored by FloatingResizeSettings; labels also identify each accessibility node. */
+/** Stable ids identify each corner for accessibility; labels also identify each accessibility node. */
 enum class FloatingResizeCorner(val id: String, val label: String, val bit: Int, val horizontalSign: Int, val verticalSign: Int) {
     TOP_LEFT("top_left", "左上角", 1, -1, -1),
     TOP_RIGHT("top_right", "右上角", 2, 1, -1),

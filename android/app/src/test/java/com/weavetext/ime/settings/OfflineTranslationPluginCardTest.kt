@@ -1,5 +1,6 @@
 package com.weavetext.ime.settings
 
+import com.weavetext.ime.models.Progress
 import android.app.Application
 import android.content.Context
 import android.net.Uri
@@ -28,6 +29,8 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.test.core.app.ApplicationProvider
 import com.weavetext.ime.translate.TranslationProtocol
+import com.weavetext.ime.models.DownloadPhase
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Rule
@@ -83,6 +86,15 @@ class OfflineTranslationPluginCardTest {
         override fun installFromUri(ctx: Context, uri: Uri): Result<Unit> {
             imports += uri to (Looper.myLooper() != Looper.getMainLooper())
             return installResult
+        }
+        var downloadResult: Result<Unit> = Result.success(Unit)
+        val downloads = ConcurrentLinkedQueue<Boolean>()
+        var downloadCancelled = false
+        override fun downloadAndInstall(ctx: Context, cancel: AtomicBoolean, onProgress: (Progress) -> Unit): Result<Unit> {
+            downloads += (Looper.myLooper() != Looper.getMainLooper())
+            onProgress(Progress(512L * 1024, 1024L * 1024, 0, "", DownloadPhase.DOWNLOADING))
+            downloadCancelled = cancel.get()
+            return downloadResult
         }
     }
 
@@ -174,6 +186,27 @@ class OfflineTranslationPluginCardTest {
         assertTrue(actions.statusReads > reads)
         compose.onNodeWithText("版本：1.3").assertExists()
         compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsEnabled().assertIsSelected()
+    }
+
+    @Test fun downloadButtonFetchesTheSameVersionOffTheMainThreadAndKeepsTheProviderUntilVerified() {
+        open()
+        compose.onNodeWithTag("offline_translation_plugin_download").assertIsEnabled()
+        click("offline_translation_plugin_download")
+        awaitMessage("请在系统页面确认安装；返回后会刷新插件状态。")
+        assertEquals(1, actions.downloads.size)
+        assertTrue("下载不能阻塞主 UI", actions.downloads.peek())
+        assertFalse("下载没有取消", actions.downloadCancelled)
+        assertTrue(actions.imports.isEmpty())
+        assertEquals(TranslationProtocol.GOOGLE_DEVICE, TranslationSettings.protocol(prefs))
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
+    }
+
+    @Test fun failedDownloadShowsTheReasonAndDoesNotEnablePlugin() {
+        actions.downloadResult = Result.failure(java.io.IOException("插件签名与输入法不匹配"))
+        open()
+        click("offline_translation_plugin_download")
+        awaitMessage("插件签名与输入法不匹配")
+        compose.onNodeWithTag("offline_translation_plugin_enabled").assertIsNotEnabled()
     }
 
     @Test fun pickerCancellationDoesNotInstallOrChangeProvider() {

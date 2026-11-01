@@ -26,7 +26,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.weavetext.ime.debug.SmokeActivity
 import com.weavetext.ime.ime.ImeState
 import com.weavetext.ime.ime.InputController
-import com.weavetext.ime.settings.FloatingResizeSettings
 import com.weavetext.ime.settings.WeavePrefs
 import com.weavetext.ime.ui.keyboard.FloatingResizeAccessibility
 import com.weavetext.ime.ui.keyboard.FloatingResizeCorner
@@ -58,7 +57,6 @@ class FloatingResizeDeviceTest {
         // A fresh card per corner avoids reaching MIN_SCALE cumulatively and hiding a broken grip.
         for (corner in FloatingResizeCorner.entries) withKeyboard { f ->
             f.onMain {
-                assertFalse(f.prefs.contains(FloatingResizeSettings.KEY_CORNERS))
                 assertEquals(FloatingResizeCorner.entries.toSet(), f.visibleCorners())
                 f.assertControlRegions()
             }
@@ -74,42 +72,6 @@ class FloatingResizeDeviceTest {
                 f.assertInsideRoot()
                 f.assertNoInput()
             }
-        }
-    }
-
-    @Test fun selectingOnlyBottomRightLiveDisablesOtherCornerGesturesWithoutTyping() = withKeyboard { f ->
-        f.onMain { FloatingResizeSettings.write(f.prefs, setOf(FloatingResizeCorner.BOTTOM_RIGHT)) }
-        f.awaitLayout()
-        f.onMain {
-            assertEquals(8, FloatingResizeSettings.cornerMask(f.prefs))
-            assertEquals(setOf(FloatingResizeCorner.BOTTOM_RIGHT), f.visibleCorners())
-            f.assertControlRegions()
-        }
-        for (corner in FloatingResizeCorner.entries.filter { it != FloatingResizeCorner.BOTTOM_RIGHT }) {
-            val before = f.onMain { screenBounds(f.card) }
-            val scale = f.onMain { f.prefs.getString(f.sizeKey(), null) }
-            // GONE grips have no touch target: exercise their reserved bar position via the root.
-            // The top drag bar may move the card here; it must not resize or type through the bar.
-            dragCorner(f, corner, requireHandled = false)
-            f.onMain {
-                val after = screenBounds(f.card)
-                assertEquals("Disabled $corner resized width", before.width(), after.width())
-                assertEquals("Disabled $corner resized height", before.height(), after.height())
-                assertEquals("Disabled $corner saved a size", scale, f.prefs.getString(f.sizeKey(), null))
-                assertTrue("Disabled $corner unexpectedly docked the card", f.keyboard.floating)
-                f.assertInsideRoot()
-                f.assertNoInput()
-            }
-        }
-        val before = f.onMain { screenBounds(f.card) }
-        dragCorner(f, FloatingResizeCorner.BOTTOM_RIGHT, requireHandled = true) { current ->
-            assertAnchor(FloatingResizeCorner.BOTTOM_RIGHT, before, current)
-        }
-        f.onMain {
-            assertTrue(screenBounds(f.card).width() < before.width())
-            assertTrue(screenBounds(f.card).height() < before.height())
-            assertEquals(8, FloatingResizeSettings.cornerMask(f.prefs))
-            f.assertNoInput()
         }
     }
 

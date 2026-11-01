@@ -120,8 +120,17 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         }
     var handLineMode = false
         set(value) { if (field != value) { field = value; invalidate(); a11y.invalidate() } }
-    /** 单字模式下停笔是否自动上屏（连写不看它，连写只按候选确认）。 Whether a pause commits by itself in single-char mode. */
+    /** 停笔是否自动上屏（单字，或开了自动上屏的叠写）；连写只按候选确认。 Whether a pause commits by itself. */
     var handAutoCommitOn = true
+    private val pauseCommits: Boolean
+        get() = HandPad.pauseCommits(handLineMode, handOverlayMode, handAutoCommitOn)
+
+    /** 上屏后清掉当前笔迹：叠写的旧字淡出，单字与其它情况按原来的短淡出。 After a commit: overlay characters fade out, others clear. */
+    private fun retireInk() {
+        val pad = hand ?: return
+        val fade = android.animation.ValueAnimator.areAnimatorsEnabled()
+        if (handOverlayMode) pad.retire(fade) else pad.clear(fade = fade)
+    }
     var handGuide = true
         set(value) { if (field != value) { field = value; invalidate() } }
     var handRecognizing = false
@@ -137,7 +146,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         // 连写由用户点候选确认，关闭自动上屏时也一样，否则一行字还没写完就先上屏了。
         // Continuous writing is confirmed by picking a candidate, and so is auto-commit off: a half-written line would
         // otherwise commit.
-        if (handLineMode || !handAutoCommitOn) return
+        if (!pauseCommits) return
         val remaining = handIdleMs - pad.sinceLastStroke()
         if (remaining > 0L) {
             removeCallbacks(handIdle)
@@ -145,7 +154,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             return
         }
         if (host?.onHandIdleCommit() != true) return
-        pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+        retireInk()
         invalidate()
     }
     /** 正在处理的触摸事件时刻（笔画按事件时间计时，不受主线程忙闲影响）。 Time of the event being handled. */
@@ -334,7 +343,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
     private fun scheduleHandIdle() {
         removeCallbacks(handIdle)
         val pad = hand ?: return
-        if (handIdleMs > 0L && !handLineMode && handAutoCommitOn && !pad.drawing && pad.strokes.isNotEmpty()) {
+        if (handIdleMs > 0L && pauseCommits && !pad.drawing && pad.strokes.isNotEmpty()) {
             postDelayed(handIdle, (handIdleMs - pad.sinceLastStroke()).coerceAtLeast(0L))
         }
     }
@@ -410,6 +419,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
 
         override fun a11yLabel(id: Int): CharSequence? {
             if (id == PAD_ID) return when {
+                handOverlayMode && handAutoCommitOn -> "手写区，同一区域连续书写，停顿${handPauseMs}毫秒自动上屏，刚写的字会逐渐淡出"
                 handOverlayMode -> "手写区，同一区域叠写，字间停顿${handPauseMs}毫秒，最多四字，当前${hand?.characterCount ?: 0}字，写完点候选上屏"
                 handLineMode -> "手写区，横向写几个字，字间留空，写完点候选上屏"
                 else -> "手写区，用手指书写一个字"
@@ -740,6 +750,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             text.textAlign = Paint.Align.LEFT
             val instruction = when {
                 handOverlayMode && pad.overlayLimitReached -> "已到上限 · 请确认或退笔"
+                handOverlayMode && handAutoCommitOn -> "叠写 · 停顿${handPauseMs}毫秒自动上屏"
                 handOverlayMode -> "叠写 ${pad.characterCount}/4 · 字间停顿${handPauseMs}毫秒"
                 handLineMode -> "连写 · 写完一行点候选"
                 else -> "单字 · 在此书写"
@@ -871,7 +882,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         val pad = hand
         // 系统取消只丢当前一笔，保留的字重新等一次停笔；面板切换的内部复位不排队。
         // System cancellation drops only the live stroke and restarts the retained ink's pause.
-        if (cancelledInk && pad != null && !pad.drawing && pad.strokes.isNotEmpty() && handIdleMs > 0 && !handLineMode && handAutoCommitOn) {
+        if (cancelledInk && pad != null && !pad.drawing && pad.strokes.isNotEmpty() && handIdleMs > 0 && pauseCommits) {
             removeCallbacks(handIdle)
             postDelayed(handIdle, handIdleMs)
         }
@@ -890,7 +901,12 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
         return x >= pad.rect.left - band && x <= pad.rect.right + band && y >= pad.rect.top - band && y <= pad.rect.bottom + band
     }
 
+    private val contacts = ContactFilter()
+
     private fun startPointer(e: MotionEvent, index: Int) {
+        // 手掌或搁着的手压在键盘上：接触面积远大于平时的指尖，不输出字符，也不开始书写。
+        // A palm or a resting hand: far more contact area than a fingertip, so it types nothing and starts no ink.
+        if (e.getToolType(index) == MotionEvent.TOOL_TYPE_FINGER && contacts.isPalm(e.getTouchMajor(index))) return
         var p: Ptr? = null
         for (q in ptrs) if (q.id < 0) { p = q; break }
         if (p == null) return // 超过 4 根手指忽略。 More than four fingers are ignored.
@@ -917,8 +933,8 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
             // Pen down after a pause commits the previous char first. Continuous writing skips this (pausing between
             // characters is normal), as does auto-commit off (the ink waits for the user). Pause by event time, so a
             // busy main thread doesn't fake one.
-            if (!handLineMode && handAutoCommitOn && pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
-                if (host?.onHandCommit() == true) pad.clear(fade = android.animation.ValueAnimator.areAnimatorsEnabled())
+            if (pauseCommits && pad.strokes.isNotEmpty() && pad.sinceLastStroke(e.eventTime) >= handPauseMs) {
+                if (host?.onHandCommit() == true) retireInk()
             }
             // 书写要跟手：这根手指的移动不等下一帧批量送达。 Ink must follow the finger: moves are not batched per frame.
             requestUnbufferedDispatch(e)
@@ -1275,7 +1291,7 @@ class KeyboardView(ctx: Context, private val host: KeyboardHost?) : View(ctx) {
                         removeCallbacks(handIdle)
                         // 连写与关闭自动上屏都不排队：落笔后不会有超时上屏。 Continuous writing and auto-commit off
                         // queue nothing: no timed commit follows a stroke.
-                        if (handIdleMs > 0 && !handLineMode && handAutoCommitOn) postDelayed(handIdle, handIdleMs)
+                        if (handIdleMs > 0 && pauseCommits) postDelayed(handIdle, handIdleMs)
                     } else pad.cancel(evTime)
                 }
             }

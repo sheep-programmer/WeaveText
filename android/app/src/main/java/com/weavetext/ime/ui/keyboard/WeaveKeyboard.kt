@@ -23,7 +23,6 @@ import com.weavetext.ime.ime.InputController
 import com.weavetext.ime.ime.KeyboardUi
 import com.weavetext.ime.ime.WeaveImeService
 import com.weavetext.ime.settings.WeavePrefs
-import com.weavetext.ime.settings.FloatingResizeSettings
 import com.weavetext.ime.style.KeyboardStyle
 import com.weavetext.ime.style.StyleRepository
 import com.weavetext.ime.style.ToolIds
@@ -125,6 +124,8 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
     private var floatScale = 1f
     private var floatingViewportWidth = 0
     private var floatingMeasureHeight = 0
+    /** 停靠时系统给输入法窗口的高度（[onMeasure] 记下）；内联面板据此限高。 Docked window height the system granted. */
+    private var windowGrantedHeight = 0
     private var floatingBaseMainHeight = 0f
     private var floatingControlHeightDp = TOP_BAR_DP
     /** 正在拖动缩放：布局时保持右下角不动，不按保存的比例重新放置。 Resizing: layout keeps the bottom-right corner. */
@@ -538,13 +539,33 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         }
     }
 
+    /** 悬浮卡片的键高与普通键盘同一档（比例与停靠时一致）。 Floating keys use the docked height level. */
+    private fun floatLevel(): Int = WeavePrefs.heightLevel(prefs)
+
+    /**
+     * 卡片宽度占可用宽度的比例。键宽由卡片宽度决定，键高由屏幕高度决定；两者要同比缩小，键的宽高比才与停靠时一致，
+     * 所以键高乘这个比例。
+     * The card's share of the usable width. Key widths follow the card, key heights follow the screen, so the height
+     * must shrink by the same share for the keys to keep the docked proportions.
+     */
+    private fun floatProportion(): Float {
+        val landscape = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val avail = ((floatingViewportWidth.takeIf { it > 0 } ?: root.width.takeIf { it > 0 } ?: ctx.resources.displayMetrics.widthPixels) - navLeft - navRight).coerceAtLeast(1)
+        val card = FloatingGeometry.cardWidth(avail, landscape, ctx.resources.displayMetrics.density)
+        return (card.toFloat() / avail).coerceIn(0.3f, 1f)
+    }
+
+    /** 键高的总缩放：卡片比例 × 用户的悬浮大小。 Total key-height scale: card proportion times the user's floating size. */
+    private fun floatMetricScale(): Float = floatProportion() * floatScale
+
     private fun floatingStyle(): KeyboardStyle {
         val landscape = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         floatScale = FloatingGeometry.decodeScale(prefs.getString(if (landscape) WeavePrefs.FLOAT_SIZE_LAND else WeavePrefs.FLOAT_SIZE_PORT, null))
-        val base = StyleRepository.get(ctx).resolve(ctx, prefs, FLOAT_LEVEL)
-        floatingBaseMainHeight = base.metrics.mainHeight
-        if (floatScale == 1f) return base
-        val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(base.layout, base.overrides), floatScale)
+        val base = StyleRepository.get(ctx).resolve(ctx, prefs, floatLevel())
+        val scale = floatMetricScale()
+        floatingBaseMainHeight = base.metrics.mainHeight * floatProportion()
+        if (scale == 1f) return base
+        val m = KbMetrics(ctx, floatLevel(), KeyboardStyle.geometry(base.layout, base.overrides), scale)
         return KeyboardStyle(base.layout, base.theme, base.dark, base.overrides, base.palette, m)
     }
 
@@ -558,9 +579,15 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         val requested = metrics.dp(panel?.inlineHeightDp ?: 0f).toInt()
         // A short landscape IME window still needs the keyboard body and control bars.
         // The inline panel adapts its actions and scrollable text to the remaining height.
-        val viewportHeight = floatingMeasureHeight.takeIf { it > 0 } ?: root.height
-        if (!floating || !metrics.landscape || viewportHeight <= 0) return requested
-        val maxInline = (viewportHeight - navInset - metrics.dp(TOP_BAR_DP + BOTTOM_BAR_DP + 33f + 32f * 4f) - metrics.topBar - metrics.padTop - metrics.padBottom).toInt().coerceAtLeast(metrics.dp(48f).toInt())
+        if (!metrics.landscape || requested == 0) return requested
+        val viewportHeight = if (floating) floatingMeasureHeight.takeIf { it > 0 } ?: root.height else windowGrantedHeight
+        if (viewportHeight <= 0) return requested
+        // 面板之外的部分（气泡区、顶栏、键区、底部导航）必须完整留下，面板只能占剩下的高度；这里不含面板，直接相加。
+        // Everything except the panel (bubble area, top bar, key rows, nav inset) must fit whole; the panel takes the rest.
+        val nonPanel = metrics.bubbleSpace + metrics.topBar + metrics.padTop + metrics.mainHeight + metrics.padBottom + navInset
+        // 窗口放不下面板时就收到放得下为止（可以为 0），不能用最小高度把键盘本体顶出窗口。
+        // When the window can't hold the panel, shrink it to what fits (down to 0); a minimum height would push the keys out.
+        val maxInline = (viewportHeight - nonPanel).toInt().coerceAtLeast(0)
         return requested.coerceAtMost(maxInline)
     }
 
@@ -569,7 +596,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
         if (floating) {
             val kbH = m.kbHeight.toInt() + inlinePanelHeight()
             val handleH = m.dp(floatingControlHeightDp).toInt()
-            val policy = FloatingResizeSettings.read(prefs)
+            val policy = FloatingResizePolicy()
             // 四周预留窄边，调整大小时也不截走按键触摸。 Reserved gutters keep resize touches off keys.
             val bottomH = m.dp(BOTTOM_BAR_DP).toInt()
             val side = m.dp(12f).toInt()
@@ -740,7 +767,6 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             WeavePrefs.KEYBOARDS, WeavePrefs.SHUANGPIN_SCHEME, WeavePrefs.ACTIVE_KEYBOARD -> { applySchemaPref(); layoutSig = ""; refreshLayout() }
             WeavePrefs.ONE_HAND -> applyOneHand()
             WeavePrefs.FLOATING -> setFloatingMode(WeavePrefs.floating(p))
-            FloatingResizeSettings.KEY_CORNERS -> applyGeometry()
             WeavePrefs.CLIPBOARD_CLEARED -> clipboard.clearHistory()
         }
         for (pn in panels.values) if (pn is PrefAware) pn.onPref(key)
@@ -1889,7 +1915,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
             applyTheme()
         } else {
             floatScale = s
-            val m = KbMetrics(ctx, FLOAT_LEVEL, KeyboardStyle.geometry(style.layout, style.overrides), s)
+            val m = KbMetrics(ctx, floatLevel(), KeyboardStyle.geometry(style.layout, style.overrides), floatMetricScale())
             style = KeyboardStyle(style.layout, style.theme, style.dark, style.overrides, style.palette, m)
             metrics = m
             popup.applyStyle(style)
@@ -1968,7 +1994,7 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                 android.view.MotionEvent.ACTION_DOWN -> {
                     if (!resizeMode) return false
                     if (resizeSession.active) return true
-                    val policy = FloatingResizeSettings.read(prefs)
+                    val policy = FloatingResizePolicy()
                     val activeCorner = corner ?: edge?.corner(policy) ?: return false
                     val start = FloatingGeometry.Box(card.translationX.toInt(), card.translationY.toInt(), card.translationX.toInt() + card.width, card.translationY.toInt() + card.height)
                     val fixed = (card.height - metrics.mainHeight.toInt()).coerceIn(0, card.height - 1)
@@ -2186,6 +2212,13 @@ class WeaveKeyboard(val ctx: Context, val controller: InputController, private v
                     floatingViewportWidth = width; floatingMeasureHeight = h; applyGeometry()
                 }
                 fitFloatingViewport(width, h)
+            }
+            // 记下系统给窗口的高度（不是本视图算出的高度，那个已经包含内联面板）。翻译条等内联面板据此让出空间。
+            // Record the height the system granted the window, not our own result (which already includes the inline
+            // panel). Inline panels size against it.
+            if (!floating && MeasureSpec.getMode(heightMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                val granted = MeasureSpec.getSize(heightMeasureSpec)
+                if (windowGrantedHeight != granted) { windowGrantedHeight = granted; applyGeometry() }
             }
             super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
         }

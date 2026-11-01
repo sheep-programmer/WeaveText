@@ -55,6 +55,8 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     private var renderW = FloatArray(257)
     private val fadingGeom = ArrayList<FloatArray>()
     private val fadingSamples = ArrayList<FloatArray>()
+    /** 叠写自动上屏后留下的旧字：各自按落笔后的时间淡出，不参与识别。 Committed characters fading out on their own clocks. */
+    private val ghosts = ArrayList<Ghost>()
 
     var drawing = false
         private set
@@ -123,6 +125,17 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
     /** Draw in pad-local coordinates after the host clips/translates. True requests another fade frame. */
     fun drawInk(canvas: Canvas, paint: Paint, themeColor: Int): Boolean {
         paint.style = Paint.Style.FILL
+        val now = clock()
+        var ghostsLeft = false
+        val it = ghosts.iterator()
+        while (it.hasNext()) {
+            val g = it.next()
+            val age = now - g.start
+            if (age >= GHOST_FADE_MS) { it.remove(); continue }
+            paint.color = inkColor(themeColor, 1f - age / GHOST_FADE_MS.toFloat())
+            canvas.drawPath(g.path, paint)
+            ghostsLeft = true
+        }
         val fade = fadeProgress()
         if (fade >= 0f) {
             paint.color = inkColor(themeColor, 1f - fade)
@@ -130,7 +143,32 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         }
         paint.color = inkColor(themeColor)
         canvas.drawPath(ink, paint)
-        return fade >= 0f
+        return fade >= 0f || ghostsLeft
+    }
+
+    /** Live ghost alphas (0..1), newest last; expired ghosts are dropped. For tests and accessibility. */
+    fun ghostAlphas(now: Long = clock()): List<Float> {
+        ghosts.removeAll { now - it.start >= GHOST_FADE_MS }
+        return ghosts.map { 1f - (now - it.start) / GHOST_FADE_MS.toFloat() }
+    }
+
+    /**
+     * 叠写自动上屏：这一字已经交给输入框，它的笔迹变成按时间淡出的旧字，当前画布清空，下一字在同一区域写。
+     * 没有动画时直接清掉。Auto-committed overlay char: its ink becomes a ghost that fades on its own clock, and the
+     * live canvas is cleared for the next character. Without animations it is simply cleared.
+     */
+    fun retire(fade: Boolean) {
+        if (!fade || done.isEmpty()) return clear(false)
+        val t = clock()
+        val g = Ghost(ArrayList(done), ArrayList(doneSamples), t, Path())
+        rebuildGhost(g)
+        ghosts += g
+        clear(false)
+    }
+
+    private fun rebuildGhost(g: Ghost) {
+        g.path.rewind()
+        for (i in g.geom.indices) fill(g.path, g.geom[i], g.samples[i], g.geom[i].size / 2, ended = true)
     }
 
     private var vel = 0f
@@ -282,6 +320,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         drawing = false
         curN = 0
         clearFade()
+        ghosts.clear()
         ink.rewind()
         finishedInk.rewind()
     }
@@ -326,6 +365,7 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         for (i in done.indices) fill(finishedInk, done[i], doneSamples[i], done[i].size / 2, ended = true)
         fading.rewind()
         for (i in fadingGeom.indices) fill(fading, fadingGeom[i], fadingSamples[i], fadingGeom[i].size / 2, ended = true)
+        for (g in ghosts) rebuildGhost(g)
         rebuild()
     }
 
@@ -440,5 +480,17 @@ class HandPad(private val clock: () -> Long = SystemClock::uptimeMillis) {
         const val MAX_STROKES = 256
         const val COMMIT_PAUSE_MS = 800L
         const val FADE_MS = 160L
+        /** 叠写里旧字从上屏起淡出到消失的时长。 How long an auto-committed overlay character takes to fade out. */
+        const val GHOST_FADE_MS = 1500L
+
+        /**
+         * 停笔后是否自动上屏。单字模式与开了自动上屏的叠写会在停笔后上屏；连写只按候选确认。
+         * Whether a pause commits by itself: single-char mode, and overlay mode with auto-commit on. Continuous writing
+         * is always confirmed by picking a candidate.
+         */
+        fun pauseCommits(lineMode: Boolean, overlayMode: Boolean, autoCommit: Boolean): Boolean =
+            autoCommit && (!lineMode || overlayMode)
     }
+
+    private class Ghost(val geom: List<FloatArray>, val samples: List<FloatArray>, val start: Long, val path: Path)
 }

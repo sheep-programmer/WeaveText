@@ -7,7 +7,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import androidx.core.content.FileProvider
+import com.weavetext.ime.voice.VoiceUpgrade
 import com.weavetext.translation.contract.TranslationPluginContract as Contract
 import java.io.File
 import java.util.UUID
@@ -68,16 +68,23 @@ object OfflineTranslationPlugin {
                     output.write(buffer, 0, n)
                 }
             } }
-            val pm = ctx.packageManager
-            val info = pm.getPackageArchiveInfo(file.path, FLAGS) ?: error("文件不是有效的 Android 插件安装包")
-            require(info.packageName == Contract.PLUGIN_PACKAGE) { "请选择 Google 离线翻译插件安装包" }
-            val ours = pm.getPackageInfo(ctx.packageName, signatureFlags)
-            require(sameSigners(ours, info)) { "插件签名与输入法不匹配" }
-            require(inspectServices(info).state == State.READY) { "离线翻译插件清单不兼容" }
-            val shared = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
-            ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(shared, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            verifyAndInstall(ctx, file)
         } catch (error: Exception) { file.delete(); throw error }
+    }
+
+    /**
+     * 本地文件与下载共用：包名、签名（与输入法相同）、清单兼容都通过后，才交给系统安装器。
+     * Shared by local files and downloads: package name, signer (same as the app) and manifest must all pass before
+     * the system installer takes over.
+     */
+    fun verifyAndInstall(ctx: Context, file: File) {
+        val pm = ctx.packageManager
+        val info = pm.getPackageArchiveInfo(file.path, FLAGS) ?: error("文件不是有效的 Android 插件安装包")
+        require(info.packageName == Contract.PLUGIN_PACKAGE) { "请选择 Google 离线翻译插件安装包" }
+        val ours = pm.getPackageInfo(ctx.packageName, signatureFlags)
+        require(sameSigners(ours, info)) { "插件签名与输入法不匹配" }
+        require(inspectServices(info).state == State.READY) { "离线翻译插件清单不兼容" }
+        check(VoiceUpgrade.install(ctx, file)) { "请先允许织文安装应用，授权后再点一次安装" }
     }
 
     internal fun sameSigners(left: PackageInfo, right: PackageInfo): Boolean {

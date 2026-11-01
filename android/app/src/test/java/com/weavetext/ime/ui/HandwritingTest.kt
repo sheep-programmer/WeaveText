@@ -179,6 +179,8 @@ class HandwritingTest {
     }
 
     @Test fun overlayModeKeepsSameAreaCharactersSeparateUntilExplicitConfirmation() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        build()
         tap(KeyCode.HAND_MODE)
         tap(KeyCode.HAND_MODE)
         idle()
@@ -202,7 +204,25 @@ class HandwritingTest {
         assertEquals("单字", key(KeyCode.HAND_MODE).label)
     }
 
+    @Test fun overlayAutoCommitsEachPausedCharacterAndKeepsItsInkAsAFadingGhost() {
+        tap(KeyCode.HAND_MODE); tap(KeyCode.HAND_MODE)
+        idle()
+        stroke(0.2f, 0.5f, 0.8f, 0.5f)
+        hold(HandPad.COMMIT_PAUSE_MS + 100)
+        idle()
+        assertEquals("停笔即上屏第一个字", "1笔0", ic.text)
+        assertTrue(pad.strokes.isEmpty())
+        // setUp 关闭了动画，所以旧字直接清掉、不留淡出墨迹；淡出本身由 HandOverlayTest 覆盖。
+        // setUp turns animations off, so the old char is cleared outright; the fade itself is covered in HandOverlayTest.
+        assertEquals("动画关闭时旧字直接清掉", 0, pad.ghostAlphas().size)
+        // 第二个字写在同一区域，不等确认。 The next char is written in the same area without waiting for a pick.
+        stroke(0.5f, 0.2f, 0.5f, 0.8f)
+        assertEquals("第二字从空白开始，只含自己的笔画", 1, pad.strokes.size)
+    }
+
     @Test fun overlayRedoKeepsTheCharacterBoundaryAndRejectsConfirmationDuringInk() {
+        WeavePrefs.of(app).edit().putBoolean(WeavePrefs.HAND_AUTO_COMMIT, false).commit()
+        build()
         tap(KeyCode.HAND_MODE); tap(KeyCode.HAND_MODE)
         stroke(0.2f, 0.5f, 0.8f, 0.5f)
         hold(HandPad.COMMIT_PAUSE_MS + 100)

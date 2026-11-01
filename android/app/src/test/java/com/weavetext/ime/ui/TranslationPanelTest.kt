@@ -353,6 +353,20 @@ class TranslationPanelTest {
         assertEquals("", ic.text)
     }
 
+    /** 停靠（非悬浮）横屏：翻译条不能把键盘主体挤出窗口。 Docked landscape: the strip must not push the keys out of the window. */
+    @Test @Config(qualifiers = "w914dp-h411dp-land-420dpi")
+    fun inlineTranslationFitsDockedLandscapeWithoutClippingTheKeys() = withKeyboard { kb, _, _ ->
+        kb.showPanel("translation"); ShadowLooper.idleMainLooper()
+        val windowH = kb.metrics.dp(330f).toInt()
+        kb.view.measure(View.MeasureSpec.makeMeasureSpec(2200, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(windowH, View.MeasureSpec.EXACTLY))
+        kb.view.layout(0, 0, 2200, windowH)
+        assertTrue("panel must leave room for the four key rows", kb.keyboardView.height >= kb.metrics.mainHeight.toInt())
+        val keys = IntArray(2); kb.keyboardView.getLocationInWindow(keys)
+        val boardH = kb.board.height; val cardH = (kb.board.parent as View).height
+        assertTrue("keys must end inside the window: keysTop=${keys[1]} keysH=${kb.keyboardView.height} boardH=$boardH cardH=$cardH windowH=$windowH", keys[1] + kb.keyboardView.height <= windowH + 1)
+    }
+
     @Test @Config(qualifiers = "w914dp-h411dp-land-420dpi")
     fun inlineTranslationFitsFloatingLandscapeWithoutClippingTheKeys() = withKeyboard { kb, _, _ ->
         kb.toggleFloating(); ShadowLooper.idleMainLooper()
