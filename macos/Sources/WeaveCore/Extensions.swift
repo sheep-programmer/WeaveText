@@ -2,12 +2,14 @@ import Combine
 import Foundation
 
 public enum ExtensionRegistry {
-    public static let defaults: Set<String> = ["feature:voice", "feature:translate", "feature:stickers", "feature:phrases", "feature:link", "feature:cloudwords", "feature:calc", "scheme:hand", "scheme:wubi86", "scheme:cangjie"]
+    public static let defaults: Set<String> = ["feature:voice", "feature:translate", "feature:stickers", "feature:phrases", "feature:link", "feature:cloudwords", "feature:calc", "scheme:hand", "scheme:wubi86", "scheme:cangjie", "scheme:bopomofo", "scheme:romaji", "scheme:" + InputScheme.keypadNinePrefix + "xiaohe", "scheme:" + InputScheme.keypadFourteenPrefix + "xiaohe"]
+    /// 可单独关闭的方案：关闭后不出现在方案列表里。 Schemes that can be switched off and then vanish from the list.
+    public static let gatedSchemes: Set<String> = ["hand", "wubi86", "cangjie", "bopomofo", "romaji", InputScheme.keypadNinePrefix + "xiaohe", InputScheme.keypadFourteenPrefix + "xiaohe"]
     public static func enabled(_ key: String, defaults: UserDefaults = .standard) -> Bool {
         Set(defaults.stringArray(forKey: "extensionsEnabled") ?? Array(Self.defaults)).contains(key)
     }
     public static func scheme(_ id: String, enabled: Set<String>) -> Bool {
-        !["hand", "wubi86", "cangjie"].contains(id) || enabled.contains("scheme:" + id)
+        !gatedSchemes.contains(id) || enabled.contains("scheme:" + id)
     }
 }
 

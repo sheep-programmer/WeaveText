@@ -41,6 +41,7 @@ enum InputMenu {
         add("Emoji 与颜文字…", #selector(WeaveInputController.openExpressions(_:)), to: tools)
         if enabledExtensions.contains("feature:stickers") { add("表情收纳袋…", #selector(WeaveInputController.openStickers(_:)), to: tools) }
         add("剪贴板历史…", #selector(WeaveInputController.openClipboard(_:)), to: tools)
+        add("拍照识字（剪贴板图片）", #selector(WeaveInputController.recognizeClipboardImage(_:)), to: tools)
         if enabledExtensions.contains("feature:phrases") { add("常用语…", #selector(WeaveInputController.openPhrases(_:)), to: tools) }
         // 互联只在有手机连着或正在传输时出现。 Link appears only with a connected phone or a transfer.
         if enabledExtensions.contains("feature:link") && (!phones.isEmpty || canSend || progress != nil) {

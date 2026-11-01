@@ -224,12 +224,15 @@ public struct KeyContext: Equatable, Sendable {
     /// 竖排候选：上下键选候选，左右键在拼音里移动光标；横排时左右键仍选候选。
     /// Vertical candidates: Up/Down pick, Left/Right move the caret in the pinyin. Horizontal keeps Left/Right for picking.
     public var caretArrows: Bool
+    /// 键盘字符即输入（注音、九键双拼），见 InputScheme.rawKeys。 Keys that are input themselves (see InputScheme.rawKeys).
+    public var rawKeys: Set<Character>
 
     public init(composing: Bool, chinese: Bool = true, pageSize: Int = 7, pageKeys: PageKeys = .both,
                 vMode: Bool = false, bindings: CandidateKeys = CandidateKeys(), englishCompletion: Bool = false,
-                caretArrows: Bool = false) {
+                caretArrows: Bool = false, rawKeys: Set<Character> = []) {
         self.bindings = bindings
         self.caretArrows = caretArrows
+        self.rawKeys = rawKeys
         self.composing = composing
         self.vMode = vMode
         self.chinese = chinese
@@ -348,6 +351,13 @@ public enum KeyMapper {
         // v 模式的数字与运算符先送内核，不触发候选快捷键。 V-mode arithmetic reaches the engine before candidate shortcuts.
         if ctx.chinese, ctx.composing, ctx.vMode, !isFunctionKey(key.keyCode),
            let c = key.character, Calc.vAccepts(c) { return .letter(c) }
+        // 注音、九键双拼的键盘字符直接送内核：组合中的任何键盘字符，空闲时的字母与数字（大写与 Shift 组合保留给应用）。
+        // Bopomofo and keypad-shuangpin keys go to the engine first: any raw key while composing, letters and digits when idle.
+        if ctx.chinese, let c = key.character, ctx.rawKeys.contains(c), !isFunctionKey(key.keyCode),
+           !key.command, !key.control, !key.option {
+            if ctx.composing { return .letter(c) }
+            if (c.isLetter || c.isNumber), !key.shift, !key.capsLock { return .letter(c) }
+        }
         // 用户自定义的候选键优先于默认键，只在组合中生效。 Custom candidate keys beat the defaults, while composing only.
         if ctx.composing, let custom = ctx.bindings.action(for: key) { return custom }
         if !ctx.chinese { return englishAction(key, ctx) }

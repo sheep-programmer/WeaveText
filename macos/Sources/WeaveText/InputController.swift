@@ -189,7 +189,8 @@ final class WeaveInputController: IMKInputController {
                              pageKeys: prefs.pageKeys,
                              vMode: prefs.extensionEnabled("feature:calc") && composing && Calc.isVMode(preedit: preedit, scheme: host.scheme.id),
                              bindings: prefs.candidateKeys, englishCompletion: prefs.englishCompletion,
-                             caretArrows: prefs.orientation == .vertical)
+                             caretArrows: prefs.orientation == .vertical,
+                             rawKeys: host.scheme.rawKeys)
         let action = KeyMapper.action(for: key, in: ctx)
         if !composing, key.characters == "=", !key.command, !key.control, !key.option, offerCalc(client) {
             return true
@@ -480,6 +481,16 @@ final class WeaveInputController: IMKInputController {
         engine.features(["op":"policy","index":pager.offset+pageIndex,"text":text,"mode":mode])
         refresh(client)
     }
+    /// 工具菜单：识别剪贴板里的图片，文字直接输入到当前应用。 Tools menu: recognize a clipboard image and type the text into the app.
+    @objc func recognizeClipboardImage(_ sender: Any?) {
+        guard let client = client(), let engine = host.engine, !engine.isComposing else { NSSound.beep(); return }
+        guard let image = ClipboardOCR.image() else { NSSound.beep(); return }
+        ClipboardOCR.recognize(image) { [weak self] text in
+            guard let text, !text.isEmpty else { NSSound.beep(); return }
+            self?.insert(text, client)
+        }
+    }
+
     @objc func reconvertSelection(_ sender:Any?) {
         guard let client=client(),let engine=host.engine,!engine.isComposing else{return}
         let range=client.selectedRange()

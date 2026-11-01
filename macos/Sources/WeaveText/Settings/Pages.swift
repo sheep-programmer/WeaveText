@@ -209,7 +209,7 @@ struct GeneralPage: View {
 struct SchemesPage: View {
     @ObservedObject var prefs: Preferences
 
-    private var pinyinFamily: Bool { prefs.schema == "pinyin" || InputScheme.named(prefs.schema).isShuangpin }
+    private var pinyinFamily: Bool { prefs.schema == "pinyin" || InputScheme.named(prefs.schema).isShuangpinFamily }
 
     var body: some View {
         Form {

@@ -95,6 +95,7 @@ public final class Preferences: ObservableObject {
         if enabled { extensionsEnabled.insert(key) } else { extensionsEnabled.remove(key) }
         if !enabled && key == "scheme:wubi86" && schema == "wubi86" { schema = "pinyin" }
         if !enabled && key == "scheme:cangjie" && schema == "cangjie" { schema = "pinyin" }
+        if !enabled, key.hasPrefix("scheme:"), ExtensionRegistry.gatedSchemes.contains(schema), schema == String(key.dropFirst(7)) { schema = "pinyin" }
     }
 
     @Published public var schema: String { didSet { save(schema, "schema") } }
